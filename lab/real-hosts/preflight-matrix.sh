@@ -5,6 +5,8 @@ set -Eeuo pipefail
 
 : "${SSH_KEY_FILE:?Set SSH_KEY_FILE to the dedicated BAFT-TUNNEL LAB private key}"
 : "${SSH_KNOWN_HOSTS_FILE:?Set SSH_KNOWN_HOSTS_FILE to pinned host keys for all six hosts}"
+command -v ssh >/dev/null || { echo 'Missing local dependency: ssh' >&2; exit 2; }
+command -v python3 >/dev/null || { echo 'Missing local dependency: python3' >&2; exit 2; }
 
 HOST_LABELS=(IR_1 IR_2 EX_1 EX_2 EX_3 EX_4)
 HOSTS=()
@@ -12,7 +14,14 @@ for label in "${HOST_LABELS[@]}"; do
   var_name="${label}_HOST"
   value="${!var_name:-}"
   [[ -n "$value" ]] || { echo "Missing required host setting: $var_name" >&2; exit 2; }
-  [[ "$value" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "Invalid host value in $var_name" >&2; exit 2; }
+  if [[ "$value" == *:* ]]; then
+    python3 - "$value" <<'PY' >/dev/null 2>&1 || { echo "Invalid IPv6 address in $var_name" >&2; exit 2; }
+import ipaddress, sys
+ipaddress.IPv6Address(sys.argv[1])
+PY
+  else
+    [[ "$value" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "Invalid host value in $var_name" >&2; exit 2; }
+  fi
   HOSTS+=("$value")
 done
 
@@ -38,8 +47,6 @@ for port in "${PORTS[@]}"; do
   [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || { echo 'Invalid port in LAB_TEST_PORTS' >&2; exit 2; }
 done
 
-command -v ssh >/dev/null || { echo 'Missing local dependency: ssh' >&2; exit 2; }
-command -v python3 >/dev/null || { echo 'Missing local dependency: python3' >&2; exit 2; }
 [[ -f "$SSH_KEY_FILE" && -r "$SSH_KEY_FILE" ]] || { echo 'SSH key must be a readable regular file' >&2; exit 2; }
 [[ -f "$SSH_KNOWN_HOSTS_FILE" && -s "$SSH_KNOWN_HOSTS_FILE" && -r "$SSH_KNOWN_HOSTS_FILE" ]] || { echo 'known_hosts must be a readable, non-empty regular file' >&2; exit 2; }
 
