@@ -21,3 +21,5 @@ jobs:
         run: bash lab/real-hosts/test-preflight-matrix.sh
       - name: Validate Docker Compose
         run: docker compose -f lab/compose.yaml config --quiet
+      - name: Run isolated Docker netem integration
+        run: bash lab/scripts/integration-netem.sh
