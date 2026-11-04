@@ -60,8 +60,8 @@ remote_facts() {
   echo "=== HOST PREFLIGHT: $label ==="
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$host" 'bash -s' <<'REMOTE'
 set -eu
-. /etc/os-release 2>/dev/null || true
-printf 'OS=%s\n' "${PRETTY_NAME:-unknown}"
+os_name=$(awk -F= '$1 == "PRETTY_NAME" { value=substr($0,index($0,"=")+1); sub(/^"/,"",value); sub(/"$/,"",value); print value; exit }' /etc/os-release 2>/dev/null || true)
+printf 'OS=%s\n' "${os_name:-unknown}"
 printf 'KERNEL=%s\n' "$(uname -sr)"
 printf 'ARCH=%s\n' "$(uname -m)"
 printf 'INIT=%s\n' "$(ps -p 1 -o comm= 2>/dev/null | tr -d ' ' || true)"
