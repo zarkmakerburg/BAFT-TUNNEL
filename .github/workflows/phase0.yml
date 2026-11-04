@@ -1,0 +1,23 @@
+name: phase0
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  lab-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell scripts
+        run: |
+          set -eu
+          for script in lab/scripts/*.sh; do sh -n "$script"; done
+          for script in lab/real-hosts/*.sh; do bash -n "$script"; done
+      - name: Test LAB control scripts
+        run: sh lab/scripts/test-scripts.sh
+      - name: Test six-host preflight guards (mock SSH only)
+        run: bash lab/real-hosts/test-preflight-matrix.sh
+      - name: Validate Docker Compose
+        run: docker compose -f lab/compose.yaml config --quiet
