@@ -33,7 +33,9 @@ jobs:
       SSH_PORT: ${{ vars.LAB_SSH_PORT }}
       LAB_TEST_PORTS: ${{ vars.LAB_TEST_PORTS }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
       - name: Prepare ephemeral SSH credentials
         shell: bash
         env:
@@ -49,8 +51,8 @@ jobs:
             echo "::add-mask::$host"
           done
           mkdir -p "$RUNNER_TEMP/baft-tunnel-ssh"
-          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519"
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
+          printf '%s\\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519"
+          printf '%s\\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
           echo "SSH_KEY_FILE=$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" >> "$GITHUB_ENV"
           echo "SSH_KNOWN_HOSTS_FILE=$RUNNER_TEMP/baft-tunnel-ssh/known_hosts" >> "$GITHUB_ENV"
