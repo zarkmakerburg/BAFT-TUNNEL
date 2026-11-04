@@ -21,7 +21,7 @@ jobs:
       - name: Validate Bash scripts
         run: |
           set -eu
-          for script in lab/scripts/integration-netem.sh lab/real-hosts/*.sh; do
+          for script in lab/scripts/integration-netem.sh lab/scripts/test-clear-netem.sh lab/real-hosts/*.sh; do
             bash -n "$script"
           done
       - name: Test LAB control scripts
