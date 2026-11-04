@@ -10,6 +10,11 @@
 5. A mock SSH test is not SSH connectivity. Loopback is not public reachability. A container network simulation is not real Iran-to-abroad E2E. Label every evidence level precisely.
 6. Use observable readiness, not sleeps. Keep fixture-owned sockets alive until handoff. Avoid fixed-port test collisions and overlapping suites.
 7. Keep platform limitations explicit. Linux/root-only failures on macOS remain failures or unverified locally; Ubuntu CI does not retroactively make local tests pass.
+8. **Test proportionally to risk and acceptance value.** Before adding a test, identify the concrete defect class, security boundary, user-visible behavior, or acceptance criterion it protects. Prefer extending an existing focused test over creating a parallel test for the same behavior.
+9. **Do not test for test-count or CI decoration.** Avoid duplicate assertions, trivial permutations, redundant mocks, and tests whose result cannot change a decision or detect a meaningful regression. Use a representative boundary case when additional cases add no distinct coverage.
+10. Choose the smallest effective test level: static check for static policy, unit test for isolated logic, integration test for component interaction, and end-to-end test only for a critical user journey or boundary that lower levels cannot establish. Do not run every category mechanically for every change.
+11. Keep test maintenance and runtime in proportion to the risk reduced. Reuse existing fixtures and workflows; do not add another workflow or matrix dimension unless it covers a distinct supported platform, threat, or acceptance requirement.
+12. When a change is documentation-only or otherwise does not alter executable behavior, do not invent behavioral tests. Run the existing required CI validation if appropriate and report exactly what it does and does not prove.
 
 ## Security and state
 1. Fail closed on missing, malformed, stale or contradictory authority. Never convert corrupt security state or read errors into permissive defaults.
@@ -52,12 +57,12 @@
 - Requirement and acceptance criterion identified.
 - Canonical branch and exact base SHA verified.
 - Baseline defect reproduced when applicable.
-- Regression test added at the real boundary.
-- Unit, integration, race, static and security tests run and recorded.
+- Only the smallest set of tests needed for the identified risk/acceptance criterion is added or changed; existing coverage is reused where possible.
+- Unit, integration, race, static and security tests are selected by applicability and risk, not run mechanically for every change.
 - Exact-SHA CI run IDs and outcomes recorded.
 - Simulation, isolated-kernel, real-host and cross-border evidence distinguished.
 - Existing resources and traffic proven unchanged where relevant.
-- Failure, rollback, restart and recovery tested.
+- Failure, rollback, restart and recovery tested when the changed behavior can affect those paths.
 - Docs, schema, installer, API and UI kept consistent.
 - Independent review for security-sensitive changes.
 - No merge, release, deployment or phase transition without owner authorization.
