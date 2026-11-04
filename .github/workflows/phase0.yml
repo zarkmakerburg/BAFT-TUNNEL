@@ -15,7 +15,7 @@ jobs:
       - name: Validate POSIX shell scripts
         run: |
           set -eu
-          for script in lab/scripts/apply-netem.sh lab/scripts/clear-netem.sh lab/scripts/show-netem.sh lab/scripts/test-scripts.sh; do
+          for script in lab/scripts/apply-netem.sh lab/scripts/clear-netem.sh lab/scripts/show-netem.sh lab/scripts/test-scripts.sh lab/scripts/check-workflow-pins.sh lab/scripts/test-workflow-pins.sh; do
             sh -n "$script"
           done
       - name: Validate Bash scripts
@@ -24,6 +24,10 @@ jobs:
           for script in lab/scripts/integration-netem.sh lab/scripts/test-clear-netem.sh lab/real-hosts/*.sh; do
             bash -n "$script"
           done
+      - name: Enforce immutable workflow action pins
+        run: sh lab/scripts/check-workflow-pins.sh
+      - name: Test workflow action pin policy (mock fixtures)
+        run: sh lab/scripts/test-workflow-pins.sh
       - name: Test LAB control scripts
         run: sh lab/scripts/test-scripts.sh
       - name: Test NetEm cleanup failure paths (mock Docker only)
