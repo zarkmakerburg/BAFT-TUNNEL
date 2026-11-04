@@ -64,6 +64,10 @@ sh lab/scripts/test-scripts.sh
 bash lab/scripts/test-clear-netem.sh
 ```
 
+## Phase 0 evidence
+
+The current Phase 0 exit-evidence package is prepared for owner review in [docs/PHASE0_EXIT_EVIDENCE.md](docs/PHASE0_EXIT_EVIDENCE.md). It distinguishes verified CI/container simulation from unrun real-host and tunnel acceptance evidence.
+
 ## Security and repository status
 
 The canonical repository is private. No public open-source license is granted; do not redistribute, sublicense, or reuse the code without the owner's explicit written permission. Repository visibility and access are controlled by the owner.
