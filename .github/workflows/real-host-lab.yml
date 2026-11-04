@@ -19,7 +19,7 @@ concurrency:
 jobs:
   real-host-preflight:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm == 'READ_ONLY_PREFLIGHT' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: baft-tunnel-lab
     timeout-minutes: 15
     env:
