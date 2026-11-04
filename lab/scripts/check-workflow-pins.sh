@@ -5,7 +5,7 @@ found=0
 for workflow in "$workflow_dir"/*.yml "$workflow_dir"/*.yaml; do
   [ -f "$workflow" ] || continue
   while IFS= read -r line; do
-    value=$(printf '%s\n' "$line" | sed -nE 's/^[[:space:]]*uses:[[:space:]]*([^[:space:]#]+).*$/\1/p')
+    value=$(printf '%s\n' "$line" | sed -nE 's/^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*([^[:space:]#]+).*$/\2/p')
     [ -n "$value" ] || continue
     case "$value" in
       ./*|docker://*) continue ;;
