@@ -11,6 +11,8 @@ BAFT-TUNNEL's independent LAB is designed for six owner-provided test servers:
 | Abroad 3 | `EX_3_HOST` | Abroad node 3 |
 | Abroad 4 | `EX_4_HOST` | Abroad node 4 |
 
+Each host can be an IPv4 address, IPv6 literal, or DNS hostname. For IPv6 with a non-default SSH port, use OpenSSH `[IPv6]:port` notation in `known_hosts`. Zone-scoped/link-local IPv6 addresses are not supported by this remote-host workflow.
+
 The preflight inspects all six nodes and checks the complete 2 × 4 Iran-to-abroad TCP reachability matrix (eight directed paths). It distinguishes open ports, reachable hosts without listeners, timeouts, and other network errors.
 
 ## Configure GitHub
@@ -48,7 +50,7 @@ The `.env` file is git-ignored. It must contain only test-host addresses and loc
 3. Select **Run workflow** and enter exactly `READ_ONLY_PREFLIGHT`.
 4. Inspect the six host reports and eight Iran-to-abroad path results.
 
-The job uses the `baft-tunnel-lab` GitHub Environment, where environment protection rules can be enabled. The real-host job only runs on manual dispatch with the exact confirmation string. Pushes and pull requests run mock-only tests and never connect to servers.
+The job uses the `baft-tunnel-lab` GitHub Environment, where environment protection rules can be enabled. The real-host job only runs on manual dispatch with the exact confirmation string. Pushes and pull requests run mock-only tests and never connect to real hosts.
 
 ## Local mock tests
 
@@ -56,7 +58,7 @@ The job uses the `baft-tunnel-lab` GitHub Environment, where environment protect
 bash lab/real-hosts/test-preflight-matrix.sh
 ```
 
-The test uses a fake `ssh` executable and documentation-only TEST-NET IP addresses. It makes no network connection. It verifies all six role inputs, duplicate-host rejection, port validation, strict host-key checking, and the expected 14 SSH calls (six host inspections plus eight path probes).
+The test uses a fake `ssh` executable and documentation-only TEST-NET IPv4 addresses plus a documentation-only IPv6 address. It makes no network connection. It verifies all six role inputs, IPv4/IPv6 parsing, duplicate-host rejection, port validation, strict host-key checking, the complete eight-path matrix, and the expected 14 SSH calls (six host inspections plus eight path probes).
 
 ## Requirements and safety boundaries
 
