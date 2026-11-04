@@ -17,8 +17,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate-confirmation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require explicit read-only preflight confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [[ "$CONFIRM" != "READ_ONLY_PREFLIGHT" ]]; then
+            echo "Invalid confirmation. No LAB hosts were contacted; enter exactly READ_ONLY_PREFLIGHT." >&2
+            exit 2
+          fi
+
   real-host-preflight:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm == 'READ_ONLY_PREFLIGHT' }}
+    needs: validate-confirmation
     runs-on: ubuntu-24.04
     environment: baft-tunnel-lab
     timeout-minutes: 15
@@ -51,8 +64,8 @@ jobs:
             echo "::add-mask::$host"
           done
           mkdir -p "$RUNNER_TEMP/baft-tunnel-ssh"
-          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519"
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
+          printf '%s\\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519"
+          printf '%s\\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
           echo "SSH_KEY_FILE=$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" >> "$GITHUB_ENV"
           echo "SSH_KNOWN_HOSTS_FILE=$RUNNER_TEMP/baft-tunnel-ssh/known_hosts" >> "$GITHUB_ENV"
