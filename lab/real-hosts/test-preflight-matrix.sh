@@ -6,6 +6,7 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 cat > "$tmp/ssh" <<'MOCK'
 #!/bin/sh
 printf '%s\n' "$*" >> "$SSH_CALL_LOG"
+cat >> "$SSH_STDIN_LOG"
 printf '%s\n' 'MOCK_REMOTE_OK'
 MOCK
 chmod +x "$tmp/ssh"
