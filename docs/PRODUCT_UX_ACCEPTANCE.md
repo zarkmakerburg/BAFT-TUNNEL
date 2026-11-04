@@ -107,3 +107,49 @@ No source is approved for wholesale copying by appearance alone. Record selected
 - **Phase 4–5:** preserve the same interaction model as advanced capabilities are added; validate usability before v1.0.
 
 **Gate:** This document does not authorize Phase 1 or Phase 3 implementation or any merge, release, deployment or phase transition.
+
+
+## GitHub release publishing from this ChatGPT environment — Decision D-009
+
+**Binding owner workflow requirement:** the owner must be able to publish a BAFT-TUNNEL GitHub Release directly from this ChatGPT environment through the connected GitHub integration or an authorized repository-owned workflow. The normal path must not require opening a terminal, using Git commands, assembling archives manually, or navigating GitHub's release UI step by step.
+
+This decision is specifically about **publishing the project's version/release on GitHub from this conversation environment**. It does not require a release-publishing page in the BAFT-TUNNEL web panel. The product panel may later display version/update status, but it is not the target publishing interface here.
+
+### Expected owner journey in ChatGPT
+
+1. Ask to prepare or publish a specific version from this conversation.
+2. The assistant checks the exact source commit, PR/merge state, required CI, release checklist, version/tag availability, artifact inventory, signatures/checksums and release notes.
+3. The assistant prepares a release candidate and presents a concise preview: version, exact source SHA, tag, title/body, assets, verification results and blockers.
+4. The owner explicitly authorizes the irreversible publication step when required by release policy.
+5. The assistant uses connected GitHub capabilities or a narrowly scoped, repository-owned GitHub Actions workflow to create the tag/release and attach verified artifacts.
+6. The assistant verifies the resulting GitHub Release page, tag target, attached asset names/sizes, checksums/signatures and workflow outcome, then returns direct GitHub links and a short receipt in this conversation.
+
+### Requirements
+
+- Keep owner interaction conversational and compact; no terminal instructions or manual packaging in the normal path.
+- Never create a tag or publish a release before all release gates are verified and the owner has explicitly authorized publication.
+- Tie every release to an immutable source commit SHA. Verify required PR status, exact-SHA CI, release tests, artifact provenance, checksums and signatures before publication.
+- Do not claim a release is published until GitHub confirms the release and attached assets have been independently re-read/verified.
+- If the connected GitHub integration cannot perform a required write (for example, create a release or upload binary assets), use a reviewed repository-owned GitHub Actions workflow with narrow permissions and a controlled dispatch path, if available. Do not silently fall back to asking the owner to run shell commands.
+- Signing keys stay outside ChatGPT, browser code and ordinary build jobs; use a protected signing workflow/service. The assistant may orchestrate but must not expose or request private signing material in chat.
+- Make retries idempotent and reconcile uncertain outcomes before attempting a second publication.
+- Keep merge, tag, signing, GitHub Release publication and deployment as separate gates. A request to prepare a release is not permission to publish; an explicit publish instruction is required.
+- If the connected environment cannot complete an operation, report the exact missing permission/capability. Never pretend release-write or binary-upload capability exists when it does not.
+
+### Acceptance criteria
+
+- Owner can request and complete a verified GitHub Release from this ChatGPT environment without terminal/Git/manual GitHub UI steps.
+- Before publication, the assistant shows the exact source SHA, tag/version, release notes, asset list and gate status.
+- Publication requires explicit owner authorization and uses a narrowly scoped connected GitHub action or approved GitHub Actions workflow.
+- After publication, the assistant returns the GitHub Release URL and verifies tag target and every attached artifact.
+- Failed/unknown checks, missing assets, invalid signatures or unavailable permissions block publication with a clear explanation.
+- Retrying after an uncertain outcome does not create duplicate tags/releases or inconsistent assets.
+
+### Phase application
+
+- **Phase 0:** record this as a binding owner workflow requirement; no release tooling implementation is authorized by this decision.
+- **Phase 1–2:** preserve immutable source identity, build provenance and artifact/signature contracts needed for later orchestration.
+- **Phase 3:** the BAFT-TUNNEL panel may show release/version status, but this decision does not require publishing from that panel.
+- **Phase 5:** validate the end-to-end GitHub release workflow from this ChatGPT environment before v1.0.
+
+**Gate:** This decision does not authorize merge, tag creation, signing, GitHub Release publication, deployment or phase transition.
