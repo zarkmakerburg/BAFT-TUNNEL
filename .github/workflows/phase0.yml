@@ -10,11 +10,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate shell scripts
+      - name: Validate POSIX shell scripts
         run: |
           set -eu
-          for script in lab/scripts/*.sh; do sh -n "$script"; done
-          for script in lab/real-hosts/*.sh; do bash -n "$script"; done
+          for script in lab/scripts/apply-netem.sh lab/scripts/clear-netem.sh lab/scripts/show-netem.sh lab/scripts/test-scripts.sh; do
+            sh -n "$script"
+          done
+      - name: Validate Bash scripts
+        run: |
+          set -eu
+          for script in lab/scripts/integration-netem.sh lab/real-hosts/*.sh; do
+            bash -n "$script"
+          done
       - name: Test LAB control scripts
         run: sh lab/scripts/test-scripts.sh
       - name: Test six-host preflight guards (mock SSH only)
