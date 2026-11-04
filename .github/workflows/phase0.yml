@@ -26,6 +26,8 @@ jobs:
           done
       - name: Test LAB control scripts
         run: sh lab/scripts/test-scripts.sh
+      - name: Test NetEm cleanup failure paths (mock Docker only)
+        run: bash lab/scripts/test-clear-netem.sh
       - name: Test six-host preflight guards (mock SSH only)
         run: bash lab/real-hosts/test-preflight-matrix.sh
       - name: Validate Docker Compose
