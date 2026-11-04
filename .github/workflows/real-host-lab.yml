@@ -51,8 +51,8 @@ jobs:
             echo "::add-mask::$host"
           done
           mkdir -p "$RUNNER_TEMP/baft-tunnel-ssh"
-          printf '%s\\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519"
-          printf '%s\\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
           echo "SSH_KEY_FILE=$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" >> "$GITHUB_ENV"
           echo "SSH_KNOWN_HOSTS_FILE=$RUNNER_TEMP/baft-tunnel-ssh/known_hosts" >> "$GITHUB_ENV"
