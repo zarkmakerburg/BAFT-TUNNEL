@@ -26,6 +26,7 @@ Each phase ends at a review gate. No production deployment, release, or phase tr
 - Transport plugins have explicit conformance tests.
 - Network-lab simulation is labeled as simulation and never represented as a real two-host test.
 - Anti-probing and fingerprint-resistance claims are bounded and documented; no claim of being undetectable.
+- Mandatory [engineering guardrails](docs/ENGINEERING_GUARDRAILS.md) capture lessons from prior engineering incidents.
 
 ## Technology baseline
 
@@ -65,4 +66,4 @@ sh lab/scripts/test-scripts.sh
 
 The canonical repository is private. No public open-source license is granted; do not redistribute, sublicense, or reuse the code without the owner's explicit written permission. Repository visibility and access are controlled by the owner.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [docs/SECURITY_GUIDE.md](docs/SECURITY_GUIDE.md), and [docs/REAL_HOSTS_LAB.md](docs/REAL_HOSTS_LAB.md).
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [docs/SECURITY_GUIDE.md](docs/SECURITY_GUIDE.md), [docs/REAL_HOSTS_LAB.md](docs/REAL_HOSTS_LAB.md), and [docs/ENGINEERING_GUARDRAILS.md](docs/ENGINEERING_GUARDRAILS.md).
