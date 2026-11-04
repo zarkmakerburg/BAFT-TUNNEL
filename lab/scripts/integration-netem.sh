@@ -3,11 +3,32 @@
 set -Eeuo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 compose_file="$root/lab/compose.yaml"
+
 cleanup() {
-  sh "$root/lab/scripts/clear-netem.sh" >/dev/null 2>&1 || true
-  docker compose -f "$compose_file" down --remove-orphans --volumes >/dev/null 2>&1 || true
+  local result=0
+  if ! sh "$root/lab/scripts/clear-netem.sh"; then
+    echo "ERROR: failed to verify/remove LAB netem qdisc" >&2
+    result=1
+  fi
+  if ! docker compose -f "$compose_file" down --remove-orphans --volumes; then
+    echo "ERROR: failed to remove isolated Docker Compose LAB resources" >&2
+    result=1
+  fi
+  return "$result"
 }
-trap cleanup EXIT HUP INT TERM
+
+finish() {
+  local original_status=$?
+  trap - EXIT HUP INT TERM
+  if ! cleanup; then
+    original_status=1
+  fi
+  exit "$original_status"
+}
+trap finish EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 docker compose -f "$compose_file" build
 docker compose -f "$compose_file" up -d
