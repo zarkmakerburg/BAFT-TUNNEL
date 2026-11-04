@@ -1,0 +1,14 @@
+services:
+  endpoint-a:
+    build: .
+    hostname: endpoint-a
+    cap_add: [NET_ADMIN]
+    networks: [lab]
+  endpoint-b:
+    build: .
+    hostname: endpoint-b
+    cap_add: [NET_ADMIN]
+    networks: [lab]
+networks:
+  lab:
+    internal: true
