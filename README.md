@@ -27,6 +27,7 @@ Each phase ends at a review gate. No production deployment, release, or phase tr
 - Network-lab simulation is labeled as simulation and never represented as a real two-host test.
 - Anti-probing and fingerprint-resistance claims are bounded and documented; no claim of being undetectable.
 - Mandatory [engineering guardrails](docs/ENGINEERING_GUARDRAILS.md) capture lessons from prior engineering incidents.
+- Binding [product UX and dashboard acceptance criteria](docs/PRODUCT_UX_ACCEPTANCE.md) keep ordinary workflows simple without hiding advanced capability or operational risk.
 
 ## Technology baseline
 
@@ -60,10 +61,11 @@ Local mock tests:
 ```bash
 bash lab/real-hosts/test-preflight-matrix.sh
 sh lab/scripts/test-scripts.sh
+bash lab/scripts/test-clear-netem.sh
 ```
 
 ## Security and repository status
 
 The canonical repository is private. No public open-source license is granted; do not redistribute, sublicense, or reuse the code without the owner's explicit written permission. Repository visibility and access are controlled by the owner.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [docs/SECURITY_GUIDE.md](docs/SECURITY_GUIDE.md), [docs/REAL_HOSTS_LAB.md](docs/REAL_HOSTS_LAB.md), and [docs/ENGINEERING_GUARDRAILS.md](docs/ENGINEERING_GUARDRAILS.md).
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [docs/SECURITY_GUIDE.md](docs/SECURITY_GUIDE.md), [docs/REAL_HOSTS_LAB.md](docs/REAL_HOSTS_LAB.md), [docs/ENGINEERING_GUARDRAILS.md](docs/ENGINEERING_GUARDRAILS.md), and [docs/PRODUCT_UX_ACCEPTANCE.md](docs/PRODUCT_UX_ACCEPTANCE.md).
