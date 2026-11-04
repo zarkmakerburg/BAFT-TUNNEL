@@ -3,7 +3,8 @@
 **Status:** Candidate package for owner review. This document does not declare Phase 0 accepted and does not authorize a phase transition.  
 **Project:** BAFT-TUNNEL (independent private project)  
 **Evidence branch:** `phase0/six-host-lab-foundation`  
-**Evidence commit:** `8e1e9e18d41df74d467b0345e0bb1683f7d61876`  
+**Phase 0 baseline commit:** `8e1e9e18d41df74d467b0345e0bb1683f7d61876`  
+**Latest verified Phase 0 head at this review:** `2b9c8c73093262b318b01975a659411f5f0c8481`  
 **Pull request:** [PR #1 — Phase 0: add six-host BAFT-TUNNEL test lab](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/1)
 
 ## 1. Phase 0 scope
@@ -18,7 +19,7 @@ Phase 0 is limited to architecture, threat model, repository governance/foundati
 - [ADR 0002](decisions/0002-transport-baseline.md) — pooled TLS 1.3 mutual-authenticated TCP transport baseline; implementation remains subject to Phase 1 review.
 - [ADR 0003](decisions/0003-rust-core.md) — Rust-only core implementation; no Phase 1 authorization implied.
 - [Security Guide](SECURITY_GUIDE.md) and [Engineering Guardrails](ENGINEERING_GUARDRAILS.md) — binding safety and engineering requirements.
-- [Product UX and Installer Acceptance](PRODUCT_UX_ACCEPTANCE.md) — binding D-008 simplicity, full dashboard information architecture and usability/accessibility acceptance.
+- [Product UX and Installer Acceptance](PRODUCT_UX_ACCEPTANCE.md) — binding D-008 simplicity, full dashboard information architecture and usability/accessibility acceptance, plus D-009 GitHub Release publishing from this ChatGPT environment.
 
 ## 3. Network-lab evidence
 
@@ -48,10 +49,16 @@ The owner has not configured the six-host GitHub Environment variables/secrets. 
 
 ## 4. CI evidence tied to the exact commit
 
-Exact commit: `8e1e9e18d41df74d467b0345e0bb1683f7d61876`
+Historical Phase 0 baseline commit: `8e1e9e18d41df74d467b0345e0bb1683f7d61876`.
 
-- [Workflow run 41781588190](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/41781588190) — success.
-- [Workflow run 41781593696](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/41781593696) — success.
+Latest verified head for this review: `2b9c8c73093262b318b01975a659411f5f0c8481`.
+
+- [Workflow run 41790089193](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/41790089193) — push run, success on exact latest verified head.
+- [Workflow run 41790096469](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/41790096469) — PR run, success on the same exact latest verified head.
+- [Earlier baseline run 41781588190](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/41781588190) — success.
+- [Earlier baseline run 41781593696](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/41781593696) — success.
+
+D-009 was added in commit [`51a48d5`](https://github.com/zarkmakerburg/BAFT-TUNNEL/commit/51a48d539c566002cd6da000de21ea9c4f067847) and verified by [run 41785951457](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/41785951457) and [run 41785959557](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/41785959557), both successful on that exact SHA.
 
 Successful checks include:
 
@@ -71,6 +78,7 @@ Earlier failed intermediate runs are preserved in GitHub Actions history. They e
 - [PR #1](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/1) remains Draft/open and mergeable clean.
 - The PR base/main commit remains `1a53751ce186ea8263a11ac264130d0544d0627b`; main has not been changed by this work.
 - Workflows use a full immutable checkout action SHA, disable persisted checkout credentials, and request only read-only repository permissions.
+- The manual real-host preflight validates the exact confirmation in a separate no-secrets job; invalid confirmation fails the workflow before the protected LAB environment or host credentials are reached.
 - The isolated LAB image and direct network-test packages are pinned.
 - No secrets, private keys, real host addresses or production configuration were added to the repository.
 
@@ -96,6 +104,7 @@ The following are **NOT VERIFIED** and must not be described as completed:
 | Independent repo and governance | PR #1, Issue #2, private repo; main unchanged |
 | Engineering guardrails | Documented and linked from README |
 | Product simplicity and dashboard IA | D-008 + PRODUCT_UX_ACCEPTANCE.md |
+| GitHub Release publishing from this ChatGPT environment | D-009 recorded as a binding requirement; implementation intentionally deferred to Phase 5 |
 | Reproducible isolated network simulation | Exact-SHA CI runs successful |
 | Six-host LAB foundation | Scripts, workflow, docs and mock tests present |
 | Actual six-host test | NOT RUN — owner has not configured LAB |
