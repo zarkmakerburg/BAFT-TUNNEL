@@ -42,9 +42,9 @@ Requirements: Docker Engine + Docker Compose plugin.
 cd lab
 docker compose build
 docker compose up -d
-./scripts/apply-netem.sh moderate
-./scripts/show-netem.sh
-./scripts/clear-netem.sh
+sh scripts/apply-netem.sh moderate
+sh scripts/show-netem.sh
+sh scripts/clear-netem.sh
 docker compose down
 ```
 
