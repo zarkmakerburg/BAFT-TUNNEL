@@ -80,6 +80,11 @@ enum Command {
         #[arg(long)]
         confirm: bool,
     },
+    /// Print a redacted diagnostic bundle; never includes key material or network endpoints.
+    SupportBundle {
+        #[arg(long)]
+        config: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -183,6 +188,11 @@ async fn main() -> Result<()> {
                 "Applying validated tunnel configuration; no firewall or system settings will be changed."
             );
             config.apply().await
+        }
+        Command::SupportBundle { config: path } => {
+            let config = config::load(&path)?;
+            println!("{}", serde_json::to_string_pretty(&config.support_report())?);
+            Ok(())
         }
     }
 }
