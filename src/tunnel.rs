@@ -37,6 +37,7 @@ pub struct ServerOptions {
     pub direction: ConnectionDirection,
     pub peer_fingerprint: String,
     pub ca: PathBuf,
+    pub crl: PathBuf,
     pub cert: PathBuf,
     pub key: PathBuf,
     pub max_streams: usize,
@@ -52,6 +53,7 @@ pub struct ForwardOptions {
     pub direction: ConnectionDirection,
     pub peer_fingerprint: String,
     pub ca: PathBuf,
+    pub crl: PathBuf,
     pub cert: PathBuf,
     pub key: PathBuf,
     pub max_streams: usize,
@@ -89,7 +91,7 @@ fn next_backoff(current: Duration) -> Duration {
 pub async fn serve(options: ServerOptions) -> Result<()> {
     let listen = socket(&options.listen, "--listen")?;
     let target = destination(&options.target)?;
-    let acceptor = tls::server_config(&options.ca, &options.cert, &options.key)?;
+    let acceptor = tls::server_config(&options.ca, &options.crl, &options.cert, &options.key)?;
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("bind {listen}"))?;
@@ -204,6 +206,7 @@ async fn connect_peer(options: &ForwardOptions) -> Result<Session<ClientTlsStrea
     let remote = socket(&options.remote, "--remote")?;
     let connector = tls::connector(tls::client_config(
         &options.ca,
+        &options.crl,
         &options.cert,
         &options.key,
     )?);
@@ -418,6 +421,7 @@ mod tests {
             KeyUsagePurpose::CrlSign,
         ];
         let ca_key = KeyPair::generate().unwrap();
+        let ca_key_pem = ca_key.serialize_pem();
         let ca_cert = ca_params.self_signed(&ca_key).unwrap();
         let issuer = Issuer::new(ca_params, ca_key);
 
@@ -453,11 +457,37 @@ mod tests {
         let client_cert = client_params.signed_by(&client_key, &issuer).unwrap();
 
         let ca_path = directory.join("ca.pem");
+        let crl_path = directory.join("ca.crl");
+        let openssl_db = directory.join("index.txt");
+        let new_certs = directory.join("newcerts");
+        fs::create_dir_all(&new_certs).unwrap();
+        fs::write(&openssl_db, "").unwrap();
+        fs::write(directory.join("serial"), "1000\n").unwrap();
+        fs::write(directory.join("crlnumber"), "1000\n").unwrap();
+        let openssl_config = format!(
+            "[ ca ]\ndefault_ca = CA_default\n[ CA_default ]\ndatabase = {}\nnew_certs_dir = {}\ncertificate = {}\nprivate_key = {}\nserial = {}\ncrlnumber = {}\ndefault_md = sha256\ndefault_crl_days = 2\npolicy = policy_any\n[ policy_any ]\ncommonName = supplied\n",
+            openssl_db.display(),
+            new_certs.display(),
+            directory.join("ca.pem").display(),
+            directory.join("ca.key").display(),
+            directory.join("serial").display(),
+            directory.join("crlnumber").display()
+        );
+        fs::write(directory.join("openssl.cnf"), openssl_config).unwrap();
         let server_cert_path = directory.join("server.pem");
         let server_key_path = directory.join("server.key");
         let client_cert_path = directory.join("client.pem");
         let client_key_path = directory.join("client.key");
         fs::write(&ca_path, ca_cert.pem()).unwrap();
+        fs::write(directory.join("ca.key"), ca_key_pem).unwrap();
+        let crl_status = std::process::Command::new("openssl")
+            .args(["ca", "-gencrl", "-batch", "-config"])
+            .arg(directory.join("openssl.cnf"))
+            .arg("-out")
+            .arg(&crl_path)
+            .status()
+            .expect("openssl is required for CRL integration tests");
+        assert!(crl_status.success(), "openssl failed to generate test CRL");
         fs::write(&server_cert_path, server_cert.pem()).unwrap();
         fs::write(&server_key_path, server_key.serialize_pem()).unwrap();
         fs::write(&client_cert_path, client_cert.pem()).unwrap();
@@ -507,6 +537,7 @@ mod tests {
             direction,
             peer_fingerprint: client_pin,
             ca: ca_path.clone(),
+            crl: crl_path.clone(),
             cert: server_cert_path,
             key: server_key_path,
             max_streams: 8,
@@ -532,6 +563,7 @@ mod tests {
             direction,
             peer_fingerprint: server_pin,
             ca: ca_path,
+            crl: crl_path,
             cert: client_cert_path,
             key: client_key_path,
             max_streams: 8,

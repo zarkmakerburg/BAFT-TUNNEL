@@ -7,6 +7,7 @@
 - Linux or macOS with Rust 1.85 or newer.
 - A private CA and two leaf certificates signed by it.
 - Both leaf certificates must be valid for TLS client and server authentication. The server certificate must contain the DNS/IP subject alternative name used by `--server-name`.
+- Provide a current CA-signed certificate revocation list (CRL) on both peers; a missing or expired CRL fails closed.
 - Exchange SHA-256 leaf-certificate fingerprints out of band.
 
 ## Build
@@ -22,7 +23,7 @@ cargo build --release
   --listen 0.0.0.0:9443 --target 127.0.0.1:8080 \
   --local-id node-abroad --peer-id node-iran --tunnel-id demo-tunnel --direction direct \
   --peer-fingerprint REPLACE_WITH_IRAN_CERT_SHA256 \
-  --ca ./pki/ca.pem --cert ./pki/abroad.pem --key ./pki/abroad-key.pem
+  --ca ./pki/ca.pem --crl ./pki/ca.crl --cert ./pki/abroad.pem --key ./pki/abroad-key.pem
 ```
 
 ## Source-side local forwarder
@@ -32,7 +33,7 @@ cargo build --release
   --listen 127.0.0.1:18080 --remote 203.0.113.10:9443 --server-name tunnel.example.test \
   --local-id node-iran --peer-id node-abroad --tunnel-id demo-tunnel --direction direct \
   --peer-fingerprint REPLACE_WITH_ABROAD_CERT_SHA256 \
-  --ca ./pki/ca.pem --cert ./pki/iran.pem --key ./pki/iran-key.pem
+  --ca ./pki/ca.pem --crl ./pki/ca.crl --cert ./pki/iran.pem --key ./pki/iran-key.pem
 ```
 
 Connections to `127.0.0.1:18080` are forwarded to the server's fixed configured destination. Both peers must use the same explicit `--direction` value. For Reverse mode, place `serve` on the Iran-side node and `forward` on the abroad-side node, and set `--direction reverse` on both commands. Replace every example value before use. Never publish private keys.
@@ -40,7 +41,7 @@ Connections to `127.0.0.1:18080` are forwarded to the server's fixed configured 
 ## Safety and limitations
 
 - The server destination is operator-configured; a connecting peer cannot choose it.
-- The peer must pass CA validation, the configured certificate pin, node-identity binding, and the configured Direct/Reverse direction authorization.
+- The peer must pass CA validation, a current CRL check, the configured certificate pin, node-identity binding, and the configured Direct/Reverse direction authorization.
 - Each Yamux stream carries a bounded stream-open authorization frame binding the tunnel, direction, and TCP-forward capability.
 - TLS 1.3 is the only enabled version; no plaintext fallback exists.
 - Per-session Yamux streams and process-wide forwarded streams are bounded.
@@ -50,7 +51,7 @@ Connections to `127.0.0.1:18080` are forwarded to the server's fixed configured 
 
 ## JSON configuration workflow
 
-A sample forwarder configuration is available at `examples/forward.json`. Paths are resolved relative to the process working directory.
+A sample forwarder configuration is available at `examples/forward.json`. Paths are resolved relative to the process working directory. The required `crl` field points to a current PEM CRL signed by the configured CA.
 
 Validate the JSON, identities, socket addresses, TLS certificate chain and private key without opening listeners:
 

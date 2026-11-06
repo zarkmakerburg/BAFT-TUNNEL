@@ -31,6 +31,7 @@ pub enum RuntimeConfig {
         direction: ConnectionDirection,
         peer_fingerprint: String,
         ca: PathBuf,
+        crl: PathBuf,
         cert: PathBuf,
         key: PathBuf,
         #[serde(default = "default_max_streams")]
@@ -46,6 +47,7 @@ pub enum RuntimeConfig {
         direction: ConnectionDirection,
         peer_fingerprint: String,
         ca: PathBuf,
+        crl: PathBuf,
         cert: PathBuf,
         key: PathBuf,
         #[serde(default = "default_max_streams")]
@@ -65,6 +67,7 @@ impl RuntimeConfig {
                 direction: _,
                 peer_fingerprint,
                 ca,
+                crl,
                 cert,
                 key,
                 max_streams,
@@ -72,7 +75,7 @@ impl RuntimeConfig {
                 validate_common(local_id, peer_id, tunnel_id, peer_fingerprint, *max_streams)?;
                 parse_socket(listen, "listen")?;
                 validate_target(parse_socket(target, "target")?)?;
-                tls::server_config(ca, cert, key).context("server TLS material is invalid")?;
+                tls::server_config(ca, crl, cert, key).context("server TLS material is invalid")?;
             }
             Self::Forward {
                 listen,
@@ -84,6 +87,7 @@ impl RuntimeConfig {
                 direction: _,
                 peer_fingerprint,
                 ca,
+                crl,
                 cert,
                 key,
                 max_streams,
@@ -92,7 +96,7 @@ impl RuntimeConfig {
                 parse_socket(listen, "listen")?;
                 validate_target(parse_socket(remote, "remote")?)?;
                 tls::server_name(server_name)?;
-                tls::client_config(ca, cert, key).context("client TLS material is invalid")?;
+                tls::client_config(ca, crl, cert, key).context("client TLS material is invalid")?;
             }
         }
         Ok(())
@@ -235,6 +239,7 @@ impl RuntimeConfig {
                 direction,
                 peer_fingerprint,
                 ca,
+                crl,
                 cert,
                 key,
                 max_streams,
@@ -248,6 +253,7 @@ impl RuntimeConfig {
                     direction,
                     peer_fingerprint,
                     ca,
+                    crl,
                     cert,
                     key,
                     max_streams,
@@ -264,6 +270,7 @@ impl RuntimeConfig {
                 direction,
                 peer_fingerprint,
                 ca,
+                crl,
                 cert,
                 key,
                 max_streams,
@@ -278,6 +285,7 @@ impl RuntimeConfig {
                     direction,
                     peer_fingerprint,
                     ca,
+                    crl,
                     cert,
                     key,
                     max_streams,
@@ -345,7 +353,7 @@ mod tests {
             "mode":"serve","direction":"direct","listen":"127.0.0.1:9443","target":"127.0.0.1:8080",
             "local_id":"abroad","peer_id":"iran","tunnel_id":"demo",
             "peer_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "ca":"ca.pem","cert":"server.pem","key":"server-key.pem"
+            "ca":"ca.pem","crl":"ca.crl","cert":"server.pem","key":"server-key.pem"
         }"#;
         let parsed: RuntimeConfig = serde_json::from_str(valid).unwrap();
         match parsed {
@@ -359,6 +367,8 @@ mod tests {
         assert!(serde_json::from_str::<RuntimeConfig>(&with_unknown).is_err());
         let without_direction = valid.replace("\"direction\":\"direct\",", "");
         assert!(serde_json::from_str::<RuntimeConfig>(&without_direction).is_err());
+        let without_crl = valid.replace("\"crl\":\"ca.crl\",", "");
+        assert!(serde_json::from_str::<RuntimeConfig>(&without_crl).is_err());
     }
 
     #[test]
@@ -368,7 +378,7 @@ mod tests {
                 "mode":"serve","direction":"direct","listen":"198.51.100.10:9443","target":"10.0.0.8:8080",
                 "local_id":"abroad","peer_id":"iran","tunnel_id":"private-tunnel",
                 "peer_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "ca":"/secret/ca.pem","cert":"/secret/node.pem","key":"/secret/private-key.pem"
+                "ca":"/secret/ca.pem","crl":"/secret/ca.crl","cert":"/secret/node.pem","key":"/secret/private-key.pem"
             }"#,
         ).unwrap();
         let report = config.support_report().to_string();

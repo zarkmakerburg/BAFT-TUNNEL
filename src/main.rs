@@ -43,6 +43,8 @@ enum Command {
         #[arg(long)]
         ca: PathBuf,
         #[arg(long)]
+        crl: PathBuf,
+        #[arg(long)]
         cert: PathBuf,
         #[arg(long)]
         key: PathBuf,
@@ -69,6 +71,8 @@ enum Command {
         peer_fingerprint: String,
         #[arg(long)]
         ca: PathBuf,
+        #[arg(long)]
+        crl: PathBuf,
         #[arg(long)]
         cert: PathBuf,
         #[arg(long)]
@@ -121,6 +125,7 @@ async fn main() -> Result<()> {
             direction,
             peer_fingerprint,
             ca,
+            crl,
             cert,
             key,
             max_streams,
@@ -134,6 +139,7 @@ async fn main() -> Result<()> {
                 direction,
                 peer_fingerprint,
                 ca,
+                crl,
                 cert,
                 key,
                 max_streams,
@@ -151,6 +157,7 @@ async fn main() -> Result<()> {
             direction,
             peer_fingerprint,
             ca,
+            crl,
             cert,
             key,
             max_streams,
@@ -165,6 +172,7 @@ async fn main() -> Result<()> {
                 direction,
                 peer_fingerprint,
                 ca,
+                crl,
                 cert,
                 key,
                 max_streams,

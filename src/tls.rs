@@ -3,7 +3,8 @@ use std::{fs::File, io::BufReader, path::Path, sync::Arc};
 use anyhow::{Context, Result, bail};
 use rustls::{
     ClientConfig, RootCertStore, ServerConfig,
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName},
+    client::WebPkiServerVerifier,
+    pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer, ServerName},
     server::WebPkiClientVerifier,
 };
 use tokio_rustls::{TlsAcceptor, TlsConnector};
@@ -16,6 +17,18 @@ fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
         .context("parse PEM certificates")?;
     if items.is_empty() {
         bail!("certificate file contains no certificates");
+    }
+    Ok(items)
+}
+
+fn revocation_lists(path: &Path) -> Result<Vec<CertificateRevocationListDer<'static>>> {
+    let file = File::open(path)
+        .with_context(|| format!("open certificate revocation list {}", path.display()))?;
+    let items = rustls_pemfile::crls(&mut BufReader::new(file))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("parse PEM certificate revocation lists")?;
+    if items.is_empty() {
+        bail!("certificate revocation list file contains no CRLs");
     }
     Ok(items)
 }
@@ -36,9 +49,14 @@ fn roots(path: &Path) -> Result<RootCertStore> {
     Ok(store)
 }
 
-pub fn client_config(ca: &Path, cert: &Path, key: &Path) -> Result<Arc<ClientConfig>> {
+pub fn client_config(ca: &Path, crl: &Path, cert: &Path, key: &Path) -> Result<Arc<ClientConfig>> {
+    let verifier = WebPkiServerVerifier::builder(Arc::new(roots(ca)?))
+        .with_crls(revocation_lists(crl)?)
+        .enforce_revocation_expiration()
+        .build()
+        .context("build server certificate verifier with mandatory CRL checks")?;
     let mut config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-        .with_root_certificates(roots(ca)?)
+        .with_webpki_verifier(verifier)
         .with_client_auth_cert(certificates(cert)?, private_key(key)?)
         .context("build TLS 1.3 mutual-auth client configuration")?;
     // Forwarded application data is never sent as TLS 1.3 0-RTT early data.
@@ -46,10 +64,12 @@ pub fn client_config(ca: &Path, cert: &Path, key: &Path) -> Result<Arc<ClientCon
     Ok(Arc::new(config))
 }
 
-pub fn server_config(ca: &Path, cert: &Path, key: &Path) -> Result<TlsAcceptor> {
+pub fn server_config(ca: &Path, crl: &Path, cert: &Path, key: &Path) -> Result<TlsAcceptor> {
     let verifier = WebPkiClientVerifier::builder(Arc::new(roots(ca)?))
+        .with_crls(revocation_lists(crl)?)
+        .enforce_revocation_expiration()
         .build()
-        .context("build client certificate verifier")?;
+        .context("build client certificate verifier with mandatory CRL checks")?;
     let mut config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_client_cert_verifier(verifier)
         .with_single_cert(certificates(cert)?, private_key(key)?)
@@ -102,6 +122,7 @@ mod tests {
             KeyUsagePurpose::CrlSign,
         ];
         let ca_key = KeyPair::generate().unwrap();
+        let ca_key_pem = ca_key.serialize_pem();
         let ca_cert = ca_params.self_signed(&ca_key).unwrap();
         let issuer = Issuer::new(ca_params, ca_key);
 
@@ -137,11 +158,37 @@ mod tests {
         let client_cert = client_params.signed_by(&client_key, &issuer).unwrap();
 
         let ca_path = directory.join("ca.pem");
+        let crl_path = directory.join("ca.crl");
+        let openssl_db = directory.join("index.txt");
+        let new_certs = directory.join("newcerts");
+        fs::create_dir_all(&new_certs).unwrap();
+        fs::write(&openssl_db, "").unwrap();
+        fs::write(directory.join("serial"), "1000\n").unwrap();
+        fs::write(directory.join("crlnumber"), "1000\n").unwrap();
+        let openssl_config = format!(
+            "[ ca ]\ndefault_ca = CA_default\n[ CA_default ]\ndatabase = {}\nnew_certs_dir = {}\ncertificate = {}\nprivate_key = {}\nserial = {}\ncrlnumber = {}\ndefault_md = sha256\ndefault_crl_days = 2\npolicy = policy_any\n[ policy_any ]\ncommonName = supplied\n",
+            openssl_db.display(),
+            new_certs.display(),
+            directory.join("ca.pem").display(),
+            directory.join("ca.key").display(),
+            directory.join("serial").display(),
+            directory.join("crlnumber").display()
+        );
+        fs::write(directory.join("openssl.cnf"), openssl_config).unwrap();
         let server_cert_path = directory.join("server.pem");
         let server_key_path = directory.join("server.key");
         let client_cert_path = directory.join("client.pem");
         let client_key_path = directory.join("client.key");
         fs::write(&ca_path, ca_cert.pem()).unwrap();
+        fs::write(directory.join("ca.key"), ca_key_pem).unwrap();
+        let crl_status = std::process::Command::new("openssl")
+            .args(["ca", "-gencrl", "-batch", "-config"])
+            .arg(directory.join("openssl.cnf"))
+            .arg("-out")
+            .arg(&crl_path)
+            .status()
+            .expect("openssl is required for CRL integration tests");
+        assert!(crl_status.success(), "openssl failed to generate test CRL");
         fs::write(&server_cert_path, server_cert.pem()).unwrap();
         fs::write(&server_key_path, server_key.serialize_pem()).unwrap();
         fs::write(&client_cert_path, client_cert.pem()).unwrap();
@@ -149,9 +196,10 @@ mod tests {
 
         let server_pin = hex::encode(Sha256::digest(server_cert.der().as_ref()));
         let client_pin = hex::encode(Sha256::digest(client_cert.der().as_ref()));
-        let acceptor = server_config(&ca_path, &server_cert_path, &server_key_path).unwrap();
+        let acceptor =
+            server_config(&ca_path, &crl_path, &server_cert_path, &server_key_path).unwrap();
         let client_tls_config =
-            client_config(&ca_path, &client_cert_path, &client_key_path).unwrap();
+            client_config(&ca_path, &crl_path, &client_cert_path, &client_key_path).unwrap();
         assert!(!client_tls_config.enable_early_data);
         let connector = connector(client_tls_config);
 

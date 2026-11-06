@@ -73,18 +73,21 @@ test "$(grep -c 'probe.py' "$SSH_CALL_LOG")" = 5
 test "$(grep -c 'probe.py.*65536' "$SSH_CALL_LOG")" = 3
 test "$(grep -c 'probe.py.*2097289' "$SSH_CALL_LOG")" = 2
 test "$(grep -c 'check-ports.py' "$SSH_CALL_LOG")" = 2
-test "$(grep -c 'serve --listen' "$SSH_CALL_LOG")" = 3
-test "$(grep -c 'forward --listen' "$SSH_CALL_LOG")" = 2
+test "$(grep -c 'serve --listen' "$SSH_CALL_LOG")" = 5
+test "$(grep -c 'forward --listen' "$SSH_CALL_LOG")" = 4
 test "$(grep -c 'nohup python3' "$SSH_CALL_LOG")" = 2
 test "$(grep -c -- '--local-id' "$SSH_CALL_LOG")" -ge 5
 test "$(grep -c -- '--peer-id' "$SSH_CALL_LOG")" -ge 5
 test "$(grep -c -- '--tunnel-id' "$SSH_CALL_LOG")" -ge 5
 test "$(grep -c -- '--peer-fingerprint' "$SSH_CALL_LOG")" -ge 5
-test "$(grep -c -- '--direction' "$SSH_CALL_LOG")" -ge 5
-test "$(grep -c -- '--direction.*direct' "$SSH_CALL_LOG")" = 3
+test "$(grep -c -- '--direction' "$SSH_CALL_LOG")" -ge 9
+test "$(grep -c -- '--crl' "$SSH_CALL_LOG")" = 9
+test "$(grep -c "grep -qi 'revok'" "$SSH_CALL_LOG")" = 2
+test "$(grep -c -- '--direction.*direct' "$SSH_CALL_LOG")" = 7
 test "$(grep -c -- '--direction.*reverse' "$SSH_CALL_LOG")" = 2
 test "$(grep -E -c -- '--local_id|--peer_id|--tunnel_id|--peer_fingerprint' "$SSH_CALL_LOG" || true)" = 0
-test "$(wc -l < "$SCP_CALL_LOG" | tr -d ' ')" = 2
+test "$(wc -l < "$SCP_CALL_LOG" | tr -d ' ')" = 6
+test "$(grep -c 'ca.crl' "$SCP_CALL_LOG")" = 6
 if grep -Eqi 'iptables|nft |systemctl|sysctl|tc qdisc|reboot' "$SSH_CALL_LOG"; then
   echo 'E2E orchestration unexpectedly attempted host-level mutation' >&2
   exit 1

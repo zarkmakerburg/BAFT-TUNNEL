@@ -75,11 +75,11 @@ start_echo() {
 }
 start_serve() {
   local side="$1" local_id="$2" peer_id="$3" direction="$4" peer_pin="$5" cert="$6" key="$7"
-  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' serve --listen '0.0.0.0:$E2E_PORT' --target '127.0.0.1:$ECHO_PORT' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --direction '$direction' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/serve.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/serve.pid'"
+  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' serve --listen '0.0.0.0:$E2E_PORT' --target '127.0.0.1:$ECHO_PORT' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --direction '$direction' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --crl '$REMOTE_DIR/ca.crl' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/serve.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/serve.pid'"
 }
 start_forward() {
   local side="$1" local_id="$2" peer_id="$3" peer_host="$4" peer_dns="$5" direction="$6" peer_pin="$7" cert="$8" key="$9"
-  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' forward --listen '127.0.0.1:$LOCAL_PORT' --remote '$peer_host:$E2E_PORT' --server-name '$peer_dns' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --direction '$direction' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/forward.pid'"
+  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' forward --listen '127.0.0.1:$LOCAL_PORT' --remote '$peer_host:$E2E_PORT' --server-name '$peer_dns' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --direction '$direction' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --crl '$REMOTE_DIR/ca.crl' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/forward.pid'"
 }
 probe_host() {
   local side="$1" bytes="${2:-2097289}"
@@ -104,12 +104,35 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Generate a short-lived private LAB CA and two node certificates. The CA key stays on the runner.
+# Generate a short-lived private LAB CA, two node certificates, and an authenticated CRL.
+# The CA key stays on the runner; the CRL is mandatory on both TLS peers.
+mkdir -p "$LOCAL_TMP/newcerts"
+: > "$LOCAL_TMP/index.txt"
+printf '1000\n' > "$LOCAL_TMP/serial"
+printf '1000\n' > "$LOCAL_TMP/crlnumber"
 openssl req -x509 -newkey rsa:3072 -nodes -keyout "$LOCAL_TMP/ca.key" -out "$LOCAL_TMP/ca.crt" \
   -days 2 -sha256 -subj "/CN=BAFT-TUNNEL ephemeral LAB CA" \
   -addext "basicConstraints=critical,CA:TRUE" \
   -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1
-for node in iran abroad; do
+cat > "$LOCAL_TMP/openssl.cnf" <<EOF
+[ ca ]
+default_ca = CA_default
+[ CA_default ]
+database = $LOCAL_TMP/index.txt
+new_certs_dir = $LOCAL_TMP/newcerts
+certificate = $LOCAL_TMP/ca.crt
+private_key = $LOCAL_TMP/ca.key
+serial = $LOCAL_TMP/serial
+crlnumber = $LOCAL_TMP/crlnumber
+default_md = sha256
+default_days = 2
+default_crl_days = 2
+policy = policy_any
+copy_extensions = copy
+[ policy_any ]
+commonName = supplied
+EOF
+for node in iran abroad control; do
   openssl req -new -newkey rsa:2048 -nodes -keyout "$LOCAL_TMP/$node.key" \
     -out "$LOCAL_TMP/$node.csr" -subj "/CN=$node.lab" >/dev/null 2>&1
   cat > "$LOCAL_TMP/$node.ext" <<EOF
@@ -118,12 +141,15 @@ keyUsage=critical,digitalSignature
 extendedKeyUsage=serverAuth,clientAuth
 subjectAltName=DNS:$node.lab,URI:urn:baft-tunnel:node:$node
 EOF
-  openssl x509 -req -in "$LOCAL_TMP/$node.csr" -CA "$LOCAL_TMP/ca.crt" \
-    -CAkey "$LOCAL_TMP/ca.key" -CAcreateserial -out "$LOCAL_TMP/$node.crt" \
-    -days 2 -sha256 -extfile "$LOCAL_TMP/$node.ext" >/dev/null 2>&1
+  printf '[ %s_ext ]\n' "$node" >> "$LOCAL_TMP/openssl.cnf"
+  cat "$LOCAL_TMP/$node.ext" >> "$LOCAL_TMP/openssl.cnf"
+  openssl ca -batch -notext -config "$LOCAL_TMP/openssl.cnf" -extensions "${node}_ext" \
+    -in "$LOCAL_TMP/$node.csr" -out "$LOCAL_TMP/$node.crt" -days 2 >/dev/null 2>&1
 done
+openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.crl" >/dev/null 2>&1
 IRAN_PIN="$(openssl x509 -in "$LOCAL_TMP/iran.crt" -outform DER | sha256sum | awk '{print $1}')"
 ABROAD_PIN="$(openssl x509 -in "$LOCAL_TMP/abroad.crt" -outform DER | sha256sum | awk '{print $1}')"
+CONTROL_PIN="$(openssl x509 -in "$LOCAL_TMP/control.crt" -outform DER | sha256sum | awk '{print $1}')"
 
 cat > "$LOCAL_TMP/echo.py" <<'PY'
 import socket, sys, threading
@@ -194,8 +220,9 @@ PY
 
 for side in iran abroad; do
   ssh_host "$side" "mkdir -p '$REMOTE_DIR' && chmod 700 '$REMOTE_DIR'"
-  copy_to_host "$side" "$BINARY" "$LOCAL_TMP/ca.crt" "$LOCAL_TMP/iran.crt" \
-    "$LOCAL_TMP/iran.key" "$LOCAL_TMP/abroad.crt" "$LOCAL_TMP/abroad.key" \
+  copy_to_host "$side" "$BINARY" "$LOCAL_TMP/ca.crt" "$LOCAL_TMP/ca.crl" \
+    "$LOCAL_TMP/iran.crt" "$LOCAL_TMP/iran.key" "$LOCAL_TMP/abroad.crt" "$LOCAL_TMP/abroad.key" \
+    "$LOCAL_TMP/control.crt" "$LOCAL_TMP/control.key" \
     "$LOCAL_TMP/echo.py" "$LOCAL_TMP/probe.py" "$LOCAL_TMP/check-ports.py"
   ssh_host "$side" "chmod 700 '$REMOTE_DIR/baft-tunnel' && chmod 600 '$REMOTE_DIR/'*.key"
   ssh_host "$side" "python3 '$REMOTE_DIR/check-ports.py' '$E2E_PORT' '$LOCAL_PORT' '$ECHO_PORT'"
@@ -227,4 +254,36 @@ start_forward abroad abroad iran "$LAB_IRAN_HOST" iran.lab reverse "$IRAN_PIN" a
 probe_host abroad 65536
 probe_host abroad 2097289
 
-echo "PHASE1_TWO_HOST_E2E=PASS (Direct, Reverse, 2 MiB integrity, listener interruption/recovery; temporary /tmp processes only)"
+echo "=== CERTIFICATE REVOCATION: server rejects revoked client certificate ==="
+openssl ca -batch -config "$LOCAL_TMP/openssl.cnf" -revoke "$LOCAL_TMP/iran.crt" >/dev/null 2>&1
+openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.crl" >/dev/null 2>&1
+for side in iran abroad; do copy_to_host "$side" "$LOCAL_TMP/ca.crl"; done
+stop_role abroad serve
+stop_role abroad forward
+stop_role iran forward
+sleep 1
+start_serve abroad abroad iran direct "$IRAN_PIN" abroad.crt abroad.key
+start_forward iran iran abroad "$LAB_ABROAD_HOST" abroad.lab direct "$ABROAD_PIN" iran.crt iran.key
+sleep 4
+if ! ssh_host abroad "grep -qi 'revok' '$REMOTE_DIR/serve.log'"; then
+  echo "Revoked client certificate was not rejected by the TLS server" >&2
+  exit 1
+fi
+stop_role iran forward
+stop_role abroad serve
+
+echo "=== CERTIFICATE REVOCATION: client rejects revoked server certificate ==="
+openssl ca -batch -config "$LOCAL_TMP/openssl.cnf" -revoke "$LOCAL_TMP/abroad.crt" >/dev/null 2>&1
+openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.crl" >/dev/null 2>&1
+for side in iran abroad; do copy_to_host "$side" "$LOCAL_TMP/ca.crl"; done
+start_serve abroad abroad control direct "$CONTROL_PIN" abroad.crt abroad.key
+start_forward iran control abroad "$LAB_ABROAD_HOST" abroad.lab direct "$ABROAD_PIN" control.crt control.key
+sleep 4
+if ! ssh_host iran "grep -qi 'revok' '$REMOTE_DIR/forward.log'"; then
+  echo "Revoked server certificate was not rejected by the TLS client" >&2
+  exit 1
+fi
+stop_role iran forward
+stop_role abroad serve
+
+echo "PHASE1_TWO_HOST_E2E=PASS (Direct, Reverse, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
