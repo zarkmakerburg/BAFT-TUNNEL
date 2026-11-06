@@ -15,7 +15,7 @@ use crate::{
 };
 
 fn default_max_streams() -> usize {
-    64
+    8
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,8 +293,8 @@ fn validate_common(
     if local == peer {
         bail!("local and peer identities must differ");
     }
-    if !(1..=256).contains(&streams) {
-        bail!("max_streams must be between 1 and 256");
+    if !(1..=8).contains(&streams) {
+        bail!("max_streams must be between 1 and 8");
     }
     Ok(())
 }
@@ -302,6 +302,14 @@ fn validate_common(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn max_stream_count_is_bounded() {
+        let fingerprint = "a".repeat(64);
+        assert!(validate_common("node-a", "node-b", "tunnel", &fingerprint, 1).is_ok());
+        assert!(validate_common("node-a", "node-b", "tunnel", &fingerprint, 8).is_ok());
+        assert!(validate_common("node-a", "node-b", "tunnel", &fingerprint, 9).is_err());
+    }
 
     #[test]
     fn config_rejects_unknown_fields_and_defaults_stream_limit() {
@@ -313,7 +321,7 @@ mod tests {
         }"#;
         let parsed: RuntimeConfig = serde_json::from_str(valid).unwrap();
         match parsed {
-            RuntimeConfig::Serve { max_streams, .. } => assert_eq!(max_streams, 64),
+            RuntimeConfig::Serve { max_streams, .. } => assert_eq!(max_streams, 8),
             RuntimeConfig::Forward { .. } => panic!("expected serve config"),
         }
         let with_unknown = valid.replace(

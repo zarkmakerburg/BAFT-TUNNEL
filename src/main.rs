@@ -42,7 +42,7 @@ enum Command {
         cert: PathBuf,
         #[arg(long)]
         key: PathBuf,
-        #[arg(long, default_value_t = 64)]
+        #[arg(long, default_value_t = 8)]
         max_streams: usize,
     },
     /// Listen locally and open authenticated multiplexed streams to a remote peer.
@@ -67,7 +67,7 @@ enum Command {
         cert: PathBuf,
         #[arg(long)]
         key: PathBuf,
-        #[arg(long, default_value_t = 64)]
+        #[arg(long, default_value_t = 8)]
         max_streams: usize,
     },
     /// Validate or preview a JSON configuration without opening network listeners.

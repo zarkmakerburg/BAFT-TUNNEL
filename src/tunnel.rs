@@ -18,7 +18,10 @@ use tokio_yamux::{Config as YamuxConfig, Session};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_SESSIONS: usize = 32;
+const MAX_SESSIONS: usize = 8;
+// Keep aggregate receive buffering bounded while allowing a 2 MiB payload
+// to pass without depending on repeated window-update cycles over high-RTT links.
+const MAX_STREAM_WINDOW_SIZE: u32 = 4 * 1024 * 1024;
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
@@ -56,7 +59,7 @@ fn yamux_config(max: usize) -> YamuxConfig {
         keepalive_interval: Duration::from_secs(15),
         connection_write_timeout: Duration::from_secs(10),
         max_stream_count: max,
-        max_stream_window_size: 1024 * 1024,
+        max_stream_window_size: MAX_STREAM_WINDOW_SIZE,
     }
 }
 
@@ -505,7 +508,10 @@ mod tests {
         let (local_stream, _) = local_listener.accept().await.unwrap();
         sender.send(local_stream).await.unwrap();
 
-        let payload = format!("authenticated-{client_id}-to-{server_id}-payload").into_bytes();
+        // Exercise flow-control updates beyond the default Yamux initial window.
+        let payload: Vec<u8> = (0..(2 * 1024 * 1024 + 137))
+            .map(|index| (index % 251) as u8)
+            .collect();
         timeout(Duration::from_secs(10), async {
             local_client.write_all(&payload).await.unwrap();
             let mut received = vec![0_u8; payload.len()];
