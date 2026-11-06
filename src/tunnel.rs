@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use tokio::{io::copy_bidirectional, net::{TcpListener, TcpStream}, sync::Semaphore, time::timeout};
-use tokio_rustls::{TlsAcceptor, client::TlsStream as ClientTlsStream};
+use tokio_rustls::client::TlsStream as ClientTlsStream;
 use tokio_yamux::{Config as YamuxConfig, Session};
 use crate::{handshake, tls};
 
