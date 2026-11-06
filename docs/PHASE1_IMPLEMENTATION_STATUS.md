@@ -2,8 +2,8 @@
 
 **Authorization:** Owner-approved 2026-11-06.
 **Branch:** phase1/rust-tcp-transport.
-**Latest previously CI-verified head:** 45ab9084f2670ea70b71e63dcf5b4a4f18fa09bd.
-**Current security remediation:** Rust 1.88.0 baseline, `time 0.3.47`, and removal of unmaintained `rustls-pemfile`; exact-head CI pending.
+**Latest exact-head CI-verified commit:** e91a83ed5ff98fbf175f1cd1381143e40e5e4e47.
+**Current security remediation:** Rust 1.88.0 baseline, `time 0.3.47`, removal of unmaintained `rustls-pemfile`; exact-head CI PASS (2026-11-07).
 **Runtime product-code SHA:** 775e1c5afcf1582c01d8ca01c25874bcda552bee.
 **Status:** In progress; not production-ready. ADR-0010 is the current transport decision; ADR-0009 is superseded. Offline PKI tooling is defined by ADR-0012.
 
@@ -68,7 +68,14 @@ The mandatory cross-project engineering policy is documented in [BAFT_LESSONS_AN
 
 ## Latest exact-head CI — PASS
 
-Branch head `f303bfcbd115b9da95fa9b8f3130850066bfdece` passed all four exact-head workflows:
+Branch head `e91a83ed5ff98fbf175f1cd1381143e40e5e4e47` passed all four exact-head workflows:
+
+- Phase 1 push [42309114881](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42309114881) and PR [42309118735](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42309118735): pinned Rust 1.88.0, pinned cargo-audit 0.22.1, RustSec audit with warnings denied, formatting, 35/35 Rust tests, Clippy with warnings denied, optimized release build, encrypted systemd credential runtime validation, and installed systemd service lifecycle all passed.
+- Phase 0 push [42309114884](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42309114884) and PR [42309118743](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42309118743): passed.
+- RustSec scanned the locked dependency graph with no vulnerable, unmaintained, unsound, or yanked dependency findings.
+- This exact-head result closes the dependency-remediation CI gate only; it does not close the remaining product/security acceptance gates below.
+
+Previous branch head `f303bfcbd115b9da95fa9b8f3130850066bfdece` passed all four exact-head workflows:
 
 - Phase 1 push [42288011714](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42288011714) and PR [42288020266](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42288020266): formatting, 35/35 Rust tests, Clippy with warnings denied, release build, encrypted systemd credential delivery/runtime key parsing/restart redelivery, and installed systemd service lifecycle all passed.
 - Phase 0 push [42288011578](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42288011578) and PR [42288022829](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42288022829): passed.
