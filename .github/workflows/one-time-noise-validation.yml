@@ -13,6 +13,9 @@ on:
       - .github/workflows/one-time-noise-validation.yml
 permissions:
   contents: write
+concurrency:
+  group: noise-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   lock-and-validate:
     runs-on: ubuntu-24.04
@@ -20,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
+          ref: ${{ github.head_ref || github.ref_name }}
           persist-credentials: true
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.85.0 --profile minimal --component rustfmt --component clippy
@@ -28,10 +32,12 @@ jobs:
           cargo +1.85.0 generate-lockfile
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin "$GITHUB_HEAD_REF"
+          git rebase "origin/${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
           git add Cargo.lock
           if ! git diff --cached --quiet; then
             git commit -m "deps: lock Noise transport dependency"
-            git push
+            git push origin "HEAD:${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
           fi
       - name: Check formatting
         run: cargo +1.85.0 fmt --all -- --check
