@@ -2,7 +2,7 @@
 name = "baft-tunnel"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Authenticated TCP forwarding for BAFT-TUNNEL"
 license = "LicenseRef-Proprietary"
 
@@ -13,7 +13,6 @@ futures = "0.3"
 hex = "0.4"
 rand = "0.8"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-rustls-pemfile = "2.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"

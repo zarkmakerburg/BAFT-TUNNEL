@@ -4,7 +4,9 @@ use anyhow::{Context, Result, bail};
 use rustls::{
     ClientConfig, RootCertStore, ServerConfig,
     client::WebPkiServerVerifier,
-    pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer, ServerName},
+    pki_types::{
+        CertificateDer, CertificateRevocationListDer, PrivateKeyDer, ServerName, pem::PemObject,
+    },
     server::WebPkiClientVerifier,
 };
 use tokio_rustls::{TlsAcceptor, TlsConnector};
@@ -12,7 +14,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
     let file =
         File::open(path).with_context(|| format!("open certificate file {}", path.display()))?;
-    let items = rustls_pemfile::certs(&mut BufReader::new(file))
+    let items = CertificateDer::pem_reader_iter(BufReader::new(file))
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("parse PEM certificates")?;
     if items.is_empty() {
@@ -24,7 +26,7 @@ fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
 fn revocation_lists(path: &Path) -> Result<Vec<CertificateRevocationListDer<'static>>> {
     let file = File::open(path)
         .with_context(|| format!("open certificate revocation list {}", path.display()))?;
-    let items = rustls_pemfile::crls(&mut BufReader::new(file))
+    let items = CertificateRevocationListDer::pem_reader_iter(BufReader::new(file))
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("parse PEM certificate revocation lists")?;
     if items.is_empty() {
@@ -36,9 +38,7 @@ fn revocation_lists(path: &Path) -> Result<Vec<CertificateRevocationListDer<'sta
 fn private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
     let file =
         File::open(path).with_context(|| format!("open private key file {}", path.display()))?;
-    rustls_pemfile::private_key(&mut BufReader::new(file))
-        .context("parse PEM private key")?
-        .context("no supported private key found")
+    PrivateKeyDer::from_pem_reader(BufReader::new(file)).context("parse PEM private key")
 }
 
 fn roots(path: &Path) -> Result<RootCertStore> {

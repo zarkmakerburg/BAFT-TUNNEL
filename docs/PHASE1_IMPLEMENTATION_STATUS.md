@@ -2,8 +2,8 @@
 
 **Authorization:** Owner-approved 2026-11-06.
 **Branch:** phase1/rust-tcp-transport.
-**Latest runtime/test code head with exact-head CI evidence:** f303bfcbd115b9da95fa9b8f3130850066bfdece.
-**Latest branch head:** f303bfcbd115b9da95fa9b8f3130850066bfdece.
+**Latest previously CI-verified head:** 45ab9084f2670ea70b71e63dcf5b4a4f18fa09bd.
+**Current security remediation:** Rust 1.88.0 baseline, `time 0.3.47`, and removal of unmaintained `rustls-pemfile`; exact-head CI pending.
 **Runtime product-code SHA:** 775e1c5afcf1582c01d8ca01c25874bcda552bee.
 **Status:** In progress; not production-ready. ADR-0010 is the current transport decision; ADR-0009 is superseded. Offline PKI tooling is defined by ADR-0012.
 
@@ -58,6 +58,13 @@ Run [42246759289](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/4224
 ## Engineering guardrails
 
 The mandatory cross-project engineering policy is documented in [BAFT_LESSONS_AND_ENGINEERING_GUARDRAILS.md](BAFT_LESSONS_AND_ENGINEERING_GUARDRAILS.md). It converts lessons into requirements for truthful connectivity state, safe desired-state apply/rollback, security boundaries, simple installation/UX, LAB evidence classification, CI enforcement, and release gates.
+
+## Dependency security audit
+
+- The first RustSec audit found `time 0.3.45` (RUSTSEC-2026-0009, stack-exhaustion DoS) and `rustls-pemfile 2.2.0` (unmaintained warning). The vulnerable `time` version was transitive through `x509-parser`/`asn1-rs` and the test-only certificate generator.
+- Remediation: upgraded the pinned Rust baseline to 1.88.0 (required by fixed `time 0.3.47`), updated `time`/`time-core`/`time-macros` in `Cargo.lock`, and removed `rustls-pemfile` in favor of the PEM parsing API already re-exported by `rustls-pki-types`. Existing TLS integration tests exercise certificate, CRL, and private-key parsing through the replacement.
+- Local RustSec audit on the corrected lockfile: `cargo +1.88.0 audit --no-fetch -D warnings` passed with no vulnerability, unmaintained, unsound, or yanked-dependency findings (157 dependencies scanned). Local `cargo +1.88.0 test --locked --all-targets`: 35/35 passed; Clippy with `-D warnings`, optimized release build, rustfmt check, and `git diff --check` also passed on this updated dependency graph.
+- CI now installs pinned `cargo-audit 0.22.1` and runs `cargo audit -D warnings` so advisories and unmaintained/unsound/yanked warnings block Phase 1 CI.
 
 ## Latest exact-head CI — PASS
 
