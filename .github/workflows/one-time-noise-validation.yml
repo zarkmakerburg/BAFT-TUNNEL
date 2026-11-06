@@ -1,5 +1,8 @@
 name: one-time-noise-validation
 on:
+  pull_request:
+    branches:
+      - phase0/six-host-lab-foundation
   push:
     branches:
       - phase1/rust-tcp-transport
