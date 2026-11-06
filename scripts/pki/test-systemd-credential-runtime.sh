@@ -115,22 +115,23 @@ credential_dir="${CREDENTIALS_DIRECTORY:?systemd did not set CREDENTIALS_DIRECTO
 credential="$credential_dir/node-key"
 [[ -f "$credential" && -r "$credential" ]]
 read -r mode owner group < <(stat -c '%a %u %g' "$credential")
-service_uid="$(id -u)"
-service_gid="$(id -g)"
-[[ "$owner" == "$service_uid" ]] || {
-  echo "credential owner is uid $owner, expected service uid $service_uid" >&2
+# systemd owns credential files as root and grants the unit process read
+# access through its credential mount/ACL. The service-context readability
+# check above is authoritative; metadata must never grant world access.
+[[ "$owner" == "0" ]] || {
+  echo "credential owner is uid $owner, expected systemd root owner uid 0" >&2
   exit 1
 }
 case "$mode" in
   400) ;;
   440)
-    [[ "$group" == "$service_gid" ]] || {
-      echo "credential group is gid $group, expected service gid $service_gid" >&2
+    [[ "$group" == "0" ]] || {
+      echo "credential group is gid $group, expected root group gid 0 for mode 0440" >&2
       exit 1
     }
     ;;
   *)
-    echo "credential mode is $mode, expected 400 or service-group-scoped 440" >&2
+    echo "credential mode is $mode, expected root-owned 0400 or root-group 0440 (no world access)" >&2
     exit 1
     ;;
 esac
