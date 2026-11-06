@@ -1,5 +1,6 @@
 mod config;
 mod handshake;
+mod noise;
 mod tls;
 mod tunnel;
 
