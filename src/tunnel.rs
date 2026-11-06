@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
-use anyhow::{Context, Result};
 use crate::{handshake, tls};
+use anyhow::{Context, Result};
 use futures::StreamExt;
 use tokio::{
     io::copy_bidirectional,
