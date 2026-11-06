@@ -191,7 +191,10 @@ async fn main() -> Result<()> {
         }
         Command::SupportBundle { config: path } => {
             let config = config::load(&path)?;
-            println!("{}", serde_json::to_string_pretty(&config.support_report())?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&config.support_report())?
+            );
             Ok(())
         }
     }
