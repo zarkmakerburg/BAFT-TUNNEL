@@ -1,0 +1,86 @@
+name: Phase 1 two-host LAB E2E (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type RUN_PHASE1_E2E to start temporary Direct/Reverse tunnel tests on the two LAB hosts
+        required: true
+        type: string
+        default: ''
+      ref:
+        description: The Phase 1 branch to test (restricted to phase1/rust-tcp-transport)
+        required: true
+        type: string
+        default: phase1/rust-tcp-transport
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-phase1-two-host-e2e
+  cancel-in-progress: false
+
+jobs:
+  validate-confirmation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require explicit E2E confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          REF: ${{ inputs.ref }}
+        run: |
+          if [[ "$CONFIRM" != "RUN_PHASE1_E2E" ]]; then
+            echo "Invalid confirmation. No LAB hosts were contacted." >&2
+            exit 2
+          fi
+          if [[ "$REF" != "phase1/rust-tcp-transport" ]]; then
+            echo "Only the reviewed Phase 1 branch may be tested." >&2
+            exit 2
+          fi
+
+  two-host-e2e:
+    needs: validate-confirmation
+    runs-on: ubuntu-24.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 25
+    env:
+      LAB_IRAN_HOST: ${{ vars.LAB_IRAN_HOST }}
+      LAB_ABROAD_HOST: ${{ vars.LAB_ABROAD_HOST }}
+      LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+      LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+      LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+      LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+      LAB_E2E_PORT: '18300'
+      LAB_E2E_LOCAL_PORT: '18080'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.85.0 --profile minimal
+      - name: Build Linux release binary
+        run: cargo +1.85.0 build --locked --release
+      - name: Prepare ephemeral SSH credentials
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -n "$SSH_PRIVATE_KEY" || { echo 'Missing secret LAB_SSH_PRIVATE_KEY' >&2; exit 2; }
+          test -n "$SSH_KNOWN_HOSTS" || { echo 'Missing secret LAB_SSH_KNOWN_HOSTS' >&2; exit 2; }
+          mkdir -p "$RUNNER_TEMP/baft-tunnel-ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
+          echo "SSH_KEY_FILE=$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" >> "$GITHUB_ENV"
+          echo "SSH_KNOWN_HOSTS_FILE=$RUNNER_TEMP/baft-tunnel-ssh/known_hosts" >> "$GITHUB_ENV"
+      - name: Run temporary two-host Direct/Reverse E2E and recovery
+        run: bash lab/real-hosts/phase1-two-host-e2e.sh
+      - name: Remove ephemeral runner credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/baft-tunnel-ssh"
