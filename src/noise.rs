@@ -179,7 +179,12 @@ where
     if !state.is_handshake_finished() {
         bail!("Noise IK handshake did not complete");
     }
-    bridge_transport(io, state.into_transport_mode().context("enter Noise transport mode")?)
+    bridge_transport(
+        io,
+        state
+            .into_transport_mode()
+            .context("enter Noise transport mode")?,
+    )
 }
 
 fn bridge_transport<T>(io: T, transport_state: TransportState) -> Result<NoiseIo>
