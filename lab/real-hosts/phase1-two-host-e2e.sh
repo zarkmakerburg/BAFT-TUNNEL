@@ -82,8 +82,8 @@ start_forward() {
   ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' forward --listen '127.0.0.1:$LOCAL_PORT' --remote '$peer_host:$E2E_PORT' --server-name '$peer_dns' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/forward.pid'"
 }
 probe_host() {
-  local side="$1"
-  ssh_host "$side" "python3 '$REMOTE_DIR/probe.py' 127.0.0.1 '$LOCAL_PORT'"
+  local side="$1" bytes="${2:-2097289}"
+  ssh_host "$side" "python3 '$REMOTE_DIR/probe.py' 127.0.0.1 '$LOCAL_PORT' '$bytes'"
 }
 cleanup() {
   local status=$?
@@ -159,7 +159,8 @@ PORTS_CHECK
 cat > "$LOCAL_TMP/probe.py" <<'PY'
 import hashlib, socket, sys, time
 host, port = sys.argv[1], int(sys.argv[2])
-payload = bytes((i % 251 for i in range(2 * 1024 * 1024 + 137)))
+payload_size = int(sys.argv[3]) if len(sys.argv) > 3 else (2 * 1024 * 1024 + 137)
+payload = bytes((i % 251 for i in range(payload_size)))
 started = time.monotonic()
 deadline = started + 45
 last_error = None
@@ -178,7 +179,10 @@ with sock:
     sock.shutdown(socket.SHUT_WR)
     received = bytearray()
     while len(received) < len(payload):
-        block = sock.recv(min(65536, len(payload) - len(received)))
+        try:
+            block = sock.recv(min(65536, len(payload) - len(received)))
+        except TimeoutError as exc:
+            raise SystemExit(f"payload receive timed out: received={len(received)} expected={len(payload)}") from exc
         if not block:
             break
         received.extend(block)
@@ -204,13 +208,14 @@ sleep 1
 echo "=== DIRECT: Iran dials abroad ==="
 start_serve abroad abroad iran "$IRAN_PIN" abroad.crt abroad.key
 start_forward iran iran abroad "$LAB_ABROAD_HOST" abroad.lab "$ABROAD_PIN" iran.crt iran.key
-probe_host iran
+probe_host iran 65536
+probe_host iran 2097289
 
 echo "=== INTERRUPTION / RECOVERY: restart abroad listener ==="
 stop_role abroad serve
 sleep 2
 start_serve abroad abroad iran "$IRAN_PIN" abroad.crt abroad.key
-probe_host iran
+probe_host iran 65536
 
 stop_role iran forward
 stop_role abroad serve
@@ -219,6 +224,7 @@ sleep 1
 echo "=== REVERSE: Abroad dials Iran ==="
 start_serve iran iran abroad "$ABROAD_PIN" iran.crt iran.key
 start_forward abroad abroad iran "$LAB_IRAN_HOST" iran.lab "$IRAN_PIN" abroad.crt abroad.key
-probe_host abroad
+probe_host abroad 65536
+probe_host abroad 2097289
 
 echo "PHASE1_TWO_HOST_E2E=PASS (Direct, Reverse, 2 MiB integrity, listener interruption/recovery; temporary /tmp processes only)"

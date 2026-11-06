@@ -142,6 +142,7 @@ where
     while let Some(item) = session.next().await {
         match item {
             Ok(mut logical) => {
+                eprintln!("yamux stream accepted; connecting fixed destination");
                 let permit = match slots.clone().try_acquire_owned() {
                     Ok(p) => p,
                     Err(_) => {
@@ -157,6 +158,7 @@ where
                             timeout(CONNECT_TIMEOUT, TcpStream::connect(destination))
                                 .await
                                 .context("destination connect timeout")??;
+                        eprintln!("fixed destination connected for yamux stream");
                         copy_bidirectional(&mut logical, &mut upstream)
                             .await
                             .context("forward TCP stream")?;
@@ -254,6 +256,7 @@ async fn run_forward_session(
                         .await
                         .context("opening multiplexed stream timed out")?
                         .context("open multiplexed stream")?;
+                        eprintln!("yamux stream opened for local connection");
                         copy_bidirectional(&mut local, &mut stream)
                             .await
                             .context("forward local TCP stream")?;
