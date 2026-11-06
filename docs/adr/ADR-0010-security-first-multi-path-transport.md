@@ -74,7 +74,7 @@ Security, privacy, traffic classification resistance, and censorship/availabilit
 6. Complete dependency advisory/license review, fuzzing of protocol boundaries, and independent security review before production readiness.
 7. Evaluate QUIC separately with UDP-disabled fallback tests and real-host measurements.
 8. Evaluate ECH as a privacy enhancement only; test supported DNS/TLS deployment and document remaining metadata exposure.
-9. Real six-host cross-border LAB remains NOT_RUN until the owner supplies server availability and access.
+9. Required real-host LAB topology is exactly two nodes: one server in Iran and one server abroad. Validate Direct and Reverse where network reachability permits, bidirectional authenticated forwarding, TCP interruption/reconnect behavior, and controlled latency/loss measurements. Two hosts are sufficient for Phase 1 cross-border acceptance; six-host testing is not required. The two-host LAB remains NOT_RUN until the owner supplies both servers and access.
 
 ## Consequences
 
