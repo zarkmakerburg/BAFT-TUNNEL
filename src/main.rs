@@ -1,5 +1,6 @@
 mod config;
 mod handshake;
+#[allow(dead_code)]
 mod noise;
 mod tls;
 mod tunnel;
