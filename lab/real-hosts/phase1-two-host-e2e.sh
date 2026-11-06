@@ -75,11 +75,11 @@ start_echo() {
 }
 start_serve() {
   local side="$1" local_id="$2" peer_id="$3" peer_pin="$4" cert="$5" key="$6"
-  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' serve --listen '0.0.0.0:$E2E_PORT' --target '127.0.0.1:$ECHO_PORT' --local_id '$local_id' --peer_id '$peer_id' --tunnel_id 'lab-e2e' --peer_fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max_streams 8 > '$REMOTE_DIR/serve.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/serve.pid'"
+  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' serve --listen '0.0.0.0:$E2E_PORT' --target '127.0.0.1:$ECHO_PORT' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/serve.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/serve.pid'"
 }
 start_forward() {
   local side="$1" local_id="$2" peer_id="$3" peer_host="$4" peer_dns="$5" peer_pin="$6" cert="$7" key="$8"
-  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' forward --listen '127.0.0.1:$LOCAL_PORT' --remote '$peer_host:$E2E_PORT' --server_name '$peer_dns' --local_id '$local_id' --peer_id '$peer_id' --tunnel_id 'lab-e2e' --peer_fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max_streams 8 > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/forward.pid'"
+  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' forward --listen '127.0.0.1:$LOCAL_PORT' --remote '$peer_host:$E2E_PORT' --server-name '$peer_dns' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/forward.pid'"
 }
 probe_host() {
   local side="$1"
