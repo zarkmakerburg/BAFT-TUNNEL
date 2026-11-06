@@ -1,20 +1,28 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::{handshake, tls};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use futures::StreamExt;
+use rand::{RngCore, rngs::OsRng};
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
-    sync::Semaphore,
-    time::timeout,
+    sync::{Semaphore, mpsc::{self, Receiver}},
+    time::{sleep, timeout},
 };
 use tokio_rustls::client::TlsStream as ClientTlsStream;
-use tokio_yamux::{Config as YamuxConfig, Session};
+use tokio_yamux::{Config as YamuxConfig, Control, Session};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_SESSIONS: usize = 32;
+const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 pub struct ServerOptions {
     pub listen: String,
@@ -63,9 +71,13 @@ fn socket(value: &str, name: &str) -> Result<SocketAddr> {
 fn destination(value: &str) -> Result<SocketAddr> {
     let address = socket(value, "--target")?;
     if address.port() == 0 || address.ip().is_unspecified() || address.ip().is_multicast() {
-        anyhow::bail!("--target must be a specific unicast IP address with a non-zero port");
+        bail!("--target must be a specific unicast IP address with a non-zero port");
     }
     Ok(address)
+}
+
+fn next_backoff(current: Duration) -> Duration {
+    current.saturating_mul(2).min(MAX_BACKOFF)
 }
 
 pub async fn serve(options: ServerOptions) -> Result<()> {
@@ -142,13 +154,9 @@ where
                 tokio::spawn(async move {
                     let _permit = permit;
                     let result: Result<()> = async {
-                        let mut upstream =
-                            timeout(CONNECT_TIMEOUT, TcpStream::connect(destination))
-                                .await
-                                .context("destination connect timeout")?
-                                .with_context(|| {
-                                    format!("connect configured destination {destination}")
-                                })?;
+                        let mut upstream = timeout(CONNECT_TIMEOUT, TcpStream::connect(destination))
+                            .await
+                            .context("destination connect timeout")??;
                         copy_bidirectional(&mut logical, &mut upstream)
                             .await
                             .context("forward TCP stream")?;
@@ -168,8 +176,9 @@ where
     }
 }
 
-pub async fn forward(options: ForwardOptions) -> Result<()> {
-    let listen = socket(&options.listen, "--listen")?;
+async fn connect_peer(
+    options: &ForwardOptions,
+) -> Result<Session<ClientTlsStream<TcpStream>>> {
     let remote = socket(&options.remote, "--remote")?;
     let connector = tls::connector(tls::client_config(
         &options.ca,
@@ -200,52 +209,116 @@ pub async fn forward(options: ForwardOptions) -> Result<()> {
     .await
     .context("protocol handshake timeout")??;
 
-    let mut session = Session::new_client(secure, yamux_config(options.max_streams));
+    Ok(Session::new_client(
+        secure,
+        yamux_config(options.max_streams),
+    ))
+}
+
+async fn run_forward_session(
+    mut session: Session<ClientTlsStream<TcpStream>>,
+    receiver: &mut Receiver<TcpStream>,
+    slots: &Arc<Semaphore>,
+) -> Result<()> {
     let control = session.control();
-    tokio::spawn(async move {
+    let mut driver = tokio::spawn(async move {
         while let Some(item) = session.next().await {
             match item {
                 Ok(unexpected) => drop(unexpected),
-                Err(error) => {
-                    eprintln!("yamux session ended: {error}");
-                    break;
+                Err(error) => return Err(anyhow::anyhow!("yamux session failed: {error}")),
+            }
+        }
+        Err(anyhow::anyhow!("yamux session closed"))
+    });
+
+    let mut control = control;
+    loop {
+        tokio::select! {
+            local = receiver.recv() => {
+                let Some(mut local) = local else {
+                    bail!("local connection queue closed");
+                };
+                let permit = match slots.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        drop(local);
+                        continue;
+                    }
+                };
+                let mut stream_control = control.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    let result: Result<()> = async {
+                        let mut stream = timeout(
+                            CONNECT_TIMEOUT,
+                            stream_control.open_stream(),
+                        )
+                        .await
+                        .context("opening multiplexed stream timed out")?
+                        .context("open multiplexed stream")?;
+                        copy_bidirectional(&mut local, &mut stream)
+                            .await
+                            .context("forward local TCP stream")?;
+                        Ok(())
+                    }
+                    .await;
+                    if let Err(error) = result {
+                        eprintln!("local connection closed: {error:#}");
+                    }
+                });
+            }
+            result = &mut driver => {
+                match result {
+                    Ok(Err(error)) => return Err(error),
+                    Ok(Ok(())) => bail!("yamux session ended unexpectedly"),
+                    Err(error) => bail!("yamux driver task failed: {error}"),
                 }
             }
         }
-    });
+    }
+}
 
+async fn supervise_forward(
+    options: ForwardOptions,
+    mut receiver: Receiver<TcpStream>,
+    slots: Arc<Semaphore>,
+) {
+    let mut backoff = INITIAL_BACKOFF;
+    loop {
+        match connect_peer(&options).await {
+            Ok(session) => {
+                eprintln!("authenticated tunnel session established");
+                backoff = INITIAL_BACKOFF;
+                if let Err(error) = run_forward_session(session, &mut receiver, &slots).await {
+                    eprintln!("tunnel session lost: {error:#}");
+                }
+            }
+            Err(error) => {
+                eprintln!("tunnel connection attempt failed: {error:#}");
+            }
+        }
+
+        let jitter_ms = u64::from(OsRng.next_u32() % 500);
+        sleep(backoff + Duration::from_millis(jitter_ms)).await;
+        backoff = next_backoff(backoff);
+    }
+}
+
+pub async fn forward(options: ForwardOptions) -> Result<()> {
+    let listen = socket(&options.listen, "--listen")?;
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("bind {listen}"))?;
+    let (sender, receiver) = mpsc::channel(options.max_streams);
     let slots = Arc::new(Semaphore::new(options.max_streams));
-    eprintln!("BAFT-TUNNEL local forwarder listening on {listen} via {remote}");
+    tokio::spawn(supervise_forward(options, receiver, slots));
+
+    eprintln!("BAFT-TUNNEL local forwarder listening on {listen}");
     loop {
-        let (mut local, _) = listener.accept().await?;
-        let permit = match slots.clone().try_acquire_owned() {
-            Ok(p) => p,
-            Err(_) => {
-                drop(local);
-                continue;
-            }
-        };
-        let mut control = control.clone();
-        tokio::spawn(async move {
-            let _permit = permit;
-            let result: Result<()> = async {
-                let mut stream = control
-                    .open_stream()
-                    .await
-                    .context("open multiplexed stream")?;
-                copy_bidirectional(&mut local, &mut stream)
-                    .await
-                    .context("forward local TCP stream")?;
-                Ok(())
-            }
-            .await;
-            if let Err(error) = result {
-                eprintln!("local connection closed: {error:#}");
-            }
-        });
+        let (local, _) = listener.accept().await?;
+        if sender.try_send(local).is_err() {
+            eprintln!("local connection rejected: bounded pending queue is full");
+        }
     }
 }
 
@@ -260,5 +333,15 @@ mod tests {
         assert!(destination("224.0.0.1:8080").is_err());
         assert!(destination("127.0.0.1:0").is_err());
         assert!(destination("example.invalid:8080").is_err());
+    }
+
+    #[test]
+    fn reconnect_backoff_is_exponential_and_bounded() {
+        let mut delay = INITIAL_BACKOFF;
+        for _ in 0..6 {
+            delay = next_backoff(delay);
+        }
+        assert_eq!(delay, MAX_BACKOFF);
+        assert_eq!(next_backoff(delay), MAX_BACKOFF);
     }
 }
