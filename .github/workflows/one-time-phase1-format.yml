@@ -1,0 +1,32 @@
+name: one-time-phase1-format
+on:
+  push:
+    branches:
+      - phase1/rust-tcp-transport
+    paths:
+      - src/main.rs
+      - src/config.rs
+permissions:
+  contents: write
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: phase1/rust-tcp-transport
+      - name: Install pinned Rust formatter
+        run: rustup toolchain install 1.85.0 --profile minimal --component rustfmt
+      - name: Format Rust sources
+        run: cargo +1.85.0 fmt --all
+      - name: Commit formatting only
+        run: |
+          if git diff --quiet; then
+            echo "No formatting changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/main.rs src/config.rs
+          git commit -m "style: format phase 1 config CLI"
+          git push origin HEAD:phase1/rust-tcp-transport
