@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   validate-confirmation:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - name: Require explicit E2E confirmation
@@ -42,7 +42,7 @@ jobs:
 
   two-host-e2e:
     needs: validate-confirmation
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     environment: baft-tunnel-lab
     timeout-minutes: 25
     env:
