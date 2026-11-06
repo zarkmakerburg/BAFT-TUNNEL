@@ -25,7 +25,7 @@
 - Disable TLS 1.3 early data for forwarded traffic and non-idempotent/control operations unless a reviewed replay-safe design is approved.
 - Installer, systemd unit, rollback and uninstall.
 - Dependency advisory/license review, protocol-boundary fuzzing, adversarial resource-exhaustion suites, and independent security review.
-- Six-host real-server LAB and cross-border E2E.
+- Two-host real-server LAB: one Iran node and one abroad node; validate Direct/Reverse reachability, authenticated forwarding, interruption/recovery, and measured performance. No six-host topology is required.
 
 ## Later work (not Phase 1 acceptance blockers)
 
@@ -40,5 +40,5 @@
 - The last observed CI run on prior head `be48da90a03b91178f70645a12d1b911300e74cb` completed successfully for formatting, focused Rust tests, Clippy, and release build. This evidence does not cover subsequent documentation commits or prove the complete acceptance gate.
 - Compile/test success is not real-host evidence.
 - Docker/netem is simulation, not a live Iran-to-abroad path.
-- Real-host LAB remains NOT_RUN until the owner supplies server availability and access.
+- Two-host real-server LAB remains NOT_RUN until the owner supplies both servers and access. These two hosts are sufficient for the required Phase 1 cross-border E2E; larger topologies are optional future scale testing.
 - No production host mutation, merge, release, or deployment is authorized by this work.
