@@ -122,17 +122,8 @@ impl RuntimeConfig {
     }
 
     pub fn support_report(&self) -> serde_json::Value {
-        let (
-            mode,
-            local_id,
-            peer_id,
-            tunnel_id,
-            peer_fingerprint,
-            max_streams,
-            ca,
-            cert,
-            key,
-        ) = match self {
+        let (mode, local_id, peer_id, tunnel_id, peer_fingerprint, max_streams, ca, cert, key) =
+            match self {
             Self::Serve {
                 local_id,
                 peer_id,
