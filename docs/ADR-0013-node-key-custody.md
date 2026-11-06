@@ -1,0 +1,41 @@
+# ADR-0013: Node private-key custody
+
+- Status: Accepted design; implementation pending
+- Scope: Linux systemd deployments in Phase 1
+- Date: 2026-11-06
+
+## Context
+
+The TLS runtime currently loads an unencrypted PEM node private key from a filesystem path. Restrictive ownership and mode (root:baft-tunnel, 0640, under a 0750 directory for the systemd copy) reduce local disclosure, but do not provide encryption at rest. The Rustls configuration path consumes private-key material in process memory; a file-permission change alone cannot provide hardware-backed signing or eliminate in-memory key exposure.
+
+The current LAB hosts run Ubuntu 22.04. The systemd service-credential encryption mechanism (LoadCredentialEncrypted= and systemd-creds) was added in systemd 250. Ubuntu 22.04's systemd 249 baseline therefore cannot be assumed to support it. The feature must be capability-detected, not inferred from the distribution name.
+
+## Decision
+
+1. Keep the current PEM-file mode explicitly classified as a development/LAB compatibility mode. It must never be described as encrypted-at-rest custody or production-grade protection.
+2. Add an opt-in systemd credential source for node keys. The service manager, not BAFT-TUNNEL, decrypts the credential before process start and exposes it through $CREDENTIALS_DIRECTORY. The application resolves only a strict credential identifier; it must not accept arbitrary environment-expanded paths.
+3. For encrypted-at-rest deployments, require systemd 250+ and LoadCredentialEncrypted=. Prefer TPM2-bound encryption where supported; otherwise use systemd's host credential key with its documented host/OS binding limitations. Provisioning must fail closed if the selected encryption capability is unavailable.
+4. Do not silently fall back from encrypted credentials to plaintext LoadCredential= or PEM files. A deliberate operator-selected LAB compatibility mode is separate and visibly reported.
+5. Keep credential plaintext out of JSON configuration, command-line arguments, environment variable values, logs, plans, and support bundles. Only the credential identifier may appear in configuration.
+6. Treat the credential directory as service-scoped, read-only input. Validate the resolved file as a regular file, reject symlinks where the platform permits reliable detection, and enforce a conservative size bound before parsing.
+7. The current Rustls API receives private-key bytes in process memory. This design improves at-rest protection and delivery isolation; it does not claim TPM-backed non-exportable signing. A PKCS#11/TPM signer integration is a separate future architecture decision.
+
+## Compatibility and deployment gate
+
+- Ubuntu 22.04 / systemd 249: encrypted systemd credentials are unavailable; production key-custody gate remains open. Do not enable the encrypted-key mode.
+- Ubuntu 24.04 / systemd 255: supports systemd encrypted credentials, subject to runtime capability checks and host-specific TPM/host-key provisioning.
+- A unit must not declare an unconditional credential dependency that breaks existing file-mode LAB instances. Encrypted credentials are enabled only by an explicit per-instance drop-in or equivalent generated unit configuration.
+- Never copy the offline CA private key to a tunnel host.
+
+## Security and acceptance tests
+
+- Missing CREDENTIALS_DIRECTORY, missing credential ID, invalid ID, absent file, symlink, non-regular file, oversized key, and malformed PEM all fail closed.
+- Credential identifiers cannot escape the credential directory or introduce path separators.
+- Support bundles and plans expose only the selected key-source class and credential ID, never contents or passphrases.
+- Unit-level tests cover resolution and rejection cases; Linux integration tests verify systemd credential delivery, permissions, restart behavior, and encrypted credential decryption.
+- At least one real Linux host must demonstrate encrypted credential mode before the production key-custody gate can close.
+- No plaintext fallback is permitted when encrypted mode is selected.
+
+## Consequences
+
+This is a staged path, not a completed feature. The existing two Ubuntu 22.04 LAB hosts remain suitable for transport and compatibility testing, but cannot currently prove the encrypted systemd credential path. A production rollout requiring this custody control needs a compatible host/systemd baseline or a separately reviewed hardware-backed signing provider.
