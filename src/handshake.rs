@@ -426,6 +426,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn framed_reader_survives_deterministic_adversarial_frame_corpus() {
+        use std::time::Duration;
+
+        // Deterministic, dependency-free mutation corpus. It exercises arbitrary
+        // length prefixes and payload bytes while keeping each case bounded.
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        for _case in 0..1024 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let declared = (state as usize) % (MAX_MESSAGE + 5);
+            let mut frame = Vec::with_capacity(2 + declared.min(MAX_MESSAGE));
+            frame.extend_from_slice(&(declared as u16).to_be_bytes());
+            if declared <= MAX_MESSAGE {
+                for _ in 0..declared {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    frame.push(state as u8);
+                }
+            }
+
+            let (mut writer, mut reader) = duplex(MAX_MESSAGE + 2);
+            writer.write_all(&frame).await.unwrap();
+            writer.shutdown().await.unwrap();
+            let result = tokio::time::timeout(
+                Duration::from_millis(50),
+                read_message::<_, StreamOpen>(&mut reader),
+            )
+            .await;
+            assert!(result.is_ok(), "frame parser stalled on corpus case");
+        }
+    }
+
+    #[tokio::test]
     async fn framed_writer_rejects_oversized_serialized_message() {
         #[derive(serde::Serialize)]
         struct Oversized {
