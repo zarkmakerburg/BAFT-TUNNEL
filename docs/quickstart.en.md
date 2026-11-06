@@ -43,5 +43,5 @@ Connections to `127.0.0.1:18080` are forwarded to the server's fixed configured 
 - The peer must pass both CA validation and the configured certificate pin.
 - TLS 1.3 is the only enabled version; no plaintext fallback exists.
 - Per-session Yamux streams and process-wide forwarded streams are bounded.
-- The forwarder does not automatically reconnect after carrier loss yet; restart it manually.
+- The source-side forwarder retries carrier establishment with bounded exponential backoff and jitter. A carrier loss still terminates in-flight TCP streams; they are not transparently resumed. New local connections can wait in a bounded queue during reconnect.
 - No installer or firewall automation exists. These commands do not change host settings.
