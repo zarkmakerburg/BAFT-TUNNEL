@@ -149,6 +149,39 @@ pub async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     .await
 }
 
+/// Bind the TLS-authenticated certificate to the enrolled logical node identity.
+/// The exact URI SAN contract is `urn:baft-tunnel:node:<node-id>`.
+pub fn verify_peer_identity(
+    certs: Option<&[rustls::pki_types::CertificateDer<'_>]>,
+    expected_peer_id: &str,
+) -> Result<()> {
+    validate_identity(expected_peer_id)?;
+    let leaf = certs
+        .and_then(|items| items.first())
+        .context("TLS peer did not present a certificate")?;
+    let (_, certificate) = x509_parser::parse_x509_certificate(leaf.as_ref())
+        .map_err(|_| anyhow::anyhow!("TLS peer certificate is not valid X.509 DER"))?;
+    let expected_uri = format!("urn:baft-tunnel:node:{expected_peer_id}");
+    let mut matched = false;
+    for extension in certificate.extensions() {
+        if let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) =
+            extension.parsed_extension()
+        {
+            for name in &san.general_names {
+                if let x509_parser::extensions::GeneralName::URI(uri) = name {
+                    if *uri == expected_uri {
+                        matched = true;
+                    }
+                }
+            }
+        }
+    }
+    if !matched {
+        bail!("TLS certificate URI SAN does not match the enrolled peer identity");
+    }
+    Ok(())
+}
+
 pub fn verify_peer_fingerprint(
     certs: Option<&[rustls::pki_types::CertificateDer<'_>]>,
     expected: &str,
@@ -182,6 +215,36 @@ mod tests {
         assert!(validate_fingerprint(&("AB:".to_owned() + &"CD:".repeat(30) + "EF")).is_ok());
         assert!(validate_fingerprint("not-a-fingerprint").is_err());
         assert!(validate_fingerprint(&"0".repeat(63)).is_err());
+    }
+
+    #[test]
+    fn certificate_uri_san_must_match_enrolled_node_identity() {
+        use rcgen::{CertificateParams, KeyPair, SanType, string::Ia5String};
+
+        let mut params = CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+        params.subject_alt_names.push(SanType::URI(
+            Ia5String::try_from("urn:baft-tunnel:node:peer-1").unwrap(),
+        ));
+        let key = KeyPair::generate().unwrap();
+        let certificate = params.self_signed(&key).unwrap();
+        let der = rustls::pki_types::CertificateDer::from(certificate.der().to_vec());
+        let chain = [der];
+
+        assert!(verify_peer_identity(Some(&chain), "peer-1").is_ok());
+        assert!(verify_peer_identity(Some(&chain), "peer-2").is_err());
+        assert!(verify_peer_identity(Some(&chain), "bad/id").is_err());
+        assert!(verify_peer_identity(None, "peer-1").is_err());
+    }
+
+    #[test]
+    fn certificate_without_node_uri_san_is_rejected() {
+        use rcgen::{CertificateParams, KeyPair};
+
+        let params = CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+        let key = KeyPair::generate().unwrap();
+        let certificate = params.self_signed(&key).unwrap();
+        let der = rustls::pki_types::CertificateDer::from(certificate.der().to_vec());
+        assert!(verify_peer_identity(Some(&[der]), "peer-1").is_err());
     }
 
     #[tokio::test]

@@ -116,6 +116,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                     .await
                     .context("TLS handshake timeout")??;
                 handshake::verify_peer_fingerprint(secure.get_ref().1.peer_certificates(), &pin)?;
+                handshake::verify_peer_identity(secure.get_ref().1.peer_certificates(), &peer)?;
                 timeout(
                     HANDSHAKE_TIMEOUT,
                     handshake::server_handshake(&mut secure, &local, &peer, &tunnel),
@@ -194,6 +195,7 @@ async fn connect_peer(options: &ForwardOptions) -> Result<Session<ClientTlsStrea
         secure.get_ref().1.peer_certificates(),
         &options.peer_fingerprint,
     )?;
+    handshake::verify_peer_identity(secure.get_ref().1.peer_certificates(), &options.peer_id)?;
     timeout(
         HANDSHAKE_TIMEOUT,
         handshake::client_handshake(
