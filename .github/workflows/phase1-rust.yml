@@ -1,0 +1,29 @@
+name: phase1-rust
+on:
+  push:
+    branches:
+      - phase1/**
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install stable Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run focused Rust tests
+        run: cargo test --all-targets
+      - name: Run Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Build release binary
+        run: cargo build --release
