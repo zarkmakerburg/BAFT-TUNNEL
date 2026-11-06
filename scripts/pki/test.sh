@@ -42,7 +42,11 @@ EOF
 openssl ca -gencrl -batch -config "$CA/openssl.cnf" -out "$CA/ca.crl" >/dev/null 2>&1
 
 "$PKI" new-node iran "$NODE"
-key_mode="$(stat -f '%Lp' "$NODE/node.key" 2>/dev/null || stat -c '%a' "$NODE/node.key")"
+if stat -c '%a' "$NODE/node.key" >/dev/null 2>&1; then
+  key_mode="$(stat -c '%a' "$NODE/node.key")"
+else
+  key_mode="$(stat -f '%Lp' "$NODE/node.key")"
+fi
 [[ "$key_mode" == "600" ]] || { echo "node private key mode is $key_mode, expected 600" >&2; exit 1; }
 [[ ! -e "$NODE/ca.key" ]]
 "$PKI" issue-node "$CA" iran "$NODE/node.csr" "$NODE" tunnel.iran.example.test 30
