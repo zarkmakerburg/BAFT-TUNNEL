@@ -35,6 +35,8 @@ jobs:
         run: bash lab/scripts/test-clear-netem.sh
       - name: Test six-host preflight guards (mock SSH only)
         run: bash lab/real-hosts/test-preflight-matrix.sh
+      - name: Test Phase 1 two-host E2E orchestration (mock SSH/SCP only)
+        run: bash lab/real-hosts/test-phase1-two-host-e2e.sh
       - name: Validate Docker Compose
         run: docker compose -f lab/compose.yaml config --quiet
       - name: Run isolated Docker netem integration
