@@ -18,7 +18,7 @@
 
 - Session-pool management and automatic recovery tests; the source-side forwarder now retries with bounded exponential backoff and jitter, but established TCP streams are not resumed.
 - Identity issuance, rotation, revocation and enrollment.
-- CLI plan/apply and support-bundle commands.
+- Support-bundle command and installer, systemd unit, rollback and uninstall. JSON config validate/plan/explicit-confirm apply is implemented.
 - Installer, systemd unit, rollback and uninstall.
 - Formal interoperability, fuzzing, adversarial frame, resource-exhaustion and loopback end-to-end suites.
 - Six-host real-server LAB and cross-border E2E.
