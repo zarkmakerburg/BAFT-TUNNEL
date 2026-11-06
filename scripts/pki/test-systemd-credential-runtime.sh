@@ -30,6 +30,10 @@ cleanup() {
 }
 trap cleanup EXIT
 chmod 755 "$TMP"
+# The service runs as an unprivileged account; keep its test binary outside
+# the runner workspace, whose parent directories are intentionally private.
+RUNTIME_BIN="$TMP/baft-tunnel"
+install -m 0755 "$BIN" "$RUNTIME_BIN"
 mkdir -p "$TMP/ca/newcerts" "$TMP/node"
 chmod 755 "$TMP/ca" "$TMP/ca/newcerts" "$TMP/node"
 
@@ -155,6 +159,6 @@ UNIT="baft-tunnel-cred-test-$RANDOM-$$"
 sudo systemd-run --wait --pipe --collect --unit="$UNIT" \
   --property=User=nobody \
   --property="LoadCredentialEncrypted=node-key:$TMP/node-key.cred" \
-  /bin/bash "$TMP/run-validation.sh" "$BIN" "$TMP/config.json"
+  /bin/bash "$TMP/run-validation.sh" "$RUNTIME_BIN" "$TMP/config.json"
 
 echo "BAFT_SYSTEMD_CREDENTIAL_RUNTIME=PASS (systemd $systemd_version, encrypted delivery, service-scoped read-only mode 0400/0440, runtime TLS key parse, fail-closed outside service)"
