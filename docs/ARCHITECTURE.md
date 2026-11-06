@@ -45,6 +45,9 @@ ECH (RFC 9849) is an optional TLS privacy enhancement where DNS and server deplo
 
 ## Identity and control plane
 
+The proposed enrollment and issuer trust boundary is specified in [ADR-0014](ADR-0014-online-enrollment-and-control-plane.md). It remains proposed: do not expose an online enrollment endpoint or place CA signing keys in the API process until its issuer, operator-authentication, persistence, and security-review gates are closed.
+
+
 Each node has a long-term logical identity and separately managed transport credentials. Enrollment tokens are single-use, short-lived, and narrowly scoped. The control plane binds the enrolled node identity to its certificate identity and supports rotation/revocation. Claimed node IDs alone are never authentication. Desired state is versioned and signed. Agents verify scope, signature, generation, and expiry; compute a deterministic plan; apply idempotently after authorization; and return a receipt. Statuses distinguish desired, planned, applying, applied, degraded, failed, and unknown. Stale telemetry is always unknown, never healthy.
 
 ## Privacy, reliability, and safety
