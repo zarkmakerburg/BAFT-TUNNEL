@@ -1,40 +1,58 @@
 # BAFT-TUNNEL Architecture
 
-**Status:** Phase 1 implementation baseline; transport decision updated by ADR-0009.
+**Status:** Phase 1 security-first multi-path baseline; see ADR-0010.
 
 ## Product boundary
-BAFT-TUNNEL is an independent Linux server-to-server TCP/UDP forwarding platform. Either endpoint may initiate an outbound connection; inbound reachability at both endpoints is not assumed. The product is not a subscription panel. Its API is intended for integration with third-party panels.
+
+BAFT-TUNNEL is an independent Linux server-to-server TCP/UDP forwarding platform. It supports Direct and Reverse connection establishment, with Relay as a later topology option. Inbound reachability at both endpoints is never assumed. The product is not a subscription panel; its API is intended for integration with third-party panels.
 
 No BAFT implementation, history, keys, production configuration, CI secrets, or deployment assets are imported.
 
 ## Components
+
 - **Node agent:** maintains authenticated transport sessions, listeners, forwarding sockets, health probes, and reconciliation.
 - **Panel/API:** enrollment, node identity, desired state, policy, audit, and operator UI.
 - **CLI:** diagnostics, enrollment, plan/apply, backup/restore, and support bundle.
-- **Transport adapters:** replaceable data-plane implementations behind a versioned interface.
+- **Connection manager:** evaluates authorized Direct/Reverse/Relay paths and selects a healthy authenticated route.
+- **Transport adapters:** versioned, replaceable TCP and later QUIC data-plane implementations.
 - **Web UI:** React + TypeScript + Vite, Persian-first RTL with English support.
 
-The core engine, agent, API, CLI, and installer are Rust. Tokio is the async runtime; `snow` provides Noise Protocol Framework operations for the node-to-node data plane; Axum provides HTTP/API routing. rustls remains available for HTTPS/API endpoints. SQLite WAL is the initial store; PostgreSQL is optional.
+The core engine, agent, API, CLI, and installer are Rust. Tokio is the async runtime; rustls is used for TLS 1.3 transport and HTTPS/API endpoints; Axum provides HTTP/API routing. SQLite WAL is the initial store; PostgreSQL is optional. The Noise prototype is isolated research code and is not the Phase 1 production data plane.
 
-## Mandatory initial data plane: reverse TCP + Noise
-The node behind NAT/firewall initiates outbound TCP connections to a reachable hub. The hub accepts those connections. Reverse logical streams are then opened over the established outbound sessions; the restricted node does not need an inbound listener exposed to the public network.
+## Connectivity modes
 
-Raw TCP is authenticated and encrypted with Noise, initially targeting `Noise_IK_25519_ChaChaPoly_BLAKE2s` through the reviewed `snow` crate. Each node has a pinned Noise static X25519 public key mapped to its enrolled logical identity. The initiator pins the responder key before the handshake; the responder authorizes the initiator key after the handshake. Protocol version, roles, node IDs, tunnel ID, and capabilities are cryptographically bound. No plaintext or TLS fallback is permitted.
+- **Direct:** either peer may initiate TCP to the other peer's reachable listener.
+- **Reverse:** a peer behind NAT/firewall initiates outbound TCP to a reachable peer/hub; reverse logical streams use that established connection.
+- **Relay:** a separately authorized intermediary forwards opaque end-to-end protected traffic when a direct path cannot be established.
 
-A bounded, length-prefixed Noise framing adapter carries Yamux logical streams. Use a bounded pool of independent long-lived TCP sessions to reduce the blast radius of per-session TCP head-of-line blocking; it does not eliminate head-of-line blocking within a session. Pool width, buffering, and scheduling must be measured. Frame sizes, stream counts, connection counts, queues, and handshake duration are bounded.
+These are connection/topology modes, not cryptographic protocols. Direct and Reverse share the same secure TCP transport adapter; only dial/listen orchestration differs. Relay must not terminate end-to-end tunnel encryption.
 
-The existing TLS 1.3/mTLS data-plane code is transitional and must be replaced by Noise before the Phase 1 transport acceptance gate. rustls may still be used for HTTPS control-plane endpoints.
+Path selection must use authenticated connection establishment and bounded bidirectional health checks, not ICMP alone. Auto-selection must never weaken cryptographic policy or silently downgrade transport security.
 
-## Other transports
-WebSocket/HTTP2 is a later adapter for HTTP-aware paths, not a universal CDN compatibility promise. QUIC is deferred to a later phase. UDP forwarding needs explicit framing, size limits, flow expiry, congestion control, and anti-amplification protection.
+## Phase 1 data plane: TCP + TLS 1.3 mutual authentication
+
+The Phase 1 production data plane uses TCP protected by TLS 1.3 with mutual authentication for both Direct and Reverse modes. Per-node certificate identity is bound to the enrolled logical node and explicit tunnel authorization. Authentication is not authorization. Trust-anchor constraints, rotation, revocation, and safe enrollment are required.
+
+Use bounded Yamux logical streams over the authenticated TLS stream. Bound sessions, streams, queues, frame sizes, handshake duration, and memory. A pool of independent TCP sessions may reduce the impact of per-session head-of-line blocking but does not eliminate TCP head-of-line blocking within a session. Pool width and buffering must be measured.
+
+TLS 1.3 0-RTT is disabled for forwarded tunnel data and non-idempotent/control operations unless a separately reviewed replay-safe design proves it safe. No plaintext or legacy TLS fallback is permitted.
+
+## Later transport: QUIC
+
+QUIC over UDP with TLS 1.3 and native QUIC streams is a later optional adapter. UDP availability must never be assumed; TCP remains an independent path. Do not put Yamux on top of QUIC. Direct and Reverse may use QUIC when policy and authenticated reachability permit it. Evaluate migration, congestion control, anti-amplification, resource limits, and real network compatibility before enabling it by default.
+
+ECH (RFC 9849) is an optional TLS privacy enhancement where DNS and server deployment support it. It is not a transport and does not hide destination IP, timing, volume, or all traffic characteristics. No traffic invisibility or censorship-resistance guarantee is made.
 
 ## Identity and control plane
-Each node has a long-term logical identity and a separate Noise static X25519 transport key. Enrollment tokens are single-use, short-lived, and narrowly scoped. The control plane binds the enrolled node identity to its Noise public key and supports rotation/revocation. Claimed node IDs alone are never authentication. Desired state is versioned and signed. Agents verify scope, signature, generation, and expiry; compute a deterministic plan; apply idempotently after authorization; and return a receipt. Statuses distinguish desired, planned, applying, applied, degraded, failed, and unknown. Stale telemetry is always unknown, never healthy.
 
-## Reliability and safety
+Each node has a long-term logical identity and separately managed transport credentials. Enrollment tokens are single-use, short-lived, and narrowly scoped. The control plane binds the enrolled node identity to its certificate identity and supports rotation/revocation. Claimed node IDs alone are never authentication. Desired state is versioned and signed. Agents verify scope, signature, generation, and expiry; compute a deterministic plan; apply idempotently after authorization; and return a receipt. Statuses distinguish desired, planned, applying, applied, degraded, failed, and unknown. Stale telemetry is always unknown, never healthy.
+
+## Privacy, reliability, and safety
+
+Minimize identity and metadata in application messages, logs, metrics, and support bundles. No payload logging. Audit records describe actor, action, target, plan hash, result, and time, not forwarded traffic. Secrets stay outside logs, metrics, and support bundles.
+
 Use bounded reconnect backoff with jitter, graceful drain, path health based on fresh measurements, and failover for new streams. A failed TCP session terminates its active logical streams unless an explicit resumable application protocol is implemented; do not claim transparent migration of established TCP streams. Sysctl/network tuning is opt-in and must restore only values changed by the product.
 
-No payload logging. Audit records describe actor, action, target, plan hash, result, and time, not forwarded traffic. Secrets stay outside logs, metrics, and support bundles.
-
 ## Phase boundary
-Phase 1 implementation is owner-approved. Noise reverse-TCP transport, key lifecycle, conformance tests, and real-host validation gates are required before production readiness. No merge, release, or deployment is implied.
+
+Phase 1 implementation is owner-approved. TCP/TLS 1.3 mTLS Direct and Reverse, node identity/authorization, key lifecycle, conformance tests, installer, and security review gates are required before production readiness. QUIC, ECH evaluation, Relay, and Noise comparison remain later work. No merge, release, or deployment is implied.
