@@ -4,13 +4,17 @@
 //! Callers must authenticate the resulting static key against the enrolled peer
 //! record and bind identities/tunnel/version into the supplied prologue.
 
-use std::{io, pin::Pin, sync::Arc, task::{Context, Poll}};
+use std::{
+    io,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use anyhow::{Context as AnyhowContext, Result, bail};
-use snow::{Builder, HandshakeState, params::NoiseParams, TransportState};
+use snow::{Builder, HandshakeState, TransportState, params::NoiseParams};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream},
-    net::TcpStream,
     sync::Mutex,
 };
 
@@ -53,7 +57,9 @@ impl AsyncWrite for NoiseIo {
 }
 
 fn params() -> Result<NoiseParams> {
-    NOISE_PATTERN.parse().context("parse fixed Noise protocol suite")
+    NOISE_PATTERN
+        .parse()
+        .context("parse fixed Noise protocol suite")
 }
 
 pub fn generate_static_keypair() -> Result<snow::Keypair> {
@@ -139,7 +145,12 @@ where
     if !state.is_handshake_finished() {
         bail!("Noise IK handshake did not complete");
     }
-    bridge_transport(io, state.into_transport_mode().context("enter Noise transport mode")?)
+    bridge_transport(
+        io,
+        state
+            .into_transport_mode()
+            .context("enter Noise transport mode")?,
+    )
 }
 
 pub async fn accept<T>(
@@ -234,7 +245,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::{io::{duplex, AsyncReadExt, AsyncWriteExt}, time::{Duration, timeout}};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt, duplex},
+        time::{Duration, timeout},
+    };
 
     #[tokio::test]
     async fn ik_authenticates_both_static_keys_and_carries_encrypted_stream_data() {
@@ -277,9 +291,14 @@ mod tests {
         let wrong_peer = generate_static_keypair().unwrap();
         let (left, right) = duplex(128 * 1024);
         let server = tokio::spawn(async move {
-            accept(right, &responder.private, &wrong_peer.public, b"baft-test/v1")
-                .await
-                .is_err()
+            accept(
+                right,
+                &responder.private,
+                &wrong_peer.public,
+                b"baft-test/v1",
+            )
+            .await
+            .is_err()
         });
         let client = initiate(left, &initiator.private, &responder.public, b"baft-test/v1").await;
         assert!(client.is_err() || server.await.unwrap());
@@ -291,9 +310,14 @@ mod tests {
         let responder = generate_static_keypair().unwrap();
         let (left, right) = duplex(128 * 1024);
         let server = tokio::spawn(async move {
-            accept(right, &responder.private, &initiator.public, b"baft-test/v1")
-                .await
-                .is_err()
+            accept(
+                right,
+                &responder.private,
+                &initiator.public,
+                b"baft-test/v1",
+            )
+            .await
+            .is_err()
         });
         let client = initiate(left, &initiator.private, &responder.public, b"baft-test/v2").await;
         assert!(client.is_err() || server.await.unwrap());
