@@ -231,7 +231,6 @@ async fn run_forward_session(
         Err(anyhow::anyhow!("yamux session closed"))
     });
 
-    let mut control = control;
     loop {
         tokio::select! {
             local = receiver.recv() => {
