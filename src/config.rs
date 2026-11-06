@@ -124,49 +124,49 @@ impl RuntimeConfig {
     pub fn support_report(&self) -> serde_json::Value {
         let (mode, local_id, peer_id, tunnel_id, peer_fingerprint, max_streams, ca, cert, key) =
             match self {
-            Self::Serve {
-                local_id,
-                peer_id,
-                tunnel_id,
-                peer_fingerprint,
-                max_streams,
-                ca,
-                cert,
-                key,
-                ..
-            } => (
-                "serve",
-                local_id,
-                peer_id,
-                tunnel_id,
-                peer_fingerprint,
-                max_streams,
-                ca,
-                cert,
-                key,
-            ),
-            Self::Forward {
-                local_id,
-                peer_id,
-                tunnel_id,
-                peer_fingerprint,
-                max_streams,
-                ca,
-                cert,
-                key,
-                ..
-            } => (
-                "forward",
-                local_id,
-                peer_id,
-                tunnel_id,
-                peer_fingerprint,
-                max_streams,
-                ca,
-                cert,
-                key,
-            ),
-        };
+                Self::Serve {
+                    local_id,
+                    peer_id,
+                    tunnel_id,
+                    peer_fingerprint,
+                    max_streams,
+                    ca,
+                    cert,
+                    key,
+                    ..
+                } => (
+                    "serve",
+                    local_id,
+                    peer_id,
+                    tunnel_id,
+                    peer_fingerprint,
+                    max_streams,
+                    ca,
+                    cert,
+                    key,
+                ),
+                Self::Forward {
+                    local_id,
+                    peer_id,
+                    tunnel_id,
+                    peer_fingerprint,
+                    max_streams,
+                    ca,
+                    cert,
+                    key,
+                    ..
+                } => (
+                    "forward",
+                    local_id,
+                    peer_id,
+                    tunnel_id,
+                    peer_fingerprint,
+                    max_streams,
+                    ca,
+                    cert,
+                    key,
+                ),
+            };
         serde_json::json!({
             "application": "baft-tunnel",
             "version": env!("CARGO_PKG_VERSION"),
