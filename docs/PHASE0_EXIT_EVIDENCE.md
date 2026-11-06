@@ -1,8 +1,8 @@
 # Phase 0 Exit Evidence — Owner Review Candidate
 
-**Status:** Candidate package for owner review. This document does not declare Phase 0 accepted and does not authorize a phase transition.  
+**Status:** Historical Phase 0 snapshot from 2026-11-04. Its original state statements are retained for traceability and are superseded by the current addendum at the end of this document.
 **Project:** BAFT-TUNNEL (independent private project)  
-**Evidence branch:** `phase0/six-host-lab-foundation`  
+**Historical evidence branch:** `phase0/six-host-lab-foundation`
 **Phase 0 baseline commit:** `8e1e9e18d41df74d467b0345e0bb1683f7d61876`  
 **Latest PR head at this revision:** `2ce68dbc9aeda3798cd40848ee80ca17fc439be2` (documentation-only evidence reconciliation)  
 **Latest code/behavior commit reviewed:** `95b7da3020618bda07a1c9d96b0d46f204834a6f`  
@@ -116,3 +116,31 @@ Owner review is requested for the Phase 0 evidence package only.
 If the owner accepts Phase 0, a separate explicit instruction is required to authorize Phase 1. Merge of PR #1, Phase 1 implementation, release, deployment and production changes remain separate gates and are not implied by acceptance of this document.
 
 **Current command state:** remain in Phase 0; do not merge or begin Phase 1 without explicit owner approval.
+
+
+## 9. Current status addendum — 2026-11-06
+
+This addendum supersedes the original snapshot above for current project status. The original sections remain as historical evidence and must not be read as today's operational state.
+
+### Current phase and repository state
+
+- Phase 0 architecture, repository, mock/simulation lab and two-host read-only preflight foundation have been delivered.
+- The owner explicitly authorized Phase 1; Phase 1 implementation and validation are active.
+- Main is currently at `d9bbc46`. PR #1 remains Draft/open and its Phase 0 branch is being reconciled with main before any merge. PR #3 is Draft/open and targets `phase0/six-host-lab-foundation`.
+- The active LAB is one configured Iran host and one configured abroad host. The former six-host matrix is optional future work, not the active configuration.
+
+### Verified real-host evidence
+
+- Phase 0 read-only preflight: [run 42221903167](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42221903167) passed. Both hosts reported Ubuntu 22.04.x and expected baseline tools. TCP probes on 443, 8443, 2053 and 18300 reported host-reachable/no-listener. No persistent host changes were made.
+- Phase 1 Direct/Reverse tunnel E2E: [run 42273060260](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42273060260) checked out runtime commit `ee1c224718dd201fd050f98eacb788ebd0387219` and passed Direct and Reverse forwarding, matching 2,097,289-byte payload hashes, listener restart/recovery, and rejection of revoked client and server certificates. Temporary processes/files were cleaned up. This is bounded LAB evidence, not production readiness.
+- Latest Phase 1 head is `0d05e349277a9481b1433694f4cdd9d21142d696`. Its Phase 1 Rust CI passed in [run 42274280120](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42274280120); Phase 0 workflow CI passed in [runs 42274280441](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42274280441) and [42274272173](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42274272173).
+
+### Still NOT VERIFIED
+
+- Encrypted systemd credential delivery using `LoadCredentialEncrypted=`: the two active LAB hosts run Ubuntu 22.04 / systemd 249 and cannot prove the systemd 250+ feature.
+- Online enrollment/control-plane authorization, automated CRL distribution and rollover, expanded adversarial/fuzz testing, persistent Linux service lifecycle, and soak testing.
+- Production readiness, long-duration reliability, censorship resistance, and any production deployment.
+
+### Current phase gate
+
+Phase 1 is active and owner-authorized, but PR #3 remains Draft. No merge, release, deployment, or persistent production-host mutation is implied by this addendum. Continue with the Phase 1 acceptance queue in the [HQ Control Board](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).

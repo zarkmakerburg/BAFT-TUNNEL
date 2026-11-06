@@ -1,4 +1,4 @@
-name: Two-host LAB (manual, read-only preflight)
+name: Phase 0 two-host LAB (manual, read-only preflight)
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: baft-tunnel-two-host-lab
+  group: baft-tunnel-phase0-two-host-lab
   cancel-in-progress: false
 
 jobs:
@@ -68,7 +68,7 @@ jobs:
           echo "SSH_KEY_FILE=$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" >> "$GITHUB_ENV"
           echo "SSH_KNOWN_HOSTS_FILE=$RUNNER_TEMP/baft-tunnel-ssh/known_hosts" >> "$GITHUB_ENV"
       - name: Run read-only two-host preflight
-        run: bash lab/real-hosts/preflight-matrix.sh
+        run: bash lab/real-hosts/preflight-two-hosts.sh
       - name: Remove ephemeral credentials
         if: always()
         run: rm -rf "$RUNNER_TEMP/baft-tunnel-ssh"
