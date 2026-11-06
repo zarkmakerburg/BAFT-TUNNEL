@@ -74,12 +74,12 @@ start_echo() {
   ssh_host "$side" "nohup python3 '$REMOTE_DIR/echo.py' '$ECHO_PORT' > '$REMOTE_DIR/echo.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/echo.pid'"
 }
 start_serve() {
-  local side="$1" local_id="$2" peer_id="$3" peer_pin="$4" cert="$5" key="$6"
-  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' serve --listen '0.0.0.0:$E2E_PORT' --target '127.0.0.1:$ECHO_PORT' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/serve.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/serve.pid'"
+  local side="$1" local_id="$2" peer_id="$3" direction="$4" peer_pin="$5" cert="$6" key="$7"
+  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' serve --listen '0.0.0.0:$E2E_PORT' --target '127.0.0.1:$ECHO_PORT' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --direction '$direction' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/serve.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/serve.pid'"
 }
 start_forward() {
-  local side="$1" local_id="$2" peer_id="$3" peer_host="$4" peer_dns="$5" peer_pin="$6" cert="$7" key="$8"
-  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' forward --listen '127.0.0.1:$LOCAL_PORT' --remote '$peer_host:$E2E_PORT' --server-name '$peer_dns' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/forward.pid'"
+  local side="$1" local_id="$2" peer_id="$3" peer_host="$4" peer_dns="$5" direction="$6" peer_pin="$7" cert="$8" key="$9"
+  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' forward --listen '127.0.0.1:$LOCAL_PORT' --remote '$peer_host:$E2E_PORT' --server-name '$peer_dns' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --direction '$direction' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/forward.pid'"
 }
 probe_host() {
   local side="$1" bytes="${2:-2097289}"
@@ -206,15 +206,15 @@ start_echo abroad
 sleep 1
 
 echo "=== DIRECT: Iran dials abroad ==="
-start_serve abroad abroad iran "$IRAN_PIN" abroad.crt abroad.key
-start_forward iran iran abroad "$LAB_ABROAD_HOST" abroad.lab "$ABROAD_PIN" iran.crt iran.key
+start_serve abroad abroad iran direct "$IRAN_PIN" abroad.crt abroad.key
+start_forward iran iran abroad "$LAB_ABROAD_HOST" abroad.lab direct "$ABROAD_PIN" iran.crt iran.key
 probe_host iran 65536
 probe_host iran 2097289
 
 echo "=== INTERRUPTION / RECOVERY: restart abroad listener ==="
 stop_role abroad serve
 sleep 2
-start_serve abroad abroad iran "$IRAN_PIN" abroad.crt abroad.key
+start_serve abroad abroad iran direct "$IRAN_PIN" abroad.crt abroad.key
 probe_host iran 65536
 
 stop_role iran forward
@@ -222,8 +222,8 @@ stop_role abroad serve
 sleep 1
 
 echo "=== REVERSE: Abroad dials Iran ==="
-start_serve iran iran abroad "$ABROAD_PIN" iran.crt iran.key
-start_forward abroad abroad iran "$LAB_IRAN_HOST" iran.lab "$IRAN_PIN" abroad.crt abroad.key
+start_serve iran iran abroad reverse "$ABROAD_PIN" iran.crt iran.key
+start_forward abroad abroad iran "$LAB_IRAN_HOST" iran.lab reverse "$IRAN_PIN" abroad.crt abroad.key
 probe_host abroad 65536
 probe_host abroad 2097289
 

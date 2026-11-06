@@ -171,9 +171,15 @@ mod tests {
                 )
                 .is_err()
             );
-            server_handshake(&mut secure, "abroad", "iran", "test-tunnel")
-                .await
-                .unwrap();
+            server_handshake(
+                &mut secure,
+                "abroad",
+                "iran",
+                "test-tunnel",
+                crate::authorization::ConnectionDirection::Direct,
+            )
+            .await
+            .unwrap();
         });
 
         let mut secure = timeout(
@@ -197,9 +203,15 @@ mod tests {
         );
         crate::handshake::verify_peer_identity(secure.get_ref().1.peer_certificates(), "abroad")
             .unwrap();
-        client_handshake(&mut secure, "iran", "abroad", "test-tunnel")
-            .await
-            .unwrap();
+        client_handshake(
+            &mut secure,
+            "iran",
+            "abroad",
+            "test-tunnel",
+            crate::authorization::ConnectionDirection::Direct,
+        )
+        .await
+        .unwrap();
         server_task.await.unwrap();
 
         fs::remove_dir_all(directory).unwrap();

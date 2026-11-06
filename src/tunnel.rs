@@ -1,6 +1,9 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
-use crate::{handshake, tls};
+use crate::{
+    authorization::{ConnectionDirection, StreamCapability},
+    handshake, tls,
+};
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
 use rand::{RngCore, rngs::OsRng};
@@ -31,6 +34,7 @@ pub struct ServerOptions {
     pub local_id: String,
     pub peer_id: String,
     pub tunnel_id: String,
+    pub direction: ConnectionDirection,
     pub peer_fingerprint: String,
     pub ca: PathBuf,
     pub cert: PathBuf,
@@ -45,6 +49,7 @@ pub struct ForwardOptions {
     pub local_id: String,
     pub peer_id: String,
     pub tunnel_id: String,
+    pub direction: ConnectionDirection,
     pub peer_fingerprint: String,
     pub ca: PathBuf,
     pub cert: PathBuf,
@@ -103,10 +108,11 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
             }
         };
         let acceptor = acceptor.clone();
-        let (local, peer, tunnel, pin, target, max, stream_slots) = (
+        let (local, peer, tunnel, direction, pin, target, max, stream_slots) = (
             options.local_id.clone(),
             options.peer_id.clone(),
             options.tunnel_id.clone(),
+            options.direction,
             options.peer_fingerprint.clone(),
             target,
             options.max_streams,
@@ -122,11 +128,11 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                 handshake::verify_peer_identity(secure.get_ref().1.peer_certificates(), &peer)?;
                 timeout(
                     HANDSHAKE_TIMEOUT,
-                    handshake::server_handshake(&mut secure, &local, &peer, &tunnel),
+                    handshake::server_handshake(&mut secure, &local, &peer, &tunnel, direction),
                 )
                 .await
                 .context("protocol handshake timeout")??;
-                server_session(secure, target, max, stream_slots).await;
+                server_session(secure, target, max, stream_slots, tunnel, direction).await;
                 Ok(())
             }
             .await;
@@ -137,8 +143,14 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
     }
 }
 
-async fn server_session<S>(stream: S, target: SocketAddr, max: usize, slots: Arc<Semaphore>)
-where
+async fn server_session<S>(
+    stream: S,
+    target: SocketAddr,
+    max: usize,
+    slots: Arc<Semaphore>,
+    tunnel: String,
+    direction: ConnectionDirection,
+) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let mut session = Session::new_server(stream, yamux_config(max));
@@ -154,9 +166,16 @@ where
                     }
                 };
                 let destination = target;
+                let stream_tunnel = tunnel.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
                     let result: Result<()> = async {
+                        timeout(
+                            HANDSHAKE_TIMEOUT,
+                            handshake::server_stream_open(&mut logical, &stream_tunnel, direction),
+                        )
+                        .await
+                        .context("stream authorization timeout")??;
                         let mut upstream =
                             timeout(CONNECT_TIMEOUT, TcpStream::connect(destination))
                                 .await
@@ -208,6 +227,7 @@ async fn connect_peer(options: &ForwardOptions) -> Result<Session<ClientTlsStrea
             &options.local_id,
             &options.peer_id,
             &options.tunnel_id,
+            options.direction,
         ),
     )
     .await
@@ -223,6 +243,8 @@ async fn run_forward_session(
     mut session: Session<ClientTlsStream<TcpStream>>,
     receiver: &mut Receiver<TcpStream>,
     slots: &Arc<Semaphore>,
+    direction: ConnectionDirection,
+    tunnel: &str,
 ) -> Result<()> {
     let control = session.control();
     let mut driver = tokio::spawn(async move {
@@ -249,6 +271,7 @@ async fn run_forward_session(
                     }
                 };
                 let mut stream_control = control.clone();
+                let tunnel = tunnel.to_owned();
                 tokio::spawn(async move {
                     let _permit = permit;
                     let result: Result<()> = async {
@@ -260,6 +283,14 @@ async fn run_forward_session(
                         .context("opening multiplexed stream timed out")?
                         .context("open multiplexed stream")?;
                         eprintln!("yamux stream opened for local connection");
+                        handshake::client_stream_open(
+                            &mut stream,
+                            &tunnel,
+                            direction,
+                            StreamCapability::TcpForward,
+                        )
+                        .await
+                        .context("authorize TCP forwarding stream")?;
                         copy_bidirectional(&mut local, &mut stream)
                             .await
                             .context("forward local TCP stream")?;
@@ -293,7 +324,15 @@ async fn supervise_forward(
             Ok(session) => {
                 eprintln!("authenticated tunnel session established");
                 backoff = INITIAL_BACKOFF;
-                if let Err(error) = run_forward_session(session, &mut receiver, &slots).await {
+                if let Err(error) = run_forward_session(
+                    session,
+                    &mut receiver,
+                    &slots,
+                    options.direction,
+                    &options.tunnel_id,
+                )
+                .await
+                {
                     eprintln!("tunnel session lost: {error:#}");
                 }
             }
@@ -454,12 +493,18 @@ mod tests {
         let local_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let local_address = local_listener.local_addr().unwrap();
 
+        let direction = if client_id == "iran" {
+            ConnectionDirection::Direct
+        } else {
+            ConnectionDirection::Reverse
+        };
         let server_task = tokio::spawn(serve(ServerOptions {
             listen: server_address.to_string(),
             target: echo_address.to_string(),
             local_id: server_id.to_owned(),
             peer_id: client_id.to_owned(),
             tunnel_id: "e2e-tunnel".to_owned(),
+            direction,
             peer_fingerprint: client_pin,
             ca: ca_path.clone(),
             cert: server_cert_path,
@@ -484,6 +529,7 @@ mod tests {
             local_id: client_id.to_owned(),
             peer_id: server_id.to_owned(),
             tunnel_id: "e2e-tunnel".to_owned(),
+            direction,
             peer_fingerprint: server_pin,
             ca: ca_path,
             cert: client_cert_path,
@@ -498,7 +544,14 @@ mod tests {
         let (sender, mut receiver) = mpsc::channel(8);
         let stream_slots = Arc::new(Semaphore::new(8));
         let forward_task = tokio::spawn(async move {
-            run_forward_session(session, &mut receiver, &stream_slots).await
+            run_forward_session(
+                session,
+                &mut receiver,
+                &stream_slots,
+                direction,
+                "e2e-tunnel",
+            )
+            .await
         });
 
         let mut local_client = timeout(Duration::from_secs(5), TcpStream::connect(local_address))

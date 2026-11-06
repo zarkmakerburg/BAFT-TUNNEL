@@ -1,3 +1,4 @@
+mod authorization;
 mod config;
 mod handshake;
 #[allow(dead_code)]
@@ -6,6 +7,7 @@ mod tls;
 mod tunnel;
 
 use anyhow::{Result, bail};
+use authorization::ConnectionDirection;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -34,6 +36,8 @@ enum Command {
         peer_id: String,
         #[arg(long)]
         tunnel_id: String,
+        #[arg(long, value_enum)]
+        direction: ConnectionDirection,
         #[arg(long)]
         peer_fingerprint: String,
         #[arg(long)]
@@ -59,6 +63,8 @@ enum Command {
         peer_id: String,
         #[arg(long)]
         tunnel_id: String,
+        #[arg(long, value_enum)]
+        direction: ConnectionDirection,
         #[arg(long)]
         peer_fingerprint: String,
         #[arg(long)]
@@ -112,6 +118,7 @@ async fn main() -> Result<()> {
             local_id,
             peer_id,
             tunnel_id,
+            direction,
             peer_fingerprint,
             ca,
             cert,
@@ -124,6 +131,7 @@ async fn main() -> Result<()> {
                 local_id,
                 peer_id,
                 tunnel_id,
+                direction,
                 peer_fingerprint,
                 ca,
                 cert,
@@ -140,6 +148,7 @@ async fn main() -> Result<()> {
             local_id,
             peer_id,
             tunnel_id,
+            direction,
             peer_fingerprint,
             ca,
             cert,
@@ -153,6 +162,7 @@ async fn main() -> Result<()> {
                 local_id,
                 peer_id,
                 tunnel_id,
+                direction,
                 peer_fingerprint,
                 ca,
                 cert,

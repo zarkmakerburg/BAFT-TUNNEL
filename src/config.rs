@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::{
+    authorization::ConnectionDirection,
     handshake::{validate_fingerprint, validate_identity},
     tls, tunnel,
     tunnel::{ForwardOptions, ServerOptions},
@@ -27,6 +28,7 @@ pub enum RuntimeConfig {
         local_id: String,
         peer_id: String,
         tunnel_id: String,
+        direction: ConnectionDirection,
         peer_fingerprint: String,
         ca: PathBuf,
         cert: PathBuf,
@@ -41,6 +43,7 @@ pub enum RuntimeConfig {
         local_id: String,
         peer_id: String,
         tunnel_id: String,
+        direction: ConnectionDirection,
         peer_fingerprint: String,
         ca: PathBuf,
         cert: PathBuf,
@@ -59,6 +62,7 @@ impl RuntimeConfig {
                 local_id,
                 peer_id,
                 tunnel_id,
+                direction: _,
                 peer_fingerprint,
                 ca,
                 cert,
@@ -77,6 +81,7 @@ impl RuntimeConfig {
                 local_id,
                 peer_id,
                 tunnel_id,
+                direction: _,
                 peer_fingerprint,
                 ca,
                 cert,
@@ -101,10 +106,12 @@ impl RuntimeConfig {
                 local_id,
                 peer_id,
                 tunnel_id,
+                direction,
                 max_streams,
                 ..
             } => format!(
-                "Mode: serve\nListen: {listen}\nFixed destination: {target}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nSecurity: TLS 1.3 + mutual certificate auth + SHA-256 peer pin\nHost changes: none"
+                "Mode: serve\nDirection: {}\nListen: {listen}\nFixed destination: {target}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nSecurity: TLS 1.3 + mutual certificate auth + SHA-256 peer pin\nHost changes: none",
+                direction.as_str()
             ),
             Self::Forward {
                 listen,
@@ -113,60 +120,76 @@ impl RuntimeConfig {
                 local_id,
                 peer_id,
                 tunnel_id,
+                direction,
                 max_streams,
                 ..
             } => format!(
-                "Mode: forward\nLocal listener: {listen}\nRemote peer: {remote}\nTLS server name: {server_name}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nSecurity: TLS 1.3 + mutual certificate auth + SHA-256 peer pin\nHost changes: none"
+                "Mode: forward\nDirection: {}\nLocal listener: {listen}\nRemote peer: {remote}\nTLS server name: {server_name}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nSecurity: TLS 1.3 + mutual certificate auth + SHA-256 peer pin\nHost changes: none",
+                direction.as_str()
             ),
         }
     }
 
     pub fn support_report(&self) -> serde_json::Value {
-        let (mode, local_id, peer_id, tunnel_id, peer_fingerprint, max_streams, ca, cert, key) =
-            match self {
-                Self::Serve {
-                    local_id,
-                    peer_id,
-                    tunnel_id,
-                    peer_fingerprint,
-                    max_streams,
-                    ca,
-                    cert,
-                    key,
-                    ..
-                } => (
-                    "serve",
-                    local_id,
-                    peer_id,
-                    tunnel_id,
-                    peer_fingerprint,
-                    max_streams,
-                    ca,
-                    cert,
-                    key,
-                ),
-                Self::Forward {
-                    local_id,
-                    peer_id,
-                    tunnel_id,
-                    peer_fingerprint,
-                    max_streams,
-                    ca,
-                    cert,
-                    key,
-                    ..
-                } => (
-                    "forward",
-                    local_id,
-                    peer_id,
-                    tunnel_id,
-                    peer_fingerprint,
-                    max_streams,
-                    ca,
-                    cert,
-                    key,
-                ),
-            };
+        let (
+            mode,
+            local_id,
+            peer_id,
+            tunnel_id,
+            direction,
+            peer_fingerprint,
+            max_streams,
+            ca,
+            cert,
+            key,
+        ) = match self {
+            Self::Serve {
+                local_id,
+                peer_id,
+                tunnel_id,
+                direction,
+                peer_fingerprint,
+                max_streams,
+                ca,
+                cert,
+                key,
+                ..
+            } => (
+                "serve",
+                local_id,
+                peer_id,
+                tunnel_id,
+                direction,
+                peer_fingerprint,
+                max_streams,
+                ca,
+                cert,
+                key,
+            ),
+            Self::Forward {
+                local_id,
+                peer_id,
+                tunnel_id,
+                direction,
+                peer_fingerprint,
+                max_streams,
+                ca,
+                cert,
+                key,
+                ..
+            } => (
+                "forward",
+                local_id,
+                peer_id,
+                tunnel_id,
+                direction,
+                peer_fingerprint,
+                max_streams,
+                ca,
+                cert,
+                key,
+            ),
+        };
         serde_json::json!({
             "application": "baft-tunnel",
             "version": env!("CARGO_PKG_VERSION"),
@@ -179,6 +202,7 @@ impl RuntimeConfig {
                 "local_identity": local_id,
                 "peer_identity": peer_id,
                 "tunnel_id": tunnel_id,
+                "direction": direction,
                 "max_streams": max_streams,
                 "peer_certificate_pin_configured": !peer_fingerprint.is_empty(),
                 "ca_file_present": ca.is_file(),
@@ -208,6 +232,7 @@ impl RuntimeConfig {
                 local_id,
                 peer_id,
                 tunnel_id,
+                direction,
                 peer_fingerprint,
                 ca,
                 cert,
@@ -220,6 +245,7 @@ impl RuntimeConfig {
                     local_id,
                     peer_id,
                     tunnel_id,
+                    direction,
                     peer_fingerprint,
                     ca,
                     cert,
@@ -235,6 +261,7 @@ impl RuntimeConfig {
                 local_id,
                 peer_id,
                 tunnel_id,
+                direction,
                 peer_fingerprint,
                 ca,
                 cert,
@@ -248,6 +275,7 @@ impl RuntimeConfig {
                     local_id,
                     peer_id,
                     tunnel_id,
+                    direction,
                     peer_fingerprint,
                     ca,
                     cert,
@@ -314,7 +342,7 @@ mod tests {
     #[test]
     fn config_rejects_unknown_fields_and_defaults_stream_limit() {
         let valid = r#"{
-            "mode":"serve","listen":"127.0.0.1:9443","target":"127.0.0.1:8080",
+            "mode":"serve","direction":"direct","listen":"127.0.0.1:9443","target":"127.0.0.1:8080",
             "local_id":"abroad","peer_id":"iran","tunnel_id":"demo",
             "peer_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "ca":"ca.pem","cert":"server.pem","key":"server-key.pem"
@@ -329,13 +357,15 @@ mod tests {
             "\"mode\":\"serve\",\"unexpected\":true",
         );
         assert!(serde_json::from_str::<RuntimeConfig>(&with_unknown).is_err());
+        let without_direction = valid.replace("\"direction\":\"direct\",", "");
+        assert!(serde_json::from_str::<RuntimeConfig>(&without_direction).is_err());
     }
 
     #[test]
     fn support_report_redacts_paths_fingerprints_and_network_endpoints() {
         let config: RuntimeConfig = serde_json::from_str(
             r#"{
-                "mode":"serve","listen":"198.51.100.10:9443","target":"10.0.0.8:8080",
+                "mode":"serve","direction":"direct","listen":"198.51.100.10:9443","target":"10.0.0.8:8080",
                 "local_id":"abroad","peer_id":"iran","tunnel_id":"private-tunnel",
                 "peer_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "ca":"/secret/ca.pem","cert":"/secret/node.pem","key":"/secret/private-key.pem"

@@ -80,6 +80,9 @@ test "$(grep -c -- '--local-id' "$SSH_CALL_LOG")" -ge 5
 test "$(grep -c -- '--peer-id' "$SSH_CALL_LOG")" -ge 5
 test "$(grep -c -- '--tunnel-id' "$SSH_CALL_LOG")" -ge 5
 test "$(grep -c -- '--peer-fingerprint' "$SSH_CALL_LOG")" -ge 5
+test "$(grep -c -- '--direction' "$SSH_CALL_LOG")" -ge 5
+test "$(grep -c -- '--direction.*direct' "$SSH_CALL_LOG")" = 3
+test "$(grep -c -- '--direction.*reverse' "$SSH_CALL_LOG")" = 2
 test "$(grep -E -c -- '--local_id|--peer_id|--tunnel_id|--peer_fingerprint' "$SSH_CALL_LOG" || true)" = 0
 test "$(wc -l < "$SCP_CALL_LOG" | tr -d ' ')" = 2
 if grep -Eqi 'iptables|nft |systemctl|sysctl|tc qdisc|reboot' "$SSH_CALL_LOG"; then

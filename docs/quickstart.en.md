@@ -20,7 +20,7 @@ cargo build --release
 ```bash
 ./target/release/baft-tunnel serve \
   --listen 0.0.0.0:9443 --target 127.0.0.1:8080 \
-  --local-id node-abroad --peer-id node-iran --tunnel-id demo-tunnel \
+  --local-id node-abroad --peer-id node-iran --tunnel-id demo-tunnel --direction direct \
   --peer-fingerprint REPLACE_WITH_IRAN_CERT_SHA256 \
   --ca ./pki/ca.pem --cert ./pki/abroad.pem --key ./pki/abroad-key.pem
 ```
@@ -30,17 +30,18 @@ cargo build --release
 ```bash
 ./target/release/baft-tunnel forward \
   --listen 127.0.0.1:18080 --remote 203.0.113.10:9443 --server-name tunnel.example.test \
-  --local-id node-iran --peer-id node-abroad --tunnel-id demo-tunnel \
+  --local-id node-iran --peer-id node-abroad --tunnel-id demo-tunnel --direction direct \
   --peer-fingerprint REPLACE_WITH_ABROAD_CERT_SHA256 \
   --ca ./pki/ca.pem --cert ./pki/iran.pem --key ./pki/iran-key.pem
 ```
 
-Connections to `127.0.0.1:18080` are forwarded to the server's fixed configured destination. Replace every example value before use. Never publish private keys.
+Connections to `127.0.0.1:18080` are forwarded to the server's fixed configured destination. Both peers must use the same explicit `--direction` value. For Reverse mode, place `serve` on the Iran-side node and `forward` on the abroad-side node, and set `--direction reverse` on both commands. Replace every example value before use. Never publish private keys.
 
 ## Safety and limitations
 
 - The server destination is operator-configured; a connecting peer cannot choose it.
-- The peer must pass both CA validation and the configured certificate pin.
+- The peer must pass CA validation, the configured certificate pin, node-identity binding, and the configured Direct/Reverse direction authorization.
+- Each Yamux stream carries a bounded stream-open authorization frame binding the tunnel, direction, and TCP-forward capability.
 - TLS 1.3 is the only enabled version; no plaintext fallback exists.
 - Per-session Yamux streams and process-wide forwarded streams are bounded.
 - The source-side forwarder retries carrier establishment with bounded exponential backoff and jitter. A carrier loss still terminates in-flight TCP streams; they are not transparently resumed. New local connections can wait in a bounded queue during reconnect.

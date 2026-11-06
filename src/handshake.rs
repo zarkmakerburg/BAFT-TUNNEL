@@ -1,3 +1,6 @@
+use crate::authorization::{
+    ConnectionDirection, PHASE1_CAPABILITIES, StreamCapability, authorize_session, authorize_stream,
+};
 use anyhow::{Context, Result, bail};
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
@@ -15,6 +18,8 @@ struct ClientHello {
     client_id: String,
     server_id: String,
     tunnel_id: String,
+    direction: ConnectionDirection,
+    capabilities: Vec<StreamCapability>,
     nonce: String,
 }
 
@@ -25,6 +30,8 @@ struct ServerHello {
     server_id: String,
     client_id: String,
     tunnel_id: String,
+    direction: ConnectionDirection,
+    capabilities: Vec<StreamCapability>,
     client_nonce: String,
     server_nonce: String,
 }
@@ -93,6 +100,7 @@ pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     local: &str,
     peer: &str,
     tunnel: &str,
+    direction: ConnectionDirection,
 ) -> Result<()> {
     let client_nonce = nonce();
     write_message(
@@ -102,6 +110,8 @@ pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
             client_id: local.into(),
             server_id: peer.into(),
             tunnel_id: tunnel.into(),
+            direction,
+            capabilities: PHASE1_CAPABILITIES.to_vec(),
             nonce: client_nonce.clone(),
         },
     )
@@ -111,6 +121,8 @@ pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
         || response.server_id != peer
         || response.client_id != local
         || response.tunnel_id != tunnel
+        || response.direction != direction
+        || response.capabilities != PHASE1_CAPABILITIES
         || response.client_nonce != client_nonce
         || !valid_nonce(&response.server_nonce)
         || response.server_nonce == client_nonce
@@ -125,16 +137,25 @@ pub async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     local: &str,
     peer: &str,
     tunnel: &str,
+    direction: ConnectionDirection,
 ) -> Result<()> {
     let request: ClientHello = read_message(stream).await?;
     if request.version != VERSION
         || request.client_id != peer
         || request.server_id != local
-        || request.tunnel_id != tunnel
         || !valid_nonce(&request.nonce)
     {
         bail!("peer rejected or returned an invalid protocol handshake");
     }
+    authorize_session(
+        &request.client_id,
+        peer,
+        &request.tunnel_id,
+        tunnel,
+        request.direction,
+        direction,
+        &request.capabilities,
+    )?;
     write_message(
         stream,
         &ServerHello {
@@ -142,11 +163,59 @@ pub async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(
             server_id: local.into(),
             client_id: peer.into(),
             tunnel_id: tunnel.into(),
+            direction,
+            capabilities: PHASE1_CAPABILITIES.to_vec(),
             client_nonce: request.nonce,
             server_nonce: nonce(),
         },
     )
     .await
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StreamOpen {
+    version: u16,
+    tunnel_id: String,
+    direction: ConnectionDirection,
+    capability: StreamCapability,
+}
+
+pub async fn client_stream_open<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    tunnel: &str,
+    direction: ConnectionDirection,
+    capability: StreamCapability,
+) -> Result<()> {
+    authorize_stream(tunnel, tunnel, direction, direction, capability)?;
+    write_message(
+        stream,
+        &StreamOpen {
+            version: VERSION,
+            tunnel_id: tunnel.into(),
+            direction,
+            capability,
+        },
+    )
+    .await
+}
+
+pub async fn server_stream_open<S: AsyncRead + Unpin>(
+    stream: &mut S,
+    expected_tunnel: &str,
+    expected_direction: ConnectionDirection,
+) -> Result<()> {
+    let request: StreamOpen = read_message(stream).await?;
+    if request.version != VERSION {
+        bail!("unsupported stream-open protocol version");
+    }
+    authorize_stream(
+        &request.tunnel_id,
+        expected_tunnel,
+        request.direction,
+        expected_direction,
+        request.capability,
+    )
 }
 
 /// Bind the TLS-authenticated certificate to the enrolled logical node identity.
@@ -268,24 +337,121 @@ mod tests {
     async fn handshake_binds_both_identities_and_tunnel() {
         let (mut client, mut server) = duplex(4096);
         let server_task = tokio::spawn(async move {
-            server_handshake(&mut server, "abroad", "iran", "tunnel-a").await
-        });
-        client_handshake(&mut client, "iran", "abroad", "tunnel-a")
+            server_handshake(
+                &mut server,
+                "abroad",
+                "iran",
+                "tunnel-a",
+                ConnectionDirection::Direct,
+            )
             .await
-            .unwrap();
+        });
+        client_handshake(
+            &mut client,
+            "iran",
+            "abroad",
+            "tunnel-a",
+            ConnectionDirection::Direct,
+        )
+        .await
+        .unwrap();
         server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_wrong_connection_direction() {
+        let (mut client, mut server) = duplex(4096);
+        let server_task = tokio::spawn(async move {
+            server_handshake(
+                &mut server,
+                "abroad",
+                "iran",
+                "tunnel-a",
+                ConnectionDirection::Reverse,
+            )
+            .await
+        });
+        assert!(
+            client_handshake(
+                &mut client,
+                "iran",
+                "abroad",
+                "tunnel-a",
+                ConnectionDirection::Direct
+            )
+            .await
+            .is_err()
+        );
+        assert!(server_task.await.unwrap().is_err());
+    }
+
+    #[test]
+    fn stream_open_rejects_unknown_capabilities() {
+        let request =
+            br#"{"version":1,"tunnel_id":"lab","direction":"direct","capability":"udp-forward"}"#;
+        assert!(serde_json::from_slice::<StreamOpen>(request).is_err());
+    }
+
+    #[tokio::test]
+    async fn stream_open_rejects_wrong_tunnel_or_direction() {
+        let (mut client, mut server) = duplex(4096);
+        let client_task = tokio::spawn(async move {
+            client_stream_open(
+                &mut client,
+                "tunnel-a",
+                ConnectionDirection::Direct,
+                StreamCapability::TcpForward,
+            )
+            .await
+        });
+        assert!(
+            server_stream_open(&mut server, "tunnel-a", ConnectionDirection::Reverse)
+                .await
+                .is_err()
+        );
+        client_task.await.unwrap().unwrap();
+
+        let (mut client, mut server) = duplex(4096);
+        let client_task = tokio::spawn(async move {
+            client_stream_open(
+                &mut client,
+                "tunnel-a",
+                ConnectionDirection::Direct,
+                StreamCapability::TcpForward,
+            )
+            .await
+        });
+        assert!(
+            server_stream_open(&mut server, "tunnel-b", ConnectionDirection::Direct)
+                .await
+                .is_err()
+        );
+        client_task.await.unwrap().unwrap();
     }
 
     #[tokio::test]
     async fn handshake_rejects_wrong_peer_identity() {
         let (mut client, mut server) = duplex(4096);
         let server_task = tokio::spawn(async move {
-            server_handshake(&mut server, "abroad", "expected-peer", "tunnel-a").await
+            server_handshake(
+                &mut server,
+                "abroad",
+                "expected-peer",
+                "tunnel-a",
+                ConnectionDirection::Direct,
+            )
+            .await
         });
         assert!(
-            client_handshake(&mut client, "iran", "abroad", "tunnel-a")
-                .await
-                .is_err()
+            client_handshake(
+                &mut client,
+                "iran",
+                "abroad",
+                "tunnel-a",
+                ConnectionDirection::Direct
+            )
+            .await
+            .is_err()
         );
         assert!(server_task.await.unwrap().is_err());
     }
