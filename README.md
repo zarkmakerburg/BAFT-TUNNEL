@@ -125,6 +125,10 @@ A phase is complete only when its acceptance evidence is reviewed. A roadmap ite
 - [Operator guide](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/OPERATOR_GUIDE.md)
 - [Real-host LAB setup](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/REAL_HOSTS_LAB.md)
 - [Open Phase 1 pull request](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/3)
+- [Engineering guardrails](docs/ENGINEERING_GUARDRAILS.md)
+- [Product UX and installer acceptance](docs/PRODUCT_UX_ACCEPTANCE.md)
+- [Phase 0 two-host LAB instructions](docs/PHASE0_TWO_HOST_LAB.md)
+- [Phase 0 evidence history](docs/PHASE0_EXIT_EVIDENCE.md)
 
 ## Repository access and use
 
