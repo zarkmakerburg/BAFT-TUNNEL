@@ -18,7 +18,7 @@ This is a manual offline-CA workflow for the current TCP/TLS transport. It is no
    `bash scripts/pki/baft-pki.sh verify-node ./offline-ca ./issued-iran/ca.crl ./issued-iran/node.crt iran tunnel.iran.example.test`
 6. Install the service runtime's private-key copy with least privilege. The generated key remains mode `0600`; do not relax its permissions in the enrollment workspace. For a systemd installation, place the runtime copy under the root-owned, service-group-readable PKI directory:
    ```sh
-   install -d -o root -g baft-tunnel -m 0750 /etc/baft-tunnel/pki
+      install -d -o root -g baft-tunnel -m 0750 /etc/baft-tunnel/pki
    install -o root -g baft-tunnel -m 0640 ./node-iran/node.key /etc/baft-tunnel/pki/node.key
    install -o root -g root -m 0644 ./issued-iran/node.crt /etc/baft-tunnel/pki/node.crt
    install -o root -g root -m 0644 ./issued-iran/ca.crt /etc/baft-tunnel/pki/ca.crt
@@ -33,6 +33,26 @@ This is a manual offline-CA workflow for the current TCP/TLS transport. It is no
 The CA key is encrypted and must never be copied to endpoints. Node private keys are currently unencrypted PEM files. The enrollment-generated key is mode `0600`; the separately installed systemd runtime copy is root-owned, group `baft-tunnel`, mode `0640`, with its parent directory root:`baft-tunnel` mode `0750`. This is a least-privilege filesystem arrangement, not encrypted-at-rest key storage. Encrypted node-key storage, OS keystore/HSM integration, online enrollment, automated CRL distribution, rotation, and safe overlapping pin rollover remain open acceptance work.
 
 Run the isolated PKI regression suite with `bash scripts/pki/test.sh`. It creates and removes a temporary test CA; it does not touch the offline CA or LAB hosts.
+
+## Encrypted node-key delivery (systemd 250+; opt-in)
+
+The application supports a key_credential JSON source. This mode must be paired with systemd encrypted credential delivery; it is not enabled by the shared unit by default.
+
+1. Confirm the host actually supports the feature: systemd --version must report 250 or newer, and systemd-creds --help must expose encrypt. Ubuntu 22.04 / systemd 249 LAB hosts do not qualify.
+2. As root, create a protected credential store and encrypt the node key using systemd's automatic TPM2/host key selection (never null-key mode):
+      install -d -o root -g root -m 0700 /etc/credstore.encrypted/baft-tunnel
+      systemd-creds encrypt --name=node-key --with-key=auto ./node.key /etc/credstore.encrypted/baft-tunnel/INSTANCE-node-key
+      chown root:root /etc/credstore.encrypted/baft-tunnel/INSTANCE-node-key
+      chmod 0600 /etc/credstore.encrypted/baft-tunnel/INSTANCE-node-key
+   Replace INSTANCE with the exact systemd instance name. Auto mode prefers TPM2 when available and follows systemd's documented host-key fallback; never use --with-key=null.
+3. Create /etc/systemd/system/baft-tunnel@INSTANCE.service.d/credentials.conf with:
+      [Service]
+      LoadCredentialEncrypted=node-key:/etc/credstore.encrypted/baft-tunnel/INSTANCE-node-key
+4. In the instance JSON, remove key and set key_credential to node-key; see examples/forward-systemd-credential.json. Never set both fields.
+5. Run systemctl daemon-reload, then validate and start only the explicitly selected instance. The service manager supplies CREDENTIALS_DIRECTORY; manual validation outside that service context is expected to fail closed.
+6. Confirm the unit's credential is loaded and the tunnel starts. Do not copy decrypted credentials out of the service credential directory or log their contents.
+
+If encrypted delivery is selected but the host, encrypted credential file, credential ID, or service-manager delivery is unavailable, startup must fail. Do not fall back to a plaintext key path or LoadCredential=. Host-key encryption protects at rest with host/OS binding; it is not a claim of TPM non-exportable signing. The Rustls TLS stack still consumes the decrypted key in process memory. The current Ubuntu 22.04 LAB pair cannot close this acceptance gate.
 
 ## Remaining operator workflow
 

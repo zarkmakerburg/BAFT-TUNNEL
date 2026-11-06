@@ -20,7 +20,8 @@
 - Source-side reconnect supervisor uses capped exponential backoff and jitter. In-flight TCP streams are not resumed after carrier loss.
 - Strict JSON config validation, redacted plan, explicit-confirm apply, and redacted support bundle.
 - Experimental offline PKI helper (scripts/pki/baft-pki.sh): encrypted P-384 offline CA, per-node EC P-256 key/CSR generation, CA-supplied URI plus DNS/IP SANs, certificate issuance, CRL generation/revocation, and certificate/CRL verification. The helper never copies the CA key into a node bundle.
-- Node private keys remain unencrypted PEM with mode 0600 because the runtime does not yet support encrypted key files. This is a minimum file-permission control, not production-grade key custody.\n- A hardened systemd template and install/rollback/uninstall scripts are implemented. Staged installer lifecycle tests cover install, permissions, systemd hardening assertions, backup/rollback, safe uninstall, and explicit config purge. They do not yet prove an actual Linux/systemd host lifecycle.
+- Node private keys remain unencrypted PEM in the current LAB workflow. Runtime JSON now supports a mutually exclusive key_credential source resolved from systemd's CREDENTIALS_DIRECTORY, and validation/apply fail closed if it is absent or invalid. Encrypted delivery still requires a per-instance LoadCredentialEncrypted= drop-in on systemd 250+; it has not yet been proven on a qualifying Linux host. This is not yet a closed production key-custody gate.
+- A hardened systemd template and install/rollback/uninstall scripts are implemented. Staged installer lifecycle tests cover install, permissions, systemd hardening assertions, backup/rollback, safe uninstall, and explicit config purge. They do not yet prove an actual Linux/systemd host lifecycle.
 - Noise IK prototype remains isolated research code and is not wired into the production data plane.
 
 ## Real-host LAB evidence — PASS
@@ -49,10 +50,14 @@ Run [42246759289](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/4224
 - Current branch head 1597e4bf4258a3ae006b108e8998d29c477a816b passed Phase 1 CI [42250860492](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42250860492): formatting, all Rust tests (including expired/untrusted peer and CRL issuer-mismatch negatives), Clippy with warnings denied, and release build.
 - Runtime/installer code head 5af31f942fe5b20cb4005787c40801a8441de9ae passed Phase 1 CI [42259334888](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42259334888) and Phase 0 CI [42259334926](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42259334926). Phase 0 included installer staged lifecycle tests, shell validation, immutable action pins, mock SSH/SCP orchestration, offline PKI lifecycle, Docker Compose validation, and isolated Docker/netem integration. Phase 1 included formatting, Rust tests, Clippy with warnings denied, and release build.\n- Documentation-only guardrails commit 8866b439be7bd0ba4180e9eab59a1f9235a8c262 adds this policy and does not change runtime code; no new runtime test claim is made for that documentation-only commit.
 
-## Engineering guardrails\n\nThe mandatory cross-project engineering policy is documented in [BAFT_LESSONS_AND_ENGINEERING_GUARDRAILS.md](BAFT_LESSONS_AND_ENGINEERING_GUARDRAILS.md). It converts lessons into requirements for truthful connectivity state, safe desired-state apply/rollback, security boundaries, simple installation/UX, LAB evidence classification, CI enforcement, and release gates.\n\n## Mandatory remaining Phase 1 acceptance work
+## Engineering guardrails
+
+The mandatory cross-project engineering policy is documented in [BAFT_LESSONS_AND_ENGINEERING_GUARDRAILS.md](BAFT_LESSONS_AND_ENGINEERING_GUARDRAILS.md). It converts lessons into requirements for truthful connectivity state, safe desired-state apply/rollback, security boundaries, simple installation/UX, LAB evidence classification, CI enforcement, and release gates.
+
+## Mandatory remaining Phase 1 acceptance work
 
 - Online enrollment/authorization workflow and control-plane integration. Current PKI helper is manual/offline only.
-- Encrypted node private-key storage and OS keystore/HSM integration. Current node keys are unencrypted files protected by mode 0600 and a dedicated service account.
+- Real systemd encrypted-credential delivery and restart/permission integration on systemd 250+; the resolver is wired into config validation and apply, but actual Linux host proof remains open. TPM2-backed provisioning and PKCS#11/TPM signing remain separate follow-up work.
 - Automated CRL publication/distribution, CRL refresh coordination, safe CA/pin rollover, and overlapping pins. CRL updates are currently supplied out of band; restart both peers to apply them.
 - Negative tests for expired CRLs and additional trust-anchor/CA lifecycle failure modes.
 - Further replay-sensitive operation, framing fuzz, session-isolation, adversarial resource-exhaustion, reconnect/drain, and concurrency testing.

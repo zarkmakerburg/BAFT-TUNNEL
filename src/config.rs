@@ -33,7 +33,9 @@ pub enum RuntimeConfig {
         ca: PathBuf,
         crl: PathBuf,
         cert: PathBuf,
-        key: PathBuf,
+        key: Option<PathBuf>,
+        #[serde(default)]
+        key_credential: Option<String>,
         #[serde(default = "default_max_streams")]
         max_streams: usize,
     },
@@ -49,7 +51,9 @@ pub enum RuntimeConfig {
         ca: PathBuf,
         crl: PathBuf,
         cert: PathBuf,
-        key: PathBuf,
+        key: Option<PathBuf>,
+        #[serde(default)]
+        key_credential: Option<String>,
         #[serde(default = "default_max_streams")]
         max_streams: usize,
     },
@@ -70,12 +74,15 @@ impl RuntimeConfig {
                 crl,
                 cert,
                 key,
+                key_credential,
                 max_streams,
             } => {
                 validate_common(local_id, peer_id, tunnel_id, peer_fingerprint, *max_streams)?;
                 parse_socket(listen, "listen")?;
                 validate_target(parse_socket(target, "target")?)?;
-                tls::server_config(ca, crl, cert, key).context("server TLS material is invalid")?;
+                let key_path = private_key_path(key.as_deref(), key_credential.as_deref())?;
+                tls::server_config(ca, crl, cert, &key_path)
+                    .context("server TLS material is invalid")?;
             }
             Self::Forward {
                 listen,
@@ -90,13 +97,16 @@ impl RuntimeConfig {
                 crl,
                 cert,
                 key,
+                key_credential,
                 max_streams,
             } => {
                 validate_common(local_id, peer_id, tunnel_id, peer_fingerprint, *max_streams)?;
                 parse_socket(listen, "listen")?;
                 validate_target(parse_socket(remote, "remote")?)?;
                 tls::server_name(server_name)?;
-                tls::client_config(ca, crl, cert, key).context("client TLS material is invalid")?;
+                let key_path = private_key_path(key.as_deref(), key_credential.as_deref())?;
+                tls::client_config(ca, crl, cert, &key_path)
+                    .context("client TLS material is invalid")?;
             }
         }
         Ok(())
@@ -112,10 +122,13 @@ impl RuntimeConfig {
                 tunnel_id,
                 direction,
                 max_streams,
+                key,
+                key_credential,
                 ..
             } => format!(
-                "Mode: serve\nDirection: {}\nListen: {listen}\nFixed destination: {target}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nSecurity: TLS 1.3 + mutual certificate auth + SHA-256 peer pin\nHost changes: none",
-                direction.as_str()
+                "Mode: serve\nDirection: {}\nListen: {listen}\nFixed destination: {target}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nPrivate key source: {}\nSecurity: TLS 1.3 + mutual certificate auth + SHA-256 peer pin\nHost changes: none",
+                direction.as_str(),
+                key_source_description(key.as_ref(), key_credential.as_deref())
             ),
             Self::Forward {
                 listen,
@@ -126,10 +139,13 @@ impl RuntimeConfig {
                 tunnel_id,
                 direction,
                 max_streams,
+                key,
+                key_credential,
                 ..
             } => format!(
-                "Mode: forward\nDirection: {}\nLocal listener: {listen}\nRemote peer: {remote}\nTLS server name: {server_name}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nSecurity: TLS 1.3 + mutual certificate auth + SHA-256 peer pin\nHost changes: none",
-                direction.as_str()
+                "Mode: forward\nDirection: {}\nLocal listener: {listen}\nRemote peer: {remote}\nTLS server name: {server_name}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nPrivate key source: {}\nSecurity: TLS 1.3 + mutual certificate auth + SHA-256 peer pin\nHost changes: none",
+                direction.as_str(),
+                key_source_description(key.as_ref(), key_credential.as_deref())
             ),
         }
     }
@@ -145,7 +161,7 @@ impl RuntimeConfig {
             max_streams,
             ca,
             cert,
-            key,
+            key_credential,
         ) = match self {
             Self::Serve {
                 local_id,
@@ -156,7 +172,7 @@ impl RuntimeConfig {
                 max_streams,
                 ca,
                 cert,
-                key,
+                key_credential,
                 ..
             } => (
                 "serve",
@@ -168,7 +184,7 @@ impl RuntimeConfig {
                 max_streams,
                 ca,
                 cert,
-                key,
+                key_credential,
             ),
             Self::Forward {
                 local_id,
@@ -179,7 +195,7 @@ impl RuntimeConfig {
                 max_streams,
                 ca,
                 cert,
-                key,
+                key_credential,
                 ..
             } => (
                 "forward",
@@ -191,7 +207,7 @@ impl RuntimeConfig {
                 max_streams,
                 ca,
                 cert,
-                key,
+                key_credential,
             ),
         };
         serde_json::json!({
@@ -211,7 +227,8 @@ impl RuntimeConfig {
                 "peer_certificate_pin_configured": !peer_fingerprint.is_empty(),
                 "ca_file_present": ca.is_file(),
                 "certificate_file_present": cert.is_file(),
-                "private_key_file_present": key.is_file()
+                "private_key_source": if key_credential.is_some() { "systemd-credential" } else { "file" },
+                "private_key_credential_id": key_credential
             },
             "security": {
                 "tls_version": "1.3",
@@ -242,8 +259,10 @@ impl RuntimeConfig {
                 crl,
                 cert,
                 key,
+                key_credential,
                 max_streams,
             } => {
+                let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 tunnel::serve(ServerOptions {
                     listen,
                     target,
@@ -273,8 +292,10 @@ impl RuntimeConfig {
                 crl,
                 cert,
                 key,
+                key_credential,
                 max_streams,
             } => {
+                let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 tunnel::forward(ForwardOptions {
                     listen,
                     remote,
@@ -293,6 +314,23 @@ impl RuntimeConfig {
                 .await
             }
         }
+    }
+}
+
+fn private_key_path(key: Option<&Path>, credential_id: Option<&str>) -> Result<PathBuf> {
+    match (key, credential_id) {
+        (Some(path), None) => Ok(path.to_path_buf()),
+        (None, Some(identifier)) => crate::key_custody::systemd_credential_path(identifier),
+        (Some(_), Some(_)) => bail!("configure exactly one of key or key_credential"),
+        (None, None) => bail!("configure exactly one of key or key_credential"),
+    }
+}
+
+fn key_source_description(key: Option<&PathBuf>, credential_id: Option<&str>) -> String {
+    match (key, credential_id) {
+        (Some(_), None) => "filesystem (LAB compatibility)".to_owned(),
+        (None, Some(identifier)) => format!("systemd credential ({identifier})"),
+        _ => "invalid (configure exactly one source)".to_owned(),
     }
 }
 
@@ -388,6 +426,52 @@ mod tests {
         assert!(!report.contains("aaaaaaaaaaaaaaaa"));
         assert!(!report.contains("/secret/"));
         assert!(!report.contains("private-key.pem"));
+    }
+
+    #[test]
+    fn key_source_requires_exactly_one_configured_source() {
+        assert!(private_key_path(None, None).is_err());
+        assert!(private_key_path(Some(Path::new("node.key")), Some("node-key")).is_err());
+        assert_eq!(
+            key_source_description(Some(&PathBuf::from("hidden/path")), None),
+            "filesystem (LAB compatibility)"
+        );
+        assert_eq!(
+            key_source_description(None, Some("node-key")),
+            "systemd credential (node-key)"
+        );
+    }
+
+    #[test]
+    fn config_accepts_systemd_credential_without_a_key_path() {
+        let valid = r#"{
+            "mode":"serve","direction":"direct","listen":"127.0.0.1:9443","target":"127.0.0.1:8080",
+            "local_id":"abroad","peer_id":"iran","tunnel_id":"demo",
+            "peer_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ca":"ca.pem","crl":"ca.crl","cert":"server.pem","key_credential":"node-key"
+        }"#;
+        let parsed: RuntimeConfig = serde_json::from_str(valid).unwrap();
+        assert!(parsed.plan().contains("systemd credential (node-key)"));
+        let report = parsed.support_report();
+        assert_eq!(
+            report["configuration"]["private_key_source"],
+            "systemd-credential"
+        );
+        assert_eq!(
+            report["configuration"]["private_key_credential_id"],
+            "node-key"
+        );
+        match parsed {
+            RuntimeConfig::Serve {
+                key,
+                key_credential,
+                ..
+            } => {
+                assert!(key.is_none());
+                assert_eq!(key_credential.as_deref(), Some("node-key"));
+            }
+            RuntimeConfig::Forward { .. } => panic!("expected serve config"),
+        }
     }
 
     #[test]

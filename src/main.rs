@@ -142,7 +142,8 @@ async fn main() -> Result<()> {
                 ca,
                 crl,
                 cert,
-                key,
+                key: Some(key),
+                key_credential: None,
                 max_streams,
             };
             config.validate()?;
@@ -175,7 +176,8 @@ async fn main() -> Result<()> {
                 ca,
                 crl,
                 cert,
-                key,
+                key: Some(key),
+                key_credential: None,
                 max_streams,
             };
             config.validate()?;

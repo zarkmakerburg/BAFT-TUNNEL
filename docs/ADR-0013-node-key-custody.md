@@ -1,6 +1,6 @@
 # ADR-0013: Node private-key custody
 
-- Status: Accepted design; implementation pending
+- Status: Accepted; runtime config resolver integrated; encrypted systemd delivery and Linux host proof pending
 - Scope: Linux systemd deployments in Phase 1
 - Date: 2026-11-06
 
@@ -19,6 +19,16 @@ The current LAB hosts run Ubuntu 22.04. The systemd service-credential encryptio
 5. Keep credential plaintext out of JSON configuration, command-line arguments, environment variable values, logs, plans, and support bundles. Only the credential identifier may appear in configuration.
 6. Treat the credential directory as service-scoped, read-only input. Validate the resolved file as a regular file, reject symlinks where the platform permits reliable detection, and enforce a conservative size bound before parsing.
 7. The current Rustls API receives private-key bytes in process memory. This design improves at-rest protection and delivery isolation; it does not claim TPM-backed non-exportable signing. A PKCS#11/TPM signer integration is a separate future architecture decision.
+
+## Runtime integration
+
+The runtime JSON accepts exactly one private-key source:
+- key: a filesystem path retained for explicit LAB/development compatibility.
+- key_credential: a strict systemd credential identifier resolved only beneath CREDENTIALS_DIRECTORY.
+
+The two fields are mutually exclusive. The resolver rejects missing credential environment, invalid identifiers, absent files, symlinks, non-regular files, empty/oversized files, and canonical paths outside the credential directory. config validate and apply both resolve the credential source before TLS key parsing; there is no fallback to key when key_credential is selected. Plans and support bundles expose the source class and credential identifier, never the filesystem path or key bytes.
+
+Encrypted delivery is configured per service instance through a systemd drop-in, not in the shared unit. This preserves compatibility with LAB/file-mode instances and prevents a credential dependency from being imposed on every instance.
 
 ## Compatibility and deployment gate
 
