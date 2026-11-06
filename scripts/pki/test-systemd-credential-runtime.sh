@@ -169,7 +169,8 @@ sudo systemd-run --wait --pipe --collect --unit="$UNIT" \
 # parsing; systemd must restart the unit, redeliver the encrypted credential,
 # and allow the second invocation to finish successfully.
 RESTART_STATE="$TMP/restart-state"
-mkdir -m 0777 "$RESTART_STATE"
+mkdir "$RESTART_STATE"
+chmod 0777 "$RESTART_STATE"
 RESTART_UNIT="baft-tunnel-cred-restart-$RANDOM-$$"
 sudo systemd-run --wait --pipe --collect --unit="$RESTART_UNIT" \
   --property=User=nobody \
