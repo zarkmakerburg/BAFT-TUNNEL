@@ -22,8 +22,8 @@
 - Support both Direct and Reverse connection orchestration over the same authenticated TCP adapter.
 - Enforce explicit authorization of the authenticated node for each tunnel, connection direction, and stream capability; current fixed peer/tunnel checks are not yet a complete policy model.
 - Implement credential issuance/enrollment, secure storage, rotation/revocation, and safe trust/pin rollover.
-- Add direct and reverse two-process loopback E2E tests over the same TLS adapter.
-- Add invalid/expired/revoked/untrusted certificate and wrong-identity rejection tests.
+- Two-process loopback E2E coverage now exercises authenticated TCP/TLS/Yamux forwarding with each side acting as the dialer; both orientations pass. This is local loopback evidence, not the required two-host Iran/abroad LAB.
+- Add invalid/expired/revoked/untrusted certificate rejection tests.
 - Add unauthorized tunnel/direction, replay-sensitive operation, framing, timeout, resource-limit, reconnect, drain, and session-isolation integration tests.
 - Installer, systemd unit, rollback and uninstall.
 - Dependency advisory/license review, protocol-boundary fuzzing, adversarial resource-exhaustion suites, and independent security review.
