@@ -1,6 +1,6 @@
 # ADR-0013: Node private-key custody
 
-- Status: Accepted; runtime config resolver integrated; encrypted systemd delivery and Linux host proof pending
+- Status: Accepted; runtime resolver integrated; transient systemd 255 encrypted-delivery CI integration PASS; dedicated-host lifecycle proof pending
 - Scope: Linux systemd deployments in Phase 1
 - Date: 2026-11-06
 
@@ -43,9 +43,9 @@ Encrypted delivery is configured per service instance through a systemd drop-in,
 - Credential identifiers cannot escape the credential directory or introduce path separators.
 - Support bundles and plans expose only the selected key-source class and credential ID, never contents or passphrases.
 - Unit-level tests cover resolution and rejection cases; Linux integration tests verify systemd credential delivery, permissions, restart behavior, and encrypted credential decryption.
-- At least one real Linux host must demonstrate encrypted credential mode before the production key-custody gate can close.
+- Hosted Ubuntu 24.04/systemd 255 CI now demonstrates encrypted credential delivery through a real transient systemd unit and successful BAFT runtime TLS-key parsing. This is not persistent service lifecycle evidence. A dedicated operator-controlled Linux host must still demonstrate encrypted credential mode, permissions, restart behavior, upgrade/rollback and uninstall before the production key-custody gate can close.
 - No plaintext fallback is permitted when encrypted mode is selected.
 
 ## Consequences
 
-This is a staged path, not a completed feature. The existing two Ubuntu 22.04 LAB hosts remain suitable for transport and compatibility testing, but cannot currently prove the encrypted systemd credential path. A production rollout requiring this custody control needs a compatible host/systemd baseline or a separately reviewed hardware-backed signing provider.
+The transient encrypted-credential delivery path is now exercised in hosted CI on Ubuntu 24.04/systemd 255, including the actual runtime key parser. This is a staged integration result, not a completed production custody feature. The existing two Ubuntu 22.04 LAB hosts remain suitable for transport and compatibility testing, but cannot exercise the encrypted systemd credential path. Persistent service lifecycle and dedicated-host proof remain open. A production rollout requiring this custody control needs a compatible host/systemd baseline or a separately reviewed hardware-backed signing provider.
