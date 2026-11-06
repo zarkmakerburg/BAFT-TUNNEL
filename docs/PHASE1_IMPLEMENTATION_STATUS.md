@@ -2,6 +2,7 @@
 
 **Authorization:** Owner-approved 2026-11-06.
 **Branch:** phase1/rust-tcp-transport.
+**Latest validated implementation head:** 1597e4bf4258a3ae006b108e8998d29c477a816b.
 **Runtime product-code SHA:** 775e1c5afcf1582c01d8ca01c25874bcda552bee.
 **Status:** In progress; not production-ready. ADR-0010 is the current transport decision; ADR-0009 is superseded. Offline PKI tooling is defined by ADR-0012.
 
@@ -45,8 +46,8 @@ Run [42246759289](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/4224
 ## Exact-head CI evidence
 
 - Product-code and TLS negative-test commit 705f937f63604876d846ec6e740b90062e1fe747 passed Phase 1 CI [42248834201](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42248834201): formatting, all Rust tests, Clippy with warnings denied, and release build.
-- The same commit passed Phase 0 checks [42248834452](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42248834452): shell validation, immutable action pins, mock SSH/SCP orchestration, Docker Compose validation, and isolated Docker/netem integration.
-- The subsequent offline PKI tooling and docs are locally tested; their exact-head CI is pending the next push.
+- Current branch head 1597e4bf4258a3ae006b108e8998d29c477a816b passed Phase 1 CI [42250860492](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42250860492): formatting, all Rust tests (including expired/untrusted peer and CRL issuer-mismatch negatives), Clippy with warnings denied, and release build.
+- The same current head passed Phase 0 checks [42250860522](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42250860522): shell validation, immutable action pins, mock SSH/SCP orchestration, offline PKI lifecycle test, Docker Compose validation, and isolated Docker/netem integration.
 
 ## Mandatory remaining Phase 1 acceptance work
 
