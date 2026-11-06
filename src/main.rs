@@ -1,6 +1,7 @@
 mod authorization;
 mod config;
 mod handshake;
+pub mod key_custody;
 #[allow(dead_code)]
 mod noise;
 mod tls;
