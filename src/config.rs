@@ -1,4 +1,4 @@
-use std::{fs::File, io::BufReader, net::SocketAddr, path::PathBuf};
+use std::{fs::File, io::BufReader, net::SocketAddr, path::{Path, PathBuf}};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -80,7 +80,7 @@ impl RuntimeConfig {
             } => {
                 validate_common(local_id, peer_id, tunnel_id, peer_fingerprint, *max_streams)?;
                 parse_socket(listen, "listen")?;
-                parse_socket(remote, "remote")?;
+                validate_target(parse_socket(remote, "remote")?)?;
                 tls::server_name(server_name)?;
                 tls::client_config(ca, cert, key).context("client TLS material is invalid")?;
             }
@@ -176,7 +176,7 @@ impl RuntimeConfig {
     }
 }
 
-pub fn load(path: &PathBuf) -> Result<RuntimeConfig> {
+pub fn load(path: &Path) -> Result<RuntimeConfig> {
     let file = File::open(path).with_context(|| format!("open config file {}", path.display()))?;
     serde_json::from_reader(BufReader::new(file))
         .with_context(|| format!("parse JSON config {}", path.display()))
