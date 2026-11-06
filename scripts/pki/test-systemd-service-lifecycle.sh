@@ -4,14 +4,14 @@ set -Eeuo pipefail
 umask 077
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
-BIN="\${1:-$ROOT/target/release/baft-tunnel}"
+BIN="${1:-$ROOT/target/release/baft-tunnel}"
 SERVICE_NAME="credential-ci"
-SERVICE_UNIT="baft-tunnel@\${SERVICE_NAME}.service"
-DROPIN_DIR="/etc/systemd/system/\${SERVICE_UNIT}.d"
-CONFIG_FILE="/etc/baft-tunnel/\${SERVICE_NAME}.json"
+SERVICE_UNIT="baft-tunnel@${SERVICE_NAME}.service"
+DROPIN_DIR="/etc/systemd/system/${SERVICE_UNIT}.d"
+CONFIG_FILE="/etc/baft-tunnel/${SERVICE_NAME}.json"
 PKI_DIR="/etc/baft-tunnel/pki/credential-ci"
 CREDENTIAL_DIR="/etc/baft-tunnel/credentials/credential-ci"
-TMP="$(mktemp -d "\${TMPDIR:-/tmp}/baft-systemd-service.XXXXXX")"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/baft-systemd-service.XXXXXX")"
 INSTALL_DONE=0
 CREATED_USER=0
 CREATED_GROUP=0
