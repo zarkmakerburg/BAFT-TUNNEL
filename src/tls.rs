@@ -37,7 +37,7 @@ fn roots(path: &Path) -> Result<RootCertStore> {
 }
 
 pub fn client_config(ca: &Path, cert: &Path, key: &Path) -> Result<Arc<ClientConfig>> {
-    let config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])?
+    let config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_root_certificates(roots(ca)?)
         .with_client_auth_cert(certificates(cert)?, private_key(key)?)
         .context("build TLS 1.3 mutual-auth client configuration")?;
@@ -48,7 +48,7 @@ pub fn server_config(ca: &Path, cert: &Path, key: &Path) -> Result<TlsAcceptor> 
     let verifier = WebPkiClientVerifier::builder(Arc::new(roots(ca)?))
         .build()
         .context("build client certificate verifier")?;
-    let config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])?
+    let config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_client_cert_verifier(verifier)
         .with_single_cert(certificates(cert)?, private_key(key)?)
         .context("build TLS 1.3 mutual-auth server configuration")?;
