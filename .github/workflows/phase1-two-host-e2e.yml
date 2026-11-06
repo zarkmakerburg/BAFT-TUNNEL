@@ -8,6 +8,11 @@ on:
         required: true
         type: string
         default: ''
+      ref:
+        description: The Phase 1 branch to test (restricted to phase1/rust-tcp-transport)
+        required: true
+        type: string
+        default: phase1/rust-tcp-transport
 
 permissions:
   contents: read
@@ -24,9 +29,14 @@ jobs:
       - name: Require explicit E2E confirmation
         env:
           CONFIRM: ${{ inputs.confirm }}
+          REF: ${{ inputs.ref }}
         run: |
           if [[ "$CONFIRM" != "RUN_PHASE1_E2E" ]]; then
             echo "Invalid confirmation. No LAB hosts were contacted." >&2
+            exit 2
+          fi
+          if [[ "$REF" != "phase1/rust-tcp-transport" ]]; then
+            echo "Only the reviewed Phase 1 branch may be tested." >&2
             exit 2
           fi
 
@@ -47,6 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.85.0 --profile minimal
