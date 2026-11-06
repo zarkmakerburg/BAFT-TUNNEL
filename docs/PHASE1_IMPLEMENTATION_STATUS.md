@@ -15,8 +15,8 @@
 
 ## Mandatory remaining Phase 1 work
 
-- Replace node-to-node TLS with reverse TCP + Noise IK using a reviewed `snow` implementation and pinned X25519 peer keys.
-- Implement strict framed Noise transport adapter and run Yamux over it; no plaintext/TLS fallback.
+- Complete and integrate the initial `snow`-based Noise IK handshake/framing adapter prototype in `src/noise.rs`; it is not yet wired into the runtime.
+- Replace node-to-node TLS with reverse TCP + Noise IK using pinned X25519 peer keys; run Yamux over the Noise adapter with no plaintext/TLS fallback.
 - Bind enrolled node identity, tunnel ID, protocol version, role, and capabilities to the authenticated Noise session.
 - Implement transport key generation/storage, peer authorization, rotation/revocation, and safe pin rollover.
 - Add Noise vectors, wrong-key/prologue/identity rejection, frame-boundary, resource-limit, pool/reconnect, and two-process loopback E2E tests.
