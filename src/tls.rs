@@ -189,6 +189,28 @@ mod tests {
             .status()
             .expect("openssl is required for CRL integration tests");
         assert!(crl_status.success(), "openssl failed to generate test CRL");
+
+        // Generate a syntactically valid CRL whose validity window is long expired.
+        // Verify expiration enforcement independently on both TLS roles below.
+        let expired_crl_path = directory.join("expired-ca.crl");
+        let expired_crl_status = std::process::Command::new("openssl")
+            .args(["ca", "-gencrl", "-batch", "-config"])
+            .arg(directory.join("openssl.cnf"))
+            .args([
+                "-crl_lastupdate",
+                "20200101000000Z",
+                "-crl_nextupdate",
+                "20200102000000Z",
+                "-out",
+            ])
+            .arg(&expired_crl_path)
+            .status()
+            .expect("openssl is required for expired-CRL integration tests");
+        assert!(
+            expired_crl_status.success(),
+            "openssl failed to generate expired test CRL"
+        );
+
         fs::write(&server_cert_path, server_cert.pem()).unwrap();
         fs::write(&server_key_path, server_key.serialize_pem()).unwrap();
         fs::write(&client_cert_path, client_cert.pem()).unwrap();
@@ -261,6 +283,87 @@ mod tests {
         .await
         .unwrap();
         server_task.await.unwrap();
+
+        // An expired CRL must fail closed when verifying a client certificate (server role).
+        let expired_crl_acceptor = server_config(
+            &ca_path,
+            &expired_crl_path,
+            &server_cert_path,
+            &server_key_path,
+        )
+        .unwrap();
+        let current_crl_connector = connector(
+            client_config(&ca_path, &crl_path, &client_cert_path, &client_key_path).unwrap(),
+        );
+        let (expired_server_client_io, expired_server_io) = duplex(64 * 1024);
+        let expired_server_task = tokio::spawn(async move {
+            timeout(
+                StdDuration::from_secs(5),
+                expired_crl_acceptor.accept(expired_server_io),
+            )
+            .await
+        });
+        let expired_server_client_result = timeout(
+            StdDuration::from_secs(5),
+            current_crl_connector
+                .connect(server_name("localhost").unwrap(), expired_server_client_io),
+        )
+        .await;
+        let expired_server_result = timeout(StdDuration::from_secs(5), expired_server_task)
+            .await
+            .unwrap()
+            .unwrap();
+        let expired_server_client_failed = expired_server_client_result
+            .as_ref()
+            .map_or(true, |handshake| handshake.is_err());
+        let expired_server_failed = expired_server_result
+            .as_ref()
+            .map_or(true, |handshake| handshake.is_err());
+        assert!(
+            expired_server_client_failed || expired_server_failed,
+            "server must reject client authentication when its configured CRL is expired"
+        );
+
+        // An expired CRL must also fail closed when verifying the server certificate (client role).
+        let current_crl_acceptor =
+            server_config(&ca_path, &crl_path, &server_cert_path, &server_key_path).unwrap();
+        let expired_crl_connector = connector(
+            client_config(
+                &ca_path,
+                &expired_crl_path,
+                &client_cert_path,
+                &client_key_path,
+            )
+            .unwrap(),
+        );
+        let (expired_client_io, expired_client_server_io) = duplex(64 * 1024);
+        let expired_client_server_task = tokio::spawn(async move {
+            timeout(
+                StdDuration::from_secs(5),
+                current_crl_acceptor.accept(expired_client_server_io),
+            )
+            .await
+        });
+        let expired_client_result = timeout(
+            StdDuration::from_secs(5),
+            expired_crl_connector.connect(server_name("localhost").unwrap(), expired_client_io),
+        )
+        .await;
+        let expired_client_server_result =
+            timeout(StdDuration::from_secs(5), expired_client_server_task)
+                .await
+                .unwrap()
+                .unwrap();
+        let expired_client_failed = expired_client_result
+            .as_ref()
+            .map_or(true, |handshake| handshake.is_err());
+        let expired_client_server_failed = expired_client_server_result
+            .as_ref()
+            .map_or(true, |handshake| handshake.is_err());
+        assert!(
+            expired_client_failed || expired_client_server_failed,
+            "client must reject server authentication when its configured CRL is expired"
+        );
 
         // A certificate signed by a different CA must not pass client authentication.
         let mut rogue_ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
