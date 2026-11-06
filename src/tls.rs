@@ -68,7 +68,7 @@ mod tests {
     use super::*;
     use crate::handshake::{client_handshake, server_handshake, verify_peer_fingerprint};
     use rcgen::{
-        BasicConstraints, Certificate, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer,
+        BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer,
         KeyPair, KeyUsagePurpose,
     };
     use sha2::{Digest, Sha256};
