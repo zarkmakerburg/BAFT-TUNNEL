@@ -13,19 +13,20 @@
 - Config validate/plan/explicit-confirm apply and redacted support-bundle command.
 - TLS 1.3/mTLS TCP transport implemented and CI-tested; it is now the selected Phase 1 production baseline, subject to the hardening and acceptance work below.
 - Initial Noise IK prototype exists in `src/noise.rs`; it is not wired into runtime and is research-only pending separate review.
+- Phase 0 two-host real-server preflight completed successfully on 2026-11-06 (GitHub Actions run [42221903167](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42221903167)). Both configured hosts accepted strict-host-key SSH inspection; both reported Ubuntu 22.04.x, x86_64, systemd, and the required baseline tools. The Iran-to-abroad TCP probes completed; all four tested ports reported reachable host/no listener.
 
 ## Mandatory remaining Phase 1 work
 
 - Retain and harden TCP + TLS 1.3 mutual authentication as the single Phase 1 data-plane security adapter.
 - Support both Direct and Reverse connection orchestration over the same authenticated TCP adapter.
-- Bind certificate identity to enrolled node identity and explicit tunnel/stream authorization; authentication alone is insufficient.
+- Bind the validated certificate SAN identity to the enrolled logical node identity and enforce explicit tunnel/stream authorization. The current application handshake exchanges claimed node IDs; those claims must not be treated as certificate identity.
 - Implement credential issuance/enrollment, secure storage, rotation/revocation, and safe trust/pin rollover.
 - Add direct and reverse two-process loopback E2E tests over the same TLS adapter.
-- Add invalid/expired/revoked/untrusted certificate, wrong identity, unauthorized tunnel, replay-sensitive operation, framing, timeout, resource-limit, pool/reconnect, drain, and session-isolation tests.
+- Add invalid/expired/revoked/untrusted certificate, wrong certificate identity, unauthorized tunnel, replay-sensitive operation, framing, timeout, resource-limit, pool/reconnect, drain, and session-isolation tests.
 - Disable TLS 1.3 early data for forwarded traffic and non-idempotent/control operations unless a reviewed replay-safe design is approved.
 - Installer, systemd unit, rollback and uninstall.
 - Dependency advisory/license review, protocol-boundary fuzzing, adversarial resource-exhaustion suites, and independent security review.
-- Two-host real-server LAB: one Iran node and one abroad node; validate Direct/Reverse reachability, authenticated forwarding, interruption/recovery, and measured performance. No six-host topology is required.
+- Two-host Phase 1 real-server LAB: validate actual Direct/Reverse tunnel establishment, authenticated forwarding, interruption/recovery, and measured performance. Phase 0 host inspection and TCP reachability are not Phase 1 tunnel E2E evidence.
 
 ## Later work (not Phase 1 acceptance blockers)
 
@@ -37,8 +38,8 @@
 ## Evidence and constraints
 
 - CI evidence must be tied to the exact branch-head SHA.
-- The last observed CI run on prior head `be48da90a03b91178f70645a12d1b911300e74cb` completed successfully for formatting, focused Rust tests, Clippy, and release build. This evidence does not cover subsequent documentation commits or prove the complete acceptance gate.
-- Compile/test success is not real-host evidence.
-- Docker/netem is simulation, not a live Iran-to-abroad path.
-- Two-host real-server LAB remains NOT_RUN until the owner supplies both servers and access. These two hosts are sufficient for the required Phase 1 cross-border E2E; larger topologies are optional future scale testing.
+- The last observed CI run on branch head `66bf647a9d45e929306c1ca4845ad2bcb0a2f7a4` completed successfully for the `phase1-rust` workflow (formatting, focused Rust tests, Clippy, and release build); run [42212748324](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42212748324). This does not prove the complete acceptance gate.
+- The Phase 0 real-host preflight is successful, but it is limited to host facts and TCP connection probes. It does not prove tunnel functionality, throughput, resilience, censorship resistance, or production readiness.
+- Docker/netem is simulation, not a live Iran-to-abroad tunnel path.
+- Phase 1 real-host tunnel E2E remains NOT_RUN.
 - No production host mutation, merge, release, or deployment is authorized by this work.
