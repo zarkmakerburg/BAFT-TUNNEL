@@ -49,10 +49,10 @@ The application supports a key_credential JSON source. This mode must be paired 
       [Service]
       LoadCredentialEncrypted=node-key:/etc/credstore.encrypted/baft-tunnel/INSTANCE-node-key
 4. In the instance JSON, remove key and set key_credential to node-key; see examples/forward-systemd-credential.json. Never set both fields.
-5. Run systemctl daemon-reload, then validate and start only the explicitly selected instance. The service manager supplies CREDENTIALS_DIRECTORY; manual validation outside that service context is expected to fail closed.
+5. Run systemctl daemon-reload, then start only the explicitly selected instance. Its ExecStartPre validation runs in the service context where systemd supplies CREDENTIALS_DIRECTORY; manual validation outside that context is expected to fail closed.
 6. Confirm the unit's credential is loaded and the tunnel starts. Do not copy decrypted credentials out of the service credential directory or log their contents.
 
-If encrypted delivery is selected but the host, encrypted credential file, credential ID, or service-manager delivery is unavailable, startup must fail. Do not fall back to a plaintext key path or LoadCredential=. Host-key encryption protects at rest with host/OS binding; it is not a claim of TPM non-exportable signing. The Rustls TLS stack still consumes the decrypted key in process memory. The current Ubuntu 22.04 LAB pair cannot close this acceptance gate.
+If encrypted delivery is selected but the host, encrypted credential file, credential ID, or service-manager delivery is unavailable, startup must fail. Do not fall back to a plaintext key path or LoadCredential=. Systemd's selected host and/or TPM2 key binds the credential to the host OS and/or TPM device; this is not a claim of TPM non-exportable signing. The Rustls TLS stack still consumes the decrypted key in process memory. The current Ubuntu 22.04 LAB pair cannot close this acceptance gate.
 
 ## Remaining operator workflow
 

@@ -91,6 +91,31 @@ mod tests {
         unsafe { env::remove_var("CREDENTIALS_DIRECTORY") };
     }
 
+    #[test]
+    fn missing_empty_oversized_and_non_regular_credentials_are_rejected() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let directory = temp_dir();
+        unsafe { env::set_var("CREDENTIALS_DIRECTORY", &directory) };
+
+        assert!(systemd_credential_path("missing-key").is_err());
+
+        fs::write(directory.join("empty-key"), b"").unwrap();
+        assert!(systemd_credential_path("empty-key").is_err());
+
+        fs::write(
+            directory.join("oversized-key"),
+            vec![b'K'; (MAX_CREDENTIAL_BYTES + 1) as usize],
+        )
+        .unwrap();
+        assert!(systemd_credential_path("oversized-key").is_err());
+
+        fs::create_dir(directory.join("directory-key")).unwrap();
+        assert!(systemd_credential_path("directory-key").is_err());
+
+        fs::remove_dir_all(directory).unwrap();
+        unsafe { env::remove_var("CREDENTIALS_DIRECTORY") };
+    }
+
     #[cfg(unix)]
     #[test]
     fn credential_symlinks_are_rejected() {
