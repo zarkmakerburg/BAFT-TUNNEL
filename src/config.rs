@@ -122,9 +122,9 @@ impl RuntimeConfig {
     }
 
     pub fn support_report(&self) -> serde_json::Value {
-        let (mode, local_id, peer_id, tunnel_id, max_streams, ca, cert, key) = match self {
+        let (mode, local_id, peer_id, tunnel_id, peer_fingerprint, max_streams, ca, cert, key) = match self {
             Self::Serve {
-                local_id, peer_id, tunnel_id, max_streams, ca, cert, key, ..
+                local_id, peer_id, tunnel_id, peer_fingerprint, max_streams, ca, cert, key, ..
             } => ("serve", local_id, peer_id, tunnel_id, max_streams, ca, cert, key),
             Self::Forward {
                 local_id, peer_id, tunnel_id, max_streams, ca, cert, key, ..
@@ -143,7 +143,7 @@ impl RuntimeConfig {
                 "peer_identity": peer_id,
                 "tunnel_id": tunnel_id,
                 "max_streams": max_streams,
-                "peer_certificate_pin_configured": true,
+                "peer_certificate_pin_configured": !peer_fingerprint.is_empty(),
                 "ca_file_present": ca.is_file(),
                 "certificate_file_present": cert.is_file(),
                 "private_key_file_present": key.is_file()
