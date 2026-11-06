@@ -139,7 +139,11 @@ case "$mode" in
     exit 1
     ;;
 esac
-exec "$1" config validate --config "$2"
+"$1" config validate --config "$2"
+if [[ -n "${BAFT_TEST_RESTART_STATE:-}" ]] && mkdir "$BAFT_TEST_RESTART_STATE/first-run" 2>/dev/null; then
+  echo "BAFT_SYSTEMD_RESTART_TEST=INTENTIONAL_FIRST_FAILURE"
+  exit 42
+fi
 """)
 (root / "run-validation.sh").chmod(0o755)
 (root / "config.json").chmod(0o644)
@@ -161,4 +165,23 @@ sudo systemd-run --wait --pipe --collect --unit="$UNIT" \
   --property="LoadCredentialEncrypted=node-key:$TMP/node-key.cred" \
   /bin/bash "$TMP/run-validation.sh" "$RUNTIME_BIN" "$TMP/config.json"
 
-echo "BAFT_SYSTEMD_CREDENTIAL_RUNTIME=PASS (systemd $systemd_version, encrypted delivery, service-scoped read-only mode 0400/0440, runtime TLS key parse, fail-closed outside service)"
+# Force one controlled failure after successful credential delivery and TLS-key
+# parsing; systemd must restart the unit, redeliver the encrypted credential,
+# and allow the second invocation to finish successfully.
+RESTART_STATE="$TMP/restart-state"
+mkdir -m 0777 "$RESTART_STATE"
+RESTART_UNIT="baft-tunnel-cred-restart-$RANDOM-$$"
+sudo systemd-run --wait --pipe --collect --unit="$RESTART_UNIT" \
+  --property=User=nobody \
+  --property=Restart=on-failure \
+  --property=RestartSec=100ms \
+  --property=StartLimitIntervalSec=0 \
+  --setenv="BAFT_TEST_RESTART_STATE=$RESTART_STATE" \
+  --property="LoadCredentialEncrypted=node-key:$TMP/node-key.cred" \
+  /bin/bash "$TMP/run-validation.sh" "$RUNTIME_BIN" "$TMP/config.json"
+[[ -d "$RESTART_STATE/first-run" ]] || {
+  echo "systemd credential test: controlled restart did not occur" >&2
+  exit 1
+}
+
+echo "BAFT_SYSTEMD_CREDENTIAL_RUNTIME=PASS (systemd $systemd_version, encrypted delivery, service-scoped read-only mode 0400/0440, runtime TLS key parse, restart redelivery, fail-closed outside service)"
