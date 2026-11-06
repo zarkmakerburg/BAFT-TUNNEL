@@ -86,7 +86,13 @@ async fn main() -> Result<()> {
             key,
             max_streams,
         } => {
-            validate_options(&local_id, &peer_id, &tunnel_id, &peer_fingerprint, max_streams)?;
+            validate_options(
+                &local_id,
+                &peer_id,
+                &tunnel_id,
+                &peer_fingerprint,
+                max_streams,
+            )?;
             tunnel::serve(ServerOptions {
                 listen,
                 target,
@@ -114,7 +120,13 @@ async fn main() -> Result<()> {
             key,
             max_streams,
         } => {
-            validate_options(&local_id, &peer_id, &tunnel_id, &peer_fingerprint, max_streams)?;
+            validate_options(
+                &local_id,
+                &peer_id,
+                &tunnel_id,
+                &peer_fingerprint,
+                max_streams,
+            )?;
             tunnel::forward(ForwardOptions {
                 listen,
                 remote,
