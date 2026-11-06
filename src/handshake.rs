@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn fingerprint_requires_sha256_hex() {
         assert!(validate_fingerprint(&"ab".repeat(32)).is_ok());
-        assert!(validate_fingerprint(&("AB:".to_owned() + &"CD:".repeat(31) + "EF")).is_ok());
+        assert!(validate_fingerprint(&("AB:".to_owned() + &"CD:".repeat(30) + "EF")).is_ok());
         assert!(validate_fingerprint("not-a-fingerprint").is_err());
         assert!(validate_fingerprint(&"0".repeat(63)).is_err());
     }
