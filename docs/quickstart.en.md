@@ -70,3 +70,14 @@ baft-tunnel apply --config examples/forward.json --confirm
 ```
 
 The apply command starts the configured tunnel process in the foreground. It does not install a service, change firewall rules, alter routes, or modify system settings. Keep private key files readable only by the service account. The example fingerprint and endpoint are placeholders and must be replaced.
+
+
+## Redacted support bundle
+
+Create a diagnostic report that excludes private-key contents, certificate contents, certificate fingerprints, file paths and network endpoints:
+
+```bash
+baft-tunnel support-bundle --config ./config.json
+```
+
+The report includes only runtime version/platform, tunnel role and logical identities, stream limit, whether certificate files are present, and explicit NOT_RUN markers for network probes and real-host LAB. Review the logical identity and tunnel labels before sharing the report.
