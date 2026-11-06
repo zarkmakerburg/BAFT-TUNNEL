@@ -1,75 +1,145 @@
+<div align="center">
+
 # BAFT-TUNNEL
 
-BAFT-TUNNEL is an independent TCP/UDP tunnel platform for connecting Linux servers in either direction. It is a clean project: no BAFT source code, Git history, credentials, release keys, or deployment state are imported.
+### Secure server-to-server connectivity. Direct or Reverse.
 
-**Current status:** Phase 0 — architecture and lab foundation. This is not a production-ready tunnel.
+A security-first, Linux-native tunnel platform built around authenticated connections, explicit authorization, and predictable operations.
 
-## Phase gates
+<br />
 
-| Phase | Scope | Exit evidence |
-|---|---|---|
-| 0 | Architecture, threat model, repository skeleton, network lab | Reviewed ADRs, threat model, reproducible netem lab, CI |
-| 1 | Rust tunnel engine, authentication, CLI, installer | Interoperability, security and network tests |
-| 2 | Control plane, agents, desired state, signed updates | Multi-node reconciliation and rollback tests |
-| 3 | Web panel, wizard, monitoring, alerts | E2E user journeys and accessibility |
-| 4 | Profiles, failover, UDP and QUIC | Measured gains under lossy/blocked paths |
-| 5 | Hardening, independent security review, documentation, v1.0 | Release checklist and signed artifacts |
+**Private project · Rust core · TCP + TLS 1.3 · Direct / Reverse**
 
-Each phase ends at a review gate. No production deployment, release, or phase transition occurs without owner approval.
+</div>
 
-## Design principles
+---
 
-- Evidence before status: stale or missing telemetry is `unknown`, never `healthy`.
-- Plan before apply: all mutations are previewed, idempotent, recorded, and rollback-capable.
-- Least privilege: the agent runs unprivileged and receives only narrowly scoped capabilities.
-- No traffic inspection or payload logging.
-- Transport plugins have explicit conformance tests.
-- Network-lab simulation is labeled as simulation and never represented as a real two-host test.
-- Anti-probing and fingerprint-resistance claims are bounded and documented; no claim of being undetectable.
-- Mandatory [engineering guardrails](docs/ENGINEERING_GUARDRAILS.md) capture lessons from prior engineering incidents.
-- Binding [product UX and dashboard acceptance criteria](docs/PRODUCT_UX_ACCEPTANCE.md) keep ordinary workflows simple without hiding advanced capability or operational risk.
+## What is BAFT-TUNNEL?
 
-## Technology baseline
+BAFT-TUNNEL connects Linux servers across networks where inbound reachability cannot be assumed. It is designed to support two connection paths:
 
-- Core language: Rust (engine, agent, backend/API, CLI and installer). Go is not part of the core stack.
-- Async runtime: Tokio; TLS: rustls; HTTP/API: Axum.
-- Web panel: React + TypeScript + Vite.
-- Storage: SQLite WAL initially; PostgreSQL remains optional.
+- **Direct** — one endpoint establishes a connection to the other endpoint's reachable listener.
+- **Reverse** — an endpoint behind NAT or a restrictive firewall initiates an outbound connection; logical forwarding streams travel back over that authenticated connection.
 
-## Phase 0 network simulation lab
+Both modes share the same security-focused transport foundation. They are connection modes, not separate cryptographic protocols.
 
-Requirements: Docker Engine + Docker Compose plugin.
+The project is independent: no BAFT source code, Git history, credentials, release keys, or deployment state are imported.
 
-```bash
-cd lab
-docker compose build
-docker compose up -d
-sh scripts/apply-netem.sh moderate
-sh scripts/show-netem.sh
-sh scripts/clear-netem.sh
-docker compose down
-```
+## Project status
 
-The lab creates two isolated Linux endpoints and applies Linux `tc netem` impairment. It is simulation only; it does not establish an Iran-to-abroad production path.
+<sub>Updated: 6 November 2026</sub>
 
-## Six-host real-server LAB (2 Iran + 4 abroad)
+<blockquote>
+**Active development — Phase 1**
 
-A manual, read-only six-host preflight is provided. Configure the `baft-tunnel-lab` GitHub Actions Environment using [docs/REAL_HOSTS_LAB.md](docs/REAL_HOSTS_LAB.md). It inspects all six hosts and tests all eight Iran-to-abroad TCP paths. Push/PR CI runs mock-only tests and never contacts real hosts. No active install, firewall, service, or reboot operation is included in Phase 0.
+The Rust TCP transport has passed a two-host LAB integrity test in both Direct and Reverse directions, including certificate-revocation checks. The implementation is still under review and is **not production-ready**.
+</blockquote>
 
-Local mock tests:
+| Area | Current state |
+|---|---|
+| Architecture and threat model | Defined |
+| Rust TCP transport | Implemented; review and acceptance ongoing |
+| Direct + Reverse | Real two-host LAB evidence available |
+| Mutual TLS and peer identity | Implemented with negative tests |
+| Offline PKI and CRL revocation | Experimental; manual workflow |
+| Installer and systemd unit | Implemented; staged lifecycle CI passes |
+| Online enrollment / control plane | Not complete |
+| Web dashboard and guided wizard | Planned |
+| Production release | Not available |
 
-```bash
-bash lab/real-hosts/test-preflight-matrix.sh
-sh lab/scripts/test-scripts.sh
-bash lab/scripts/test-clear-netem.sh
-```
+**Current engineering work:** [Phase 1 implementation PR #3](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/3)
 
-## Phase 0 evidence
+## Security model
 
-The current Phase 0 exit-evidence package is prepared for owner review in [docs/PHASE0_EXIT_EVIDENCE.md](docs/PHASE0_EXIT_EVIDENCE.md). It distinguishes verified CI/container simulation from unrun real-host and tunnel acceptance evidence.
+Security is part of the transport design, not an optional add-on.
 
-## Security and repository status
+- TLS 1.3 mutual authentication for the current TCP data plane.
+- Explicit peer identity, tunnel identity, direction, and capability authorization.
+- No plaintext fallback or silent downgrade.
+- Revocation-aware certificate validation using CA-signed CRLs.
+- Bounded frames, sessions, streams, queues, and connection deadlines.
+- Fixed forwarding destinations; a remote peer cannot select arbitrary targets.
+- No forwarded-payload logging.
+- Least-privilege service execution and hardened systemd defaults.
 
-The canonical repository is private. No public open-source license is granted; do not redistribute, sublicense, or reuse the code without the owner's explicit written permission. Repository visibility and access are controlled by the owner.
+The current node private keys are unencrypted PEM files. Offline CA issuance and CRL distribution are manual. Encrypted key custody, online enrollment, automated revocation distribution, key/pin rotation, further adversarial testing, and independent security review remain open work. This project does not claim to be undetectable or to provide censorship-proof connectivity.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [docs/SECURITY_GUIDE.md](docs/SECURITY_GUIDE.md), [docs/REAL_HOSTS_LAB.md](docs/REAL_HOSTS_LAB.md), [docs/ENGINEERING_GUARDRAILS.md](docs/ENGINEERING_GUARDRAILS.md), and [docs/PRODUCT_UX_ACCEPTANCE.md](docs/PRODUCT_UX_ACCEPTANCE.md).
+## Technology
+
+| Layer | Technology |
+|---|---|
+| Core, agent, API, CLI | Rust |
+| Async runtime | Tokio |
+| Secure transport | rustls · TLS 1.3 |
+| Multiplexing | Yamux |
+| HTTP/API | Axum |
+| Web interface | React · TypeScript · Vite |
+| Initial persistence | SQLite WAL |
+
+QUIC is a planned optional transport, not part of the current production data plane. The isolated Noise IK prototype is research-only and is not used to carry tunnel traffic.
+
+## Verified LAB evidence
+
+The two-host test exercised the current Rust runtime on the configured Iran and abroad LAB hosts:
+
+| Test | Result |
+|---|---|
+| Direct forwarding | 2,097,289 bytes transferred; SHA-256 matched |
+| Reverse forwarding | Same byte count and SHA-256 |
+| Listener restart | Direct forwarding recovered; integrity probe passed |
+| Certificate revocation | Revoked client and server certificates rejected |
+| Cleanup | Temporary LAB processes and files cleaned up |
+
+[View the real-host LAB run](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42246759289)
+
+This is a bounded LAB result, not a production-readiness certification or a long-duration reliability claim.
+
+## Engineering principles
+
+1. **Verify before declaring healthy.** Missing or stale telemetry is unknown, never healthy.
+2. **Plan before applying.** Mutations should be previewed, authorized, recorded, and recoverable.
+3. **Authenticate, then authorize.** A valid certificate alone does not grant tunnel access.
+4. **Fail closed.** Invalid identity, policy, revocation data, or protocol framing must not silently weaken security.
+5. **Keep operations understandable.** Safe defaults and guided workflows should make routine setup approachable without hiding risk.
+6. **Prove the environment.** Simulation, mock tests, and real-host LAB results are reported separately.
+
+## Roadmap
+
+| Stage | Focus |
+|---|---|
+| Phase 0 | Architecture, threat model, repository and LAB foundation |
+| **Phase 1 — active** | Rust transport, identity, authorization, CLI, PKI, installer, security testing |
+| Phase 2 | Enrollment, control plane, agent reconciliation, signed desired state |
+| Phase 3 | Web dashboard, setup wizard, monitoring and alerts |
+| Phase 4 | Optional QUIC, path selection, failover and additional transports |
+| Phase 5 | Hardening, independent security review, operational readiness and release |
+
+A phase is complete only when its acceptance evidence is reviewed. A roadmap item is not a shipped feature.
+
+## Repository guide
+
+- [Architecture and component boundaries](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/ARCHITECTURE.md)
+- [Threat model](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/THREAT_MODEL.md)
+- [Security guide](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/SECURITY_GUIDE.md)
+- [Phase 1 implementation status and acceptance gaps](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/PHASE1_IMPLEMENTATION_STATUS.md)
+- [Operator guide](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/OPERATOR_GUIDE.md)
+- [Real-host LAB setup](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/REAL_HOSTS_LAB.md)
+- [Open Phase 1 pull request](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/3)
+- [Engineering guardrails](docs/ENGINEERING_GUARDRAILS.md)
+- [Product UX and installer acceptance](docs/PRODUCT_UX_ACCEPTANCE.md)
+- [Phase 0 two-host LAB instructions](docs/PHASE0_TWO_HOST_LAB.md)
+- [Phase 0 evidence history](docs/PHASE0_EXIT_EVIDENCE.md)
+
+## Repository access and use
+
+This is a private, owner-controlled project. No public open-source license is granted. Do not redistribute, sublicense, publish, or reuse this code without the owner's explicit written permission.
+
+---
+
+<div align="center">
+
+**BAFT-TUNNEL** · Built for secure, verifiable connectivity.
+
+<sub>Development status is documented honestly: implemented, tested, planned, and production-ready are different states.</sub>
+
+</div>
