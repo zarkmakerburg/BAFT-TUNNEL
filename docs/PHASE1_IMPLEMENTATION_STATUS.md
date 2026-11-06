@@ -2,33 +2,51 @@
 
 **Authorization:** Owner-approved 2026-11-06.
 **Branch:** `phase1/rust-tcp-transport`.
+**Exact product-code head:** `775e1c5afcf1582c01d8ca01c25874bcda552bee`.
 **Status:** In progress; not production-ready. The production transport decision is ADR-0010; ADR-0009 is superseded.
 
-## Implemented in the first transitional vertical slice
+## Implemented
 
 - Rust CLI with explicit `serve` and `forward` roles.
-- Bounded Yamux session with keepalive, an explicit 4 MiB per-stream receive window, at most 8 streams per session, and at most 8 concurrent sessions (aggregate theoretical receive-window budget: 256 MiB).
-- TCP forwarding from an explicitly bound local listener to one fixed remote destination.
-- Bounded session and stream admission; no firewall, route, sysctl or service-manager mutation.
-- Config validate/plan/explicit-confirm apply and redacted support-bundle command.
-- TLS 1.3/mTLS TCP transport implemented; the peer leaf certificate must contain exactly one BAFT-TUNNEL node URI SAN matching the enrolled logical node (urn:baft-tunnel:node:<node-id>), parsed with the vetted x509-parser crate. Missing, duplicate, conflicting, malformed, or trailing certificate data is rejected. Certificate-chain validation and SHA-256 pinning remain in force.
-- TLS 1.3 early data is explicitly disabled in both client and server configurations. The TLS integration test checks correct and incorrect node identity on both sides.
-- Initial Noise IK prototype exists in `src/noise.rs`; it is not wired into runtime and is research-only pending separate review.
-- Phase 0 two-host real-server preflight completed successfully on 2026-11-06 (GitHub Actions run [42221903167](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42221903167)). Both configured hosts accepted strict-host-key SSH inspection; both reported Ubuntu 22.04.x, x86_64, systemd, and the required baseline tools. The Iran-to-abroad TCP probes completed; all four tested ports reported reachable host/no listener.
+- Direct and Reverse use the same TCP + TLS 1.3 mutual-authentication + bounded Yamux adapter; no plaintext, legacy TLS, or silent downgrade.
+- TLS 1.3 early data is disabled on both peers.
+- Peer leaf certificates are validated against the configured CA, a SHA-256 leaf pin, and exactly one URI SAN identity (`urn:baft-tunnel:node:<node-id>`) using `x509-parser`. Missing, duplicate/conflicting, malformed, or trailing certificate data is rejected.
+- Both TLS client and server require a PEM CRL. Rustls rejects revoked certificates, denies unknown revocation status by default, and enforces CRL expiration. Missing/empty CRL files fail closed during configuration loading.
+- Session authorization binds the TLS-authenticated peer identity, expected peer, tunnel ID, connection direction, and allowed capability set. Phase 1 currently allows only `tcp-forward`; empty, duplicate, and unknown capabilities fail closed.
+- Each Yamux stream starts with a bounded, versioned authorization frame binding tunnel ID, direction, and capability before the server connects to its fixed destination.
+- Fixed unicast IP:port destination; a peer cannot choose an arbitrary target or trigger DNS resolution.
+- Bounded handshake frames, handshake/connect deadlines, session and stream admission, Yamux receive windows, and pending local-connection queues.
+- Source-side reconnect supervisor uses capped exponential backoff and jitter. In-flight TCP streams are not resumed after carrier loss.
+- Strict JSON config validation, redacted plan, explicit-confirm apply, and redacted support bundle.
+- Noise IK prototype remains isolated research code and is not wired into the production data plane.
 
-## Mandatory remaining Phase 1 work
+## Real-host LAB evidence — PASS
 
-- Retain and harden TCP + TLS 1.3 mutual authentication as the single Phase 1 data-plane security adapter.
-- Support both Direct and Reverse connection orchestration over the same authenticated TCP adapter.
-- Enforce explicit authorization of the authenticated node for each tunnel, connection direction, and stream capability; current fixed peer/tunnel checks are not yet a complete policy model.
-- Implement credential issuance/enrollment, secure storage, rotation/revocation, and safe trust/pin rollover.
-- Two-process loopback E2E coverage exercises authenticated TCP/TLS/Yamux forwarding with each side acting as the dialer; both orientations pass with a 2 MiB + 137-byte payload, validating the configured Yamux flow-control window.
-- The manual GitHub Actions workflow provisions short-lived certificates and temporary binaries under /tmp on both LAB hosts, tests Direct and Reverse forwarding, verifies payload integrity and listener interruption/recovery, then cleans up. It does not change firewall, routes, sysctl, or service-manager state. Real-host run [42236737480](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42236737480) passed on 2026-11-06.
-- Add invalid/expired/revoked/untrusted certificate rejection tests.
-- Add unauthorized tunnel/direction, replay-sensitive operation, framing, timeout, resource-limit, reconnect, drain, and session-isolation integration tests.
-- Installer, systemd unit, rollback and uninstall.
-- Dependency advisory/license review, protocol-boundary fuzzing, adversarial resource-exhaustion suites, and independent security review.
-- Extend LAB performance and resilience evidence with longer-duration runs and controlled loss/latency profiles; the current successful run covers direct/reverse forwarding, 2 MiB integrity, and listener restart/recovery on the two configured hosts.
+Latest run [42246759289](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42246759289), testing exact product-code head `775e1c5afcf1582c01d8ca01c25874bcda552bee` on the two configured LAB hosts:
+
+- Direct (Iran dials abroad): 2,097,289 bytes, SHA-256 `1bb59406b95f296d1ffac9536e3c14a5dfc67c2632ca9ae26d1c85ca8b414fa8`, 0.889 s.
+- Reverse (abroad dials Iran): same byte count and SHA-256, 0.830 s.
+- 64 KiB probes passed in both directions.
+- After restarting the abroad listener, Direct forwarding recovered and passed a further 64 KiB integrity probe in 0.334 s.
+- Revocation test 1: the server rejected the revoked Iran client certificate.
+- Revocation test 2: the Iran client rejected the revoked abroad server certificate.
+- Workflow cleanup passed. Only temporary binaries, certificates, and processes under `/tmp` were used. No firewall, route, sysctl, systemd, or persistent host configuration was changed.
+
+## Exact-head CI evidence
+
+- `phase1-rust` run [42246739532](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42246739532) passed on exact product-code head `775e1c5afcf1582c01d8ca01c25874bcda552bee`: formatting, all Rust tests, Clippy with warnings denied, and release build.
+- Phase 0 checks [42246739568](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42246739568) passed: shell validation, immutable action pins, mock SSH/SCP orchestration, Docker Compose validation, and isolated Docker/netem integration.
+- Local Mac validation on this code also passed: 24 Rust tests, Clippy, release build, shell syntax, workflow pin checks, LAB orchestration mocks, preflight mocks, and NetEm cleanup failure-path tests.
+
+## Mandatory remaining Phase 1 acceptance work
+
+- Enrollment and credential issuance workflow; secure private-key storage and least-privilege permissions.
+- Certificate/key rotation, automated CRL publication/distribution, CRL refresh coordination, and safe CA/pin rollover. CRLs are currently supplied out of band; update both peers and restart the processes to apply a new CRL.
+- Additional negative tests for expired and untrusted certificates, malformed/expired CRLs, and trust-anchor/issuer mismatch.
+- Further replay-sensitive operation, framing fuzz, session-isolation, adversarial resource-exhaustion, reconnect/drain, and concurrency testing.
+- Installer, systemd unit, rollback, upgrade, and uninstall.
+- Dependency advisory/license audit, protocol-boundary fuzzing, and independent security review.
+- Longer-duration LAB soak and controlled packet-loss/latency measurements.
 
 ## Later work (not Phase 1 acceptance blockers)
 
@@ -37,12 +55,6 @@
 - Relay topology with end-to-end encryption between tunnel endpoints.
 - Noise interoperability/security comparison; do not route production traffic through the prototype without a new accepted ADR.
 
-## Evidence and constraints
+## Release boundary
 
-- Current exact branch head: `01285d83fb6cfcc3f2c474072cf82317dfbbb887`.
-- Exact-head `phase1-rust` CI run [42236683776](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42236683776) passed: formatting, 19 Rust tests, Clippy with warnings denied, and release build.
-- Exact-head Phase 0 checks run [42236683874](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42236683874) passed, including shell checks, workflow pin checks, mock SSH/SCP orchestration tests, and isolated Docker/netem integration.
-- Two-host real-host LAB run [42236737480](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42236737480) passed. Direct (Iran dials abroad): 2,097,289 bytes, SHA-256 `1bb59406b95f296d1ffac9536e3c14a5dfc67c2632ca9ae26d1c85ca8b414fa8`, 0.869 s. Reverse (abroad dials Iran): same byte count and SHA-256, 0.749 s. The 64 KiB probes also passed in both directions. After restarting the abroad listener, Direct forwarding recovered and passed a further 64 KiB integrity probe in 1.481 s.
-- The real-host workflow used only temporary binaries, certificates, and processes under `/tmp`; the workflow cleanup step passed. No firewall, route, sysctl, systemd, or production configuration was changed.
-- Docker/netem remains simulation, not a substitute for the live Iran-to-abroad evidence above.
-- No production host mutation or deployment has been performed. PR #3 remains Draft because explicit per-tunnel/direction/stream authorization, credential lifecycle, additional negative-security tests, installer/rollback, dependency/fuzz/security review, and other acceptance gates remain open.
+This evidence is not a security certification. Phase 1 remains Draft and is not production-ready. No production host mutation, release artifact publication, or deployment has been performed. Do not merge into the release branch or publish a product release until the remaining mandatory acceptance gates are closed and independently reviewed.
