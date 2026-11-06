@@ -1,4 +1,9 @@
-use std::{fs::File, io::BufReader, net::SocketAddr, path::{Path, PathBuf}};
+use std::{
+    fs::File,
+    io::BufReader,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
