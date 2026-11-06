@@ -321,6 +321,7 @@ pub async fn forward(options: ForwardOptions) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
     #[test]
     fn destination_requires_specific_unicast_socket() {
@@ -339,5 +340,58 @@ mod tests {
         }
         assert_eq!(delay, MAX_BACKOFF);
         assert_eq!(next_backoff(delay), MAX_BACKOFF);
+    }
+
+    #[tokio::test]
+    async fn yamux_multiplexes_concurrent_streams_without_corrupting_bytes() {
+        let (client_io, server_io) = duplex(1024 * 1024);
+        let mut server_session = Session::new_server(server_io, yamux_config(8));
+        let server_task = tokio::spawn(async move {
+            while let Some(item) = server_session.next().await {
+                match item {
+                    Ok(mut stream) => {
+                        tokio::spawn(async move {
+                            let mut payload = vec![0_u8; 4096];
+                            if stream.read_exact(&mut payload).await.is_ok() {
+                                let _ = stream.write_all(&payload).await;
+                            }
+                        });
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let mut client_session = Session::new_client(client_io, yamux_config(8));
+        let control = client_session.control();
+        let client_task = tokio::spawn(async move {
+            while let Some(item) = client_session.next().await {
+                if item.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let mut tasks = Vec::new();
+        for stream_id in 0_u8..8 {
+            let mut stream_control = control.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut stream = stream_control.open_stream().await.unwrap();
+                let expected = vec![stream_id; 4096];
+                stream.write_all(&expected).await.unwrap();
+                let mut received = vec![0_u8; 4096];
+                stream.read_exact(&mut received).await.unwrap();
+                assert_eq!(received, expected);
+            }));
+        }
+
+        for task in tasks {
+            timeout(Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        server_task.abort();
+        client_task.abort();
     }
 }
