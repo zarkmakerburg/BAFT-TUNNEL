@@ -1,6 +1,6 @@
 # ADR-0013: Node private-key custody
 
-- Status: Accepted; runtime resolver integrated; transient systemd 255 encrypted-delivery CI integration PASS; dedicated-host lifecycle proof pending
+- Status: Accepted; runtime resolver integrated; transient systemd 255 encrypted-delivery and restart/redelivery CI integration PASS; dedicated-host lifecycle proof pending
 - Scope: Linux systemd deployments in Phase 1
 - Date: 2026-11-06
 
@@ -43,7 +43,7 @@ Encrypted delivery is configured per service instance through a systemd drop-in,
 - Credential identifiers cannot escape the credential directory or introduce path separators.
 - Support bundles and plans expose only the selected key-source class and credential ID, never contents or passphrases.
 - Unit-level tests cover resolution and rejection cases; Linux integration tests verify systemd credential delivery, permissions, restart behavior, and encrypted credential decryption.
-- Hosted Ubuntu 24.04/systemd 255 CI now demonstrates encrypted credential delivery through a real transient systemd unit and successful BAFT runtime TLS-key parsing. This is not persistent service lifecycle evidence. A dedicated operator-controlled Linux host must still demonstrate encrypted credential mode, permissions, restart behavior, upgrade/rollback and uninstall before the production key-custody gate can close.
+- Hosted Ubuntu 24.04/systemd 255 CI demonstrates encrypted credential delivery through a real transient systemd unit, successful BAFT runtime TLS-key parsing, and systemd restart/redelivery after a controlled first-run failure. This is not persistent service lifecycle evidence. A dedicated operator-controlled Linux host must still demonstrate encrypted credential mode, permissions, restart behavior, upgrade/rollback and uninstall before the production key-custody gate can close.
 - No plaintext fallback is permitted when encrypted mode is selected.
 
 ## Consequences
