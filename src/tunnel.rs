@@ -1,9 +1,4 @@
-use std::{
-    net::SocketAddr,
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use crate::{handshake, tls};
 use anyhow::{Context, Result, bail};
@@ -12,7 +7,10 @@ use rand::{RngCore, rngs::OsRng};
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
-    sync::{Semaphore, mpsc::{self, Receiver}},
+    sync::{
+        Semaphore,
+        mpsc::{self, Receiver},
+    },
     time::{sleep, timeout},
 };
 use tokio_rustls::client::TlsStream as ClientTlsStream;
@@ -154,9 +152,10 @@ where
                 tokio::spawn(async move {
                     let _permit = permit;
                     let result: Result<()> = async {
-                        let mut upstream = timeout(CONNECT_TIMEOUT, TcpStream::connect(destination))
-                            .await
-                            .context("destination connect timeout")??;
+                        let mut upstream =
+                            timeout(CONNECT_TIMEOUT, TcpStream::connect(destination))
+                                .await
+                                .context("destination connect timeout")??;
                         copy_bidirectional(&mut logical, &mut upstream)
                             .await
                             .context("forward TCP stream")?;
@@ -176,9 +175,7 @@ where
     }
 }
 
-async fn connect_peer(
-    options: &ForwardOptions,
-) -> Result<Session<ClientTlsStream<TcpStream>>> {
+async fn connect_peer(options: &ForwardOptions) -> Result<Session<ClientTlsStream<TcpStream>>> {
     let remote = socket(&options.remote, "--remote")?;
     let connector = tls::connector(tls::client_config(
         &options.ca,
