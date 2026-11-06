@@ -5,9 +5,7 @@ mod tunnel;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use handshake::{validate_fingerprint, validate_identity};
 use std::path::PathBuf;
-use tunnel::{ForwardOptions, ServerOptions};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -113,14 +111,7 @@ async fn main() -> Result<()> {
             key,
             max_streams,
         } => {
-            validate_options(
-                &local_id,
-                &peer_id,
-                &tunnel_id,
-                &peer_fingerprint,
-                max_streams,
-            )?;
-            tunnel::serve(ServerOptions {
+            let config = config::RuntimeConfig::Serve {
                 listen,
                 target,
                 local_id,
@@ -131,8 +122,9 @@ async fn main() -> Result<()> {
                 cert,
                 key,
                 max_streams,
-            })
-            .await
+            };
+            config.validate()?;
+            config.apply().await
         }
         Command::Forward {
             listen,
@@ -147,14 +139,7 @@ async fn main() -> Result<()> {
             key,
             max_streams,
         } => {
-            validate_options(
-                &local_id,
-                &peer_id,
-                &tunnel_id,
-                &peer_fingerprint,
-                max_streams,
-            )?;
-            tunnel::forward(ForwardOptions {
+            let config = config::RuntimeConfig::Forward {
                 listen,
                 remote,
                 server_name,
@@ -166,8 +151,9 @@ async fn main() -> Result<()> {
                 cert,
                 key,
                 max_streams,
-            })
-            .await
+            };
+            config.validate()?;
+            config.apply().await
         }
         Command::Config {
             command: ConfigCommand::Validate { config: path },
@@ -201,22 +187,3 @@ async fn main() -> Result<()> {
     }
 }
 
-fn validate_options(
-    local: &str,
-    peer: &str,
-    tunnel: &str,
-    fingerprint: &str,
-    streams: usize,
-) -> Result<()> {
-    validate_identity(local)?;
-    validate_identity(peer)?;
-    validate_identity(tunnel)?;
-    validate_fingerprint(fingerprint)?;
-    if local == peer {
-        bail!("local and peer identities must differ");
-    }
-    if !(1..=256).contains(&streams) {
-        bail!("--max-streams must be between 1 and 256");
-    }
-    Ok(())
-}
