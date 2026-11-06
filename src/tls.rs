@@ -37,10 +37,12 @@ fn roots(path: &Path) -> Result<RootCertStore> {
 }
 
 pub fn client_config(ca: &Path, cert: &Path, key: &Path) -> Result<Arc<ClientConfig>> {
-    let config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+    let mut config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_root_certificates(roots(ca)?)
         .with_client_auth_cert(certificates(cert)?, private_key(key)?)
         .context("build TLS 1.3 mutual-auth client configuration")?;
+    // Forwarded application data is never sent as TLS 1.3 0-RTT early data.
+    config.enable_early_data = false;
     Ok(Arc::new(config))
 }
 
@@ -48,10 +50,12 @@ pub fn server_config(ca: &Path, cert: &Path, key: &Path) -> Result<TlsAcceptor> 
     let verifier = WebPkiClientVerifier::builder(Arc::new(roots(ca)?))
         .build()
         .context("build client certificate verifier")?;
-    let config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+    let mut config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_client_cert_verifier(verifier)
         .with_single_cert(certificates(cert)?, private_key(key)?)
         .context("build TLS 1.3 mutual-auth server configuration")?;
+    // Keep server-side TLS 1.3 early data disabled for all tunnel traffic.
+    config.max_early_data_size = 0;
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
@@ -69,7 +73,7 @@ mod tests {
     use crate::handshake::{client_handshake, server_handshake, verify_peer_fingerprint};
     use rcgen::{
         BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
-        KeyUsagePurpose,
+        KeyUsagePurpose, SanType, string::Ia5String,
     };
     use sha2::{Digest, Sha256};
     use std::{
@@ -110,6 +114,9 @@ mod tests {
             ExtendedKeyUsagePurpose::ClientAuth,
         ];
         server_params.use_authority_key_identifier_extension = true;
+        server_params.subject_alt_names.push(SanType::URI(
+            Ia5String::try_from("urn:baft-tunnel:node:abroad").unwrap(),
+        ));
         let server_key = KeyPair::generate().unwrap();
         let server_cert = server_params.signed_by(&server_key, &issuer).unwrap();
 
@@ -123,6 +130,9 @@ mod tests {
             ExtendedKeyUsagePurpose::ServerAuth,
         ];
         client_params.use_authority_key_identifier_extension = true;
+        client_params.subject_alt_names.push(SanType::URI(
+            Ia5String::try_from("urn:baft-tunnel:node:iran").unwrap(),
+        ));
         let client_key = KeyPair::generate().unwrap();
         let client_cert = client_params.signed_by(&client_key, &issuer).unwrap();
 
@@ -140,8 +150,10 @@ mod tests {
         let server_pin = hex::encode(Sha256::digest(server_cert.der().as_ref()));
         let client_pin = hex::encode(Sha256::digest(client_cert.der().as_ref()));
         let acceptor = server_config(&ca_path, &server_cert_path, &server_key_path).unwrap();
-        let connector =
-            connector(client_config(&ca_path, &client_cert_path, &client_key_path).unwrap());
+        let client_tls_config =
+            client_config(&ca_path, &client_cert_path, &client_key_path).unwrap();
+        assert!(!client_tls_config.enable_early_data);
+        let connector = connector(client_tls_config);
 
         let (client_io, server_io) = duplex(64 * 1024);
         let server_task = tokio::spawn(async move {
@@ -150,6 +162,15 @@ mod tests {
                 .unwrap()
                 .unwrap();
             verify_peer_fingerprint(secure.get_ref().1.peer_certificates(), &client_pin).unwrap();
+            crate::handshake::verify_peer_identity(secure.get_ref().1.peer_certificates(), "iran")
+                .unwrap();
+            assert!(
+                crate::handshake::verify_peer_identity(
+                    secure.get_ref().1.peer_certificates(),
+                    "unexpected-node",
+                )
+                .is_err()
+            );
             server_handshake(&mut secure, "abroad", "iran", "test-tunnel")
                 .await
                 .unwrap();
@@ -167,6 +188,15 @@ mod tests {
             verify_peer_fingerprint(secure.get_ref().1.peer_certificates(), &"00".repeat(32),)
                 .is_err()
         );
+        assert!(
+            crate::handshake::verify_peer_identity(
+                secure.get_ref().1.peer_certificates(),
+                "unexpected-node",
+            )
+            .is_err()
+        );
+        crate::handshake::verify_peer_identity(secure.get_ref().1.peer_certificates(), "abroad")
+            .unwrap();
         client_handshake(&mut secure, "iran", "abroad", "test-tunnel")
             .await
             .unwrap();

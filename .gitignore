@@ -1,5 +1,6 @@
 # Rust / build artifacts
 /bin/
+/target/
 /dist/
 /coverage.out
 *.test
