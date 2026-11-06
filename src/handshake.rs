@@ -392,6 +392,53 @@ mod tests {
         assert!(serde_json::from_slice::<StreamOpen>(request).is_err());
     }
 
+    #[test]
+    fn stream_open_rejects_duplicate_and_unknown_fields() {
+        let duplicate =
+            br#"{"version":1,"version":1,"tunnel_id":"lab","direction":"direct","capability":"tcp-forward"}"#;
+        let unknown =
+            br#"{"version":1,"tunnel_id":"lab","direction":"direct","capability":"tcp-forward","extra":true}"#;
+        assert!(serde_json::from_slice::<StreamOpen>(duplicate).is_err());
+        assert!(serde_json::from_slice::<StreamOpen>(unknown).is_err());
+    }
+
+    #[tokio::test]
+    async fn framed_reader_rejects_zero_and_oversized_lengths_before_allocation() {
+        let (mut writer, mut reader) = duplex(16);
+        writer.write_all(&0_u16.to_be_bytes()).await.unwrap();
+        assert!(read_message::<_, StreamOpen>(&mut reader).await.is_err());
+
+        let (mut writer, mut reader) = duplex(16);
+        writer
+            .write_all(&((MAX_MESSAGE as u16) + 1).to_be_bytes())
+            .await
+            .unwrap();
+        assert!(read_message::<_, StreamOpen>(&mut reader).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn framed_reader_rejects_truncated_payload() {
+        let (mut writer, mut reader) = duplex(16);
+        writer.write_all(&5_u16.to_be_bytes()).await.unwrap();
+        writer.write_all(b"{}").await.unwrap();
+        writer.shutdown().await.unwrap();
+        assert!(read_message::<_, StreamOpen>(&mut reader).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn framed_writer_rejects_oversized_serialized_message() {
+        #[derive(serde::Serialize)]
+        struct Oversized {
+            payload: String,
+        }
+
+        let (mut writer, _reader) = duplex(16);
+        let message = Oversized {
+            payload: "x".repeat(MAX_MESSAGE + 1),
+        };
+        assert!(write_message(&mut writer, &message).await.is_err());
+    }
+
     #[tokio::test]
     async fn stream_open_rejects_wrong_tunnel_or_direction() {
         let (mut client, mut server) = duplex(4096);
