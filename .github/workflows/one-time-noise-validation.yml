@@ -34,7 +34,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
           git fetch origin "$BRANCH"
-          git rebase "origin/$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
           git add Cargo.lock
           if ! git diff --cached --quiet; then
             git commit -m "deps: lock Noise transport dependency"
