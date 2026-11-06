@@ -121,6 +121,48 @@ impl RuntimeConfig {
         }
     }
 
+    pub fn support_report(&self) -> serde_json::Value {
+        let (mode, local_id, peer_id, tunnel_id, max_streams, ca, cert, key) = match self {
+            Self::Serve {
+                local_id, peer_id, tunnel_id, max_streams, ca, cert, key, ..
+            } => ("serve", local_id, peer_id, tunnel_id, max_streams, ca, cert, key),
+            Self::Forward {
+                local_id, peer_id, tunnel_id, max_streams, ca, cert, key, ..
+            } => ("forward", local_id, peer_id, tunnel_id, max_streams, ca, cert, key),
+        };
+        serde_json::json!({
+            "application": "baft-tunnel",
+            "version": env!("CARGO_PKG_VERSION"),
+            "runtime": {
+                "os": std::env::consts::OS,
+                "architecture": std::env::consts::ARCH
+            },
+            "configuration": {
+                "mode": mode,
+                "local_identity": local_id,
+                "peer_identity": peer_id,
+                "tunnel_id": tunnel_id,
+                "max_streams": max_streams,
+                "peer_certificate_pin_configured": true,
+                "ca_file_present": ca.is_file(),
+                "certificate_file_present": cert.is_file(),
+                "private_key_file_present": key.is_file()
+            },
+            "security": {
+                "tls_version": "1.3",
+                "mutual_certificate_authentication": true,
+                "private_key_contents_included": false,
+                "certificate_contents_included": false,
+                "network_endpoints_included": false
+            },
+            "environment": {
+                "host_settings_modified": false,
+                "network_probe_performed": false,
+                "real_host_lab": "NOT_RUN"
+            }
+        })
+    }
+
     pub async fn apply(self) -> Result<()> {
         match self {
             Self::Serve {
@@ -242,6 +284,25 @@ mod tests {
             "\"mode\":\"serve\",\"unexpected\":true",
         );
         assert!(serde_json::from_str::<RuntimeConfig>(&with_unknown).is_err());
+    }
+
+    #[test]
+    fn support_report_redacts_paths_fingerprints_and_network_endpoints() {
+        let config: RuntimeConfig = serde_json::from_str(
+            r#"{
+                "mode":"serve","listen":"198.51.100.10:9443","target":"10.0.0.8:8080",
+                "local_id":"abroad","peer_id":"iran","tunnel_id":"private-tunnel",
+                "peer_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "ca":"/secret/ca.pem","cert":"/secret/node.pem","key":"/secret/private-key.pem"
+            }"#,
+        ).unwrap();
+        let report = config.support_report().to_string();
+        assert!(report.contains("private-tunnel"));
+        assert!(!report.contains("198.51.100.10"));
+        assert!(!report.contains("10.0.0.8"));
+        assert!(!report.contains("aaaaaaaaaaaaaaaa"));
+        assert!(!report.contains("/secret/"));
+        assert!(!report.contains("private-key.pem"));
     }
 
     #[test]
