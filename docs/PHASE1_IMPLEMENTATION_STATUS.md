@@ -37,8 +37,8 @@
 
 ## Evidence and constraints
 
-- CI evidence must be tied to the exact branch-head SHA.
-- The last observed CI run on branch head `66bf647a9d45e929306c1ca4845ad2bcb0a2f7a4` completed successfully for the `phase1-rust` workflow (formatting, focused Rust tests, Clippy, and release build); run [42212748324](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42212748324). This does not prove the complete acceptance gate.
+- CI evidence is tied to exact branch-head SHA `a0bac6302ec2b5719d698ac7b998b8a6c3caea55`.
+- The `phase1-rust` workflow completed successfully on this exact head in run [42222210740](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42222210740): formatting, focused Rust tests, Clippy, and release build all passed.
 - The Phase 0 real-host preflight is successful, but it is limited to host facts and TCP connection probes. It does not prove tunnel functionality, throughput, resilience, censorship resistance, or production readiness.
 - Docker/netem is simulation, not a live Iran-to-abroad tunnel path.
 - Phase 1 real-host tunnel E2E remains NOT_RUN.
