@@ -1,4 +1,4 @@
-// CLI entry point; configuration validation is side-effect-free until explicit apply.\nmod config;
+mod config;
 mod handshake;
 mod tls;
 mod tunnel;
