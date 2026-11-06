@@ -11,8 +11,8 @@
 - TCP forwarding from an explicitly bound local listener to one fixed remote destination.
 - Bounded session and stream admission; no firewall, route, sysctl or service-manager mutation.
 - Config validate/plan/explicit-confirm apply and redacted support-bundle command.
-- TLS 1.3/mTLS TCP transport implemented; the peer leaf certificate is bound to the enrolled logical node using the exact URI SAN contract urn:baft-tunnel:node:<node-id> with the vetted x509-parser crate. Certificate-chain validation and SHA-256 pinning remain in force.
-- TLS 1.3 early data is explicitly disabled in both client and server configurations.
+- TLS 1.3/mTLS TCP transport implemented; the peer leaf certificate must contain exactly one BAFT-TUNNEL node URI SAN matching the enrolled logical node (urn:baft-tunnel:node:<node-id>), parsed with the vetted x509-parser crate. Missing, duplicate, conflicting, malformed, or trailing certificate data is rejected. Certificate-chain validation and SHA-256 pinning remain in force.
+- TLS 1.3 early data is explicitly disabled in both client and server configurations. The TLS integration test checks correct and incorrect node identity on both sides.
 - Initial Noise IK prototype exists in `src/noise.rs`; it is not wired into runtime and is research-only pending separate review.
 - Phase 0 two-host real-server preflight completed successfully on 2026-11-06 (GitHub Actions run [42221903167](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42221903167)). Both configured hosts accepted strict-host-key SSH inspection; both reported Ubuntu 22.04.x, x86_64, systemd, and the required baseline tools. The Iran-to-abroad TCP probes completed; all four tested ports reported reachable host/no listener.
 

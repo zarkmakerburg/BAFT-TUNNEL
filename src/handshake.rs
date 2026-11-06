@@ -159,24 +159,25 @@ pub fn verify_peer_identity(
     let leaf = certs
         .and_then(|items| items.first())
         .context("TLS peer did not present a certificate")?;
-    let (_, certificate) = x509_parser::parse_x509_certificate(leaf.as_ref())
+    let (remaining, certificate) = x509_parser::parse_x509_certificate(leaf.as_ref())
         .map_err(|_| anyhow::anyhow!("TLS peer certificate is not valid X.509 DER"))?;
+    if !remaining.is_empty() {
+        bail!("TLS peer certificate contains trailing data after X.509 DER");
+    }
+    let san = certificate
+        .subject_alternative_name()
+        .context("parse TLS peer certificate subject alternative name")?
+        .context("TLS peer certificate has no subject alternative name")?;
     let expected_uri = format!("urn:baft-tunnel:node:{expected_peer_id}");
-    let mut matched = false;
-    for extension in certificate.extensions() {
-        if let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) =
-            extension.parsed_extension()
-        {
-            for name in &san.general_names {
-                if let x509_parser::extensions::GeneralName::URI(uri) = name {
-                    if *uri == expected_uri {
-                        matched = true;
-                    }
-                }
+    let mut node_identity = None;
+    for name in &san.value.general_names {
+        if let x509_parser::extensions::GeneralName::URI(uri) = name {
+            if uri.starts_with("urn:baft-tunnel:node:") && node_identity.replace(*uri).is_some() {
+                bail!("TLS certificate contains multiple BAFT-TUNNEL node identities");
             }
         }
     }
-    if !matched {
+    if node_identity != Some(expected_uri.as_str()) {
         bail!("TLS certificate URI SAN does not match the enrolled peer identity");
     }
     Ok(())
@@ -234,6 +235,22 @@ mod tests {
         assert!(verify_peer_identity(Some(&chain), "peer-2").is_err());
         assert!(verify_peer_identity(Some(&chain), "bad/id").is_err());
         assert!(verify_peer_identity(None, "peer-1").is_err());
+    }
+
+    #[test]
+    fn certificate_with_multiple_node_uri_sans_is_rejected() {
+        use rcgen::{CertificateParams, KeyPair, SanType, string::Ia5String};
+
+        let mut params = CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+        params.subject_alt_names.extend([
+            SanType::URI(Ia5String::try_from("urn:baft-tunnel:node:peer-1").unwrap()),
+            SanType::URI(Ia5String::try_from("urn:baft-tunnel:node:peer-2").unwrap()),
+        ]);
+        let key = KeyPair::generate().unwrap();
+        let certificate = params.self_signed(&key).unwrap();
+        let der = rustls::pki_types::CertificateDer::from(certificate.der().to_vec());
+        assert!(verify_peer_identity(Some(&[der.clone()]), "peer-1").is_err());
+        assert!(verify_peer_identity(Some(&[der]), "peer-2").is_err());
     }
 
     #[test]
