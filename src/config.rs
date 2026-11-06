@@ -10,8 +10,7 @@ use serde::Deserialize;
 
 use crate::{
     handshake::{validate_fingerprint, validate_identity},
-    tls,
-    tunnel,
+    tls, tunnel,
     tunnel::{ForwardOptions, ServerOptions},
 };
 
