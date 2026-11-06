@@ -16,7 +16,7 @@
 
 ## Not implemented yet
 
-- Automatic reconnect and session-pool management.
+- Session-pool management and automatic recovery tests; the source-side forwarder now retries with bounded exponential backoff and jitter, but established TCP streams are not resumed.
 - Identity issuance, rotation, revocation and enrollment.
 - CLI plan/apply and support-bundle commands.
 - Installer, systemd unit, rollback and uninstall.
