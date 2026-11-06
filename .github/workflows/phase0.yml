@@ -22,7 +22,7 @@ jobs:
       - name: Validate Bash scripts
         run: |
           set -eu
-          for script in lab/scripts/integration-netem.sh lab/scripts/test-clear-netem.sh lab/real-hosts/*.sh; do
+          for script in lab/scripts/integration-netem.sh lab/scripts/test-clear-netem.sh lab/real-hosts/*.sh scripts/pki/*.sh; do
             bash -n "$script"
           done
       - name: Enforce immutable workflow action pins
@@ -37,6 +37,8 @@ jobs:
         run: bash lab/real-hosts/test-preflight-matrix.sh
       - name: Test Phase 1 two-host E2E orchestration (mock SSH/SCP only)
         run: bash lab/real-hosts/test-phase1-two-host-e2e.sh
+      - name: Test offline PKI lifecycle (temporary CA only)
+        run: bash scripts/pki/test.sh
       - name: Validate Docker Compose
         run: docker compose -f lab/compose.yaml config --quiet
       - name: Run isolated Docker netem integration

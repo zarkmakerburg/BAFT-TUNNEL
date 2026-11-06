@@ -5,7 +5,7 @@
 ## Requirements
 
 - Linux or macOS with Rust 1.85 or newer.
-- A private CA and two leaf certificates signed by it.
+- A private CA and two leaf certificates signed by it. See the [offline PKI bootstrap](OPERATOR_GUIDE.md) for the experimental issuance workflow.
 - Both leaf certificates must be valid for TLS client and server authentication. The server certificate must contain the DNS/IP subject alternative name used by `--server-name`.
 - Provide a current CA-signed certificate revocation list (CRL) on both peers; a missing, expired, or unusable CRL fails closed. CRL updates are not hot-reloaded: distribute the updated CRL and restart both endpoint processes.
 - Exchange SHA-256 leaf-certificate fingerprints out of band.

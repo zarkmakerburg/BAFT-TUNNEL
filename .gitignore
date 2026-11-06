@@ -15,3 +15,13 @@
 .DS_Store
 .idea/
 .vscode/
+
+# Generated private PKI material
+*.csr
+*.crt
+*.crl
+**/newcerts/
+**/index.txt*
+**/serial
+**/crlnumber
+/offline-ca/
