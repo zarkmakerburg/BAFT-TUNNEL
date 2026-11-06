@@ -14,7 +14,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 use tokio_rustls::client::TlsStream as ClientTlsStream;
-use tokio_yamux::{Config as YamuxConfig, Control, Session};
+use tokio_yamux::{Config as YamuxConfig, Session};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
