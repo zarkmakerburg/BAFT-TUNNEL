@@ -1,10 +1,10 @@
-name: Real-host LAB (manual, read-only preflight)
+name: Two-host LAB (manual, read-only preflight)
 
 on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: Type READ_ONLY_PREFLIGHT to connect to the six configured LAB hosts
+        description: Type READ_ONLY_PREFLIGHT to connect to the Iran and abroad LAB hosts
         required: true
         type: string
         default: ''
@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: baft-tunnel-real-host-lab
+  group: baft-tunnel-two-host-lab
   cancel-in-progress: false
 
 jobs:
@@ -30,20 +30,18 @@ jobs:
             exit 2
           fi
 
-  real-host-preflight:
+  two-host-preflight:
     needs: validate-confirmation
     runs-on: ubuntu-24.04
     environment: baft-tunnel-lab
     timeout-minutes: 15
     env:
-      IR_1_HOST: ${{ vars.IR_1_HOST }}
-      IR_2_HOST: ${{ vars.IR_2_HOST }}
-      EX_1_HOST: ${{ vars.EX_1_HOST }}
-      EX_2_HOST: ${{ vars.EX_2_HOST }}
-      EX_3_HOST: ${{ vars.EX_3_HOST }}
-      EX_4_HOST: ${{ vars.EX_4_HOST }}
-      SSH_USER: ${{ vars.LAB_SSH_USER }}
-      SSH_PORT: ${{ vars.LAB_SSH_PORT }}
+      LAB_IRAN_HOST: ${{ vars.LAB_IRAN_HOST }}
+      LAB_ABROAD_HOST: ${{ vars.LAB_ABROAD_HOST }}
+      LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+      LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+      LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+      LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
       LAB_TEST_PORTS: ${{ vars.LAB_TEST_PORTS }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
@@ -58,18 +56,18 @@ jobs:
           set -Eeuo pipefail
           umask 077
           test -n "$SSH_PRIVATE_KEY" || { echo 'Missing secret LAB_SSH_PRIVATE_KEY' >&2; exit 2; }
-          test -n "$SSH_KNOWN_HOSTS" || { echo 'Missing secret LAB_SSH_KNOWN_HOSTS' >&2; exit 2; }
-          for host in "$IR_1_HOST" "$IR_2_HOST" "$EX_1_HOST" "$EX_2_HOST" "$EX_3_HOST" "$EX_4_HOST"; do
-            test -n "$host" || { echo 'Missing one or more host variables in baft-tunnel-lab environment' >&2; exit 2; }
-            echo "::add-mask::$host"
-          done
+          test -n "$SSH_KNOWN_HOSTS" || { echo 'Missing secret LAB_SSH_KNOWN_HOSTS (verified host keys for both servers)' >&2; exit 2; }
+          test -n "$LAB_IRAN_HOST" || { echo 'Missing environment variable LAB_IRAN_HOST' >&2; exit 2; }
+          test -n "$LAB_ABROAD_HOST" || { echo 'Missing environment variable LAB_ABROAD_HOST' >&2; exit 2; }
+          echo "::add-mask::$LAB_IRAN_HOST"
+          echo "::add-mask::$LAB_ABROAD_HOST"
           mkdir -p "$RUNNER_TEMP/baft-tunnel-ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519"
           printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
           echo "SSH_KEY_FILE=$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" >> "$GITHUB_ENV"
           echo "SSH_KNOWN_HOSTS_FILE=$RUNNER_TEMP/baft-tunnel-ssh/known_hosts" >> "$GITHUB_ENV"
-      - name: Run read-only six-host matrix preflight
+      - name: Run read-only two-host preflight
         run: bash lab/real-hosts/preflight-matrix.sh
       - name: Remove ephemeral credentials
         if: always()
