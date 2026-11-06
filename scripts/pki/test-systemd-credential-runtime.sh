@@ -114,8 +114,26 @@ set -Eeuo pipefail
 credential_dir="${CREDENTIALS_DIRECTORY:?systemd did not set CREDENTIALS_DIRECTORY}"
 credential="$credential_dir/node-key"
 [[ -f "$credential" && -r "$credential" ]]
-mode="$(stat -c '%a' "$credential")"
-[[ "$mode" == "400" ]] || { echo "credential mode is $mode, expected 400" >&2; exit 1; }
+read -r mode owner group < <(stat -c '%a %u %g' "$credential")
+service_uid="$(id -u)"
+service_gid="$(id -g)"
+[[ "$owner" == "$service_uid" ]] || {
+  echo "credential owner is uid $owner, expected service uid $service_uid" >&2
+  exit 1
+}
+case "$mode" in
+  400) ;;
+  440)
+    [[ "$group" == "$service_gid" ]] || {
+      echo "credential group is gid $group, expected service gid $service_gid" >&2
+      exit 1
+    }
+    ;;
+  *)
+    echo "credential mode is $mode, expected 400 or service-group-scoped 440" >&2
+    exit 1
+    ;;
+esac
 exec "$1" config validate --config "$2"
 """)
 (root / "run-validation.sh").chmod(0o755)
@@ -138,4 +156,4 @@ sudo systemd-run --wait --pipe --collect --unit="$UNIT" \
   --property="LoadCredentialEncrypted=node-key:$TMP/node-key.cred" \
   /bin/bash "$TMP/run-validation.sh" "$BIN" "$TMP/config.json"
 
-echo "BAFT_SYSTEMD_CREDENTIAL_RUNTIME=PASS (systemd $systemd_version, encrypted delivery, service-scoped mode 0400, runtime TLS key parse, fail-closed outside service)"
+echo "BAFT_SYSTEMD_CREDENTIAL_RUNTIME=PASS (systemd $systemd_version, encrypted delivery, service-scoped read-only mode 0400/0440, runtime TLS key parse, fail-closed outside service)"
