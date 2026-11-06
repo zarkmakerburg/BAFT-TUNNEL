@@ -6,7 +6,7 @@
 
 ## Decision
 
-Use **`tokio-yamux = 0.3.20`** behind the transport boundary. Docs.rs identifies it as a Rust implementation of HashiCorp Yamux; the 0.3.20 release is listed as published 2026-08-17. The published crate manifest for the 0.3.19 line declares MIT licensing, Rust 1.85, Tokio 1.x and tokio-util codec integration; the resolved 0.3.20 package metadata and checksum must be captured in Cargo.lock before merge. Its API exposes bounded stream count, accept backlog, stream window, keepalive and write timeout.
+Use **`tokio-yamux = 0.3.20`** behind the transport boundary. Docs.rs identifies it as a Rust implementation of HashiCorp Yamux; the 0.3.20 release is listed as published 2026-08-17. The published [0.3.20 crate manifest](https://docs.rs/crate/tokio-yamux/0.3.20/source/Cargo.toml) declares MIT licensing, Rust 1.85, Tokio 1.x and tokio-util codec integration. The resolved 0.3.20 version, checksum and full dependency graph are now recorded in the committed Cargo.lock. Its API exposes bounded stream count, accept backlog, stream window, keepalive and write timeout.
 
 ## Alternatives
 
@@ -26,7 +26,7 @@ Use **`tokio-yamux = 0.3.20`** behind the transport boundary. Docs.rs identifies
 
 ## Required verification before merge
 
-1. Commit Cargo.lock with exact versions and checksums; review the full dependency graph and license metadata.
+1. Review the committed Cargo.lock exact versions/checksums, full dependency graph and license metadata before merge.
 2. Run formatting, tests, Clippy and release build on the exact commit.
 3. Add loopback tests for bidirectional byte integrity, concurrent stream isolation, stream-cap enforcement, reset and session shutdown.
 4. Review malformed-frame and resource-exhaustion behavior. Upstream tests do not replace BAFT-TUNNEL integration tests.
