@@ -271,8 +271,99 @@ mod tests {
             KeyUsagePurpose::CrlSign,
         ];
         let rogue_ca_key = KeyPair::generate().unwrap();
-        let _rogue_ca_cert = rogue_ca_params.self_signed(&rogue_ca_key).unwrap();
+        let rogue_ca_key_pem = rogue_ca_key.serialize_pem();
+        let rogue_ca_cert = rogue_ca_params.self_signed(&rogue_ca_key).unwrap();
         let rogue_issuer = Issuer::new(rogue_ca_params, rogue_ca_key);
+
+        let rogue_pki_dir = directory.join("rogue-pki");
+        let rogue_new_certs = rogue_pki_dir.join("newcerts");
+        fs::create_dir_all(&rogue_new_certs).unwrap();
+        let rogue_ca_path = rogue_pki_dir.join("ca.pem");
+        let rogue_ca_key_path = rogue_pki_dir.join("ca.key");
+        let rogue_crl_path = rogue_pki_dir.join("ca.crl");
+        fs::write(&rogue_ca_path, rogue_ca_cert.pem()).unwrap();
+        fs::write(&rogue_ca_key_path, rogue_ca_key_pem).unwrap();
+        fs::write(rogue_pki_dir.join("index.txt"), "").unwrap();
+        fs::write(rogue_pki_dir.join("serial"), "1000\n").unwrap();
+        fs::write(rogue_pki_dir.join("crlnumber"), "1000\n").unwrap();
+        let rogue_openssl_config = format!(
+            "[ ca ]\ndefault_ca = CA_default\n[ CA_default ]\ndatabase = {}\nnew_certs_dir = {}\ncertificate = {}\nprivate_key = {}\nserial = {}\ncrlnumber = {}\ndefault_md = sha256\ndefault_crl_days = 2\npolicy = policy_any\n[ policy_any ]\ncommonName = supplied\n",
+            rogue_pki_dir.join("index.txt").display(),
+            rogue_new_certs.display(),
+            rogue_ca_path.display(),
+            rogue_ca_key_path.display(),
+            rogue_pki_dir.join("serial").display(),
+            rogue_pki_dir.join("crlnumber").display()
+        );
+        fs::write(rogue_pki_dir.join("openssl.cnf"), rogue_openssl_config).unwrap();
+        let rogue_crl_status = std::process::Command::new("openssl")
+            .args(["ca", "-gencrl", "-batch", "-config"])
+            .arg(rogue_pki_dir.join("openssl.cnf"))
+            .arg("-out")
+            .arg(&rogue_crl_path)
+            .status()
+            .expect("openssl is required for CRL issuer-mismatch tests");
+        assert!(
+            rogue_crl_status.success(),
+            "openssl failed to generate rogue CRL"
+        );
+
+        // A parseable CRL from the wrong issuer must not turn unknown status into trust.
+        let wrong_crl_acceptor = server_config(
+            &ca_path,
+            &rogue_crl_path,
+            &server_cert_path,
+            &server_key_path,
+        )
+        .unwrap();
+        let valid_crl_connector = connector(
+            client_config(&ca_path, &crl_path, &client_cert_path, &client_key_path).unwrap(),
+        );
+        let (wrong_crl_client_io, wrong_crl_server_io) = duplex(64 * 1024);
+        let wrong_crl_server_task =
+            tokio::spawn(async move { wrong_crl_acceptor.accept(wrong_crl_server_io).await });
+        let wrong_crl_client_result = timeout(
+            StdDuration::from_secs(5),
+            valid_crl_connector.connect(server_name("localhost").unwrap(), wrong_crl_client_io),
+        )
+        .await;
+        let wrong_crl_server_result = timeout(StdDuration::from_secs(5), wrong_crl_server_task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            wrong_crl_client_result.is_err() || wrong_crl_server_result.is_err(),
+            "a CRL signed by the wrong issuer must fail closed on the server"
+        );
+
+        let valid_crl_acceptor =
+            server_config(&ca_path, &crl_path, &server_cert_path, &server_key_path).unwrap();
+        let wrong_crl_connector = connector(
+            client_config(
+                &ca_path,
+                &rogue_crl_path,
+                &client_cert_path,
+                &client_key_path,
+            )
+            .unwrap(),
+        );
+        let (wrong_crl_server_client_io, wrong_crl_server_io) = duplex(64 * 1024);
+        let wrong_crl_client_server_task =
+            tokio::spawn(async move { valid_crl_acceptor.accept(wrong_crl_server_io).await });
+        let wrong_crl_server_client_result = timeout(
+            StdDuration::from_secs(5),
+            wrong_crl_connector.connect(
+                server_name("localhost").unwrap(),
+                wrong_crl_server_client_io,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(
+            wrong_crl_server_client_result.is_err(),
+            "a CRL signed by the wrong issuer must fail closed on the client"
+        );
+        let _ = timeout(StdDuration::from_secs(5), wrong_crl_client_server_task).await;
 
         let mut rogue_client_params =
             CertificateParams::new(vec!["baft-rogue-client".to_owned()]).unwrap();
