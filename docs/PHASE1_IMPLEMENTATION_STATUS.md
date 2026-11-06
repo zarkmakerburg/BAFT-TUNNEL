@@ -23,6 +23,7 @@
 - Enforce explicit authorization of the authenticated node for each tunnel, connection direction, and stream capability; current fixed peer/tunnel checks are not yet a complete policy model.
 - Implement credential issuance/enrollment, secure storage, rotation/revocation, and safe trust/pin rollover.
 - Two-process loopback E2E coverage now exercises authenticated TCP/TLS/Yamux forwarding with each side acting as the dialer; both orientations pass. This is local loopback evidence, not the required two-host Iran/abroad LAB.
+- A manual GitHub Actions workflow now provisions short-lived certificates and temporary binaries under /tmp on the two LAB hosts, tests Direct and Reverse forwarding, and verifies listener interruption/recovery. It changes no firewall, route, sysctl, or service-manager state; the real-host run remains pending.
 - Add invalid/expired/revoked/untrusted certificate rejection tests.
 - Add unauthorized tunnel/direction, replay-sensitive operation, framing, timeout, resource-limit, reconnect, drain, and session-isolation integration tests.
 - Installer, systemd unit, rollback and uninstall.
