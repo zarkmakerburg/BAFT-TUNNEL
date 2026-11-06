@@ -9,8 +9,8 @@ use rustls::{
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
-    let file = File::open(path)
-        .with_context(|| format!("open certificate file {}", path.display()))?;
+    let file =
+        File::open(path).with_context(|| format!("open certificate file {}", path.display()))?;
     let items = rustls_pemfile::certs(&mut BufReader::new(file))
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("parse PEM certificates")?;
