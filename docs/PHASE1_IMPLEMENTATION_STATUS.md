@@ -7,7 +7,7 @@
 ## Implemented in the first transitional vertical slice
 
 - Rust CLI with explicit `serve` and `forward` roles.
-- Bounded Yamux session with explicit stream/backlog/window limits and keepalive.
+- Bounded Yamux session with keepalive, an explicit 4 MiB per-stream receive window, at most 8 streams per session, and at most 8 concurrent sessions (aggregate theoretical receive-window budget: 256 MiB).
 - TCP forwarding from an explicitly bound local listener to one fixed remote destination.
 - Bounded session and stream admission; no firewall, route, sysctl or service-manager mutation.
 - Config validate/plan/explicit-confirm apply and redacted support-bundle command.
@@ -22,13 +22,13 @@
 - Support both Direct and Reverse connection orchestration over the same authenticated TCP adapter.
 - Enforce explicit authorization of the authenticated node for each tunnel, connection direction, and stream capability; current fixed peer/tunnel checks are not yet a complete policy model.
 - Implement credential issuance/enrollment, secure storage, rotation/revocation, and safe trust/pin rollover.
-- Two-process loopback E2E coverage now exercises authenticated TCP/TLS/Yamux forwarding with each side acting as the dialer; both orientations pass. This is local loopback evidence, not the required two-host Iran/abroad LAB.
-- A manual GitHub Actions workflow now provisions short-lived certificates and temporary binaries under /tmp on the two LAB hosts, tests Direct and Reverse forwarding, and verifies listener interruption/recovery. It changes no firewall, route, sysctl, or service-manager state; the real-host run remains pending.
+- Two-process loopback E2E coverage exercises authenticated TCP/TLS/Yamux forwarding with each side acting as the dialer; both orientations pass with a 2 MiB + 137-byte payload, validating the configured Yamux flow-control window.
+- The manual GitHub Actions workflow provisions short-lived certificates and temporary binaries under /tmp on both LAB hosts, tests Direct and Reverse forwarding, verifies payload integrity and listener interruption/recovery, then cleans up. It does not change firewall, routes, sysctl, or service-manager state. Real-host run [42236737480](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42236737480) passed on 2026-11-06.
 - Add invalid/expired/revoked/untrusted certificate rejection tests.
 - Add unauthorized tunnel/direction, replay-sensitive operation, framing, timeout, resource-limit, reconnect, drain, and session-isolation integration tests.
 - Installer, systemd unit, rollback and uninstall.
 - Dependency advisory/license review, protocol-boundary fuzzing, adversarial resource-exhaustion suites, and independent security review.
-- Two-host Phase 1 real-server LAB: validate actual Direct/Reverse tunnel establishment, authenticated forwarding, interruption/recovery, and measured performance. Phase 0 host inspection and TCP reachability are not Phase 1 tunnel E2E evidence.
+- Extend LAB performance and resilience evidence with longer-duration runs and controlled loss/latency profiles; the current successful run covers direct/reverse forwarding, 2 MiB integrity, and listener restart/recovery on the two configured hosts.
 
 ## Later work (not Phase 1 acceptance blockers)
 
@@ -39,9 +39,10 @@
 
 ## Evidence and constraints
 
-- CI evidence is tied to exact branch-head SHA `99456e16cb2ceb9a1da11a9761a2a635e06d2e25`.
-- The `phase1-rust` workflow completed successfully on this exact head in run [42228819817](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42228819817): formatting, all-target Rust tests, Clippy, and release build all passed.
-- The Phase 0 real-host preflight is successful, but it is limited to host facts and TCP connection probes. It does not prove tunnel functionality, throughput, resilience, censorship resistance, or production readiness.
-- Docker/netem is simulation, not a live Iran-to-abroad tunnel path.
-- Phase 1 real-host tunnel E2E remains NOT_RUN.
-- No production host mutation or deployment has been performed. Merge, release, and deployment remain gated on the complete Phase 1 acceptance criteria and real-host LAB evidence.
+- Current exact branch head: `01285d83fb6cfcc3f2c474072cf82317dfbbb887`.
+- Exact-head `phase1-rust` CI run [42236683776](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42236683776) passed: formatting, 19 Rust tests, Clippy with warnings denied, and release build.
+- Exact-head Phase 0 checks run [42236683874](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42236683874) passed, including shell checks, workflow pin checks, mock SSH/SCP orchestration tests, and isolated Docker/netem integration.
+- Two-host real-host LAB run [42236737480](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42236737480) passed. Direct (Iran dials abroad): 2,097,289 bytes, SHA-256 `1bb59406b95f296d1ffac9536e3c14a5dfc67c2632ca9ae26d1c85ca8b414fa8`, 0.869 s. Reverse (abroad dials Iran): same byte count and SHA-256, 0.749 s. The 64 KiB probes also passed in both directions. After restarting the abroad listener, Direct forwarding recovered and passed a further 64 KiB integrity probe in 1.481 s.
+- The real-host workflow used only temporary binaries, certificates, and processes under `/tmp`; the workflow cleanup step passed. No firewall, route, sysctl, systemd, or production configuration was changed.
+- Docker/netem remains simulation, not a substitute for the live Iran-to-abroad evidence above.
+- No production host mutation or deployment has been performed. PR #3 remains Draft because explicit per-tunnel/direction/stream authorization, credential lifecycle, additional negative-security tests, installer/rollback, dependency/fuzz/security review, and other acceptance gates remain open.
