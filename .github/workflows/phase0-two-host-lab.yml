@@ -1,0 +1,74 @@
+name: Phase 0 two-host LAB (manual, read-only preflight)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type READ_ONLY_PREFLIGHT to connect to the Iran and abroad LAB hosts
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-phase0-two-host-lab
+  cancel-in-progress: false
+
+jobs:
+  validate-confirmation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require explicit read-only preflight confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [[ "$CONFIRM" != "READ_ONLY_PREFLIGHT" ]]; then
+            echo "Invalid confirmation. No LAB hosts were contacted; enter exactly READ_ONLY_PREFLIGHT." >&2
+            exit 2
+          fi
+
+  two-host-preflight:
+    needs: validate-confirmation
+    runs-on: ubuntu-24.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 15
+    env:
+      LAB_IRAN_HOST: ${{ vars.LAB_IRAN_HOST }}
+      LAB_ABROAD_HOST: ${{ vars.LAB_ABROAD_HOST }}
+      LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+      LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+      LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+      LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+      LAB_TEST_PORTS: ${{ vars.LAB_TEST_PORTS }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare ephemeral SSH credentials
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -n "$SSH_PRIVATE_KEY" || { echo 'Missing secret LAB_SSH_PRIVATE_KEY' >&2; exit 2; }
+          test -n "$SSH_KNOWN_HOSTS" || { echo 'Missing secret LAB_SSH_KNOWN_HOSTS (verified host keys for both servers)' >&2; exit 2; }
+          test -n "$LAB_IRAN_HOST" || { echo 'Missing environment variable LAB_IRAN_HOST' >&2; exit 2; }
+          test -n "$LAB_ABROAD_HOST" || { echo 'Missing environment variable LAB_ABROAD_HOST' >&2; exit 2; }
+          echo "::add-mask::$LAB_IRAN_HOST"
+          echo "::add-mask::$LAB_ABROAD_HOST"
+          mkdir -p "$RUNNER_TEMP/baft-tunnel-ssh"
+          printf '%s\\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519"
+          printf '%s\\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
+          echo "SSH_KEY_FILE=$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" >> "$GITHUB_ENV"
+          echo "SSH_KNOWN_HOSTS_FILE=$RUNNER_TEMP/baft-tunnel-ssh/known_hosts" >> "$GITHUB_ENV"
+      - name: Run read-only two-host preflight
+        run: bash lab/real-hosts/preflight-two-hosts.sh
+      - name: Remove ephemeral credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/baft-tunnel-ssh"
