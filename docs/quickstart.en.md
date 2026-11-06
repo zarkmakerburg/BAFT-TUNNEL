@@ -45,3 +45,28 @@ Connections to `127.0.0.1:18080` are forwarded to the server's fixed configured 
 - Per-session Yamux streams and process-wide forwarded streams are bounded.
 - The source-side forwarder retries carrier establishment with bounded exponential backoff and jitter. A carrier loss still terminates in-flight TCP streams; they are not transparently resumed. New local connections can wait in a bounded queue during reconnect.
 - No installer or firewall automation exists. These commands do not change host settings.
+
+
+## JSON configuration workflow
+
+A sample forwarder configuration is available at `examples/forward.json`. Paths are resolved relative to the process working directory.
+
+Validate the JSON, identities, socket addresses, TLS certificate chain and private key without opening listeners:
+
+```bash
+baft-tunnel config validate --config examples/forward.json
+```
+
+Preview the effective plan (private key contents and certificate contents are never printed):
+
+```bash
+baft-tunnel config plan --config examples/forward.json
+```
+
+Start only after reviewing the plan. Applying a config requires the explicit confirmation flag:
+
+```bash
+baft-tunnel apply --config examples/forward.json --confirm
+```
+
+The apply command starts the configured tunnel process in the foreground. It does not install a service, change firewall rules, alter routes, or modify system settings. Keep private key files readable only by the service account. The example fingerprint and endpoint are placeholders and must be replaced.
