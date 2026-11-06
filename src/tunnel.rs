@@ -60,8 +60,17 @@ fn socket(value: &str, name: &str) -> Result<SocketAddr> {
         .with_context(|| format!("{name} must be an IP:port socket address"))
 }
 
+fn destination(value: &str) -> Result<SocketAddr> {
+    let address = socket(value, "--target")?;
+    if address.port() == 0 || address.ip().is_unspecified() || address.ip().is_multicast() {
+        anyhow::bail!("--target must be a specific unicast IP address with a non-zero port");
+    }
+    Ok(address)
+}
+
 pub async fn serve(options: ServerOptions) -> Result<()> {
     let listen = socket(&options.listen, "--listen")?;
+    let target = destination(&options.target)?;
     let acceptor = tls::server_config(&options.ca, &options.cert, &options.key)?;
     let listener = TcpListener::bind(listen)
         .await
@@ -86,7 +95,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
             options.peer_id.clone(),
             options.tunnel_id.clone(),
             options.peer_fingerprint.clone(),
-            options.target.clone(),
+            target,
             options.max_streams,
             streams.clone(),
         );
@@ -114,7 +123,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
     }
 }
 
-async fn server_session<S>(stream: S, target: String, max: usize, slots: Arc<Semaphore>)
+async fn server_session<S>(stream: S, target: SocketAddr, max: usize, slots: Arc<Semaphore>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -129,12 +138,12 @@ where
                         continue;
                     }
                 };
-                let destination = target.clone();
+                let destination = target;
                 tokio::spawn(async move {
                     let _permit = permit;
                     let result: Result<()> = async {
                         let mut upstream =
-                            timeout(CONNECT_TIMEOUT, TcpStream::connect(&destination))
+                            timeout(CONNECT_TIMEOUT, TcpStream::connect(destination))
                                 .await
                                 .context("destination connect timeout")?
                                 .with_context(|| {
@@ -237,5 +246,19 @@ pub async fn forward(options: ForwardOptions) -> Result<()> {
                 eprintln!("local connection closed: {error:#}");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn destination_requires_specific_unicast_socket() {
+        assert!(destination("127.0.0.1:8080").is_ok());
+        assert!(destination("0.0.0.0:8080").is_err());
+        assert!(destination("224.0.0.1:8080").is_err());
+        assert!(destination("127.0.0.1:0").is_err());
+        assert!(destination("example.invalid:8080").is_err());
     }
 }
