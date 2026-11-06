@@ -359,6 +359,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn client_handshake_rejects_each_server_hello_binding_mismatch() {
+        // A TLS-authenticated peer must still prove that its protocol response
+        // belongs to this exact client hello, tunnel, direction and capability set.
+        for mutation in 0..8 {
+            let (mut client, mut server) = duplex(4096);
+            let server_task = tokio::spawn(async move {
+                let request: ClientHello = read_message(&mut server).await.unwrap();
+                let mut response = ServerHello {
+                    version: VERSION,
+                    server_id: "abroad".into(),
+                    client_id: "iran".into(),
+                    tunnel_id: "tunnel-a".into(),
+                    direction: ConnectionDirection::Direct,
+                    capabilities: PHASE1_CAPABILITIES.to_vec(),
+                    client_nonce: request.nonce.clone(),
+                    server_nonce: nonce(),
+                };
+                match mutation {
+                    0 => response.version = VERSION + 1,
+                    1 => response.server_id = "unexpected-server".into(),
+                    2 => response.client_id = "unexpected-client".into(),
+                    3 => response.tunnel_id = "unexpected-tunnel".into(),
+                    4 => response.direction = ConnectionDirection::Reverse,
+                    5 => response.capabilities.clear(),
+                    6 => response.client_nonce = nonce(),
+                    7 => response.server_nonce = request.nonce,
+                    _ => unreachable!(),
+                }
+                write_message(&mut server, &response).await.unwrap();
+            });
+
+            assert!(
+                client_handshake(
+                    &mut client,
+                    "iran",
+                    "abroad",
+                    "tunnel-a",
+                    ConnectionDirection::Direct,
+                )
+                .await
+                .is_err(),
+                "client accepted server hello mutation {mutation}"
+            );
+            server_task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn handshake_rejects_wrong_connection_direction() {
         let (mut client, mut server) = duplex(4096);
         let server_task = tokio::spawn(async move {
