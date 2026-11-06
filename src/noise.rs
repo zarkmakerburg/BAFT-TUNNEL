@@ -34,7 +34,7 @@ impl AsyncRead for NoiseIo {
         cx: &mut Context<'_>,
         buffer: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        self.get_mut().inner.poll_read(cx, buffer)
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buffer)
     }
 }
 
@@ -44,15 +44,15 @@ impl AsyncWrite for NoiseIo {
         cx: &mut Context<'_>,
         bytes: &[u8],
     ) -> Poll<io::Result<usize>> {
-        self.get_mut().inner.poll_write(cx, bytes)
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, bytes)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.get_mut().inner.poll_flush(cx)
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.get_mut().inner.poll_shutdown(cx)
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
     }
 }
 
