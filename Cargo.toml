@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 description = "Authenticated TCP forwarding for BAFT-TUNNEL"
 license = "LicenseRef-Proprietary"
+publish = false
 
 [dependencies]
 anyhow = "1.0"
