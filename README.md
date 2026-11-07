@@ -32,7 +32,7 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 <blockquote>
 **Active development — Phase 1**
 
-The Rust TCP transport has passed a two-host LAB integrity test in both Direct and Reverse directions, including certificate-revocation checks. The implementation is still under review and is **not production-ready**.
+The Rust TCP transport has passed a two-host LAB integrity test in both Direct and Reverse directions, including certificate-revocation checks. Exact-head Phase 0 and Phase 1 push/PR CI all pass on `d901d11`. The implementation remains under review and is **not production-ready**; enrollment/control-plane, automated CRL lifecycle, independent security review, persistent operator-host proof, and longer soak remain open.
 </blockquote>
 
 | Area | Current state |
