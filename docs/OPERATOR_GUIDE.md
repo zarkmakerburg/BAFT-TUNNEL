@@ -64,3 +64,18 @@ Before production use, this guide still needs tunnel plans, apply receipts, key 
 The `serve` and `forward` runtime handles SIGTERM (systemd stop) and Ctrl-C. It stops accepting new peer/local connections, signals the active Yamux session to close with GOAWAY, and waits for session cleanup up to the configured 20-second shutdown deadline. If the deadline expires, remaining session tasks are aborted so systemd is not left waiting indefinitely. Active forwarded TCP streams are closed with their Yamux session; they are not migrated or transparently resumed. Clients may reconnect and establish new streams after the service starts again.
 
 For systemd, use `systemctl stop baft-tunnel@INSTANCE`; the unit's `TimeoutStopSec=20s` bounds the same shutdown window. Do not use SIGKILL for routine stops.
+
+## Guarded offline CRL update (ADR-0015)
+
+CRLs are still issued only on the offline CA. Transfer only the signed `ca.crl` to both nodes through the approved operator channel. Do not copy the CA key, CA database, or passphrase.
+
+1. On each node, validate the candidate without changing files or services:
+   `bash scripts/pki/apply-crl.sh check /etc/baft-tunnel/pki/ca.crt /etc/baft-tunnel/pki/ca.crl ./candidate/ca.crl`
+2. Confirm both nodes report the same candidate CRL number and SHA-256 fingerprint. The check rejects malformed PEM/trailing data, invalid signature or issuer, missing CRL Number, equal/lower CRL Number, and expired/not-yet-valid candidates.
+3. As root, activate one already-running instance at a time:
+   `bash scripts/pki/apply-crl.sh apply /etc/baft-tunnel/pki/ca.crt /etc/baft-tunnel/pki/ca.crl ./candidate/ca.crl iran`
+   The helper stages beside the live CRL, atomically replaces it, restarts the selected instance, and checks that it is active. It refuses to start or enable a stopped instance. If restart/active verification fails, it restores the previous CRL and attempts recovery.
+4. If any activation fails, stop the rollout. Restore the prior CRL on every node already updated and verify recovery. A rollback restores the old trust state and may re-admit a revoked certificate; it is an explicit availability recovery, not a security-neutral operation.
+5. After both nodes activate, verify rejection of the revoked identity and reconnection of the intended peer. There is no distributed transaction; interruption during the rollout is expected. The helper never contacts the other node or distributes files.
+
+The helper does not automate CA rollover, pin overlap, or remote CRL distribution. Run `bash scripts/pki/test-apply-crl.sh` for its isolated temporary-CA regression suite; it does not touch a live CA or systemd service.

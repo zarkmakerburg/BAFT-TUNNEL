@@ -174,3 +174,12 @@ This dated addendum supersedes older "latest" snapshots above without deleting h
 5. Longer-duration real-host soak and controlled latency/loss acceptance remain open. Existing Docker netem evidence is simulation and must not be represented as real-host impairment proof.
 
 The new E2E result closes the missing post-shutdown-change real-host Direct/Reverse/recovery/revocation evidence only. It does not close the gates above or constitute production readiness/security certification. Phase 1 remains in progress and PR #3 remains Draft.
+
+## 2026-11-07 — Guarded offline CRL activation implementation
+
+- Accepted [ADR-0015](ADR-0015-crl-update-and-rollover.md): offline CA issuance remains authoritative; node-side activation is explicit and local; no online signer, remote distribution, or two-node transaction is introduced.
+- Added `scripts/pki/apply-crl.sh check` to validate exactly one PEM CRL, CA signature and issuer, mandatory CRL Number, strictly increasing number versus the installed CRL, and candidate `lastUpdate`/`nextUpdate` window without mutation.
+- Added `apply-crl.sh apply` for root-only activation of an already-active named `baft-tunnel@INSTANCE.service`: stage in the same directory, atomic replacement, restart and active-state check, restore prior CRL and attempt service recovery on failure. It does not enable/start stopped services, alter firewall/network settings, or contact the other node.
+- Added isolated `scripts/pki/test-apply-crl.sh` covering valid advancement, equal/lower CRL number rejection, different-CA signature rejection, malformed/trailing-data rejection, and expired CRL rejection. Local run: `BAFT_CRL_APPLY_TEST=PASS`; shell syntax and `git diff --check` passed.
+- Phase 0 CI now runs this test with temporary CAs only. No live CA, service, or LAB host was changed. CI for this new head is pending.
+- This improves local CRL update safety only. Remote distribution, two-node orchestration, safe CA/pin rollover, persistent operator-host lifecycle, independent security review, and real-host soak remain open.

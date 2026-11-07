@@ -41,6 +41,8 @@ jobs:
         run: bash lab/real-hosts/test-phase1-two-host-e2e.sh
       - name: Test offline PKI lifecycle (temporary CA only)
         run: bash scripts/pki/test.sh
+      - name: Test guarded CRL update validation (temporary CAs only)
+        run: bash scripts/pki/test-apply-crl.sh
       - name: Validate Docker Compose
         run: docker compose -f lab/compose.yaml config --quiet
       - name: Run isolated Docker netem integration
