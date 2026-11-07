@@ -449,6 +449,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handshake_rejects_malformed_nonces_and_unknown_hello_fields() {
+        // Short, non-hex, uppercase-padded and oversized nonces must never be accepted.
+        for bad in ["", "ab", &"g".repeat(64), &"a".repeat(65), &"a".repeat(63)] {
+            let (mut client, mut server) = duplex(4096);
+            let bad_owned = bad.to_owned();
+            let server_task = tokio::spawn(async move {
+                let request: ClientHello = read_message(&mut server).await.unwrap();
+                let response = ServerHello {
+                    version: VERSION,
+                    server_id: "abroad".into(),
+                    client_id: "iran".into(),
+                    tunnel_id: "tunnel-a".into(),
+                    direction: ConnectionDirection::Direct,
+                    capabilities: PHASE1_CAPABILITIES.to_vec(),
+                    client_nonce: request.nonce,
+                    server_nonce: bad_owned,
+                };
+                write_message(&mut server, &response).await.unwrap();
+            });
+            assert!(
+                client_handshake(
+                    &mut client,
+                    "iran",
+                    "abroad",
+                    "tunnel-a",
+                    ConnectionDirection::Direct
+                )
+                .await
+                .is_err(),
+                "client accepted server nonce {bad:?}"
+            );
+            server_task.await.unwrap();
+        }
+
+        // A hello carrying an unknown field is rejected, not silently ignored.
+        let (mut client, mut server) = duplex(4096);
+        let server_task = tokio::spawn(async move {
+            server_handshake(
+                &mut server,
+                "abroad",
+                "iran",
+                "tunnel-a",
+                ConnectionDirection::Direct,
+            )
+            .await
+        });
+        let mut value = serde_json::to_value(ClientHello {
+            version: VERSION,
+            client_id: "iran".into(),
+            server_id: "abroad".into(),
+            tunnel_id: "tunnel-a".into(),
+            direction: ConnectionDirection::Direct,
+            capabilities: PHASE1_CAPABILITIES.to_vec(),
+            nonce: nonce(),
+        })
+        .unwrap();
+        value["extra"] = serde_json::json!(true);
+        write_message(&mut client, &value).await.unwrap();
+        assert!(server_task.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
     async fn handshake_rejects_wrong_connection_direction() {
         let (mut client, mut server) = duplex(4096);
         let server_task = tokio::spawn(async move {
