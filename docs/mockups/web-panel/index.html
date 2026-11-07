@@ -105,9 +105,11 @@ input,select{font:inherit;width:100%;min-height:42px;padding:6px 10px;border:1px
   <div class="step" data-s="3" hidden>
     <b data-fa="موتور تونل را انتخاب کنید" data-en="Choose the tunnel engine"></b>
     <div class="types" role="radiogroup">
-      <label class="type"><input type="radio" name="eng" value="tcp" checked><span><b>TCP/TLS 1.3 (mTLS)</b><span class="sub" data-fa="موتور فعلی پروژه. روی هر شبکه‌ای کار می‌کند." data-en="The current engine. Works on any network."></span></span></label>
-      <label class="type off"><input type="radio" name="eng" value="udp" disabled><span><b>UDP</b><span class="sub" data-fa="در برنامه (فاز ۴). هنوز در دسترس نیست." data-en="Planned (Phase 4). Not available yet."></span></span></label>
-      <label class="type off"><input type="radio" name="eng" value="quic" disabled><span><b>QUIC</b><span class="sub" data-fa="در برنامه (فاز ۴، اختیاری). هنوز در دسترس نیست." data-en="Planned (Phase 4, optional). Not available yet."></span></span></label>
+      <label class="type"><input type="radio" name="eng" value="tcp" checked><span><b>TCP/TLS 1.3 mTLS</b><span class="sub" data-fa="موتور اصلی BAFT. فعال. روی هر شبکه‌ای کار می‌کند." data-en="BAFT main engine. Active. Works on any network."></span></span></label>
+      <label class="type off"><input type="radio" name="eng" value="udp" disabled><span><b>UDP (FEC / DTLS 1.3)</b><span class="sub" data-fa="در برنامه (فاز ۴). مناسب مسیر پرتلفات." data-en="Planned (Phase 4). For lossy routes."></span></span></label>
+      <label class="type off"><input type="radio" name="eng" value="quic" disabled><span><b>QUIC</b><span class="sub" data-fa="در برنامه (فاز ۴). وقتی TCP کند یا محدود است." data-en="Planned (Phase 4). When TCP is slow or limited."></span></span></label>
+      <label class="type off"><input type="radio" name="eng" value="wg" disabled><span><b>WireGuard</b><span class="sub" data-fa="در برنامه (بعداً). رمزنگاری سریع در هسته." data-en="Planned (later). Fast in-kernel encryption."></span></span></label>
+      <label class="type off"><input type="radio" name="eng" value="gre" disabled><span><b>GRE / IPIP</b><span class="sub" data-fa="در برنامه (بعداً). کمترین مصرف CPU." data-en="Planned (later). Lowest CPU use."></span></span></label>
     </div>
     <b data-fa="نوع تونل را انتخاب کنید" data-en="Choose the tunnel type"></b>
     <div class="types" role="radiogroup">
