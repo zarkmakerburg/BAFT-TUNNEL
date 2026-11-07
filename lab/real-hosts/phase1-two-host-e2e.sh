@@ -15,6 +15,11 @@ ABROAD_SSH_PORT="${LAB_ABROAD_SSH_PORT:-22}"
 E2E_PORT="${LAB_E2E_PORT:-18300}"
 LOCAL_PORT="${LAB_E2E_LOCAL_PORT:-18080}"
 ECHO_PORT=19090
+IMPAIR_PORT=19100
+SOAK_SECONDS="${LAB_SOAK_SECONDS:-0}"
+IMPAIR="${LAB_IMPAIR:-0}"
+[[ "$SOAK_SECONDS" =~ ^[0-9]+$ ]] && (( SOAK_SECONDS <= 3600 )) || { echo "LAB_SOAK_SECONDS must be 0-3600" >&2; exit 2; }
+[[ "$IMPAIR" == 0 || "$IMPAIR" == 1 ]] || { echo "LAB_IMPAIR must be 0 or 1" >&2; exit 2; }
 REMOTE_DIR="/tmp/baft-tunnel-e2e-${GITHUB_RUN_ID:-$$}"
 BINARY="${BAFT_TUNNEL_BINARY:-target/release/baft-tunnel}"
 LOCAL_TMP="$(mktemp -d)"
@@ -78,23 +83,30 @@ start_serve() {
   ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' serve --listen '0.0.0.0:$E2E_PORT' --target '127.0.0.1:$ECHO_PORT' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --direction '$direction' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --crl '$REMOTE_DIR/ca.crl' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/serve.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/serve.pid'"
 }
 start_forward() {
-  local side="$1" local_id="$2" peer_id="$3" peer_host="$4" peer_dns="$5" direction="$6" peer_pin="$7" cert="$8" key="$9"
-  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' forward --listen '127.0.0.1:$LOCAL_PORT' --remote '$peer_host:$E2E_PORT' --server-name '$peer_dns' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --direction '$direction' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --crl '$REMOTE_DIR/ca.crl' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/forward.pid'"
+  local side="$1" local_id="$2" peer_id="$3" peer_host="$4" peer_dns="$5" direction="$6" peer_pin="$7" cert="$8" key="$9" remote_port="${10:-$E2E_PORT}"
+  ssh_host "$side" "nohup '$REMOTE_DIR/baft-tunnel' forward --listen '127.0.0.1:$LOCAL_PORT' --remote '$peer_host:$remote_port' --server-name '$peer_dns' --local-id '$local_id' --peer-id '$peer_id' --tunnel-id 'lab-e2e' --direction '$direction' --peer-fingerprint '$peer_pin' --ca '$REMOTE_DIR/ca.crt' --crl '$REMOTE_DIR/ca.crl' --cert '$REMOTE_DIR/$cert' --key '$REMOTE_DIR/$key' --max-streams 8 > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/forward.pid'"
 }
 probe_host() {
   local side="$1" bytes="${2:-2097289}"
   ssh_host "$side" "python3 '$REMOTE_DIR/probe.py' 127.0.0.1 '$LOCAL_PORT' '$bytes'"
+}
+proc_stats() {
+  local side="$1" role="$2"
+  ssh_host "$side" "p=\$(cat '$REMOTE_DIR/$role.pid'); echo \$(ls /proc/\$p/fd | wc -l) \$(awk '/VmRSS/{print \$2}' /proc/\$p/status)"
+}
+start_impair() {
+  ssh_host iran "nohup python3 '$REMOTE_DIR/impair.py' '$IMPAIR_PORT' '$LAB_ABROAD_HOST' '$E2E_PORT' > '$REMOTE_DIR/impair.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/impair.pid'"
 }
 cleanup() {
   local status=$?
   trap - EXIT
   if (( status != 0 )); then
     for side in iran abroad; do
-      ssh_host "$side" "for f in serve.log forward.log echo.log; do if [ -f '$REMOTE_DIR/'\$f ]; then echo === $side:\$f ===; tail -n 80 '$REMOTE_DIR/'\$f; fi; done" || true
+      ssh_host "$side" "for f in serve.log forward.log echo.log impair.log; do if [ -f '$REMOTE_DIR/'\$f ]; then echo === $side:\$f ===; tail -n 80 '$REMOTE_DIR/'\$f; fi; done" || true
     done
   fi
   for side in iran abroad; do
-    ssh_host "$side" "for role in serve forward echo; do f='$REMOTE_DIR/'\$role'.pid'; if [ -s \"\$f\" ]; then kill \$(cat \"\$f\") 2>/dev/null || true; fi; done; sleep 0.2; rm -rf '$REMOTE_DIR'" || status=1
+    ssh_host "$side" "for role in serve forward echo impair; do f='$REMOTE_DIR/'\$role'.pid'; if [ -s \"\$f\" ]; then kill \$(cat \"\$f\") 2>/dev/null || true; fi; done; sleep 0.2; rm -rf '$REMOTE_DIR'" || status=1
   done
   rm -rf "$LOCAL_TMP"
   if (( status != 0 )); then
@@ -169,9 +181,41 @@ while True:
     connection, _ = listener.accept()
     threading.Thread(target=handle, args=(connection,), daemon=True).start()
 PY
+cat > "$LOCAL_TMP/impair.py" <<'PY'
+# Application-level impairment proxy (latency, jitter, small chunks). It does not touch
+# interfaces, qdiscs, routes or firewall rules.
+import random, socket, sys, threading, time
+lport, rhost, rport = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", lport))
+listener.listen(16)
+def pipe(a, b):
+    try:
+        while True:
+            data = a.recv(16384)
+            if not data:
+                break
+            time.sleep(random.uniform(0.04, 0.12))
+            b.sendall(data)
+    except OSError:
+        pass
+    finally:
+        for s in (a, b):
+            try: s.shutdown(socket.SHUT_RDWR)
+            except OSError: pass
+while True:
+    c, _ = listener.accept()
+    try:
+        u = socket.create_connection((rhost, rport), timeout=5)
+    except OSError:
+        c.close(); continue
+    threading.Thread(target=pipe, args=(c, u), daemon=True).start()
+    threading.Thread(target=pipe, args=(u, c), daemon=True).start()
+PY
 cat > "$LOCAL_TMP/check-ports.py" <<'PORTS_CHECK'
 import socket, sys
-for host, raw_port in [("0.0.0.0", sys.argv[1]), ("127.0.0.1", sys.argv[2]), ("127.0.0.1", sys.argv[3])]:
+for host, raw_port in [("0.0.0.0", sys.argv[1]), ("127.0.0.1", sys.argv[2]), ("127.0.0.1", sys.argv[3]), ("127.0.0.1", sys.argv[4])]:
     port = int(raw_port)
     probe = socket.socket()
     try:
@@ -223,9 +267,9 @@ for side in iran abroad; do
   copy_to_host "$side" "$BINARY" "$LOCAL_TMP/ca.crt" "$LOCAL_TMP/ca.crl" \
     "$LOCAL_TMP/iran.crt" "$LOCAL_TMP/iran.key" "$LOCAL_TMP/abroad.crt" "$LOCAL_TMP/abroad.key" \
     "$LOCAL_TMP/control.crt" "$LOCAL_TMP/control.key" \
-    "$LOCAL_TMP/echo.py" "$LOCAL_TMP/probe.py" "$LOCAL_TMP/check-ports.py"
+    "$LOCAL_TMP/echo.py" "$LOCAL_TMP/impair.py" "$LOCAL_TMP/probe.py" "$LOCAL_TMP/check-ports.py"
   ssh_host "$side" "chmod 700 '$REMOTE_DIR/baft-tunnel' && chmod 600 '$REMOTE_DIR/'*.key"
-  ssh_host "$side" "python3 '$REMOTE_DIR/check-ports.py' '$E2E_PORT' '$LOCAL_PORT' '$ECHO_PORT'"
+  ssh_host "$side" "python3 '$REMOTE_DIR/check-ports.py' '$E2E_PORT' '$LOCAL_PORT' '$ECHO_PORT' '$IMPAIR_PORT'"
 done
 
 start_echo iran
@@ -237,6 +281,42 @@ start_serve abroad abroad iran direct "$IRAN_PIN" abroad.crt abroad.key
 start_forward iran iran abroad "$LAB_ABROAD_HOST" abroad.lab direct "$ABROAD_PIN" iran.crt iran.key
 probe_host iran 65536
 probe_host iran 2097289
+
+if (( SOAK_SECONDS > 0 )); then
+  echo "=== SOAK: ${SOAK_SECONDS}s of repeated probes over Direct ==="
+  read -r fd0 rss0 < <(proc_stats iran forward)
+  read -r sfd0 srss0 < <(proc_stats abroad serve)
+  end=$((SECONDS + SOAK_SECONDS)); n=0
+  while (( SECONDS < end )); do
+    probe_host iran 65536 >/dev/null
+    n=$((n + 1))
+    if (( n % 6 == 0 )); then probe_host iran 2097289 >/dev/null; fi
+    sleep 10
+  done
+  read -r fd1 rss1 < <(proc_stats iran forward)
+  read -r sfd1 srss1 < <(proc_stats abroad serve)
+  echo "SOAK_RESULT rounds=$n forward_fd=$fd0->$fd1 forward_rss_kb=$rss0->$rss1 serve_fd=$sfd0->$sfd1 serve_rss_kb=$srss0->$srss1"
+  (( fd1 <= fd0 + 8 && sfd1 <= sfd0 + 8 )) || { echo "fd growth during soak" >&2; exit 1; }
+  (( rss1 <= rss0 * 2 + 20480 && srss1 <= srss0 * 2 + 20480 )) || { echo "memory growth during soak" >&2; exit 1; }
+fi
+
+if [[ "$IMPAIR" == 1 ]]; then
+  echo "=== IMPAIRMENT: application-level latency/jitter proxy, then proxy restart ==="
+  stop_role iran forward
+  start_impair
+  sleep 1
+  start_forward iran iran abroad 127.0.0.1 abroad.lab direct "$ABROAD_PIN" iran.crt iran.key "$IMPAIR_PORT"
+  probe_host iran 65536
+  probe_host iran 1048576
+  stop_role iran impair
+  sleep 2
+  start_impair
+  probe_host iran 65536
+  stop_role iran impair
+  stop_role iran forward
+  start_forward iran iran abroad "$LAB_ABROAD_HOST" abroad.lab direct "$ABROAD_PIN" iran.crt iran.key
+  probe_host iran 65536
+fi
 
 echo "=== INTERRUPTION / RECOVERY: restart abroad listener ==="
 stop_role abroad serve
@@ -286,4 +366,4 @@ fi
 stop_role iran forward
 stop_role abroad serve
 
-echo "PHASE1_TWO_HOST_E2E=PASS (Direct, Reverse, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
+echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR (Direct, Reverse, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
