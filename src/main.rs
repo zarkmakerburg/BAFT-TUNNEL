@@ -80,6 +80,9 @@ enum Command {
         key: PathBuf,
         #[arg(long, default_value_t = 8)]
         max_streams: usize,
+        /// Permit a non-loopback --listen address (unauthenticated local clients can then use the tunnel).
+        #[arg(long)]
+        allow_non_loopback_listen: bool,
     },
     /// Validate or preview a JSON configuration without opening network listeners.
     Config {
@@ -163,6 +166,7 @@ async fn main() -> Result<()> {
             cert,
             key,
             max_streams,
+            allow_non_loopback_listen,
         } => {
             let config = config::RuntimeConfig::Forward {
                 listen,
@@ -179,6 +183,7 @@ async fn main() -> Result<()> {
                 key: Some(key),
                 key_credential: None,
                 max_streams,
+                allow_non_loopback_listen,
             };
             config.validate()?;
             config.apply().await

@@ -35,6 +35,28 @@ fn revocation_lists(path: &Path) -> Result<Vec<CertificateRevocationListDer<'sta
     Ok(items)
 }
 
+/// Seconds until the earliest CRL `nextUpdate` in the file (negative once expired).
+/// Operators use this to refresh the CRL before peers start failing closed.
+pub fn crl_seconds_remaining(path: &Path) -> Result<i64> {
+    use x509_parser::prelude::FromDer;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_secs() as i64;
+    let mut earliest: Option<i64> = None;
+    for der in revocation_lists(path)? {
+        let (_, crl) =
+            x509_parser::revocation_list::CertificateRevocationList::from_der(der.as_ref())
+                .map_err(|error| anyhow::anyhow!("parse CRL: {error}"))?;
+        let next = crl
+            .next_update()
+            .context("CRL has no nextUpdate; refusing to treat it as fresh")?
+            .timestamp();
+        earliest = Some(earliest.map_or(next, |current| current.min(next)));
+    }
+    Ok(earliest.context("certificate revocation list file contains no CRLs")? - now)
+}
+
 fn private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
     let file =
         File::open(path).with_context(|| format!("open private key file {}", path.display()))?;

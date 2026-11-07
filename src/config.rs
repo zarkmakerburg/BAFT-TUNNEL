@@ -15,6 +15,8 @@ use crate::{
     tunnel::{ForwardOptions, ServerOptions},
 };
 
+const CRL_WARNING_SECONDS: i64 = 24 * 3600;
+
 fn default_max_streams() -> usize {
     8
 }
@@ -56,6 +58,10 @@ pub enum RuntimeConfig {
         key_credential: Option<String>,
         #[serde(default = "default_max_streams")]
         max_streams: usize,
+        /// Allow the local forwarder to listen on a non-loopback address. Anyone who can reach
+        /// that address can use the tunnel without authentication, so it must be explicit.
+        #[serde(default)]
+        allow_non_loopback_listen: bool,
     },
 }
 
@@ -99,9 +105,13 @@ impl RuntimeConfig {
                 key,
                 key_credential,
                 max_streams,
+                allow_non_loopback_listen,
             } => {
                 validate_common(local_id, peer_id, tunnel_id, peer_fingerprint, *max_streams)?;
-                parse_socket(listen, "listen")?;
+                validate_forward_listen(
+                    parse_socket(listen, "listen")?,
+                    *allow_non_loopback_listen,
+                )?;
                 validate_target(parse_socket(remote, "remote")?)?;
                 tls::server_name(server_name)?;
                 let key_path = private_key_path(key.as_deref(), key_credential.as_deref())?;
@@ -109,7 +119,29 @@ impl RuntimeConfig {
                     .context("client TLS material is invalid")?;
             }
         }
+        self.warn_if_crl_expiring();
         Ok(())
+    }
+
+    fn crl_path(&self) -> &Path {
+        match self {
+            Self::Serve { crl, .. } | Self::Forward { crl, .. } => crl,
+        }
+    }
+
+    /// Warn when the CRL is close to expiry; peers fail closed once it expires.
+    fn warn_if_crl_expiring(&self) {
+        match tls::crl_seconds_remaining(self.crl_path()) {
+            Ok(remaining) if remaining <= 0 => eprintln!(
+                "WARNING: certificate revocation list has expired; TLS connections will fail closed until it is refreshed"
+            ),
+            Ok(remaining) if remaining < CRL_WARNING_SECONDS => eprintln!(
+                "WARNING: certificate revocation list expires in {} hours; refresh it before then",
+                remaining / 3600
+            ),
+            Ok(_) => {}
+            Err(error) => eprintln!("WARNING: could not determine CRL expiry: {error:#}"),
+        }
     }
 
     pub fn plan(&self) -> String {
@@ -230,6 +262,10 @@ impl RuntimeConfig {
                 "private_key_source": if key_credential.is_some() { "systemd-credential" } else { "file" },
                 "private_key_credential_id": key_credential
             },
+            "crl": {
+                "seconds_until_expiry": tls::crl_seconds_remaining(self.crl_path()).ok(),
+                "expiry_known": tls::crl_seconds_remaining(self.crl_path()).is_ok()
+            },
             "security": {
                 "tls_version": "1.3",
                 "mutual_certificate_authentication": true,
@@ -294,6 +330,7 @@ impl RuntimeConfig {
                 key,
                 key_credential,
                 max_streams,
+                allow_non_loopback_listen: _,
             } => {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 tunnel::forward(ForwardOptions {
@@ -344,6 +381,18 @@ fn parse_socket(value: &str, field: &str) -> Result<SocketAddr> {
     value
         .parse()
         .with_context(|| format!("{field} must be an IP:port socket address"))
+}
+
+fn validate_forward_listen(address: SocketAddr, allow_non_loopback: bool) -> Result<()> {
+    if address.port() == 0 {
+        bail!("listen must have a non-zero port");
+    }
+    if !address.ip().is_loopback() && !allow_non_loopback {
+        bail!(
+            "forward listen address must be loopback; unauthenticated clients could use the tunnel. Set allow_non_loopback_listen (--allow-non-loopback-listen) to accept this risk"
+        );
+    }
+    Ok(())
 }
 
 fn validate_target(address: SocketAddr) -> Result<()> {
@@ -480,5 +529,17 @@ mod tests {
         assert!(validate_target("0.0.0.0:8080".parse().unwrap()).is_err());
         assert!(validate_target("224.0.0.1:8080".parse().unwrap()).is_err());
         assert!(validate_target("127.0.0.1:0".parse().unwrap()).is_err());
+    }
+
+    #[test]
+    fn forward_listen_must_be_loopback_unless_explicitly_allowed() {
+        let loopback: SocketAddr = "127.0.0.1:18080".parse().unwrap();
+        let loopback6: SocketAddr = "[::1]:18080".parse().unwrap();
+        let public: SocketAddr = "0.0.0.0:18080".parse().unwrap();
+        assert!(validate_forward_listen(loopback, false).is_ok());
+        assert!(validate_forward_listen(loopback6, false).is_ok());
+        assert!(validate_forward_listen(public, false).is_err());
+        assert!(validate_forward_listen(public, true).is_ok());
+        assert!(validate_forward_listen("127.0.0.1:0".parse().unwrap(), true).is_err());
     }
 }
