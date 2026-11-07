@@ -2,7 +2,7 @@
 
 **Authorization:** Owner-approved 2026-11-06.
 **Branch:** phase1/rust-tcp-transport.
-**Latest branch-head CI-verified commit:** 4baba491499faacfc051b66ef78f3db1263695ee (documentation-only; all four Phase 0/Phase 1 push/PR workflows PASS).
+**Latest branch-head CI-verified commit (superseded by dated addendum below):** 4baba491499faacfc051b66ef78f3db1263695ee. See the 2026-11-07 current-head addendum for the authoritative state.
 **Current security remediation:** Rust 1.88.0 baseline, `time 0.3.47`, removal of unmaintained `rustls-pemfile`; exact-head CI PASS (2026-11-07).
 **Latest runtime product-code SHA:** 6afaf9a8758c435986c9f60ad50863491e67266c (includes tracked per-stream task cleanup and nested bounded shutdown budgets; no runtime code changed in later docs-only commits).
 **Status:** In progress; not production-ready. ADR-0010 is the current transport decision; ADR-0009 is superseded. Offline PKI tooling is defined by ADR-0012.
@@ -190,3 +190,22 @@ The new E2E result closes the missing post-shutdown-change real-host Direct/Reve
 - Real systemd activation/rollback proof completed in an isolated local Ubuntu 24.04.4 ARM64 VM (systemd 255): `BAFT_CRL_SYSTEMD_ACTIVATION=PASS`. This exercised an actual transient systemd unit, successful CRL activation, a deliberately failed first restart, restoration of the prior CRL with root:root 0644 permissions, successful service recovery, and root-only 0600 lock/backup handling. The test exposed and fixed a rollback-mode bug: the private 0600 backup is now restored through a fresh 0644 staging file.
 - Same isolated VM: `BAFT_SYSTEMD_CREDENTIAL_RUNTIME=PASS` and `BAFT_SYSTEMD_SERVICE_LIFECYCLE=PASS` (real installer, encrypted systemd credential delivery, start/restart/stop, safe uninstall). systemd-creds warned that its temporary host secret was not on encrypted media; this is a disposable software-key test only, not TPM/hardware-backed custody evidence.
 - Added `scripts/pki/test-crl-activation-systemd.sh` to Phase 1 CI after the existing service lifecycle test so successful activation and recovered rollback remain regression-gated.
+
+
+## 2026-11-07 — Current Phase 1 status and owner waiver (93355df)
+
+This addendum supersedes earlier statements in this document about the latest branch head and mandatory independent review. Historical test results and decisions above remain preserved as history.
+
+- Current branch: `phase1/rust-tcp-transport`; current exact HEAD: `93355df08d25b30f5a31fb78433f6ae0af76dc31`. Working tree was verified clean and the local branch matched `origin/phase1/rust-tcp-transport`.
+- Exact-head Phase 1 push CI [42377033575](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42377033575) and PR CI [42377037504](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42377037504): **PASS** on the same SHA. Both completed dependency audit, license/source checks, formatting, focused Rust tests, Clippy, release build, systemd encrypted-credential delivery, installed service lifecycle, and deterministic CRL activation/rollback.
+- Local exact-source checks recorded at HQ: cargo-audit (157 locked dependencies), cargo-deny, rustfmt, 37/37 Rust tests, Clippy with warnings denied, release build, offline PKI and CRL regression suites: PASS. These do not replace operator-host evidence.
+- Existing real two-host Direct/Reverse/recovery/revocation E2E evidence remains tied to runtime SHA `275b565eebdb57447b735f6666bd62ea7e86b966` and workflow [42358624201](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42358624201); it is not a soak or impairment acceptance test for `93355df`.
+- **Owner-approved waiver (2026-11-07):** a separate independent protocol/security review is not required for Phase 1 acceptance. No independent review is claimed. The waiver is recorded at [HQ comment 6708145366](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2#issuecomment-6708145366).
+
+### Remaining Phase 1 acceptance work
+
+1. Persistent operator-controlled Linux host proof for credential custody and service start/restart, permissions, upgrade/rollback, uninstall, and signal-stop. Hosted Ubuntu 24.04/systemd 255 CI uses disposable hosts; the two configured LAB nodes are Ubuntu 22.04/systemd 249 and cannot exercise `LoadCredentialEncrypted=`.
+2. Longer real-host soak and controlled latency/loss acceptance. Existing E2E evidence is bounded; Docker netem remains simulation and cannot close this gate. No dedicated soak workflow currently exists.
+3. CRL lifecycle expansion: authenticated remote publication/distribution/refresh coordination and safe CA/pin rollover with explicit overlap and rollback. Current issuance remains offline and activation remains explicit/local per ADR-0015.
+
+Dependency/license/security CI is green for the exact head and is retained as verified evidence, not an open gate. PR #3 remains OPEN / Draft / unmerged. No production/LAB persistent host changes, merge, release, or deployment have been performed.
