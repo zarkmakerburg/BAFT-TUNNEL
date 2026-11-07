@@ -104,6 +104,9 @@ restored_fingerprint="$(openssl crl -in "$TMP/current.crl" -noout -fingerprint -
 [[ "$restored_fingerprint" == "$old_fingerprint" ]] || { echo 'CRL systemd test: rollback did not restore original CRL' >&2; exit 1; }
 [[ "$(stat -c '%a:%u:%g' "$TMP/current.crl")" == '644:0:0' ]] || { echo 'CRL systemd test: rollback did not restore root:root 0644 readability' >&2; exit 1; }
 wait_active || { echo 'CRL systemd test: service did not recover after CRL rollback' >&2; exit 1; }
+if find "$TMP" -maxdepth 1 -name '.current.crl.rollback.*' | grep -q .; then
+  echo 'CRL systemd test: rollback backup remained after successful recovery' >&2; exit 1
+fi
 
 sudo "$APPLY" apply "$TMP/ca.crt" "$TMP/current.crl" "$TMP/candidate-success.crl" "$INSTANCE" >"$TMP/success.log" 2>&1
 grep -q 'CRL_APPLY=PASS' "$TMP/success.log" || { cat "$TMP/success.log" >&2; exit 1; }

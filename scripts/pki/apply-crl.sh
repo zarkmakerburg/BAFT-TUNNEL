@@ -159,8 +159,8 @@ INSTALLED=2
 install -o root -g root -m 0644 "$BACKUP" "$STAGED"
 mv -f "$STAGED" "$CURRENT_CRL"
 INSTALLED=1
-rm -f "$BACKUP"
 if systemctl restart "$SERVICE" && systemctl is-active --quiet "$SERVICE"; then
+  rm -f "$BACKUP"
   INSTALLED=1
   echo "CRL_APPLY=ROLLED_BACK service=$SERVICE activation_status=$activation_status" >&2
   exit 1
