@@ -459,6 +459,38 @@ mod tests {
     }
 
     #[test]
+    fn config_parse_and_validate_never_panic_on_mutated_input() {
+        let valid = r#"{
+            "mode":"serve","direction":"direct","listen":"127.0.0.1:9443","target":"127.0.0.1:8080",
+            "local_id":"abroad","peer_id":"iran","tunnel_id":"demo",
+            "peer_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ca":"ca.pem","crl":"ca.crl","cert":"server.pem","key":"server-key.pem"
+        }"#;
+        let mut state = 0x1234_5678_9abc_def1_u64;
+        for _case in 0..2048 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let mut bytes = valid.as_bytes().to_vec();
+            for i in 0..(1 + (state as usize) % 4) {
+                let pos = ((state >> (7 * i)) as usize) % bytes.len();
+                match (state >> 5) % 3 {
+                    0 => bytes[pos] = (state >> (2 * i)) as u8,
+                    1 => {
+                        bytes.remove(pos);
+                    }
+                    _ => bytes.insert(pos, (state >> i) as u8),
+                }
+            }
+            if let Ok(text) = std::str::from_utf8(&bytes)
+                && let Ok(config) = serde_json::from_str::<RuntimeConfig>(text)
+            {
+                let _ = config.validate();
+            }
+        }
+    }
+
+    #[test]
     fn support_report_redacts_paths_fingerprints_and_network_endpoints() {
         let config: RuntimeConfig = serde_json::from_str(
             r#"{

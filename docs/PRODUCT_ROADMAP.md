@@ -34,7 +34,7 @@ Not in MVP: central multi-user control plane, UDP/QUIC, camouflage sidecar.
 Engine rollout order: (1) TCP+TLS mTLS, (2) Noise+TCP, (3) BAFT main engine (after health check), (4) WebSocket/TLS front, (5) uTLS sidecar, (6) QUIC/UDP. Rotation: operator-defined ordered engine list per tunnel; automatic switch on health failure.
 
 ## IN PROGRESS
-- **P1-001** Soak and impairment on real LAB (optional soak/impairment merged in #15; run and record evidence).
+- **P1-001** DONE 2026-11-07: LAB soak 900 s + impairment PASS (run 42401889166, SHA 8bcafc9). Longer soak and kernel-level loss deferred to P6-001.
 - **P1-004** Phase 1 acceptance tracking.
 
 ## TO DO (priority order)
@@ -62,7 +62,7 @@ Phase 0 (PR #1); Phase 1 runtime, PKI, installer, systemd, LAB Direct/Reverse/re
 | Rust TCP runtime, mTLS, PKI, installer | PASS |
 | Ubuntu 22.04 credential path (hosted CI + LAB) | PASS |
 | Two-host E2E Direct/Reverse/revocation | PASS |
-| Soak and impairment on real hosts | OPEN (P1-001) |
+| Soak and impairment on real hosts | PASS (15 min, app-level impairment; longer soak at P6) |
 | Remote CRL distribution, CA/pin rollover | OPEN (P1-002, ADR-0017) |
 | Fuzz targets in CI | OPEN (P1-005) |
 | Phase 1 acceptance | OPEN |

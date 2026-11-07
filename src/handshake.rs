@@ -613,6 +613,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stream_open_rejects_every_mutated_authorization_frame() {
+        // Seeded field-level mutation of an otherwise valid stream-open frame:
+        // only the exact (version, tunnel, direction, capability) tuple may pass.
+        let valid =
+            r#"{"version":1,"tunnel_id":"demo","direction":"direct","capability":"tcp-forward"}"#;
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        for _case in 0..512 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let mut bytes = valid.as_bytes().to_vec();
+            let flips = 1 + (state as usize) % 3;
+            for i in 0..flips {
+                let pos = ((state >> (8 * i)) as usize) % bytes.len();
+                bytes[pos] = (state >> (3 + i)) as u8;
+            }
+            let mut frame = (bytes.len() as u16).to_be_bytes().to_vec();
+            frame.extend_from_slice(&bytes);
+            let (mut writer, mut reader) = duplex(MAX_MESSAGE + 2);
+            writer.write_all(&frame).await.unwrap();
+            writer.shutdown().await.unwrap();
+            let result = server_stream_open(&mut reader, "demo", ConnectionDirection::Direct).await;
+            if result.is_ok() {
+                assert_eq!(bytes, valid.as_bytes(), "mutated frame was authorized");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn framed_writer_rejects_oversized_serialized_message() {
         #[derive(serde::Serialize)]
         struct Oversized {
