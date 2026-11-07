@@ -13,6 +13,14 @@ on:
         description: "Branch/commit to build"
         type: string
         default: main
+      tag:
+        description: "Optional tag name (default: v<Cargo version>[-rc.N])"
+        type: string
+        default: ""
+      notes:
+        description: "Optional release notes (default: auto-generated)"
+        type: string
+        default: ""
   push:
     tags:
       - "v*"
@@ -38,6 +46,7 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           STABLE: ${{ inputs.stable }}
+          TAG_IN: ${{ inputs.tag }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
@@ -46,6 +55,9 @@ jobs:
           if [ "$EVENT" = "push" ]; then
             tag="$REF_NAME"
             case "$tag" in *-*) pre=true ;; *) pre=false ;; esac
+          elif [ -n "$TAG_IN" ]; then
+            tag="$TAG_IN"
+            if [ "$STABLE" = "true" ]; then pre=false; else pre=true; fi
           elif [ "$STABLE" = "true" ]; then
             tag="v${ver}"; pre=false
           else
@@ -91,8 +103,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.v.outputs.tag }}
           PRE: ${{ steps.v.outputs.prerelease }}
+          NOTES: ${{ inputs.notes }}
         run: |
           set -euo pipefail
-          flags=(--title "$TAG" --generate-notes --target "$(git rev-parse HEAD)")
+          flags=(--title "$TAG" --target "$(git rev-parse HEAD)")
+          if [ -n "$NOTES" ]; then flags+=(--notes "$NOTES"); else flags+=(--generate-notes); fi
           [ "$PRE" = "true" ] && flags+=(--prerelease)
           gh release create "$TAG" dist/* "${flags[@]}"
