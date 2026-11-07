@@ -124,7 +124,7 @@
 
 ## ⚡ IN PROGRESS (تسک‌های فعلی و در حال انجام)
 
-- **[P1-001] Real-Host Soak & Network Impairment:** گزینه‌های `soak_seconds` و `impair` به Workflow دو-میزبان اضافه و در Main ادغام شد (PR #15). اجرای واقعی LAB با Soak ۱۸۰۰ ثانیه + Impairment در جریان است. توجه: Impairment فعلی در سطح Application است (تأخیر/Jitter و Restart پراکسی)، **نه Packet Loss واقعی TCP/NetEm** روی کارت شبکه؛ شبیه‌سازی Packet Loss واقعی هنوز انجام نشده.
+- **[P1-001] Real-Host Soak & Network Impairment:** گزینه‌های `soak_seconds` و `impair` به Workflow دو-میزبان اضافه و در Main ادغام شد (PR #15). اجرای واقعی LAB با Soak ۱۸۰۰ ثانیه + Impairment **PASS** شد ([run 42398701622](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42398701622)، `8bcafc9`؛ ۱۲۸ دور، بدون رشد fd، RSS ثابت). توجه: Impairment فعلی در سطح Application است (تأخیر/Jitter و Restart پراکسی)، **نه Packet Loss واقعی TCP/NetEm** روی کارت شبکه؛ شبیه‌سازی Packet Loss واقعی هنوز انجام نشده.
 - **[P1-002] CRL Distribution & Trust Rollover:** ADR-0017 (پیشنهاد A1 + B1) در PR #16 برای تصمیم مالک باز است؛ پیاده‌سازی هنوز شروع نشده.
 - **[P1-004] Phase 1 Acceptance Tracking:** نگهداری وضعیت Gateها و شواهد.
 - **[P3-PREVIEW] Web Panel Mockup:** PR #17 (پیش‌نمایش UX؛ بدون Backend).
@@ -373,7 +373,7 @@
 | Hosted CI | PASS | Ubuntu 24.04 و Ubuntu 22.04 / systemd 249 |
 | Ubuntu 22.04 Credential (P1-000) | تکمیل | CI + LAB واقعی |
 | Protocol adversarial coverage (P1-003) | تکمیل | PR #13/#14 |
-| Long-duration soak (P1-001) | **باز / در حال اجرا** | اجرای ۱۸۰۰ ثانیه‌ای در جریان؛ نتیجه هنوز ثبت نشده |
+| Soak ۳۰ دقیقه‌ای (P1-001) | PASS | run 42398701622؛ Soak طولانی‌تر (ساعت‌ها) هنوز انجام نشده |
 | Controlled impairment (P1-001) | **باز / جزئی** | فقط تأخیر/Jitter در سطح Application؛ Packet Loss واقعی انجام نشده |
 | Remote CRL distribution (P1-002) | باز | ADR-0017 پیشنهادی، منتظر مالک |
 | CA / Pin rollover (P1-002) | باز | ADR-0017 پیشنهادی، پیاده‌سازی نشده |
