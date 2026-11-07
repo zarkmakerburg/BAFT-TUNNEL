@@ -171,6 +171,14 @@ wait_active() {
 }
 
 dump_service() {
+  # Diagnostic: how does this systemd expose LoadCredential= to the service user?
+  local probe
+  for probe in "" "CapabilityBoundingSet=" "ProtectSystem=strict" "PrivateTmp=true" "NoNewPrivileges=true"; do
+    echo "--- probe [${probe:-plain}]" >&2
+    sudo systemd-run --wait --pipe --collect --quiet --uid=baft-tunnel --gid=baft-tunnel \
+      ${probe:+--property="$probe"} --property="LoadCredential=node-key:$CREDENTIAL_DIR/node-key" \
+      /bin/sh -c 'id; ls -ldn "$CREDENTIALS_DIRECTORY" /run/credentials; ls -ln "$CREDENTIALS_DIRECTORY"; (getfacl -p "$CREDENTIALS_DIRECTORY" 2>&1 || true)' >&2 || true
+  done
   sudo systemctl status --no-pager "$SERVICE_UNIT" >&2 || true
   sudo journalctl -u "$SERVICE_UNIT" -n 80 --no-pager >&2 || true
 }
