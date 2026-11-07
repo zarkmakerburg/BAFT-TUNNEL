@@ -18,15 +18,15 @@ GitHub repository: `zarkmakerburg/BAFT-TUNNEL` (private)
 GitHub Actions Environment: `baft-tunnel-lab`
 
 Environment variables (hostnames/IPs and SSH connection metadata):
-- `LAB_IRAN_HOST`
 - `LAB_IRAN_SSH_USER`
 - `LAB_IRAN_SSH_PORT`
-- `LAB_ABROAD_HOST`
 - `LAB_ABROAD_SSH_USER`
 - `LAB_ABROAD_SSH_PORT`
 - `LAB_TEST_PORTS`
 
-Environment secrets:
+Environment secrets (the repository is public, so host addresses must be secrets: variables are printed in public workflow logs):
+- `LAB_IRAN_HOST`
+- `LAB_ABROAD_HOST`
 - `LAB_SSH_PRIVATE_KEY` — dedicated LAB SSH private key.
 - `LAB_SSH_KNOWN_HOSTS` — independently verified pinned host keys for both hosts.
 
