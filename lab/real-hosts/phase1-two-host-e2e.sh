@@ -18,6 +18,9 @@ ECHO_PORT=19090
 IMPAIR_PORT=19100
 SOAK_SECONDS="${LAB_SOAK_SECONDS:-0}"
 IMPAIR="${LAB_IMPAIR:-0}"
+LOSS="${LAB_LOSS_PERCENT:-0}"
+[[ "$LOSS" =~ ^[0-9]+$ ]] && (( LOSS <= 20 )) || { echo "LAB_LOSS_PERCENT must be 0-20" >&2; exit 2; }
+LOSS_TABLE=baft_lab_loss
 [[ "$SOAK_SECONDS" =~ ^[0-9]+$ ]] && (( SOAK_SECONDS <= 3600 )) || { echo "LAB_SOAK_SECONDS must be 0-3600" >&2; exit 2; }
 [[ "$IMPAIR" == 0 || "$IMPAIR" == 1 ]] || { echo "LAB_IMPAIR must be 0 or 1" >&2; exit 2; }
 REMOTE_DIR="/tmp/baft-tunnel-e2e-${GITHUB_RUN_ID:-$$}"
@@ -106,6 +109,7 @@ cleanup() {
     done
   fi
   for side in iran abroad; do
+    if (( LOSS > 0 )); then ssh_host "$side" "nft delete table inet $LOSS_TABLE 2>/dev/null || true" || true; fi
     ssh_host "$side" "for role in serve forward echo impair; do f='$REMOTE_DIR/'\$role'.pid'; if [ -s \"\$f\" ]; then kill \$(cat \"\$f\") 2>/dev/null || true; fi; done; sleep 0.2; rm -rf '$REMOTE_DIR'" || status=1
   done
   rm -rf "$LOCAL_TMP"
@@ -318,6 +322,23 @@ if [[ "$IMPAIR" == 1 ]]; then
   probe_host iran 65536
 fi
 
+if (( LOSS > 0 )); then
+  echo "=== REAL TCP PACKET LOSS: ${LOSS}% via dedicated nftables table (test flow only) ==="
+  ssh_host iran "command -v nft >/dev/null" || { echo "nft is not available on the Iran host" >&2; exit 1; }
+  ssh_host iran "! nft list table inet $LOSS_TABLE >/dev/null 2>&1" || { echo "stale $LOSS_TABLE table exists" >&2; exit 1; }
+  if [[ "$LAB_ABROAD_HOST" == *:* ]]; then fam=ip6; else fam=ip; fi
+  ssh_host iran "nft add table inet $LOSS_TABLE && nft add chain inet $LOSS_TABLE out '{ type filter hook output priority 0; policy accept; }' && nft add chain inet $LOSS_TABLE in '{ type filter hook input priority 0; policy accept; }' && nft add rule inet $LOSS_TABLE out $fam daddr $LAB_ABROAD_HOST tcp dport $E2E_PORT numgen random mod 100 '<' $LOSS counter drop && nft add rule inet $LOSS_TABLE in $fam saddr $LAB_ABROAD_HOST tcp sport $E2E_PORT numgen random mod 100 '<' $LOSS counter drop"
+  probe_host iran 65536
+  probe_host iran 524288
+  probe_host iran 65536
+  dropped="$(ssh_host iran "nft list table inet $LOSS_TABLE" | awk '/packets/ {for(i=1;i<NF;i++) if($i=="packets") sum+=$(i+1)} END{print sum+0}')"
+  echo "LOSS_RESULT percent=$LOSS dropped_packets=$dropped"
+  ssh_host iran "nft delete table inet $LOSS_TABLE"
+  ssh_host iran "! nft list table inet $LOSS_TABLE >/dev/null 2>&1" || { echo "loss table was not removed" >&2; exit 1; }
+  (( dropped > 0 )) || { echo "no packets were dropped; loss was not exercised" >&2; exit 1; }
+  probe_host iran 65536
+fi
+
 echo "=== INTERRUPTION / RECOVERY: restart abroad listener ==="
 stop_role abroad serve
 sleep 2
@@ -366,4 +387,4 @@ fi
 stop_role iran forward
 stop_role abroad serve
 
-echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR (Direct, Reverse, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
+echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS (Direct, Reverse, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"

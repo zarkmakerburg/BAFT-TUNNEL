@@ -18,6 +18,11 @@ on:
         required: false
         type: string
         default: '0'
+      loss_percent:
+        description: Real TCP packet loss on the test flow only, via a temporary nftables table (0-20)
+        required: false
+        type: string
+        default: '0'
       ref:
         description: The Phase 1 branch to test (restricted to phase1/rust-tcp-transport)
         required: true
@@ -64,6 +69,7 @@ jobs:
       LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
       LAB_SOAK_SECONDS: ${{ inputs.soak_seconds }}
       LAB_IMPAIR: ${{ inputs.impair }}
+      LAB_LOSS_PERCENT: ${{ inputs.loss_percent }}
       LAB_E2E_PORT: '18300'
       LAB_E2E_LOCAL_PORT: '18080'
     steps:
