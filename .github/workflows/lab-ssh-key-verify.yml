@@ -70,9 +70,9 @@ jobs:
           check_host() {
             local label="$1" host="$2" user="$3" port="$4"
             if ssh -F /dev/null -i "$key_file" -o IdentitiesOnly=yes -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known_hosts_file" -o ConnectTimeout=8 -p "$port" "$user@$host" "ssh-keygen -lf ~/.ssh/authorized_keys -E sha256 2>/dev/null | awk '{print \$2}' | grep -Fx '$expected_fingerprint' >/dev/null"; then
-              echo "\${label}_SSH_AUTH=MATCH"
+              echo "$label"_SSH_AUTH=MATCH
             else
-              echo "\${label}_SSH_AUTH=FAIL"
+              echo "$label"_SSH_AUTH=FAIL
               return 1
             fi
           }
