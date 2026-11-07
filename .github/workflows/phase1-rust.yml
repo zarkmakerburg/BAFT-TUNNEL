@@ -44,3 +44,7 @@ jobs:
         run: |
           bash -n scripts/pki/test-systemd-service-lifecycle.sh
           bash scripts/pki/test-systemd-service-lifecycle.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"
+      - name: Validate CRL activation and rollback on systemd
+        run: |
+          bash -n scripts/pki/test-crl-activation-systemd.sh
+          bash scripts/pki/test-crl-activation-systemd.sh

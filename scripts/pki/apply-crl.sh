@@ -132,7 +132,7 @@ INSTALLED=0
 cleanup() {
   local status=$?
   rm -f "$STAGED"
-  if [[ "$INSTALLED" == 0 ]]; then rm -f "$BACKUP"; fi
+  if [[ "$INSTALLED" != 2 ]]; then rm -f "$BACKUP"; fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -156,8 +156,10 @@ fi
 
 echo "apply-crl: service restart/active check failed; restoring previous CRL" >&2
 INSTALLED=2
-mv -f "$BACKUP" "$CURRENT_CRL"
+install -o root -g root -m 0644 "$BACKUP" "$STAGED"
+mv -f "$STAGED" "$CURRENT_CRL"
 INSTALLED=1
+rm -f "$BACKUP"
 if systemctl restart "$SERVICE" && systemctl is-active --quiet "$SERVICE"; then
   INSTALLED=1
   echo "CRL_APPLY=ROLLED_BACK service=$SERVICE activation_status=$activation_status" >&2
