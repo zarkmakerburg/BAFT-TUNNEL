@@ -1,0 +1,98 @@
+name: release
+# One input to run: gh workflow run release.yml            (pre-release)
+#                   gh workflow run release.yml -f stable=true
+# Tags matching v* also trigger it (tag with "-" => pre-release).
+on:
+  workflow_dispatch:
+    inputs:
+      stable:
+        description: "Publish as stable (default: pre-release)"
+        type: boolean
+        default: false
+      ref:
+        description: "Branch/commit to build"
+        type: string
+        default: main
+  push:
+    tags:
+      - "v*"
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: write   # create release/tag
+      id-token: write   # keyless signing via GitHub OIDC (no private key anywhere)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+          persist-credentials: false
+      - name: Resolve version and channel
+        id: v
+        env:
+          EVENT: ${{ github.event_name }}
+          STABLE: ${{ inputs.stable }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test -f Cargo.toml || { echo "::error::Cargo.toml not found on this ref (is the Rust code merged?)"; exit 1; }
+          ver="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$EVENT" = "push" ]; then
+            tag="$REF_NAME"
+            case "$tag" in *-*) pre=true ;; *) pre=false ;; esac
+          elif [ "$STABLE" = "true" ]; then
+            tag="v${ver}"; pre=false
+          else
+            tag="v${ver}-rc.${GITHUB_RUN_NUMBER}"; pre=true
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build release binary
+        run: cargo +1.88.0 build --locked --release
+      - name: Stage artifacts
+        run: |
+          set -euo pipefail
+          mkdir dist
+          cp target/release/baft-tunnel "dist/baft-tunnel-${{ steps.v.outputs.tag }}-linux-x86_64"
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          set -euo pipefail
+          cargo +1.88.0 install cargo-cyclonedx --version 0.5.7 --locked
+          cargo +1.88.0 cyclonedx --format json --override-filename sbom
+          mv sbom.json "dist/baft-tunnel-${{ steps.v.outputs.tag }}.sbom.cdx.json"
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+        with:
+          cosign-release: v2.5.3
+      - name: Sign SHA256SUMS (keyless, GitHub OIDC)
+        working-directory: dist
+        run: cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
+      - name: Self-verify before publishing
+        working-directory: dist
+        env:
+          ID: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml
+        run: |
+          cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity-regexp "^${ID}@" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          sha256sum -c SHA256SUMS
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+          PRE: ${{ steps.v.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          flags=(--title "$TAG" --generate-notes --target "$(git rev-parse HEAD)")
+          [ "$PRE" = "true" ] && flags+=(--prerelease)
+          gh release create "$TAG" dist/* "${flags[@]}"
