@@ -24,6 +24,13 @@ jobs:
         shell: bash
         env:
           SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+          IRAN_HOST: ${{ vars.LAB_IRAN_HOST }}
+          ABROAD_HOST: ${{ vars.LAB_ABROAD_HOST }}
+          IRAN_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+          ABROAD_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+          IRAN_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+          ABROAD_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
         run: |
           set -Eeuo pipefail
           set +x
@@ -54,3 +61,20 @@ jobs:
             echo "FINGERPRINT=$actual_fingerprint"
             exit 1
           fi
+          test -n "$SSH_KNOWN_HOSTS" || { echo "HOST_CHECK=SKIPPED (known_hosts secret missing)"; exit 2; }
+          test -n "$IRAN_HOST" && test -n "$ABROAD_HOST" || { echo "HOST_CHECK=SKIPPED (host variables missing)"; exit 2; }
+          known_hosts_file="$work/known_hosts"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$known_hosts_file"
+          chmod 600 "$known_hosts_file"
+          unset SSH_KNOWN_HOSTS
+          check_host() {
+            local label="$1" host="$2" user="$3" port="$4"
+            if ssh -F /dev/null -i "$key_file" -o IdentitiesOnly=yes -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known_hosts_file" -o ConnectTimeout=8 -p "$port" "$user@$host" "ssh-keygen -lf ~/.ssh/authorized_keys -E sha256 2>/dev/null | awk '{print \$2}' | grep -Fx '$expected_fingerprint' >/dev/null"; then
+              echo "\${label}_SSH_AUTH=MATCH"
+            else
+              echo "\${label}_SSH_AUTH=FAIL"
+              return 1
+            fi
+          }
+          check_host IRAN "$IRAN_HOST" "$IRAN_USER" "$IRAN_PORT"
+          check_host ABROAD "$ABROAD_HOST" "$ABROAD_USER" "$ABROAD_PORT"
