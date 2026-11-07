@@ -114,3 +114,7 @@ During a CA rollover the trust bundle holds the old and the new CA, each with it
 ## CRL freshness report (ADR-0017 A1)
 
 `bash scripts/pki/crl-status.sh /etc/baft-tunnel/ca.crl [WARN_HOURS]` prints one line per CRL in the file (issuer, CRL number, nextUpdate, hours remaining) and exits 1 if any CRL is under WARN_HOURS (default 72) or expired. It only reports; it never fetches or changes anything. Re-issue CRLs weekly with a validity of at least 14 days, push them to each node, and run this check from cron or a systemd timer you own.
+
+## Activating a CRL bundle during CA rollover (ADR-0017 B1)
+
+`apply-crl.sh` accepts a bundle of 1–4 CA certificates as `CA_CERT` and a bundle with one CRL per CA as the CRL files. The candidate must contain a CRL for every configured CA, each signed by that CA, each with a CRL number greater than the installed CRL of the same issuer, and none expired; a CRL from an unconfigured CA, a duplicate issuer, or a CA bundle with two identical subjects is rejected. A CA that has no installed CRL yet (the new CA) is allowed. Removing the old CA is a separate, explicit step: pass the CA bundle without it and a candidate without its CRL.

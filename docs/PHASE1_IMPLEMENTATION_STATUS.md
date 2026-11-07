@@ -269,3 +269,7 @@ The runtime already loads a PEM bundle of CA certificates and a PEM file of seve
 ## 2026-11-07 — P1-002c CRL freshness report (ADR-0017 A1)
 
 Added `scripts/pki/crl-status.sh` (report-only, per-CRL issuer/number/nextUpdate, exit 1 on WARN or expired, supports multi-CRL bundles) and `scripts/pki/test-crl-status.sh` (wired into the Phase 0 workflow). Local test PASS. Known gap: `apply-crl.sh` still activates exactly one CRL for one CA, so the multi-CA overlap file is assembled by the operator; extending activation to bundles is P1-002e. P1-002 stays open.
+
+## 2026-11-07 — P1-002e CRL bundle activation (ADR-0017 B1)
+
+`scripts/pki/apply-crl.sh` now validates and activates CRL bundles: 1–4 CA certificates, one CRL per CA, per-issuer signature, per-issuer increasing CRL number, expiry, fail closed on a missing CRL for any configured CA, a CRL from an unconfigured CA, duplicate issuers, or duplicate CA subjects. Single-CA behavior is unchanged except that the `CRL_CHECK=PASS` line now reads `cas=N old_numbers=… candidate_numbers=…`. `test-apply-crl.sh` extended (local PASS); systemd activation/rollback logic is unchanged and still covered by the existing CI job, not re-run here. Remaining for P1-002: full rollover sequence test and LAB run.

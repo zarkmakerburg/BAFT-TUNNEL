@@ -42,7 +42,7 @@ make_ca "$OTHER" 'Different CRL Test CA'
 openssl ca -gencrl -batch -config "$CA/openssl.cnf" -out "$TMP/current.crl" >/dev/null 2>&1
 printf '1001\n' > "$CA/crlnumber"
 openssl ca -gencrl -batch -config "$CA/openssl.cnf" -out "$TMP/candidate.crl" >/dev/null 2>&1
-"$APPLY" check "$CA/ca.crt" "$TMP/current.crl" "$TMP/candidate.crl" | grep -q 'CRL_CHECK=PASS old_number=4096 candidate_number=4097'
+"$APPLY" check "$CA/ca.crt" "$TMP/current.crl" "$TMP/candidate.crl" | grep -q 'CRL_CHECK=PASS cas=1 old_numbers=4096 candidate_numbers=4097'
 
 if "$APPLY" check "$CA/ca.crt" "$TMP/current.crl" "$TMP/current.crl" >/dev/null 2>&1; then
   echo 'equal CRL number was accepted' >&2; exit 1
@@ -68,5 +68,37 @@ if "$APPLY" check "$CA/ca.crt" "$TMP/current.crl" "$TMP/expired.crl" >/dev/null 
   echo 'expired CRL was accepted' >&2; exit 1
 fi
 
+# Rollover overlap (ADR-0017 B1): a bundle of two CAs with one CRL per CA.
+NEWCA="$TMP/newca"; DUP="$TMP/dup"
+make_ca "$NEWCA" 'BAFT-TUNNEL CRL Test CA 2'
+make_ca "$DUP" 'BAFT-TUNNEL CRL Test CA'
+cat "$CA/ca.crt" "$NEWCA/ca.crt" > "$TMP/bundle-ca.pem"
+printf '1003\n' > "$CA/crlnumber"
+openssl ca -gencrl -batch -config "$CA/openssl.cnf" -out "$TMP/a-4099.crl" >/dev/null 2>&1
+openssl ca -gencrl -batch -config "$NEWCA/openssl.cnf" -out "$TMP/b-4096.crl" >/dev/null 2>&1
+printf '1001\n' > "$NEWCA/crlnumber"
+openssl ca -gencrl -batch -config "$NEWCA/openssl.cnf" -out "$TMP/b-4097.crl" >/dev/null 2>&1
+cat "$TMP/a-4099.crl" "$TMP/b-4096.crl" > "$TMP/both-1.crl"
+"$APPLY" check "$TMP/bundle-ca.pem" "$TMP/current.crl" "$TMP/both-1.crl" | grep -q 'CRL_CHECK=PASS cas=2 old_numbers=4096 candidate_numbers=4099,4096'
+printf '1004\n' > "$CA/crlnumber"
+openssl ca -gencrl -batch -config "$CA/openssl.cnf" -out "$TMP/a-4100.crl" >/dev/null 2>&1
+cat "$TMP/a-4100.crl" "$TMP/b-4097.crl" > "$TMP/both-2.crl"
+"$APPLY" check "$TMP/bundle-ca.pem" "$TMP/both-1.crl" "$TMP/both-2.crl" | grep -q 'CRL_CHECK=PASS cas=2'
+if "$APPLY" check "$TMP/bundle-ca.pem" "$TMP/current.crl" "$TMP/candidate.crl" >/dev/null 2>&1; then
+  echo 'bundle candidate missing the new CA CRL was accepted (must fail closed)' >&2; exit 1
+fi
+if "$APPLY" check "$TMP/bundle-ca.pem" "$TMP/both-2.crl" "$TMP/both-1.crl" >/dev/null 2>&1; then
+  echo 'per-CA CRL number rollback inside a bundle was accepted' >&2; exit 1
+fi
+openssl ca -gencrl -batch -config "$OTHER/openssl.cnf" -out "$TMP/other.crl" >/dev/null 2>&1
+cat "$TMP/a-4099.crl" "$TMP/b-4096.crl" "$TMP/other.crl" > "$TMP/with-unknown.crl"
+if "$APPLY" check "$TMP/bundle-ca.pem" "$TMP/current.crl" "$TMP/with-unknown.crl" >/dev/null 2>&1; then
+  echo 'CRL from an unconfigured CA inside a bundle was accepted' >&2; exit 1
+fi
+cat "$CA/ca.crt" "$DUP/ca.crt" > "$TMP/dup-ca.pem"
+if "$APPLY" check "$TMP/dup-ca.pem" "$TMP/current.crl" "$TMP/a-4099.crl" >/dev/null 2>&1; then
+  echo 'CA bundle with duplicate subjects was accepted' >&2; exit 1
+fi
+
 bash -n "$APPLY"
-echo 'BAFT_CRL_APPLY_TEST=PASS (signature/issuer, increasing CRL number, expiry, malformed and stale rejection)'
+echo 'BAFT_CRL_APPLY_TEST=PASS (signature/issuer, increasing CRL number, expiry, malformed and stale rejection, multi-CA bundles with per-CA numbers, missing/unknown/duplicate CA rejection)'

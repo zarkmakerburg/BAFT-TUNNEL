@@ -40,52 +40,76 @@ if [[ "$ACTION" == "apply" ]]; then
   command -v python3 >/dev/null 2>&1 || die "python3 is required"
 fi
 
-# OpenSSL verifies the CRL signature against the configured trust anchor.
-# Python parses OpenSSL's stable machine-oriented fields and checks the time window.
+# OpenSSL verifies each CRL signature against the CA whose subject equals the CRL issuer.
+# CA_CERT may be a bundle of 1-4 CA certificates and each CRL file a bundle of the same CRLs
+# (ADR-0017 B1 rollover overlap). Python parses OpenSSL's stable fields and checks time windows.
 python3 - "$CA_CERT" "$CURRENT_CRL" "$CANDIDATE_CRL" <<'PY'
 import datetime
+import os
 import re
 import subprocess
 import sys
+import tempfile
 
-ca, current, candidate = sys.argv[1:]
+ca_file, current, candidate = sys.argv[1:]
+MAX_BUNDLE = 4
 
-def strict_pem(path):
+def read_blocks(path, label, kind):
     with open(path, "rb") as stream:
         data = stream.read(16 * 1024 * 1024 + 1)
     if len(data) > 16 * 1024 * 1024:
-        raise ValueError("CRL file exceeds 16 MiB limit")
-    pattern = rb"\A\s*-----BEGIN X509 CRL-----\s*[A-Za-z0-9+/=\r\n]+-----END X509 CRL-----\s*\Z"
-    if not re.fullmatch(pattern, data):
-        raise ValueError("file must contain exactly one PEM X509 CRL and no trailing data")
+        raise ValueError(f"{label} exceeds 16 MiB limit")
+    block = rb"-----BEGIN " + kind + rb"-----\s*[A-Za-z0-9+/=\r\n]+-----END " + kind + rb"-----"
+    if not re.fullmatch(rb"\s*(?:" + block + rb"\s*)+", data):
+        raise ValueError(f"{label} must contain only PEM {kind.decode()} blocks and no trailing data")
+    blocks = re.findall(block, data)
+    if not 1 <= len(blocks) <= MAX_BUNDLE:
+        raise ValueError(f"{label} must contain 1-{MAX_BUNDLE} PEM blocks")
+    return blocks
 
-def openssl(path, *args):
-    return subprocess.check_output(
-        ["openssl", "crl", "-in", path, "-noout", *args],
-        text=True, stderr=subprocess.PIPE,
-    ).strip()
+def run(args, data):
+    return subprocess.run(args, input=data, check=True, capture_output=True).stdout.decode().strip()
 
-def verify(path):
-    strict_pem(path)
-    subprocess.run(
-        ["openssl", "crl", "-in", path, "-noout", "-verify", "-CAfile", ca],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-    )
-    raw = openssl(path, "-crlnumber")
-    match = re.fullmatch(r"crlNumber=0x([0-9A-Fa-f]+)", raw)
-    if not match:
-        raise ValueError("CRL Number extension is missing or malformed")
-    ca_subject = subprocess.check_output(
-        ["openssl", "x509", "-in", ca, "-noout", "-subject", "-nameopt", "RFC2253"],
-        text=True, stderr=subprocess.PIPE,
-    ).strip().removeprefix("subject=")
-    crl_issuer = subprocess.check_output(
-        ["openssl", "crl", "-in", path, "-noout", "-issuer", "-nameopt", "RFC2253"],
-        text=True, stderr=subprocess.PIPE,
-    ).strip().removeprefix("issuer=")
-    if crl_issuer != ca_subject:
-        raise ValueError("CRL issuer does not match the configured CA subject")
-    return int(match.group(1), 16)
+def subject(cert):
+    return run(["openssl", "x509", "-noout", "-subject", "-nameopt", "RFC2253"], cert).removeprefix("subject=")
+
+def crl_field(crl, *flags):
+    return run(["openssl", "crl", "-noout", *flags], crl)
+
+def load_cas():
+    cas = {}
+    for cert in read_blocks(ca_file, "CA certificate file", b"CERTIFICATE"):
+        name = subject(cert)
+        if name in cas:
+            raise ValueError(f"duplicate CA subject in bundle (CRLs are matched by subject): {name}")
+        cas[name] = cert
+    return cas
+
+def load_crls(path, label, cas, require_ca):
+    out = {}
+    for crl in read_blocks(path, label, b"X509 CRL"):
+        issuer = crl_field(crl, "-issuer", "-nameopt", "RFC2253").removeprefix("issuer=")
+        if issuer in out:
+            raise ValueError(f"{label} has two CRLs from the same issuer: {issuer}")
+        ca = cas.get(issuer)
+        if ca is None and require_ca:
+            raise ValueError(f"{label} has a CRL whose issuer is not a configured CA: {issuer}")
+        if ca is not None:
+            with tempfile.NamedTemporaryFile("wb", delete=False) as handle:
+                handle.write(ca)
+            try:
+                subprocess.run(["openssl", "crl", "-noout", "-verify", "-CAfile", handle.name],
+                               input=crl, check=True, capture_output=True)
+            except subprocess.CalledProcessError as exc:
+                raise ValueError(f"CRL signature verification failed for issuer {issuer}") from exc
+            finally:
+                os.unlink(handle.name)
+        raw = crl_field(crl, "-crlnumber")
+        match = re.fullmatch(r"crlNumber=0x([0-9A-Fa-f]+)", raw)
+        if not match:
+            raise ValueError("CRL Number extension is missing or malformed")
+        out[issuer] = (int(match.group(1), 16), crl)
+    return out
 
 def parse_time(value):
     match = re.fullmatch(r"(?:lastUpdate|nextUpdate)=(.+) GMT", value)
@@ -94,21 +118,30 @@ def parse_time(value):
     return datetime.datetime.strptime(match.group(1), "%b %d %H:%M:%S %Y").replace(tzinfo=datetime.timezone.utc)
 
 try:
-    old_number = verify(current)
-    new_number = verify(candidate)
-    if new_number <= old_number:
-        raise ValueError(f"candidate CRL number {new_number} is not greater than installed number {old_number}")
+    cas = load_cas()
+    old = load_crls(current, "installed CRL file", cas, require_ca=False)
+    new = load_crls(candidate, "candidate CRL file", cas, require_ca=True)
+    missing = sorted(set(cas) - set(new))
+    if missing:
+        raise ValueError(f"candidate has no CRL for configured CA(s): {', '.join(missing)}")
     now = datetime.datetime.now(datetime.timezone.utc)
-    last = parse_time(openssl(candidate, "-lastupdate"))
-    nxt = parse_time(openssl(candidate, "-nextupdate"))
-    if last > now + datetime.timedelta(seconds=60):
-        raise ValueError("candidate CRL is not yet valid (more than 60 seconds in the future)")
-    if nxt <= now:
-        raise ValueError("candidate CRL has expired")
-    fingerprint = openssl(candidate, "-fingerprint", "-sha256").split("=", 1)[-1]
-    print(f"CRL_CHECK=PASS old_number={old_number} candidate_number={new_number} sha256={fingerprint} next_update={nxt.isoformat()}")
+    numbers = []
+    for issuer, (number, crl) in new.items():
+        if issuer in old and number <= old[issuer][0]:
+            raise ValueError(f"candidate CRL number {number} for {issuer} is not greater than installed number {old[issuer][0]}")
+        last = parse_time(crl_field(crl, "-lastupdate"))
+        nxt = parse_time(crl_field(crl, "-nextupdate"))
+        if last > now + datetime.timedelta(seconds=60):
+            raise ValueError(f"candidate CRL for {issuer} is not yet valid (more than 60 seconds in the future)")
+        if nxt <= now:
+            raise ValueError(f"candidate CRL for {issuer} has expired")
+        numbers.append(f"{number}")
+    old_numbers = ",".join(str(old[i][0]) for i in sorted(old)) or "none"
+    fingerprint = run(["openssl", "dgst", "-sha256", "-r"], open(candidate, "rb").read()).split()[0]
+    print(f"CRL_CHECK=PASS cas={len(cas)} old_numbers={old_numbers} candidate_numbers={','.join(numbers)} sha256={fingerprint}")
 except (subprocess.CalledProcessError, OSError, ValueError) as exc:
-    print(f"apply-crl: CRL validation failed: {exc}", file=sys.stderr)
+    detail = exc.stderr.decode().strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else exc
+    print(f"apply-crl: CRL validation failed: {detail}", file=sys.stderr)
     sys.exit(2)
 PY
 
