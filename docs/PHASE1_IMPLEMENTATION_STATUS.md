@@ -257,3 +257,7 @@ Run [42401889166](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/4240
 - Under impairment: 64 KiB probes kept SHA-256 4b640d85…a68a4df2 (0.38–2.09 s); a 1 MiB probe passed in 5.9 s. After the abroad-listener restart, Direct recovered within one probe (0.39 s).
 - Total job 19 min 59 s; temporary /tmp processes only, cleanup step passed, no persistent host change.
 - Scope limit: impairment is application-level (not kernel NetEm/packet loss on the real hosts), and the soak is 15 minutes. Longer soak and kernel-level loss remain for Phase 6 (P6-001). P1-001 is accepted at this profile.
+
+## 2026-11-07 — P1-002a dual peer pin (ADR-0017 B1, step 2)
+
+`peer_fingerprint` (config and CLI) now accepts one SHA-256 pin, or two distinct comma-separated pins for a certificate rollover window; three pins, empty entries and duplicates are rejected, and a peer matching either pin is accepted (identity URI SAN and CA/CRL checks still apply). Unit and TLS-level tests added; local 44/44 tests, rustfmt, Clippy `-D warnings`. Evidence is local only (CI runner unavailable at commit time). Remaining for P1-002: multiple CA certificates with per-CA CRLs, operator push/expiry-report helpers, rollover sequence test, LAB run.

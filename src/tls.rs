@@ -286,6 +286,17 @@ mod tests {
             verify_peer_fingerprint(secure.get_ref().1.peer_certificates(), &"00".repeat(32),)
                 .is_err()
         );
+        // Rollover window: the real pin is accepted in either position next to a stale one,
+        // while two wrong pins and three pins are rejected.
+        let stale = "00".repeat(32);
+        let certs = secure.get_ref().1.peer_certificates();
+        verify_peer_fingerprint(certs, &format!("{stale},{server_pin}")).unwrap();
+        verify_peer_fingerprint(certs, &format!("{server_pin},{stale}")).unwrap();
+        assert!(verify_peer_fingerprint(certs, &format!("{stale},{}", "11".repeat(32))).is_err());
+        assert!(
+            verify_peer_fingerprint(certs, &format!("{stale},{},{server_pin}", "11".repeat(32)))
+                .is_err()
+        );
         assert!(
             crate::handshake::verify_peer_identity(
                 secure.get_ref().1.peer_certificates(),
