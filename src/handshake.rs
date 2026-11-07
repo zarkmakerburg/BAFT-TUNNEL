@@ -407,6 +407,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_handshake_rejects_each_client_hello_authorization_mismatch() {
+        for mutation in 0..8 {
+            let (mut client, mut server) = duplex(4096);
+            let server_task = tokio::spawn(async move {
+                server_handshake(
+                    &mut server,
+                    "abroad",
+                    "iran",
+                    "tunnel-a",
+                    ConnectionDirection::Direct,
+                )
+                .await
+            });
+            let mut request = ClientHello {
+                version: VERSION,
+                client_id: "iran".into(),
+                server_id: "abroad".into(),
+                tunnel_id: "tunnel-a".into(),
+                direction: ConnectionDirection::Direct,
+                capabilities: PHASE1_CAPABILITIES.to_vec(),
+                nonce: nonce(),
+            };
+            match mutation {
+                0 => request.version = VERSION + 1,
+                1 => request.client_id = "unexpected-client".into(),
+                2 => request.server_id = "unexpected-server".into(),
+                3 => request.tunnel_id = "unexpected-tunnel".into(),
+                4 => request.direction = ConnectionDirection::Reverse,
+                5 => request.capabilities.clear(),
+                6 => request.capabilities.push(StreamCapability::TcpForward),
+                7 => request.nonce = "not-a-cryptographic-nonce".into(),
+                _ => unreachable!(),
+            }
+            write_message(&mut client, &request).await.unwrap();
+            assert!(
+                server_task.await.unwrap().is_err(),
+                "server accepted client hello mutation {mutation}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn handshake_rejects_wrong_connection_direction() {
         let (mut client, mut server) = duplex(4096);
         let server_task = tokio::spawn(async move {
