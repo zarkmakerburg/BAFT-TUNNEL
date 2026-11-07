@@ -189,6 +189,18 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
     Ok(())
 }
 
+async fn drain_stream_tasks(tasks: &mut JoinSet<()>, role: &str) {
+    if tasks.is_empty() {
+        return;
+    }
+    let drain = async { while tasks.join_next().await.is_some() {} };
+    if timeout(SHUTDOWN_TIMEOUT, drain).await.is_err() {
+        eprintln!("{role} stream tasks exceeded shutdown deadline; aborting remaining tasks");
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
+}
+
 async fn server_session<S>(
     stream: S,
     target: SocketAddr,
@@ -202,9 +214,14 @@ async fn server_session<S>(
 {
     let mut session = Session::new_server(stream, yamux_config(max));
     let mut control = session.control();
+    let mut stream_tasks = JoinSet::new();
     loop {
         let item = tokio::select! {
             item = session.next() => item,
+            completed = stream_tasks.join_next(), if !stream_tasks.is_empty() => {
+                let _ = completed;
+                continue;
+            }
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     let close = tokio::spawn(async move { control.close().await });
@@ -230,7 +247,7 @@ async fn server_session<S>(
                 };
                 let destination = target;
                 let stream_tunnel = tunnel.clone();
-                tokio::spawn(async move {
+                stream_tasks.spawn(async move {
                     let _permit = permit;
                     let result: Result<()> = async {
                         timeout(
@@ -261,6 +278,7 @@ async fn server_session<S>(
             }
         }
     }
+    drain_stream_tasks(&mut stream_tasks, "server").await;
 }
 
 async fn connect_peer(options: &ForwardOptions) -> Result<Session<ClientTlsStream<TcpStream>>> {
@@ -312,6 +330,7 @@ async fn run_forward_session(
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     let mut control = session.control();
+    let mut stream_tasks = JoinSet::new();
     let mut driver = tokio::spawn(async move {
         while let Some(item) = session.next().await {
             match item {
@@ -324,6 +343,9 @@ async fn run_forward_session(
 
     loop {
         tokio::select! {
+            completed = stream_tasks.join_next(), if !stream_tasks.is_empty() => {
+                let _ = completed;
+            }
             local = receiver.recv() => {
                 let Some(mut local) = local else {
                     control.close().await;
@@ -338,6 +360,7 @@ async fn run_forward_session(
                             let _ = driver.await;
                         }
                     }
+                    drain_stream_tasks(&mut stream_tasks, "forwarder").await;
                     return Ok(());
                 };
                 let permit = match slots.clone().try_acquire_owned() {
@@ -349,7 +372,7 @@ async fn run_forward_session(
                 };
                 let mut stream_control = control.clone();
                 let tunnel = tunnel.to_owned();
-                tokio::spawn(async move {
+                stream_tasks.spawn(async move {
                     let _permit = permit;
                     let result: Result<()> = async {
                         let mut stream = timeout(
@@ -386,15 +409,19 @@ async fn run_forward_session(
                         driver.abort();
                         let _ = driver.await;
                     }
+                    drain_stream_tasks(&mut stream_tasks, "forwarder").await;
                     return Ok(());
                 }
             }
             result = &mut driver => {
-                match result {
-                    Ok(Err(error)) => return Err(error),
-                    Ok(Ok(())) => bail!("yamux session ended unexpectedly"),
-                    Err(error) => bail!("yamux driver task failed: {error}"),
-                }
+                let outcome = match result {
+                    Ok(Err(error)) => Err(error),
+                    Ok(Ok(())) => Err(anyhow::anyhow!("yamux session ended unexpectedly")),
+                    Err(error) => Err(anyhow::anyhow!("yamux driver task failed: {error}")),
+                };
+                control.close().await;
+                drain_stream_tasks(&mut stream_tasks, "forwarder").await;
+                return outcome;
             }
         }
     }
