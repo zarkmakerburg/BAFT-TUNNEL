@@ -33,7 +33,7 @@ UNIT="$STAGE/etc/systemd/system/baft-tunnel@.service"
 grep -Fq 'NoNewPrivileges=true' "$UNIT"
 grep -Fq 'ProtectSystem=strict' "$UNIT"
 grep -Fq 'CapabilityBoundingSet=' "$UNIT"
-grep -Fq 'ExecStartPre=' "$UNIT"
+grep -Fq 'apply --config' "$UNIT"
 
 mkdir -p "$STAGE/etc/baft-tunnel/pki" "$STAGE/var/lib/baft-tunnel"
 printf 'keep-config\n' > "$STAGE/etc/baft-tunnel/iran.json"

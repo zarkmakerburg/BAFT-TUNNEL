@@ -171,27 +171,6 @@ wait_active() {
 }
 
 dump_service() {
-  # Diagnostic: look at the credential directory from inside the real unit.
-  sudo mkdir -p "$DROPIN_DIR"
-  sudo tee /usr/local/bin/baft-diag.sh >/dev/null <<'EOF_DIAG'
-#!/bin/sh
-id
-echo "CD=$CREDENTIALS_DIRECTORY"
-ls -ldn /run /run/credentials /run/credentials/* 2>&1
-ls -ldn "$CREDENTIALS_DIRECTORY" 2>&1
-ls -ln "$CREDENTIALS_DIRECTORY" 2>&1
-grep Cap /proc/self/status
-grep credentials /proc/self/mountinfo
-exit 1
-EOF_DIAG
-  sudo chmod 755 /usr/local/bin/baft-diag.sh
-  printf '[Service]\nExecStartPre=\nExecStartPre=%s\n' /usr/local/bin/baft-diag.sh | sudo tee "$DROPIN_DIR/99-diag.conf" >/dev/null
-  sudo systemctl daemon-reload
-  sudo systemctl reset-failed "$SERVICE_UNIT" >/dev/null 2>&1 || true
-  sudo systemctl start "$SERVICE_UNIT" >/dev/null 2>&1 || true
-  sudo journalctl -u "$SERVICE_UNIT" -n 40 --no-pager >&2 || true
-  sudo rm -f "$DROPIN_DIR/99-diag.conf" /usr/local/bin/baft-diag.sh
-  sudo systemctl daemon-reload
   sudo systemctl status --no-pager "$SERVICE_UNIT" >&2 || true
   sudo journalctl -u "$SERVICE_UNIT" -n 80 --no-pager >&2 || true
 }

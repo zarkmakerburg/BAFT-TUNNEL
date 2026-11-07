@@ -12,7 +12,10 @@ Type=simple
 User=baft-tunnel
 Group=baft-tunnel
 WorkingDirectory=/etc/baft-tunnel
-ExecStartPre=/usr/local/bin/baft-tunnel config validate --config /etc/baft-tunnel/%i.json
+# No ExecStartPre= validation: on systemd 249 (Ubuntu 22.04) /run/credentials is
+# inaccessible to pre-start commands, so credential-based validation can only
+# run in ExecStart. `apply` validates the config and resolves the credential
+# itself and fails closed before opening any connection.
 ExecStart=/usr/local/bin/baft-tunnel apply --config /etc/baft-tunnel/%i.json --confirm
 Restart=on-failure
 RestartSec=3s
