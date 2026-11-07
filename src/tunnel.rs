@@ -8,7 +8,6 @@ use anyhow::{Context, Result, bail};
 use futures::StreamExt;
 use rand::{RngCore, rngs::OsRng};
 use tokio::{
-    io::copy_bidirectional,
     net::{TcpListener, TcpStream},
     sync::{
         Semaphore,
@@ -24,6 +23,14 @@ use tokio_yamux::{Config as YamuxConfig, Session};
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_SESSIONS: usize = 8;
+/// Connections that have not finished authentication. Counted separately from
+/// established sessions so unauthenticated sockets cannot evict a valid peer.
+const MAX_PENDING_HANDSHAKES: usize = 32;
+const MAX_PENDING_PER_IP: usize = 2;
+/// A forwarded TCP stream with no data in a direction for this long is closed,
+/// so stalled peers cannot hold stream slots forever.
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(900);
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(200);
 // Keep aggregate receive buffering bounded while allowing a 2 MiB payload
 // to pass without depending on repeated window-update cycles over high-RTT links.
 const MAX_STREAM_WINDOW_SIZE: u32 = 4 * 1024 * 1024;
@@ -105,6 +112,88 @@ fn destination(value: &str) -> Result<SocketAddr> {
     Ok(address)
 }
 
+/// Tracks one unauthenticated connection against the global and per-source
+/// limits; the slot is released when the guard drops.
+struct PendingGuard {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    per_ip: Arc<std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, usize>>>,
+    ip: std::net::IpAddr,
+}
+
+impl PendingGuard {
+    fn try_new(
+        pending: &Arc<Semaphore>,
+        per_ip: &Arc<std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, usize>>>,
+        ip: std::net::IpAddr,
+    ) -> Option<Self> {
+        let permit = pending.clone().try_acquire_owned().ok()?;
+        let mut map = per_ip.lock().unwrap_or_else(|e| e.into_inner());
+        let count = map.entry(ip).or_insert(0);
+        if *count >= MAX_PENDING_PER_IP {
+            return None;
+        }
+        *count += 1;
+        drop(map);
+        Some(Self {
+            _permit: permit,
+            per_ip: per_ip.clone(),
+            ip,
+        })
+    }
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        let mut map = self.per_ip.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = map.get_mut(&self.ip) {
+            *count -= 1;
+            if *count == 0 {
+                map.remove(&self.ip);
+            }
+        }
+    }
+}
+
+async fn pump_with_idle_timeout<R, W>(
+    mut reader: R,
+    mut writer: W,
+    idle: Duration,
+) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buffer = vec![0u8; 16 * 1024];
+    loop {
+        let read = timeout(idle, reader.read(&mut buffer))
+            .await
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "stream idle timeout")
+            })??;
+        if read == 0 {
+            writer.shutdown().await?;
+            return Ok(());
+        }
+        writer.write_all(&buffer[..read]).await?;
+    }
+}
+
+/// Relay both directions until each side closes, failing a direction that is idle too long.
+async fn relay_with_idle_timeout<A, B>(a: A, b: B, idle: Duration) -> std::io::Result<()>
+where
+    A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (a_read, a_write) = tokio::io::split(a);
+    let (b_read, b_write) = tokio::io::split(b);
+    tokio::try_join!(
+        pump_with_idle_timeout(a_read, b_write, idle),
+        pump_with_idle_timeout(b_read, a_write, idle)
+    )?;
+    Ok(())
+}
+
 fn next_backoff(current: Duration) -> Duration {
     current.saturating_mul(2).min(MAX_BACKOFF)
 }
@@ -117,6 +206,8 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
         .await
         .with_context(|| format!("bind {listen}"))?;
     let sessions = Arc::new(Semaphore::new(MAX_SESSIONS));
+    let pending = Arc::new(Semaphore::new(MAX_PENDING_HANDSHAKES));
+    let pending_per_ip = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let streams = Arc::new(Semaphore::new(options.max_streams));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut tasks = JoinSet::new();
@@ -132,15 +223,21 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                 break;
             }
             accepted = listener.accept() => {
-                let (socket, remote) = accepted?;
-                let permit = match sessions.clone().try_acquire_owned() {
-                    Ok(p) => p,
-                    Err(_) => {
-                        eprintln!("connection rejected: session capacity reached");
-                        drop(socket);
+                let (socket, remote) = match accepted {
+                    Ok(pair) => pair,
+                    Err(error) => {
+                        // Transient accept failures (EMFILE, aborted handshakes) must not stop the server.
+                        eprintln!("accept failed: {error}");
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                         continue;
                     }
                 };
+                let Some(pending_guard) = PendingGuard::try_new(&pending, &pending_per_ip, remote.ip()) else {
+                    eprintln!("connection rejected: unauthenticated connection limit reached");
+                    drop(socket);
+                    continue;
+                };
+                let sessions = sessions.clone();
                 let acceptor = acceptor.clone();
                 let (local, peer, tunnel, direction, pin, target, max, stream_slots) = (
                     options.local_id.clone(),
@@ -154,7 +251,6 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                 );
                 let session_shutdown = shutdown_rx.clone();
                 tasks.spawn(async move {
-                    let _permit = permit;
                     let result: Result<()> = async {
                         let mut secure = timeout(HANDSHAKE_TIMEOUT, acceptor.accept(socket))
                             .await
@@ -167,6 +263,11 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                         )
                         .await
                         .context("protocol handshake timeout")??;
+                        // Authenticated: release the pre-auth slot, then take an established-session slot.
+                        drop(pending_guard);
+                        let _session_permit = sessions
+                            .try_acquire_owned()
+                            .map_err(|_| anyhow::anyhow!("session capacity reached"))?;
                         server_session(secure, target, max, stream_slots, tunnel, direction, session_shutdown).await;
                         Ok(())
                     }
@@ -262,7 +363,7 @@ async fn server_session<S>(
                                 .await
                                 .context("destination connect timeout")??;
                         eprintln!("fixed destination connected for yamux stream");
-                        copy_bidirectional(&mut logical, &mut upstream)
+                        relay_with_idle_timeout(&mut logical, &mut upstream, STREAM_IDLE_TIMEOUT)
                             .await
                             .context("forward TCP stream")?;
                         Ok(())
@@ -392,7 +493,7 @@ async fn run_forward_session(
                         )
                         .await
                         .context("authorize TCP forwarding stream")?;
-                        copy_bidirectional(&mut local, &mut stream)
+                        relay_with_idle_timeout(&mut local, &mut stream, STREAM_IDLE_TIMEOUT)
                             .await
                             .context("forward local TCP stream")?;
                         Ok(())
@@ -507,7 +608,14 @@ pub async fn forward(options: ForwardOptions) -> Result<()> {
                 break;
             }
             accepted = listener.accept() => {
-                let (local, _) = accepted?;
+                let (local, _) = match accepted {
+                    Ok(pair) => pair,
+                    Err(error) => {
+                        eprintln!("local accept failed: {error}");
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
+                        continue;
+                    }
+                };
                 if sender.try_send(local).is_err() {
                     eprintln!("local connection rejected: bounded pending queue is full");
                 }
@@ -833,5 +941,58 @@ mod tests {
         }
         server_task.abort();
         client_task.abort();
+    }
+
+    #[test]
+    fn pending_guard_limits_per_source_and_releases_slots() {
+        let pending = Arc::new(Semaphore::new(MAX_PENDING_HANDSHAKES));
+        let per_ip = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let a: std::net::IpAddr = "198.51.100.1".parse().unwrap();
+        let b: std::net::IpAddr = "198.51.100.2".parse().unwrap();
+        let g1 = PendingGuard::try_new(&pending, &per_ip, a).unwrap();
+        let _g2 = PendingGuard::try_new(&pending, &per_ip, a).unwrap();
+        assert!(PendingGuard::try_new(&pending, &per_ip, a).is_none());
+        // Another source is unaffected and the rejected attempt leaked no global slot.
+        assert!(PendingGuard::try_new(&pending, &per_ip, b).is_some());
+        assert_eq!(pending.available_permits(), MAX_PENDING_HANDSHAKES - 2);
+        drop(g1);
+        assert!(PendingGuard::try_new(&pending, &per_ip, a).is_some());
+    }
+
+    #[test]
+    fn pending_guard_enforces_global_limit_independent_of_sessions() {
+        let pending = Arc::new(Semaphore::new(MAX_PENDING_HANDSHAKES));
+        let per_ip = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let mut guards = Vec::new();
+        for n in 0..MAX_PENDING_HANDSHAKES {
+            let ip: std::net::IpAddr = format!("203.0.113.{n}").parse().unwrap();
+            guards.push(PendingGuard::try_new(&pending, &per_ip, ip).unwrap());
+        }
+        let extra: std::net::IpAddr = "192.0.2.1".parse().unwrap();
+        assert!(PendingGuard::try_new(&pending, &per_ip, extra).is_none());
+    }
+
+    #[tokio::test]
+    async fn relay_closes_idle_stream_and_passes_data_both_ways() {
+        let (mut client, relay_a) = duplex(1024);
+        let (relay_b, mut server) = duplex(1024);
+        let task = tokio::spawn(relay_with_idle_timeout(
+            relay_a,
+            relay_b,
+            Duration::from_millis(300),
+        ));
+        client.write_all(b"ping").await.unwrap();
+        let mut buffer = [0u8; 4];
+        server.read_exact(&mut buffer).await.unwrap();
+        assert_eq!(&buffer, b"ping");
+        server.write_all(b"pong").await.unwrap();
+        client.read_exact(&mut buffer).await.unwrap();
+        assert_eq!(&buffer, b"pong");
+        // No more traffic: the relay must give up instead of holding the slot forever.
+        let result = timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
     }
 }
