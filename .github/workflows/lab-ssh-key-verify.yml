@@ -1,0 +1,56 @@
+name: LAB SSH credential fingerprint verification
+
+on:
+  push:
+    branches:
+      - phase1/rust-tcp-transport
+    paths:
+      - .github/workflows/lab-ssh-key-verify.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-lab-ssh-key-verify
+  cancel-in-progress: false
+
+jobs:
+  verify-key-match:
+    runs-on: ubuntu-24.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 3
+    steps:
+      - name: Compare GitHub Secret public fingerprint without exposing private material
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+        run: |
+          set -Eeuo pipefail
+          set +x
+          umask 077
+          test -n "$SSH_PRIVATE_KEY" || { echo "RESULT=MISMATCH (secret missing)"; exit 2; }
+          work="$RUNNER_TEMP/baft-key-check"
+          install -d -m 700 "$work"
+          trap 'rm -rf "$work"' EXIT
+          key_file="$work/id_key"
+          public_file="$work/derived.pub"
+          printf '%s\\n' "$SSH_PRIVATE_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          unset SSH_PRIVATE_KEY
+          if ! ssh-keygen -y -P '' -f "$key_file" > "$public_file" 2>/dev/null; then
+            echo "RESULT=MISMATCH (secret is not a readable unencrypted SSH private key)"
+            exit 1
+          fi
+          actual_type="$(awk '{print $1}' "$public_file")"
+          actual_fingerprint="$(ssh-keygen -lf "$public_file" -E sha256 | awk '{print $2}')"
+          expected_fingerprint="SHA256:nmCJAXld33tFVzxLFH5pcfaK341CoJbFN6hDf11E+4Y"
+          if [[ "$actual_type" == "ssh-ed25519" && "$actual_fingerprint" == "$expected_fingerprint" ]]; then
+            echo "RESULT=MATCH"
+            echo "KEY_TYPE=ssh-ed25519"
+            echo "FINGERPRINT=$actual_fingerprint"
+          else
+            echo "RESULT=MISMATCH"
+            echo "KEY_TYPE=$actual_type"
+            echo "FINGERPRINT=$actual_fingerprint"
+            exit 1
+          fi
