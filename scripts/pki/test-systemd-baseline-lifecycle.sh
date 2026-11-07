@@ -170,7 +170,11 @@ wait_active() {
   return 1
 }
 
-sudo systemctl start "$SERVICE_UNIT"
+dump_service() {
+  sudo systemctl status --no-pager "$SERVICE_UNIT" >&2 || true
+  sudo journalctl -u "$SERVICE_UNIT" -n 80 --no-pager >&2 || true
+}
+sudo systemctl start "$SERVICE_UNIT" || { dump_service; die "service failed to start"; }
 wait_active || die "installed service did not become active"
 [[ "$(sudo systemctl show -p User --value "$SERVICE_UNIT")" == "baft-tunnel" ]] || die "service did not run as baft-tunnel"
 start_before="$(sudo systemctl show -p ExecMainStartTimestampMonotonic --value "$SERVICE_UNIT")"
