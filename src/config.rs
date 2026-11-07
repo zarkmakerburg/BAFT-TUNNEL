@@ -10,10 +10,19 @@ use serde::Deserialize;
 
 use crate::{
     authorization::ConnectionDirection,
+    engine::NoiseSettings,
     handshake::{validate_fingerprint, validate_identity},
     tls, tunnel,
     tunnel::{ForwardOptions, ServerOptions},
 };
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EngineKind {
+    #[default]
+    TcpTls,
+    NoiseTcp,
+}
 
 const CRL_WARNING_SECONDS: i64 = 24 * 3600;
 
@@ -31,31 +40,48 @@ pub enum RuntimeConfig {
         peer_id: String,
         tunnel_id: String,
         direction: ConnectionDirection,
+        #[serde(default)]
         peer_fingerprint: String,
+        #[serde(default)]
         ca: PathBuf,
+        #[serde(default)]
         crl: PathBuf,
+        #[serde(default)]
         cert: PathBuf,
         key: Option<PathBuf>,
         #[serde(default)]
         key_credential: Option<String>,
+        #[serde(default)]
+        engine: EngineKind,
+        #[serde(default)]
+        noise_peer_public: Option<String>,
         #[serde(default = "default_max_streams")]
         max_streams: usize,
     },
     Forward {
         listen: String,
         remote: String,
+        #[serde(default)]
         server_name: String,
         local_id: String,
         peer_id: String,
         tunnel_id: String,
         direction: ConnectionDirection,
+        #[serde(default)]
         peer_fingerprint: String,
+        #[serde(default)]
         ca: PathBuf,
+        #[serde(default)]
         crl: PathBuf,
+        #[serde(default)]
         cert: PathBuf,
         key: Option<PathBuf>,
         #[serde(default)]
         key_credential: Option<String>,
+        #[serde(default)]
+        engine: EngineKind,
+        #[serde(default)]
+        noise_peer_public: Option<String>,
         #[serde(default = "default_max_streams")]
         max_streams: usize,
         /// Allow the local forwarder to listen on a non-loopback address. Anyone who can reach
@@ -81,14 +107,31 @@ impl RuntimeConfig {
                 cert,
                 key,
                 key_credential,
+                engine,
+                noise_peer_public,
                 max_streams,
             } => {
-                validate_common(local_id, peer_id, tunnel_id, peer_fingerprint, *max_streams)?;
+                validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
                 parse_socket(listen, "listen")?;
                 validate_target(parse_socket(target, "target")?)?;
                 let key_path = private_key_path(key.as_deref(), key_credential.as_deref())?;
-                tls::server_config(ca, crl, cert, &key_path)
-                    .context("server TLS material is invalid")?;
+                match engine {
+                    EngineKind::TcpTls => {
+                        validate_fingerprint(peer_fingerprint)?;
+                        require_tls_paths(&[ca, crl, cert])?;
+                        reject_noise_fields(noise_peer_public.as_deref())?;
+                        tls::server_config(ca, crl, cert, &key_path)
+                            .context("server TLS material is invalid")?;
+                    }
+                    EngineKind::NoiseTcp => {
+                        validate_noise(
+                            &[ca, crl, cert],
+                            peer_fingerprint,
+                            &key_path,
+                            noise_peer_public.as_deref(),
+                        )?;
+                    }
+                }
             }
             Self::Forward {
                 listen,
@@ -104,23 +147,51 @@ impl RuntimeConfig {
                 cert,
                 key,
                 key_credential,
+                engine,
+                noise_peer_public,
                 max_streams,
                 allow_non_loopback_listen,
             } => {
-                validate_common(local_id, peer_id, tunnel_id, peer_fingerprint, *max_streams)?;
+                validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
                 validate_forward_listen(
                     parse_socket(listen, "listen")?,
                     *allow_non_loopback_listen,
                 )?;
                 validate_target(parse_socket(remote, "remote")?)?;
-                tls::server_name(server_name)?;
                 let key_path = private_key_path(key.as_deref(), key_credential.as_deref())?;
-                tls::client_config(ca, crl, cert, &key_path)
-                    .context("client TLS material is invalid")?;
+                match engine {
+                    EngineKind::TcpTls => {
+                        validate_fingerprint(peer_fingerprint)?;
+                        require_tls_paths(&[ca, crl, cert])?;
+                        reject_noise_fields(noise_peer_public.as_deref())?;
+                        tls::server_name(server_name)?;
+                        tls::client_config(ca, crl, cert, &key_path)
+                            .context("client TLS material is invalid")?;
+                    }
+                    EngineKind::NoiseTcp => {
+                        if !server_name.is_empty() {
+                            bail!("server_name is not used by the noise-tcp engine");
+                        }
+                        validate_noise(
+                            &[ca, crl, cert],
+                            peer_fingerprint,
+                            &key_path,
+                            noise_peer_public.as_deref(),
+                        )?;
+                    }
+                }
             }
         }
-        self.warn_if_crl_expiring();
+        if self.engine() == EngineKind::TcpTls {
+            self.warn_if_crl_expiring();
+        }
         Ok(())
+    }
+
+    fn engine(&self) -> EngineKind {
+        match self {
+            Self::Serve { engine, .. } | Self::Forward { engine, .. } => *engine,
+        }
     }
 
     fn crl_path(&self) -> &Path {
@@ -156,11 +227,13 @@ impl RuntimeConfig {
                 max_streams,
                 key,
                 key_credential,
+                engine,
                 ..
             } => format!(
-                "Mode: serve\nDirection: {}\nListen: {listen}\nFixed destination: {target}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nPrivate key source: {}\nSecurity: TLS 1.3 + mutual certificate auth + SHA-256 peer pin\nHost changes: none",
+                "Mode: serve\nDirection: {}\nListen: {listen}\nFixed destination: {target}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nPrivate key source: {}\nSecurity: {}\nHost changes: none",
                 direction.as_str(),
-                key_source_description(key.as_ref(), key_credential.as_deref())
+                key_source_description(key.as_ref(), key_credential.as_deref()),
+                security_description(*engine)
             ),
             Self::Forward {
                 listen,
@@ -173,11 +246,13 @@ impl RuntimeConfig {
                 max_streams,
                 key,
                 key_credential,
+                engine,
                 ..
             } => format!(
-                "Mode: forward\nDirection: {}\nLocal listener: {listen}\nRemote peer: {remote}\nTLS server name: {server_name}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nPrivate key source: {}\nSecurity: TLS 1.3 + mutual certificate auth + SHA-256 peer pin\nHost changes: none",
+                "Mode: forward\nDirection: {}\nLocal listener: {listen}\nRemote peer: {remote}\nTLS server name: {server_name}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nPrivate key source: {}\nSecurity: {}\nHost changes: none",
                 direction.as_str(),
-                key_source_description(key.as_ref(), key_credential.as_deref())
+                key_source_description(key.as_ref(), key_credential.as_deref()),
+                security_description(*engine)
             ),
         }
     }
@@ -296,9 +371,12 @@ impl RuntimeConfig {
                 cert,
                 key,
                 key_credential,
+                engine,
+                noise_peer_public,
                 max_streams,
             } => {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
+                let noise = noise_settings(engine, &key, noise_peer_public);
                 tunnel::serve(ServerOptions {
                     listen,
                     target,
@@ -311,6 +389,7 @@ impl RuntimeConfig {
                     crl,
                     cert,
                     key,
+                    noise,
                     max_streams,
                 })
                 .await
@@ -329,10 +408,13 @@ impl RuntimeConfig {
                 cert,
                 key,
                 key_credential,
+                engine,
+                noise_peer_public,
                 max_streams,
                 allow_non_loopback_listen: _,
             } => {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
+                let noise = noise_settings(engine, &key, noise_peer_public);
                 tunnel::forward(ForwardOptions {
                     listen,
                     remote,
@@ -346,11 +428,26 @@ impl RuntimeConfig {
                     crl,
                     cert,
                     key,
+                    noise,
                     max_streams,
                 })
                 .await
             }
         }
+    }
+}
+
+fn noise_settings(
+    engine: EngineKind,
+    key: &Path,
+    peer_public: Option<String>,
+) -> Option<NoiseSettings> {
+    match (engine, peer_public) {
+        (EngineKind::NoiseTcp, Some(peer_public)) => Some(NoiseSettings {
+            private_key: key.to_path_buf(),
+            peer_public,
+        }),
+        _ => None,
     }
 }
 
@@ -360,6 +457,15 @@ fn private_key_path(key: Option<&Path>, credential_id: Option<&str>) -> Result<P
         (None, Some(identifier)) => crate::key_custody::systemd_credential_path(identifier),
         (Some(_), Some(_)) => bail!("configure exactly one of key or key_credential"),
         (None, None) => bail!("configure exactly one of key or key_credential"),
+    }
+}
+
+fn security_description(engine: EngineKind) -> &'static str {
+    match engine {
+        EngineKind::TcpTls => "TLS 1.3 + mutual certificate auth + SHA-256 peer pin",
+        EngineKind::NoiseTcp => {
+            "Noise IK (X25519/ChaChaPoly/BLAKE2s) + pinned peer static key, no certificates"
+        }
     }
 }
 
@@ -402,17 +508,42 @@ fn validate_target(address: SocketAddr) -> Result<()> {
     Ok(())
 }
 
-fn validate_common(
-    local: &str,
-    peer: &str,
-    tunnel: &str,
-    fingerprint: &str,
-    streams: usize,
+fn require_tls_paths(paths: &[&PathBuf]) -> Result<()> {
+    if paths.iter().any(|path| path.as_os_str().is_empty()) {
+        bail!("engine tcp-tls requires ca, crl and cert");
+    }
+    Ok(())
+}
+
+fn reject_noise_fields(noise_peer_public: Option<&str>) -> Result<()> {
+    if noise_peer_public.is_some() {
+        bail!("noise_peer_public is only valid with engine noise-tcp");
+    }
+    Ok(())
+}
+
+/// Fail closed on ambiguous configuration: a Noise tunnel must not also carry TLS material.
+fn validate_noise(
+    tls_paths: &[&PathBuf],
+    peer_fingerprint: &str,
+    key_path: &Path,
+    noise_peer_public: Option<&str>,
 ) -> Result<()> {
+    if tls_paths.iter().any(|path| !path.as_os_str().is_empty()) || !peer_fingerprint.is_empty() {
+        bail!("ca, crl, cert and peer_fingerprint must be omitted with engine noise-tcp");
+    }
+    let peer = noise_peer_public.context("engine noise-tcp requires noise_peer_public")?;
+    crate::engine::NoiseSettings {
+        private_key: key_path.to_path_buf(),
+        peer_public: peer.to_owned(),
+    }
+    .validate()
+}
+
+fn validate_common(local: &str, peer: &str, tunnel: &str, streams: usize) -> Result<()> {
     validate_identity(local)?;
     validate_identity(peer)?;
     validate_identity(tunnel)?;
-    validate_fingerprint(fingerprint)?;
     if local == peer {
         bail!("local and peer identities must differ");
     }
@@ -428,10 +559,9 @@ mod tests {
 
     #[test]
     fn max_stream_count_is_bounded() {
-        let fingerprint = "a".repeat(64);
-        assert!(validate_common("node-a", "node-b", "tunnel", &fingerprint, 1).is_ok());
-        assert!(validate_common("node-a", "node-b", "tunnel", &fingerprint, 8).is_ok());
-        assert!(validate_common("node-a", "node-b", "tunnel", &fingerprint, 9).is_err());
+        assert!(validate_common("node-a", "node-b", "tunnel", 1).is_ok());
+        assert!(validate_common("node-a", "node-b", "tunnel", 8).is_ok());
+        assert!(validate_common("node-a", "node-b", "tunnel", 9).is_err());
     }
 
     #[test]
@@ -454,8 +584,60 @@ mod tests {
         assert!(serde_json::from_str::<RuntimeConfig>(&with_unknown).is_err());
         let without_direction = valid.replace("\"direction\":\"direct\",", "");
         assert!(serde_json::from_str::<RuntimeConfig>(&without_direction).is_err());
+        // A missing CRL must still fail closed for the TLS engine (at validation).
         let without_crl = valid.replace("\"crl\":\"ca.crl\",", "");
-        assert!(serde_json::from_str::<RuntimeConfig>(&without_crl).is_err());
+        let parsed: RuntimeConfig = serde_json::from_str(&without_crl).unwrap();
+        assert!(parsed.validate().is_err());
+    }
+
+    #[test]
+    fn noise_engine_config_is_strict_about_ambiguous_material() {
+        let dir = std::env::temp_dir().join(format!("baft-noise-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = dir.join("k.noise");
+        let _ = std::fs::remove_file(&key);
+        let public = crate::engine::write_noise_keypair(&key).unwrap();
+        let base = |extra: &str| {
+            format!(
+                r#"{{"mode":"serve","engine":"noise-tcp","direction":"direct","listen":"127.0.0.1:9443","target":"127.0.0.1:8080","local_id":"abroad","peer_id":"iran","tunnel_id":"demo","key":"{}"{extra}}}"#,
+                key.display()
+            )
+        };
+        let ok = base(&format!(r#","noise_peer_public":"{public}""#));
+        serde_json::from_str::<RuntimeConfig>(&ok)
+            .unwrap()
+            .validate()
+            .unwrap();
+        // Missing peer key, TLS material mixed in, bad key length: all rejected.
+        assert!(
+            serde_json::from_str::<RuntimeConfig>(&base(""))
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        let mixed = base(&format!(r#","noise_peer_public":"{public}","ca":"ca.pem""#));
+        assert!(
+            serde_json::from_str::<RuntimeConfig>(&mixed)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        let short = base(r#","noise_peer_public":"abcd""#);
+        assert!(
+            serde_json::from_str::<RuntimeConfig>(&short)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        // The TLS engine must not accept a stray Noise key.
+        let stray = ok.replace("noise-tcp", "tcp-tls");
+        assert!(
+            serde_json::from_str::<RuntimeConfig>(&stray)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

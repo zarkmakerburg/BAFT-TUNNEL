@@ -3,7 +3,6 @@ mod config;
 mod engine;
 mod handshake;
 pub mod key_custody;
-#[allow(dead_code)]
 mod noise;
 mod tls;
 mod tunnel;
@@ -97,6 +96,12 @@ enum Command {
         #[arg(long)]
         confirm: bool,
     },
+    /// Create a Noise static keypair: the private key is written to --out (mode 0600, never
+    /// overwritten); the public key is printed for enrolment in the peer's config.
+    NoiseKeygen {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Print a redacted diagnostic bundle; never includes key material or network endpoints.
     SupportBundle {
         #[arg(long)]
@@ -148,6 +153,8 @@ async fn main() -> Result<()> {
                 cert,
                 key: Some(key),
                 key_credential: None,
+                engine: config::EngineKind::TcpTls,
+                noise_peer_public: None,
                 max_streams,
             };
             config.validate()?;
@@ -183,6 +190,8 @@ async fn main() -> Result<()> {
                 cert,
                 key: Some(key),
                 key_credential: None,
+                engine: config::EngineKind::TcpTls,
+                noise_peer_public: None,
                 max_streams,
                 allow_non_loopback_listen,
             };
@@ -217,6 +226,11 @@ async fn main() -> Result<()> {
                 "Applying validated tunnel configuration; no firewall or system settings will be changed."
             );
             config.apply().await
+        }
+        Command::NoiseKeygen { out } => {
+            let public = engine::write_noise_keypair(&out)?;
+            println!("{public}");
+            Ok(())
         }
         Command::SupportBundle { config: path } => {
             let config = config::load(&path)?;
