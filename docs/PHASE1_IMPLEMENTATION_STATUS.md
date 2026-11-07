@@ -2,9 +2,9 @@
 
 **Authorization:** Owner-approved 2026-11-06.
 **Branch:** phase1/rust-tcp-transport.
-**Latest exact-head CI-verified commit:** d901d11bc37541c069b5a402d2ee78576f32be8c (2026-11-07; all four Phase 0/Phase 1 push/PR workflows PASS).
+**Latest exact-head CI-verified commit:** 6afaf9a8758c435986c9f60ad50863491e67266c (2026-11-07; all four Phase 0/Phase 1 push/PR workflows PASS).
 **Current security remediation:** Rust 1.88.0 baseline, `time 0.3.47`, removal of unmaintained `rustls-pemfile`; exact-head CI PASS (2026-11-07).
-**Latest runtime product-code SHA:** d901d11bc37541c069b5a402d2ee78576f32be8c (includes bounded SIGTERM/Ctrl-C shutdown).
+**Latest runtime product-code SHA:** 6afaf9a8758c435986c9f60ad50863491e67266c (includes tracked per-stream task cleanup and nested bounded shutdown budgets).
 **Status:** In progress; not production-ready. ADR-0010 is the current transport decision; ADR-0009 is superseded. Offline PKI tooling is defined by ADR-0012.
 
 ## Implemented
@@ -44,7 +44,7 @@ Run [42246759289](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/4224
 - TLS tests reject expired, missing and malformed CRLs and a parseable CRL signed by the wrong issuer on both TLS roles.
 - Existing identity tests reject missing, duplicate, conflicting, or wrong URI SANs, wrong peer identities, wrong tunnel IDs, and wrong directions. Framing regressions reject zero/oversized lengths, truncated payloads, oversized outbound serialization, and duplicate/unknown JSON fields.
 - The offline PKI test creates a temporary CA and verifies P-256 CSR checks, URI/DNS/IP SAN issuance, 0600 node-key permissions, CA-key isolation, certificate revocation, and node/server-name mismatch rejection.
-- Local Mac validation on the latest runtime/test code passed: formatting, 34/34 Rust tests, Clippy with warnings denied, and diff checks. Earlier local validation also covered shell syntax, workflow pin checks, LAB orchestration mocks, preflight mocks, NetEm cleanup failure paths, and the PKI lifecycle regression.
+- Historical local validation on an earlier runtime/test head passed formatting, 34/34 Rust tests, Clippy with warnings denied, and diff checks; see the latest exact-head verification below for current evidence. Earlier local validation also covered shell syntax, workflow pin checks, LAB orchestration mocks, preflight mocks, NetEm cleanup failure paths, and the PKI lifecycle regression.
 
 ## Exact-head CI evidence
 
@@ -123,3 +123,14 @@ This evidence is not a security certification. Phase 1 remains Draft and is not 
 - Phase 1 passed pinned Rust 1.88.0/cargo-audit 0.22.1, RustSec audit with warnings denied, formatting, 37 Rust tests, Clippy, optimized release build, encrypted systemd credential runtime validation, and installed systemd service lifecycle. Audit scanned 157 dependencies with no vulnerability, unmaintained, unsound, or yanked findings.
 - Local exact-head validation also passed 37/37 Rust tests, rustfmt, Clippy with warnings denied, optimized release build, RustSec audit with warnings denied, and diff checks.
 - This closes exact-head CI only. It does not close online enrollment/control-plane authorization, automated CRL distribution/refresh/rotation, independent security review, persistent operator-host custody/lifecycle/signal-stop verification, or longer real-host soak. No new real-host LAB run is claimed for d901d11.
+
+
+## Latest exact-head verification — 6afaf9a PASS
+
+- Commit: [6afaf9a8758c435986c9f60ad50863491e67266c](https://github.com/zarkmakerburg/BAFT-TUNNEL/commit/6afaf9a8758c435986c9f60ad50863491e67266c).
+- Phase 1 push [42338027443](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42338027443) and PR [42338030998](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42338030998): PASS.
+- Phase 0 push [42338027246](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42338027246) and PR [42338030975](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42338030975): PASS.
+- Phase 1 exact-head CI completed pinned Rust 1.88.0 and cargo-audit 0.22.1 installation, RustSec audit with warnings denied, formatting, all 37 Rust tests, Clippy with warnings denied, optimized release build, encrypted systemd credential runtime validation, and installed systemd service lifecycle.
+- Local exact-head validation: 37/37 Rust tests, rustfmt, Clippy, optimized release build, RustSec audit (157 dependencies; no vulnerability, unmaintained, unsound, or yanked findings), and diff check — PASS.
+- This closes exact-head CI only. No new two-host LAB run is claimed for this SHA. Persistent operator-controlled Linux lifecycle, online enrollment/control-plane authorization, automated CRL distribution/refresh/rollover, independent security review, and longer real-host soak remain open.
+- PR #3 remains Draft/open/unmerged. No release or deployment.
