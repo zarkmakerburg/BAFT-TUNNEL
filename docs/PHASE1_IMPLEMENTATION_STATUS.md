@@ -85,7 +85,7 @@ Previous branch head `f303bfcbd115b9da95fa9b8f3130850066bfdece` passed all four 
 
 ## Mandatory remaining Phase 1 acceptance work
 
-- Online enrollment/authorization workflow and control-plane integration. Current PKI helper is manual/offline only.
+- **Enrollment decision resolved (2026-11-07):** Phase 1 uses operator-controlled offline CA provisioning per accepted ADR-0014. Online enrollment/control-plane integration is deferred and is not a Phase 1 acceptance blocker. No public enrollment endpoint or online CA signer is implemented or authorized.
 - Dedicated operator-controlled Linux host proof for encrypted credential mode across persistent service start/restart, permissions, upgrade/rollback and uninstall. The ephemeral Ubuntu 24.04/systemd 255 transient-unit integration test passes; the two configured LAB hosts are Ubuntu 22.04/systemd 249 and cannot exercise LoadCredentialEncrypted=. TPM2-backed provisioning and PKCS#11/TPM signing remain separate follow-up work.
 - Automated CRL publication/distribution, CRL refresh coordination, safe CA/pin rollover, and overlapping pins. CRL updates are currently supplied out of band; restart both peers to apply them.
 - Additional trust-anchor/CA lifecycle failure modes beyond current negative coverage. Expired CRLs are already tested to fail closed on both TLS client and server roles; CRLs signed by the wrong issuer are also rejected.
@@ -106,9 +106,9 @@ Previous branch head `f303bfcbd115b9da95fa9b8f3130850066bfdece` passed all four 
 This evidence is not a security certification. Phase 1 remains Draft and is not production-ready. No production host mutation, release artifact publication, or deployment has been performed. Do not merge into the release branch or publish a product release until the remaining mandatory acceptance gates are closed and independently reviewed.
 
 
-## Enrollment architecture proposal — ADR-0014
+## Enrollment decision — ADR-0014
 
-[ADR-0014: online enrollment and control-plane trust boundary](ADR-0014-online-enrollment-and-control-plane.md) is a proposed design only. It defines scoped single-use enrollment grants, digest-only token storage, node-generated keys and CSR proof-of-possession, server-controlled node identity, idempotent signer issuance, crash-safe grant reservation, signed CRL refresh, explicit CA/pin overlap, and control-plane outage isolation. No enrollment endpoint is implemented or exposed, and no CA key is moved online. Issuer model, operator authentication, persistence/backup decisions, and independent security review remain decision gates.
+[ADR-0014: enrollment and control-plane trust boundary](ADR-0014-online-enrollment-and-control-plane.md) is **Accepted for offline operator-controlled enrollment in Phase 1**. The existing offline CA helper is the onboarding baseline; node private keys remain on their nodes and the CA private key remains offline. Online enrollment, a public endpoint, and a network-accessible signer are deferred to a later phase and are not Phase 1 release blockers. Reconsideration requires a new owner-reviewed decision and independent security review.
 
 ## Handshake negative-test history
 
@@ -167,7 +167,7 @@ This dated addendum supersedes older "latest" snapshots above without deleting h
 
 ### Remaining mandatory Phase 1 acceptance gates
 
-1. Online enrollment/authorization and control-plane integration remain unimplemented. ADR-0014 is Proposed only; issuer model, operator authentication, persistence/backup, threat review, and independent protocol review must be decided before implementation is enabled. No public enrollment endpoint or online CA signer is authorized by this ADR.
+1. **Enrollment decision resolved:** ADR-0014 is accepted for offline operator-controlled enrollment in Phase 1. Online enrollment/control-plane integration is deferred, not a Phase 1 release blocker. No public enrollment endpoint or online CA signer is authorized. Reconsider online enrollment only through a new owner-reviewed decision and independent security review.
 2. Dedicated operator-controlled Linux host proof remains open for encrypted credential custody and persistent service start/restart, permissions, upgrade/rollback, uninstall, and signal-stop. Hosted Ubuntu 24.04/systemd 255 transient-unit and disposable install lifecycle CI passed, but is not persistent operator-host evidence. The two current Ubuntu 22.04/systemd 249 LAB hosts cannot exercise `LoadCredentialEncrypted=`.
 3. Automated CRL publication/distribution/refresh and safe CA/pin rollover with an explicit overlap/rollback procedure remain open. Current CRL updates are out-of-band and require peer restart.
 4. Further justified adversarial/replay/resource-exhaustion testing, protocol-boundary fuzzing, dependency/license review, and an independent security review remain open. Avoid redundant test proliferation; prioritize uncovered effect boundaries and evidence gaps.
