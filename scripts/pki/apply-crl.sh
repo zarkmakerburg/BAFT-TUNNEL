@@ -78,7 +78,10 @@ def verify(path):
         ["openssl", "x509", "-in", ca, "-noout", "-subject", "-nameopt", "RFC2253"],
         text=True, stderr=subprocess.PIPE,
     ).strip().removeprefix("subject=")
-    crl_issuer = openssl(path, "-issuer").removeprefix("issuer=")
+    crl_issuer = subprocess.check_output(
+        ["openssl", "crl", "-in", path, "-noout", "-issuer", "-nameopt", "RFC2253"],
+        text=True, stderr=subprocess.PIPE,
+    ).strip().removeprefix("issuer=")
     if crl_issuer != ca_subject:
         raise ValueError("CRL issuer does not match the configured CA subject")
     return int(match.group(1), 16)
