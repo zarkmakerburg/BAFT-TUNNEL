@@ -93,7 +93,16 @@ input,select{font:inherit;width:100%;min-height:42px;padding:6px 10px;border:1px
   <div class="row"><div><b class="mono">media-demo</b><div class="sub">TCP/TLS · <span data-fa="مستقیم" data-en="Direct"></span> · <span data-fa="پورت" data-en="Port"></span> <span class="mono">9000</span></div></div><span class="pill warn" data-fa="تاخیر بالا (۳۲۰ms)" data-en="High latency (320ms)"></span></div>
   <div class="row"><div><b class="mono">backup-demo</b><div class="sub">TCP/TLS · <span data-fa="معکوس" data-en="Reverse"></span> · <span data-fa="پورت" data-en="Port"></span> <span class="mono">7000</span></div></div><span class="pill bad" data-fa="قطع" data-en="Down"></span></div>
   <div class="actions"><button class="primary" data-go="wizard" data-fa="+ تونل جدید" data-en="+ New tunnel"></button></div>
-</div></section>
+</div>
+<div class="card" style="margin-top:16px"><h2 data-fa="موتورهای تونل (همه از مستقیم و معکوس پشتیبانی می‌کنند)" data-en="Tunnel engines (all support direct and reverse)"></h2>
+  <div class="row"><div><b>TCP/TLS 1.3 mTLS</b><div class="sub" data-fa="مستقیم ✓ · معکوس ✓" data-en="Direct ✓ · Reverse ✓"></div></div><span class="pill ok" data-fa="فعال" data-en="Active"></span></div>
+  <div class="row"><div><b>Noise + TCP</b><div class="sub" data-fa="مستقیم ✓ · معکوس ✓" data-en="Direct ✓ · Reverse ✓"></div></div><span class="pill warn" data-fa="پژوهشی، برنامه‌ریزی‌شده" data-en="Research, planned"></span></div>
+  <div class="row"><div><b>UDP (FEC / DTLS 1.3)</b><div class="sub" data-fa="مستقیم ✓ · معکوس ✓" data-en="Direct ✓ · Reverse ✓"></div></div><span class="pill warn" data-fa="فاز ۴" data-en="Phase 4"></span></div>
+  <div class="row"><div><b>QUIC</b><div class="sub" data-fa="مستقیم ✓ · معکوس ✓" data-en="Direct ✓ · Reverse ✓"></div></div><span class="pill warn" data-fa="فاز ۴" data-en="Phase 4"></span></div>
+  <div class="row"><div><b>WireGuard</b><div class="sub" data-fa="مستقیم ✓ · معکوس ✓" data-en="Direct ✓ · Reverse ✓"></div></div><span class="pill warn" data-fa="بعداً" data-en="Later"></span></div>
+  <div class="row"><div><b>GRE / IPIP</b><div class="sub" data-fa="مستقیم ✓ · معکوس ✓" data-en="Direct ✓ · Reverse ✓"></div></div><span class="pill warn" data-fa="بعداً" data-en="Later"></span></div>
+  </div>
+</section>
 
 <section id="wizard" class="view" hidden><div class="card">
   <div class="steps"><span data-s="1" data-fa="۱ نصب نود" data-en="1 Install node"></span><span data-s="2" data-fa="۲ اتصال" data-en="2 Connect"></span><span data-s="3" data-fa="۳ ساخت تونل" data-en="3 Create tunnel"></span></div>
