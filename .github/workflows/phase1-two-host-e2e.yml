@@ -8,6 +8,16 @@ on:
         required: true
         type: string
         default: ''
+      soak_seconds:
+        description: Optional Direct soak duration in seconds (0-3600)
+        required: false
+        type: string
+        default: '0'
+      impair:
+        description: Run application-level latency/jitter impairment (0 or 1)
+        required: false
+        type: string
+        default: '0'
       ref:
         description: The Phase 1 branch to test (restricted to phase1/rust-tcp-transport)
         required: true
@@ -35,8 +45,8 @@ jobs:
             echo "Invalid confirmation. No LAB hosts were contacted." >&2
             exit 2
           fi
-          if [[ "$REF" != "phase1/rust-tcp-transport" ]]; then
-            echo "Only the reviewed Phase 1 branch may be tested." >&2
+          if [[ "$REF" != "phase1/rust-tcp-transport" && "$REF" != "main" ]]; then
+            echo "Only main or the reviewed Phase 1 branch may be tested." >&2
             exit 2
           fi
 
@@ -44,7 +54,7 @@ jobs:
     needs: validate-confirmation
     runs-on: ubuntu-22.04
     environment: baft-tunnel-lab
-    timeout-minutes: 25
+    timeout-minutes: 90
     env:
       LAB_IRAN_HOST: ${{ vars.LAB_IRAN_HOST }}
       LAB_ABROAD_HOST: ${{ vars.LAB_ABROAD_HOST }}
@@ -52,6 +62,8 @@ jobs:
       LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
       LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
       LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+      LAB_SOAK_SECONDS: ${{ inputs.soak_seconds }}
+      LAB_IMPAIR: ${{ inputs.impair }}
       LAB_E2E_PORT: '18300'
       LAB_E2E_LOCAL_PORT: '18080'
     steps:
