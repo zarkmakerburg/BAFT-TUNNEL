@@ -242,3 +242,9 @@ This addendum supersedes prior statements that treated systemd 250+ encrypted cr
 
 - PR #13: global (32) and per-source (2) pending-handshake limits independent of session slots, non-fatal accept errors with backoff, 900 s idle timeout on relayed streams, forward listeners default to loopback (`--allow-non-loopback-listen` to override), CRL expiry warning (<24 h) plus support-bundle field, unit `TasksMax`/`MemoryMax`/`ProtectProc=invisible`/`ProcSubset=pid`. CI green on `ubuntu-24.04` and `ubuntu-22.04` / systemd 249 at head `7b02cff`. Evidence type: hosted CI and unit tests; not soak or LAB.
 - P1-003 (in progress): added a handshake test rejecting malformed server nonces (empty, short, non-hex, oversized) and unknown hello fields. Existing coverage already includes per-field hello mutation, wrong direction, framed-reader corpus and truncation.
+
+## 2026-11-07 — Board refresh and P1-001/P1-002 state
+
+- Refreshed roadmap board: [docs/PROJECT_BOARD.md](PROJECT_BOARD.md) (Persian; owner can re-upload).
+- P1-001: PR #15 (`8bcafc9`) added `soak_seconds` and `impair` inputs to the manual two-host E2E. A 1800 s soak with impairment was dispatched on main; **result NOT YET RECORDED**. The impairment is application-level (latency/jitter proxy, proxy restart) and is **not** real TCP packet loss; real packet loss remains untested.
+- P1-002: ADR-0017 (PR #16) is proposed and awaiting owner decision; nothing implemented.
