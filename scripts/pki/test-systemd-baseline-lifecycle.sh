@@ -19,10 +19,10 @@ BACKUP_DIR=""
 
 die() { echo "systemd service lifecycle: $*" >&2; exit 1; }
 [[ -x "$BIN" ]] || die "missing executable: $BIN"
-for command in systemd systemctl openssl sudo install; do
+for command in systemctl openssl python3 sudo install; do
   command -v "$command" >/dev/null 2>&1 || die "missing command: $command"
 done
-systemd_version="$(systemd --version | awk 'NR == 1 { print $2 }')"
+systemd_version="$(systemctl --version | awk 'NR == 1 { print $2 }')"
 [[ "$systemd_version" =~ ^[0-9]+$ ]] && (( systemd_version >= 247 )) || die "systemd 247+ required; found $systemd_version"
 pid1="$(ps -p 1 -o comm= | tr -d '[:space:]')"
 [[ "$pid1" == "systemd" ]] || die "PID 1 is '$pid1', not systemd"
