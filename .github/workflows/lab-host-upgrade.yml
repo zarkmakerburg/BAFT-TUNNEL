@@ -1,0 +1,105 @@
+name: One-time two-host LAB OS security update
+
+on:
+  push:
+    branches:
+      - ops/lab-host-upgrade-20261107
+    paths:
+      - .github/workflows/lab-host-upgrade.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-lab-os-upgrade
+  cancel-in-progress: false
+
+jobs:
+  upgrade-lab-hosts:
+    runs-on: ubuntu-24.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 100
+    env:
+      LAB_IRAN_HOST: ${{ vars.LAB_IRAN_HOST }}
+      LAB_ABROAD_HOST: ${{ vars.LAB_ABROAD_HOST }}
+      LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+      LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+      LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+      LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+    steps:
+      - name: Prepare ephemeral strict SSH credentials
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -n "$SSH_PRIVATE_KEY" || { echo 'Missing LAB_SSH_PRIVATE_KEY' >&2; exit 2; }
+          test -n "$SSH_KNOWN_HOSTS" || { echo 'Missing LAB_SSH_KNOWN_HOSTS' >&2; exit 2; }
+          for name in LAB_IRAN_HOST LAB_ABROAD_HOST LAB_IRAN_SSH_USER LAB_ABROAD_SSH_USER LAB_IRAN_SSH_PORT LAB_ABROAD_SSH_PORT; do
+            test -n "${!name}" || { echo "Missing environment variable $name" >&2; exit 2; }
+          done
+          echo "::add-mask::$LAB_IRAN_HOST"
+          echo "::add-mask::$LAB_ABROAD_HOST"
+          mkdir -p "$RUNNER_TEMP/baft-tunnel-ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
+          echo "SSH_KEY_FILE=$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" >> "$GITHUB_ENV"
+          echo "SSH_KNOWN_HOSTS_FILE=$RUNNER_TEMP/baft-tunnel-ssh/known_hosts" >> "$GITHUB_ENV"
+
+      - name: Update Iran LAB host
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          timeout 55m ssh -i "$SSH_KEY_FILE" \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" \
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            -p "$LAB_IRAN_SSH_PORT" "$LAB_IRAN_SSH_USER@$LAB_IRAN_HOST" 'sudo -n bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
+          . /etc/os-release
+          [[ "$ID" == ubuntu && "$VERSION_ID" == "22.04" ]] || { echo "ABORT: unexpected OS $PRETTY_NAME"; exit 20; }
+          sudo -n true 2>/dev/null || true
+          free_kb=$(df -Pk / | awk 'NR==2 {print $4}')
+          (( free_kb >= 2097152 )) || { echo "ABORT: less than 2 GiB free on root filesystem"; exit 21; }
+          echo "PRE: host role=iran os=$PRETTY_NAME kernel=$(uname -r) systemd=$(systemctl --version | head -1) free_root_kb=$free_kb"
+          apt-get -o DPkg::Lock::Timeout=300 update
+          apt-get -o DPkg::Lock::Timeout=300 -y upgrade -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
+          audit=$(dpkg --audit)
+          [[ -z "$audit" ]] || { printf '%s\n' "$audit"; exit 22; }
+          echo "POST: pending_upgrades=$(apt-get -s upgrade | awk '/^Inst / {n++} END {print n+0}')"
+          echo "POST: kernel=$(uname -r) systemd=$(systemctl --version | head -1)"
+          if [[ -e /var/run/reboot-required ]]; then echo "REBOOT_REQUIRED=yes (not rebooted)"; else echo "REBOOT_REQUIRED=no"; fi
+          REMOTE
+
+      - name: Update abroad LAB host
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          timeout 55m ssh -i "$SSH_KEY_FILE" \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" \
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            -p "$LAB_ABROAD_SSH_PORT" "$LAB_ABROAD_SSH_USER@$LAB_ABROAD_HOST" 'sudo -n bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
+          . /etc/os-release
+          [[ "$ID" == ubuntu && "$VERSION_ID" == "22.04" ]] || { echo "ABORT: unexpected OS $PRETTY_NAME"; exit 20; }
+          free_kb=$(df -Pk / | awk 'NR==2 {print $4}')
+          (( free_kb >= 2097152 )) || { echo "ABORT: less than 2 GiB free on root filesystem"; exit 21; }
+          echo "PRE: host role=abroad os=$PRETTY_NAME kernel=$(uname -r) systemd=$(systemctl --version | head -1) free_root_kb=$free_kb"
+          apt-get -o DPkg::Lock::Timeout=300 update
+          apt-get -o DPkg::Lock::Timeout=300 -y upgrade -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
+          audit=$(dpkg --audit)
+          [[ -z "$audit" ]] || { printf '%s\n' "$audit"; exit 22; }
+          echo "POST: pending_upgrades=$(apt-get -s upgrade | awk '/^Inst / {n++} END {print n+0}')"
+          echo "POST: kernel=$(uname -r) systemd=$(systemctl --version | head -1)"
+          if [[ -e /var/run/reboot-required ]]; then echo "REBOOT_REQUIRED=yes (not rebooted)"; else echo "REBOOT_REQUIRED=no"; fi
+          REMOTE
+
+      - name: Remove ephemeral SSH credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/baft-tunnel-ssh"
