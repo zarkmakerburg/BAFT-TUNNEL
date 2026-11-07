@@ -61,8 +61,8 @@ jobs:
     environment: baft-tunnel-lab
     timeout-minutes: 90
     env:
-      LAB_IRAN_HOST: ${{ vars.LAB_IRAN_HOST }}
-      LAB_ABROAD_HOST: ${{ vars.LAB_ABROAD_HOST }}
+      LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+      LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
       LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
       LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
       LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
