@@ -237,3 +237,8 @@ This addendum supersedes prior statements that treated systemd 250+ encrypted cr
 ### P1-000 step 9 — isolated LAB credential test (real hosts)
 
 - Workflow `p1-000-lab-credential-test.yml`, [run 42390940225](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42390940225), commit `263d237ad648622eab01c52e101d4854cb1dbf59`: PASS on both LAB hosts (Iran and abroad, Ubuntu 22.04 / systemd 249). Each ran the baseline `LoadCredential=` lifecycle test (install, start/restart/stop, root-only permissions, fail-closed on missing credential, uninstall retention/purge) from a disposable `/tmp` directory; the test refuses to run over an existing BAFT-TUNNEL install, so no existing service was touched, and the SSH key was removed after the run. No reboot, no OS/systemd upgrade. Evidence type: real-host LAB.
+
+## 2026-11-07 — Review hardening (PR #13, merged 21b9f92) and P1-003 handshake tests
+
+- PR #13: global (32) and per-source (2) pending-handshake limits independent of session slots, non-fatal accept errors with backoff, 900 s idle timeout on relayed streams, forward listeners default to loopback (`--allow-non-loopback-listen` to override), CRL expiry warning (<24 h) plus support-bundle field, unit `TasksMax`/`MemoryMax`/`ProtectProc=invisible`/`ProcSubset=pid`. CI green on `ubuntu-24.04` and `ubuntu-22.04` / systemd 249 at head `7b02cff`. Evidence type: hosted CI and unit tests; not soak or LAB.
+- P1-003 (in progress): added a handshake test rejecting malformed server nonces (empty, short, non-hex, oversized) and unknown hello fields. Existing coverage already includes per-field hello mutation, wrong direction, framed-reader corpus and truncation.
