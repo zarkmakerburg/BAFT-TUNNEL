@@ -35,6 +35,7 @@ if [[ "$ACTION" == "apply" ]]; then
   [[ "$INSTANCE" != *..* ]] || die "invalid systemd instance name"
   [[ "$(id -u)" == 0 ]] || die "apply requires root"
   command -v systemctl >/dev/null 2>&1 || die "systemctl is required"
+  command -v flock >/dev/null 2>&1 || die "flock is required"
   command -v openssl >/dev/null 2>&1 || die "openssl is required"
   command -v python3 >/dev/null 2>&1 || die "python3 is required"
 fi
@@ -116,11 +117,15 @@ if [[ "$ACTION" == "check" ]]; then
 fi
 
 SERVICE="baft-tunnel@${INSTANCE}.service"
-systemctl is-active --quiet "$SERVICE" || die "selected service must already be active; refusing to start or enable it"
 CRL_DIR="$(cd "$(dirname "$CURRENT_CRL")" && pwd -P)"
 CRL_NAME="$(basename "$CURRENT_CRL")"
 CURRENT_CRL="$CRL_DIR/$CRL_NAME"
 [[ -d "$CRL_DIR" && -w "$CRL_DIR" ]] || die "CRL directory is not writable: $CRL_DIR"
+exec 9>>"$CRL_DIR/.${CRL_NAME}.apply.lock"
+flock -x 9
+# Revalidate under the per-CRL lock to prevent cooperating concurrent updates.
+"$0" check "$CA_CERT" "$CURRENT_CRL" "$CANDIDATE_CRL" >/dev/null
+systemctl is-active --quiet "$SERVICE" || die "selected service must already be active; refusing to start or enable it"
 BACKUP="$(mktemp "$CRL_DIR/.${CRL_NAME}.rollback.XXXXXX")"
 STAGED="$(mktemp "$CRL_DIR/.${CRL_NAME}.staged.XXXXXX")"
 INSTALLED=0
@@ -132,8 +137,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cp -p "$CURRENT_CRL" "$BACKUP"
+install -o root -g root -m 0600 "$CURRENT_CRL" "$BACKUP"
 install -o root -g root -m 0644 "$CANDIDATE_CRL" "$STAGED"
+# Validate the exact staged bytes, not a candidate path that may change after preflight.
+"$0" check "$CA_CERT" "$CURRENT_CRL" "$STAGED" >/dev/null
 mv -f "$STAGED" "$CURRENT_CRL"
 activation_status=0
 systemctl restart "$SERVICE" || activation_status=$?

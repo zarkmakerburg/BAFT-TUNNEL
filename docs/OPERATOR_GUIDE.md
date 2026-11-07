@@ -74,7 +74,7 @@ CRLs are still issued only on the offline CA. Transfer only the signed `ca.crl` 
 2. Confirm both nodes report the same candidate CRL number and SHA-256 fingerprint. The check rejects malformed PEM/trailing data, invalid signature or issuer, missing CRL Number, equal/lower CRL Number, and expired/not-yet-valid candidates.
 3. As root, activate one already-running instance at a time:
    `bash scripts/pki/apply-crl.sh apply /etc/baft-tunnel/pki/ca.crt /etc/baft-tunnel/pki/ca.crl ./candidate/ca.crl iran`
-   The helper stages beside the live CRL, atomically replaces it, restarts the selected instance, and checks that it is active. It refuses to start or enable a stopped instance. If restart/active verification fails, it restores the previous CRL and attempts recovery.
+   The helper serializes local updates with a per-CRL lock, revalidates the staged bytes, keeps a root-only rollback copy, atomically replaces the live CRL, restarts the selected instance, and checks that it is active. It refuses to start or enable a stopped instance. If restart/active verification fails, it restores the previous CRL and attempts recovery.
 4. If any activation fails, stop the rollout. Restore the prior CRL on every node already updated and verify recovery. A rollback restores the old trust state and may re-admit a revoked certificate; it is an explicit availability recovery, not a security-neutral operation.
 5. After both nodes activate, verify rejection of the revoked identity and reconnection of the intended peer. There is no distributed transaction; interruption during the rollout is expected. The helper never contacts the other node or distributes files.
 
