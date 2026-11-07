@@ -48,10 +48,30 @@ pub fn validate_identity(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Maximum number of simultaneously accepted peer pins (ADR-0017 B1 rollover window).
+pub const MAX_PEER_PINS: usize = 2;
+
+fn normalize_pin(pin: &str) -> String {
+    pin.replace(':', "").to_ascii_lowercase()
+}
+
+/// A peer pin value is one SHA-256 hex digest, or two comma-separated digests during
+/// a certificate rollover. More than two, empty entries and duplicates are rejected.
 pub fn validate_fingerprint(value: &str) -> Result<()> {
-    let normalized = value.replace(':', "");
-    if normalized.len() != 64 || !normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
-        bail!("peer fingerprint must be a SHA-256 hex digest (64 hex characters)");
+    let pins: Vec<&str> = value.split(',').map(str::trim).collect();
+    if pins.len() > MAX_PEER_PINS {
+        bail!("at most {MAX_PEER_PINS} peer fingerprints are allowed (rollover window)");
+    }
+    let mut seen: Vec<String> = Vec::new();
+    for pin in pins {
+        let normalized = normalize_pin(pin);
+        if normalized.len() != 64 || !normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
+            bail!("peer fingerprint must be a SHA-256 hex digest (64 hex characters)");
+        }
+        if seen.contains(&normalized) {
+            bail!("duplicate peer fingerprint");
+        }
+        seen.push(normalized);
     }
     Ok(())
 }
@@ -260,7 +280,11 @@ pub fn verify_peer_fingerprint(
         .and_then(|items| items.first())
         .context("TLS peer did not present a certificate")?;
     let actual = hex::encode(Sha256::digest(leaf.as_ref()));
-    if actual != expected.replace(':', "").to_ascii_lowercase() {
+    validate_fingerprint(expected)?;
+    if !expected
+        .split(',')
+        .any(|pin| actual == normalize_pin(pin.trim()))
+    {
         bail!("TLS peer certificate fingerprint does not match the configured pin");
     }
     Ok(())
@@ -284,6 +308,13 @@ mod tests {
         assert!(validate_fingerprint(&"ab".repeat(32)).is_ok());
         assert!(validate_fingerprint(&("AB:".to_owned() + &"CD:".repeat(30) + "EF")).is_ok());
         assert!(validate_fingerprint("not-a-fingerprint").is_err());
+        // Rollover window: exactly one or two distinct pins.
+        let (a, b, c) = ("ab".repeat(32), "cd".repeat(32), "ef".repeat(32));
+        assert!(validate_fingerprint(&format!("{a},{b}")).is_ok());
+        assert!(validate_fingerprint(&format!("{a},{b},{c}")).is_err());
+        assert!(validate_fingerprint(&format!("{a},{a}")).is_err());
+        assert!(validate_fingerprint(&format!("{a},")).is_err());
+        assert!(validate_fingerprint(&format!(",{a}")).is_err());
         assert!(validate_fingerprint(&"0".repeat(63)).is_err());
     }
 
