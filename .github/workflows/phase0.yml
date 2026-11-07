@@ -43,6 +43,8 @@ jobs:
         run: bash scripts/pki/test.sh
       - name: Test guarded CRL update validation (temporary CAs only)
         run: bash scripts/pki/test-apply-crl.sh
+      - name: Test CRL freshness report (temporary CAs only)
+        run: bash scripts/pki/test-crl-status.sh
       - name: Validate Docker Compose
         run: docker compose -f lab/compose.yaml config --quiet
       - name: Run isolated Docker netem integration

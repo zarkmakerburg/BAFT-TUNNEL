@@ -110,3 +110,7 @@ The helper does not automate CA rollover, pin overlap, or remote CRL distributio
 ## CA rollover naming (ADR-0017 B1)
 
 During a CA rollover the trust bundle holds the old and the new CA, each with its own CRL. CRLs are matched to their CA by subject name, so create the replacement CA with a different name: `bash scripts/pki/baft-pki.sh init-ca ./offline-ca-2 "BAFT-TUNNEL Private CA 2026-11"`. A node also accepts up to two comma-separated `peer_fingerprint` pins while certificates are replaced. If a CRL for one CA in the bundle is missing or expired, certificates from that CA are rejected (fail closed).
+
+## CRL freshness report (ADR-0017 A1)
+
+`bash scripts/pki/crl-status.sh /etc/baft-tunnel/ca.crl [WARN_HOURS]` prints one line per CRL in the file (issuer, CRL number, nextUpdate, hours remaining) and exits 1 if any CRL is under WARN_HOURS (default 72) or expired. It only reports; it never fetches or changes anything. Re-issue CRLs weekly with a validity of at least 14 days, push them to each node, and run this check from cron or a systemd timer you own.
