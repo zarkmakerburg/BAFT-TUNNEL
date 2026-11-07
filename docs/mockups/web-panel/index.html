@@ -1,0 +1,143 @@
+<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BAFT-TUNNEL Panel Preview</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;800&display=swap">
+<style>
+/* Layout: sticky fake-data banner, top tabs, single-column cards that become 2-3 columns on wide screens */
+:root{--bg:#f3f5f6;--surface:#fff;--fg:#14212b;--muted:#5c6b76;--line:#d9e0e4;--accent:#0b6e7f;--accent-fg:#fff;
+--ok:#14803c;--ok-bg:#dff3e5;--warn:#9a6700;--warn-bg:#fbefc7;--bad:#b42318;--bad-bg:#fbe0dc;--banner:#14212b;--banner-fg:#f3f5f6;
+--font:'Vazirmatn',system-ui,-apple-system,'Segoe UI',Tahoma,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1519;--surface:#172027;--fg:#e6edf1;--muted:#93a3ad;--line:#27343d;--accent:#4cc0d3;--accent-fg:#06222a;
+--ok:#5fd18a;--ok-bg:#12331f;--warn:#f0c04a;--warn-bg:#3a2d08;--bad:#ff8a7d;--bad-bg:#3d1713;--banner:#e6edf1;--banner-fg:#0f1519;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0f1519;--surface:#172027;--fg:#e6edf1;--muted:#93a3ad;--line:#27343d;--accent:#4cc0d3;--accent-fg:#06222a;
+--ok:#5fd18a;--ok-bg:#12331f;--warn:#f0c04a;--warn-bg:#3a2d08;--bad:#ff8a7d;--bad-bg:#3d1713;--banner:#e6edf1;--banner-fg:#0f1519;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.7 var(--font);margin:0}
+.wrap{max-width:1000px;margin:0 auto;padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-area-inset-right,0px));padding-block:0 40px}
+.banner{background:var(--banner);color:var(--banner-fg);font-size:13px;font-weight:600;text-align:center;padding:6px 16px;position:sticky;top:env(safe-area-inset-top,0px);z-index:5}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:var(--banner);z-index:10}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding-block:16px 8px}
+h1{font-size:20px;font-weight:800;margin:0;letter-spacing:.02em}
+h1 small{font-weight:400;color:var(--muted);font-size:13px;margin-inline-start:8px}
+.tools{display:flex;gap:8px}
+button,.btn{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:8px;padding:6px 14px;min-height:40px}
+button.primary{background:var(--accent);color:var(--accent-fg);border-color:var(--accent);font-weight:600}
+button:focus-visible,a:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+nav{display:flex;gap:4px;overflow-x:auto;border-bottom:1px solid var(--line);margin-block:8px 20px}
+nav button{border:0;border-bottom:3px solid transparent;border-radius:0;background:none;white-space:nowrap;color:var(--muted)}
+nav button[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--accent);font-weight:600}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),1fr))}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
+.card h2{font-size:15px;margin:0 0 10px;font-weight:600;color:var(--muted)}
+.span{grid-column:1/-1}
+.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:1px 10px;font-size:13px;font-weight:600;white-space:nowrap}
+.pill::before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor}
+.ok{color:var(--ok);background:var(--ok-bg)}.warn{color:var(--warn);background:var(--warn-bg)}.bad{color:var(--bad);background:var(--bad-bg)}
+.big{font-size:32px;font-weight:800;line-height:1.2;font-variant-numeric:tabular-nums}
+.row{display:flex;gap:12px;justify-content:space-between;align-items:center;padding-block:10px;border-top:1px solid var(--line);flex-wrap:wrap}
+.row:first-of-type{border-top:0}
+.row>div{min-width:0}
+.sub{color:var(--muted);font-size:13px}
+.mono{font-family:var(--mono);direction:ltr;unicode-bidi:isolate;font-size:13px}
+.alert{border-radius:8px;padding:10px 12px;margin-block:8px;font-size:14px}
+.steps{display:flex;gap:8px;margin-bottom:16px}
+.steps span{flex:1;text-align:center;padding:8px 4px;border-radius:8px;background:var(--bg);border:1px solid var(--line);font-size:13px;color:var(--muted)}
+.steps span.on{background:var(--accent);color:var(--accent-fg);border-color:var(--accent);font-weight:600}
+.steps span.done{color:var(--ok);border-color:var(--ok)}
+pre{margin:8px 0;padding:12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;overflow-x:auto;direction:ltr;text-align:left;font:13px/1.6 var(--mono)}
+label{display:block;font-weight:600;margin-top:12px}
+input,select{font:inherit;width:100%;min-height:42px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
+.bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;background:var(--ok)}
+.bar.w i{background:var(--warn)}.bar.b i{background:var(--bad)}
+.actions{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
+[hidden]{display:none!important}
+@media (prefers-reduced-motion:no-preference){.card{transition:border-color .15s}.card:hover{border-color:var(--accent)}}
+</style>
+
+<div class="banner" data-fa="⚠ پیش‌نمایش نمایشی: همه داده‌ها ساختگی‌اند و به هیچ سروری وصل نیست" data-en="⚠ Mockup only: all data is fake, nothing is connected to a real server"></div>
+<div class="wrap">
+<header>
+  <h1>BAFT-TUNNEL <small data-fa="پنل مدیریت" data-en="Control panel"></small></h1>
+  <div class="tools"><button id="lang" aria-label="Language">English</button><button id="theme" aria-label="Theme" data-fa="تم" data-en="Theme"></button></div>
+</header>
+<nav role="tablist">
+  <button role="tab" data-v="dash" data-fa="داشبورد" data-en="Dashboard"></button>
+  <button role="tab" data-v="tunnels" data-fa="تونل‌ها" data-en="Tunnels"></button>
+  <button role="tab" data-v="wizard" data-fa="راه‌اندازی" data-en="Setup"></button>
+  <button role="tab" data-v="diag" data-fa="عیب‌یابی" data-en="Diagnostics"></button>
+</nav>
+
+<section id="dash" class="view">
+<div class="grid">
+  <div class="card"><h2 data-fa="نودها" data-en="Nodes"></h2><div class="big">3 / 4</div><div class="sub" data-fa="۳ نود آنلاین از ۴" data-en="3 of 4 nodes online"></div><div class="bar w"><i style="width:75%"></i></div></div>
+  <div class="card"><h2 data-fa="تونل‌ها" data-en="Tunnels"></h2><div class="big">5</div><div class="sub"><span class="pill ok">3</span> <span class="pill warn">1</span> <span class="pill bad">1</span></div></div>
+  <div class="card"><h2 data-fa="ترافیک امروز" data-en="Traffic today"></h2><div class="big mono" style="font-size:28px">12.4 GB</div><div class="sub" data-fa="نمونه ساختگی" data-en="Sample figure"></div></div>
+  <div class="card span"><h2 data-fa="هشدارهای گواهی" data-en="Certificate alerts"></h2>
+    <div class="alert bad" data-fa="گواهی نود «de-1» ۲ روز دیگر منقضی می‌شود. تمدید کنید." data-en="Certificate for node “de-1” expires in 2 days. Renew it."></div>
+    <div class="alert warn" data-fa="لیست ابطال (CRL) ۹ روز دیگر منقضی می‌شود." data-en="The revocation list (CRL) expires in 9 days."></div>
+    <div class="alert ok" data-fa="گواهی CA تا ۴۱۲ روز معتبر است." data-en="CA certificate is valid for 412 more days."></div></div>
+  <div class="card span"><h2 data-fa="وضعیت نودها" data-en="Node status"></h2>
+    <div class="row"><div><b class="mono">de-1</b><div class="sub mono">203.0.113.10</div></div><span class="pill warn" data-fa="گواهی رو به انقضا" data-en="Cert expiring"></span></div>
+    <div class="row"><div><b class="mono">nl-2</b><div class="sub mono">203.0.113.22</div></div><span class="pill ok" data-fa="سالم" data-en="Healthy"></span></div>
+    <div class="row"><div><b class="mono">ir-edge</b><div class="sub mono">198.51.100.7</div></div><span class="pill ok" data-fa="سالم" data-en="Healthy"></span></div>
+    <div class="row"><div><b class="mono">fi-3</b><div class="sub mono">198.51.100.31</div></div><span class="pill bad" data-fa="آفلاین ۱۴ دقیقه" data-en="Offline 14 min"></span></div></div>
+</div></section>
+
+<section id="tunnels" class="view" hidden><div class="card">
+  <h2 data-fa="لیست تونل‌ها" data-en="Tunnel list"></h2>
+  <div class="row"><div><b class="mono">web-443</b><div class="sub mono">ir-edge → de-1 · :443</div></div><span class="pill ok" data-fa="فعال" data-en="Up"></span></div>
+  <div class="row"><div><b class="mono">ssh-2222</b><div class="sub mono">ir-edge → nl-2 · :2222</div></div><span class="pill ok" data-fa="فعال" data-en="Up"></span></div>
+  <div class="row"><div><b class="mono">api-8443</b><div class="sub mono">ir-edge → nl-2 · :8443</div></div><span class="pill ok" data-fa="فعال" data-en="Up"></span></div>
+  <div class="row"><div><b class="mono">media-9000</b><div class="sub mono">ir-edge → de-1 · :9000</div></div><span class="pill warn" data-fa="تاخیر بالا (۳۲۰ms)" data-en="High latency (320ms)"></span></div>
+  <div class="row"><div><b class="mono">backup-7000</b><div class="sub mono">ir-edge → fi-3 · :7000</div></div><span class="pill bad" data-fa="قطع" data-en="Down"></span></div>
+  <div class="actions"><button class="primary" data-go="wizard" data-fa="+ تونل جدید" data-en="+ New tunnel"></button></div>
+</div></section>
+
+<section id="wizard" class="view" hidden><div class="card">
+  <div class="steps"><span data-s="1" data-fa="۱ نصب نود" data-en="1 Install node"></span><span data-s="2" data-fa="۲ اتصال" data-en="2 Connect"></span><span data-s="3" data-fa="۳ ساخت تونل" data-en="3 Create tunnel"></span></div>
+  <div class="step" data-s="1"><p data-fa="این دستور را روی سرور اجرا کنید (نمونه ساختگی):" data-en="Run this on your server (fake sample):"></p>
+    <pre>curl -fsSL https://example.invalid/install.sh | sudo bash
+# token: DEMO-0000-FAKE</pre><div class="sub" data-fa="بعد از نصب، دکمه «بعدی» را بزنید." data-en="After installing, press Next."></div></div>
+  <div class="step" data-s="2" hidden><p data-fa="در حال انتظار برای اتصال نود…" data-en="Waiting for the node to connect…"></p>
+    <div class="alert ok" data-fa="نود «de-1» وصل شد (نمایشی)." data-en="Node “de-1” connected (demo)."></div></div>
+  <div class="step" data-s="3" hidden>
+    <label for="n" data-fa="نام تونل" data-en="Tunnel name"></label><input id="n" value="web-443">
+    <label for="p" data-fa="پورت" data-en="Port"></label><input id="p" value="443" inputmode="numeric" dir="ltr">
+    <label for="t" data-fa="مقصد" data-en="Target"></label><select id="t" dir="ltr"><option>de-1</option><option>nl-2</option></select>
+    <div class="alert ok" id="done" hidden data-fa="تونل ساخته شد (نمایشی، چیزی ایجاد نشد)." data-en="Tunnel created (demo, nothing was created)."></div></div>
+  <div class="actions"><button id="back" data-fa="قبلی" data-en="Back"></button><button id="next" class="primary" data-fa="بعدی" data-en="Next"></button></div>
+</div></section>
+
+<section id="diag" class="view" hidden><div class="grid">
+  <div class="card span"><h2 data-fa="چرا تونل «backup-7000» قطع است؟" data-en="Why is tunnel “backup-7000” down?"></h2>
+    <div class="alert bad"><b data-fa="مشکل:" data-en="Problem:"></b> <span data-fa="نود «fi-3» ۱۴ دقیقه است به پنل پیام نداده." data-en="Node “fi-3” has not reported to the panel for 14 minutes."></span></div>
+    <p data-fa="احتمال زیاد سرور خاموش شده یا اینترنتش قطع است. تونل‌های دیگر سالم‌اند." data-en="The server is probably off or has lost its internet link. Your other tunnels are fine."></p>
+    <b data-fa="چه کنم؟" data-en="What to do"></b>
+    <ol><li data-fa="سرور fi-3 را در پنل ارائه‌دهنده بررسی کنید." data-en="Check fi-3 in your hosting provider’s console."></li>
+    <li data-fa="اگر روشن است، سرویس را ری‌استارت کنید." data-en="If it is on, restart the service."></li>
+    <li data-fa="بعد از ۲ دقیقه دوباره بررسی کنید." data-en="Check again after 2 minutes."></li></ol>
+    <pre>sudo systemctl restart baft-agent</pre>
+    <div class="actions"><button class="primary" id="recheck" data-fa="بررسی مجدد" data-en="Check again"></button></div><div class="sub" id="rc"></div></div>
+  <div class="card span"><h2 data-fa="گواهی «de-1»" data-en="Certificate for “de-1”"></h2>
+    <div class="alert warn" data-fa="۲ روز تا انقضا. اتصال بعد از انقضا قطع می‌شود." data-en="2 days left. Connections will stop after expiry."></div></div>
+</div></section>
+</div>
+<script>
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+let lang='fa',step=1;
+function setLang(l){lang=l;document.documentElement.lang=l;document.documentElement.dir=l==='fa'?'rtl':'ltr';
+ $$('[data-fa]').forEach(e=>e.textContent=e.dataset[l]);$('#lang').textContent=l==='fa'?'English':'فارسی';$('#rc').textContent='';
+ document.title=l==='fa'?'پیش‌نمایش پنل BAFT-TUNNEL':'BAFT-TUNNEL Panel Preview'}
+function show(v){$$('.view').forEach(e=>e.hidden=e.id!==v);$$('nav button').forEach(b=>b.setAttribute('aria-selected',b.dataset.v===v));try{history.replaceState(null,'','#'+v)}catch(e){}}
+function wiz(){$$('.step').forEach(e=>e.hidden=+e.dataset.s!==step);
+ $$('.steps span').forEach(e=>{const n=+e.dataset.s;e.className=n===step?'on':n<step?'done':''});
+ $('#back').hidden=step===1;$('#next').textContent=step===3?(lang==='fa'?'ساخت تونل':'Create tunnel'):(lang==='fa'?'بعدی':'Next');}
+$('#lang').onclick=()=>{setLang(lang==='fa'?'en':'fa');wiz()};
+$('#theme').onclick=()=>{const r=document.documentElement,d=r.dataset.theme==='dark'||(!r.dataset.theme&&matchMedia('(prefers-color-scheme:dark)').matches);r.dataset.theme=d?'light':'dark'};
+$$('nav button').forEach(b=>b.onclick=()=>show(b.dataset.v));
+$$('[data-go]').forEach(b=>b.onclick=()=>show(b.dataset.go));
+$('#next').onclick=()=>{if(step<3){step++}else{$('#done').hidden=false}wiz()};
+$('#back').onclick=()=>{step=Math.max(1,step-1);$('#done').hidden=true;wiz()};
+$('#recheck').onclick=()=>{$('#rc').textContent=lang==='fa'?'هنوز پاسخی نیست (نمایشی).':'Still no response (demo).'};
+setLang('fa');wiz();show(['dash','tunnels','wizard','diag'].includes(location.hash.slice(1))?location.hash.slice(1):'dash');
+</script>
