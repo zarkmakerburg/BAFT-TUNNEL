@@ -248,3 +248,12 @@ This addendum supersedes prior statements that treated systemd 250+ encrypted cr
 - Refreshed roadmap board: [docs/PROJECT_BOARD.md](PROJECT_BOARD.md) (Persian; owner can re-upload).
 - P1-001: PR #15 (`8bcafc9`) added `soak_seconds` and `impair` inputs to the manual two-host E2E. A 1800 s soak with impairment was dispatched on main; **result NOT YET RECORDED**. The impairment is application-level (latency/jitter proxy, proxy restart) and is **not** real TCP packet loss; real packet loss remains untested.
 - P1-002: ADR-0017 (PR #16) is proposed and awaiting owner decision; nothing implemented.
+
+## 2026-11-07 — P1-001 real-host soak and impairment (LAB, PASS)
+
+Run [42401889166](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42401889166), product-code SHA 8bcafc9ff2f1c5f67d0f394f82bb5ffb8067cfa1 (main), two LAB hosts (Ubuntu 22.04 / systemd 249), inputs `soak_seconds=900`, `impair=1`. Real-host evidence, not simulation or hosted CI.
+
+- Result line: `PHASE1_TWO_HOST_E2E=PASS soak_s=900 impair=1` (Direct soak 900 s, application-level latency/jitter impairment, Direct and Reverse 2,097,289-byte integrity with SHA-256 1bb59406…ca8b414fa8 in both directions, listener-restart recovery, server-side and client-side certificate revocation rejection).
+- Under impairment: 64 KiB probes kept SHA-256 4b640d85…a68a4df2 (0.38–2.09 s); a 1 MiB probe passed in 5.9 s. After the abroad-listener restart, Direct recovered within one probe (0.39 s).
+- Total job 19 min 59 s; temporary /tmp processes only, cleanup step passed, no persistent host change.
+- Scope limit: impairment is application-level (not kernel NetEm/packet loss on the real hosts), and the soak is 15 minutes. Longer soak and kernel-level loss remain for Phase 6 (P6-001). P1-001 is accepted at this profile.
