@@ -155,3 +155,22 @@ This evidence is not a security certification. Phase 1 remains Draft and is not 
 - Phase 1 exact-head jobs passed pinned Rust 1.88.0/cargo-audit 0.22.1 installation, RustSec audit with warnings denied, formatting, 37 Rust tests, Clippy with warnings denied, optimized release build, encrypted systemd credential runtime validation, and installed systemd service lifecycle.
 - Phase 0 exact-head jobs passed installer/control-script checks and isolated Docker netem integration.
 - These workflows verify branch-head CI only. They do not constitute a new two-host LAB run or close the remaining Phase 1 acceptance gates. PR #3 remains Draft/open/unmerged; no release or deployment.
+
+## 2026-11-07 — Current branch evidence addendum
+
+This dated addendum supersedes older "latest" snapshots above without deleting historical evidence.
+
+- Current reviewed branch head at time of this entry: `275b565eebdb57447b735f6666bd62ea7e86b966` (`phase1/rust-tcp-transport`). PR #3 remains Draft/open/unmerged; no merge, release, or deployment.
+- Exact-head Phase 0 push [42358485306](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42358485306), Phase 1 push [42358485167](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42358485167), Phase 0 PR [42358489007](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42358489007), Phase 1 PR [42358489003](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42358489003), and LAB SSH credential verification [42358485289](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42358485289) all completed SUCCESS.
+- **New real-host evidence on this exact SHA:** manually gated two-host workflow [42358624201](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42358624201) completed SUCCESS. Direct (Iran → abroad) and Reverse (abroad → Iran) each passed 64 KiB and 2,097,289-byte integrity probes. The 2,097,289-byte payload SHA-256 matched in both directions: `1bb59406b95f296d1ffac9536e3c14a5dfc67c2632ca9ae26d1c85ba8b414fa8`. Direct/Reverse transfer times were 0.694 s / 0.673 s. Restarting the abroad listener was followed by successful Direct recovery and another 64 KiB integrity probe. The server rejected a revoked client certificate and the client rejected a revoked server certificate. Workflow result: `PHASE1_TWO_HOST_E2E=PASS`.
+- Test resources were temporary files/processes under `/tmp`; runner SSH credentials were removed. No persistent service, firewall, route, sysctl, or production configuration was changed. Full evidence is also recorded in [HQ comment 6704955602](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2#issuecomment-6704955602).
+
+### Remaining mandatory Phase 1 acceptance gates
+
+1. Online enrollment/authorization and control-plane integration remain unimplemented. ADR-0014 is Proposed only; issuer model, operator authentication, persistence/backup, threat review, and independent protocol review must be decided before implementation is enabled. No public enrollment endpoint or online CA signer is authorized by this ADR.
+2. Dedicated operator-controlled Linux host proof remains open for encrypted credential custody and persistent service start/restart, permissions, upgrade/rollback, uninstall, and signal-stop. Hosted Ubuntu 24.04/systemd 255 transient-unit and disposable install lifecycle CI passed, but is not persistent operator-host evidence. The two current Ubuntu 22.04/systemd 249 LAB hosts cannot exercise `LoadCredentialEncrypted=`.
+3. Automated CRL publication/distribution/refresh and safe CA/pin rollover with an explicit overlap/rollback procedure remain open. Current CRL updates are out-of-band and require peer restart.
+4. Further justified adversarial/replay/resource-exhaustion testing, protocol-boundary fuzzing, dependency/license review, and an independent security review remain open. Avoid redundant test proliferation; prioritize uncovered effect boundaries and evidence gaps.
+5. Longer-duration real-host soak and controlled latency/loss acceptance remain open. Existing Docker netem evidence is simulation and must not be represented as real-host impairment proof.
+
+The new E2E result closes the missing post-shutdown-change real-host Direct/Reverse/recovery/revocation evidence only. It does not close the gates above or constitute production readiness/security certification. Phase 1 remains in progress and PR #3 remains Draft.
