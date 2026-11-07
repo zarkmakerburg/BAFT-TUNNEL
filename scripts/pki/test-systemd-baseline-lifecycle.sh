@@ -189,7 +189,11 @@ sudo systemctl stop "$SERVICE_UNIT"
 ! sudo systemctl is-active --quiet "$SERVICE_UNIT" || die "service remained active after stop"
 # Fail-closed: a missing source credential must stop the service from starting.
 sudo mv "$CREDENTIAL_DIR/node-key" "$CREDENTIAL_DIR/node-key.away"
-! sudo systemctl start "$SERVICE_UNIT" || die "service started without its credential"
+# Type=simple: start returns before the process fails, so observe the outcome.
+sudo systemctl start "$SERVICE_UNIT" >/dev/null 2>&1 || true
+sleep 2
+! sudo systemctl is-active --quiet "$SERVICE_UNIT" || die "service stayed active without its credential"
+sudo systemctl stop "$SERVICE_UNIT" >/dev/null 2>&1 || true
 sudo mv "$CREDENTIAL_DIR/node-key.away" "$CREDENTIAL_DIR/node-key"
 sudo systemctl reset-failed "$SERVICE_UNIT" >/dev/null 2>&1 || true
 # Plain uninstall must keep credentials and config.
