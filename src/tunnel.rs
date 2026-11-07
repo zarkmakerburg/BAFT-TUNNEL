@@ -30,6 +30,7 @@ const MAX_STREAM_WINDOW_SIZE: u32 = 4 * 1024 * 1024;
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
+const STREAM_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn shutdown_signal() {
     #[cfg(unix)]
@@ -180,7 +181,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
 
     let _ = shutdown_tx.send(true);
     let drain = async { while tasks.join_next().await.is_some() {} };
-    if timeout(SHUTDOWN_TIMEOUT, drain).await.is_err() {
+    if timeout(STREAM_DRAIN_TIMEOUT, drain).await.is_err() {
         eprintln!("graceful peer-session drain timed out; aborting remaining sessions");
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
@@ -349,7 +350,7 @@ async fn run_forward_session(
             local = receiver.recv() => {
                 let Some(mut local) = local else {
                     control.close().await;
-                    match timeout(SHUTDOWN_TIMEOUT, &mut driver).await {
+                    match timeout(STREAM_DRAIN_TIMEOUT, &mut driver).await {
                         Ok(Ok(Err(error))) if error.to_string() == "yamux session closed" => {},
                         Ok(Ok(Ok(()))) => {},
                         Ok(Ok(Err(error))) => eprintln!("session closed during shutdown: {error:#}"),
@@ -405,7 +406,7 @@ async fn run_forward_session(
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     control.close().await;
-                    if timeout(SHUTDOWN_TIMEOUT, &mut driver).await.is_err() {
+                    if timeout(STREAM_DRAIN_TIMEOUT, &mut driver).await.is_err() {
                         driver.abort();
                         let _ = driver.await;
                     }
