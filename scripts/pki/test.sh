@@ -83,9 +83,16 @@ if "$PKI" verify-node "$CA" "$REVOKED/ca.crl" "$NODE/node.crt" iran tunnel.iran.
   exit 1
 fi
 openssl crl -in "$REVOKED/ca.crl" -noout -text | grep -q 'Revoked Certificates'
-if "$PKI" init-ca "$TMP/not-empty" >/dev/null 2>&1; then
+mkdir -p "$TMP/not-empty"
+: > "$TMP/not-empty/keep"
+if "$PKI" init-ca "$TMP/not-empty" </dev/null >/dev/null 2>&1; then
   echo "init-ca overwrote a non-empty directory" >&2
   exit 1
 fi
 
+if "$PKI" init-ca "$TMP/bad-name-ca" 'bad/name' </dev/null >/dev/null 2>&1; then
+  echo "init-ca accepted an invalid CA name" >&2
+  exit 1
+fi
+[[ ! -e "$TMP/bad-name-ca/ca.key" ]] || { echo "init-ca created a CA for an invalid name" >&2; exit 1; }
 echo "BAFT_PKI_TEST=PASS (P-256 node CSR, CA signing, URI/DNS/IP SANs, 0600 node key, CA isolation, revocation, mismatch rejection)"

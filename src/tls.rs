@@ -712,4 +712,206 @@ mod tests {
 
         fs::remove_dir_all(directory).unwrap();
     }
+
+    struct TestCa {
+        ca_pem: std::path::PathBuf,
+        crl_pem: std::path::PathBuf,
+        issuer: Issuer<'static, KeyPair>,
+    }
+
+    fn make_ca(dir: &Path, name: &str) -> TestCa {
+        let dir = dir.join(name);
+        fs::create_dir_all(dir.join("newcerts")).unwrap();
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        // Distinct subjects: CRLs are matched to their issuing CA by name.
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, format!("baft-test-ca-{name}"));
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.key_usages = vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::CrlSign,
+        ];
+        let key = KeyPair::generate().unwrap();
+        let key_pem = key.serialize_pem();
+        let cert = params.self_signed(&key).unwrap();
+        let issuer = Issuer::new(params, key);
+        let (ca_pem, ca_key, crl_pem) =
+            (dir.join("ca.pem"), dir.join("ca.key"), dir.join("ca.crl"));
+        fs::write(&ca_pem, cert.pem()).unwrap();
+        fs::write(&ca_key, key_pem).unwrap();
+        fs::write(dir.join("index.txt"), "").unwrap();
+        fs::write(dir.join("serial"), "1000\n").unwrap();
+        fs::write(dir.join("crlnumber"), "1000\n").unwrap();
+        let config = format!(
+            "[ ca ]\ndefault_ca = CA_default\n[ CA_default ]\ndatabase = {}\nnew_certs_dir = {}\ncertificate = {}\nprivate_key = {}\nserial = {}\ncrlnumber = {}\ndefault_md = sha256\ndefault_crl_days = 2\npolicy = policy_any\n[ policy_any ]\ncommonName = supplied\n",
+            dir.join("index.txt").display(),
+            dir.join("newcerts").display(),
+            ca_pem.display(),
+            ca_key.display(),
+            dir.join("serial").display(),
+            dir.join("crlnumber").display()
+        );
+        fs::write(dir.join("openssl.cnf"), config).unwrap();
+        let status = std::process::Command::new("openssl")
+            .args(["ca", "-gencrl", "-batch", "-config"])
+            .arg(dir.join("openssl.cnf"))
+            .arg("-out")
+            .arg(&crl_pem)
+            .status()
+            .expect("openssl is required for CRL integration tests");
+        assert!(status.success(), "openssl failed to generate test CRL");
+        TestCa {
+            ca_pem,
+            crl_pem,
+            issuer,
+        }
+    }
+
+    fn leaf(
+        dir: &Path,
+        name: &str,
+        uri: &str,
+        issuer: &Issuer<'static, KeyPair>,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let mut params = CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+        params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+        params.extended_key_usages = vec![
+            ExtendedKeyUsagePurpose::ServerAuth,
+            ExtendedKeyUsagePurpose::ClientAuth,
+        ];
+        params.use_authority_key_identifier_extension = true;
+        params
+            .subject_alt_names
+            .push(SanType::URI(Ia5String::try_from(uri.to_owned()).unwrap()));
+        let key = KeyPair::generate().unwrap();
+        let cert = params.signed_by(&key, issuer).unwrap();
+        let (cert_path, key_path) = (
+            dir.join(format!("{name}.pem")),
+            dir.join(format!("{name}.key")),
+        );
+        fs::write(&cert_path, cert.pem()).unwrap();
+        fs::write(&key_path, key.serialize_pem()).unwrap();
+        (cert_path, key_path)
+    }
+
+    async fn mtls_handshake_succeeds(
+        acceptor: TlsAcceptor,
+        client_config: Arc<ClientConfig>,
+    ) -> bool {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let Ok(mut stream) = acceptor.accept(server_io).await else {
+                return false;
+            };
+            let mut byte = [0_u8; 1];
+            stream.read_exact(&mut byte).await.is_ok() && stream.write_all(&byte).await.is_ok()
+        });
+        let client = timeout(
+            StdDuration::from_secs(5),
+            connector(client_config).connect(server_name("localhost").unwrap(), client_io),
+        )
+        .await;
+        let mut client_ok = false;
+        if let Ok(Ok(mut stream)) = client {
+            // TLS 1.3 client-auth failures surface on first use, so exchange one byte.
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut byte = [0_u8; 1];
+            client_ok = stream.write_all(b"x").await.is_ok()
+                && matches!(
+                    timeout(StdDuration::from_secs(2), stream.read_exact(&mut byte)).await,
+                    Ok(Ok(_))
+                );
+        }
+        let server_ok = timeout(StdDuration::from_secs(5), server)
+            .await
+            .map(|joined| joined.unwrap_or(false))
+            .unwrap_or(false);
+        client_ok && server_ok
+    }
+
+    #[tokio::test]
+    async fn ca_bundle_with_per_ca_crls_supports_rollover_overlap() {
+        let dir = std::env::temp_dir().join(format!(
+            "baft-tunnel-dual-ca-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let old = make_ca(&dir, "old");
+        let new = make_ca(&dir, "new");
+        let unknown = make_ca(&dir, "unknown");
+
+        // Overlap window: trust bundle holds both CAs and one CRL per CA.
+        let bundle_ca = dir.join("bundle-ca.pem");
+        let bundle_crl = dir.join("bundle.crl");
+        let cat = |paths: &[&Path], out: &Path| {
+            let mut text = String::new();
+            for path in paths {
+                text.push_str(&fs::read_to_string(path).unwrap());
+            }
+            fs::write(out, text).unwrap();
+        };
+        cat(&[&old.ca_pem, &new.ca_pem], &bundle_ca);
+        cat(&[&old.crl_pem, &new.crl_pem], &bundle_crl);
+
+        let (server_cert, server_key) =
+            leaf(&dir, "server", "urn:baft-tunnel:node:abroad", &old.issuer);
+        let accept_with =
+            |crl: &Path| server_config(&bundle_ca, crl, &server_cert, &server_key).unwrap();
+        let client_for = |ca: &TestCa, name: &str, trust_crl: &Path| {
+            let (cert, key) = leaf(&dir, name, "urn:baft-tunnel:node:iran", &ca.issuer);
+            client_config(&bundle_ca, trust_crl, &cert, &key).unwrap()
+        };
+
+        // Old-CA and new-CA client certificates both authenticate during the overlap.
+        assert!(
+            mtls_handshake_succeeds(
+                accept_with(&bundle_crl),
+                client_for(&old, "old-client", &bundle_crl)
+            )
+            .await
+        );
+        assert!(
+            mtls_handshake_succeeds(
+                accept_with(&bundle_crl),
+                client_for(&new, "new-client", &bundle_crl)
+            )
+            .await
+        );
+
+        // A CA outside the bundle is rejected.
+        assert!(
+            !mtls_handshake_succeeds(
+                accept_with(&bundle_crl),
+                client_for(&unknown, "unknown-client", &bundle_crl)
+            )
+            .await
+        );
+
+        // Fail closed: with only the old CA's CRL loaded, new-CA certificates have unknown
+        // revocation status and are rejected until the new CRL is activated.
+        let old_crl_only = dir.join("old-only.crl");
+        cat(&[&old.crl_pem], &old_crl_only);
+        assert!(
+            !mtls_handshake_succeeds(
+                accept_with(&old_crl_only),
+                client_for(&new, "new-client-2", &bundle_crl)
+            )
+            .await
+        );
+        assert!(
+            mtls_handshake_succeeds(
+                accept_with(&old_crl_only),
+                client_for(&old, "old-client-2", &bundle_crl)
+            )
+            .await
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

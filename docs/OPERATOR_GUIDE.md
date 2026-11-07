@@ -106,3 +106,7 @@ CRLs are still issued only on the offline CA. Transfer only the signed `ca.crl` 
 5. After both nodes activate, verify rejection of the revoked identity and reconnection of the intended peer. There is no distributed transaction; interruption during the rollout is expected. The helper never contacts the other node or distributes files.
 
 The helper does not automate CA rollover, pin overlap, or remote CRL distribution. Run `bash scripts/pki/test-apply-crl.sh` for its isolated temporary-CA validation suite. On a disposable systemd 250+ host, `bash scripts/pki/test-crl-activation-systemd.sh` additionally exercises real transient-service activation and rollback; neither test touches a live CA or production service.
+
+## CA rollover naming (ADR-0017 B1)
+
+During a CA rollover the trust bundle holds the old and the new CA, each with its own CRL. CRLs are matched to their CA by subject name, so create the replacement CA with a different name: `bash scripts/pki/baft-pki.sh init-ca ./offline-ca-2 "BAFT-TUNNEL Private CA 2026-11"`. A node also accepts up to two comma-separated `peer_fingerprint` pins while certificates are replaced. If a CRL for one CA in the bundle is missing or expired, certificates from that CA are rejected (fail closed).
