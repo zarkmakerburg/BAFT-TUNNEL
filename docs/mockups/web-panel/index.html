@@ -85,11 +85,12 @@ input,select{font:inherit;width:100%;min-height:42px;padding:6px 10px;border:1px
 
 <section id="tunnels" class="view" hidden><div class="card">
   <h2 data-fa="لیست تونل‌ها" data-en="Tunnel list"></h2>
-  <div class="row"><div><b class="mono">web-443</b><div class="sub mono">ir-edge → de-1 · :443</div></div><span class="pill ok" data-fa="فعال" data-en="Up"></span></div>
-  <div class="row"><div><b class="mono">ssh-2222</b><div class="sub mono">ir-edge → nl-2 · :2222</div></div><span class="pill ok" data-fa="فعال" data-en="Up"></span></div>
-  <div class="row"><div><b class="mono">api-8443</b><div class="sub mono">ir-edge → nl-2 · :8443</div></div><span class="pill ok" data-fa="فعال" data-en="Up"></span></div>
-  <div class="row"><div><b class="mono">media-9000</b><div class="sub mono">ir-edge → de-1 · :9000</div></div><span class="pill warn" data-fa="تاخیر بالا (۳۲۰ms)" data-en="High latency (320ms)"></span></div>
-  <div class="row"><div><b class="mono">backup-7000</b><div class="sub mono">ir-edge → fi-3 · :7000</div></div><span class="pill bad" data-fa="قطع" data-en="Down"></span></div>
+  <p class="sub" data-fa="هر ردیف: پورت محلی (listen) ← پورت لینک بین دو نود (TCP/TLS) ← مقصد ثابت که روی نود سرور تنظیم شده" data-en="Each row: local listen port → node link port (TCP/TLS between the two servers) → fixed destination configured on the server node"></p>
+  <div class="row"><div><b class="mono">web-demo</b><div class="sub mono">127.0.0.1:18080 → 203.0.113.10:9443 → 10.0.0.5:443</div></div><span class="pill ok" data-fa="فعال" data-en="Up"></span></div>
+  <div class="row"><div><b class="mono">ssh-demo</b><div class="sub mono">127.0.0.1:12222 → 203.0.113.10:9443 → 10.0.0.6:22</div></div><span class="pill ok" data-fa="فعال" data-en="Up"></span></div>
+  <div class="row"><div><b class="mono">api-demo</b><div class="sub mono">127.0.0.1:18443 → 203.0.113.22:9443 → 10.0.0.7:8443</div></div><span class="pill ok" data-fa="فعال" data-en="Up"></span></div>
+  <div class="row"><div><b class="mono">media-demo</b><div class="sub mono">127.0.0.1:19000 → 203.0.113.10:9443 → 10.0.0.8:9000</div></div><span class="pill warn" data-fa="تاخیر بالا (۳۲۰ms)" data-en="High latency (320ms)"></span></div>
+  <div class="row"><div><b class="mono">backup-demo</b><div class="sub mono">127.0.0.1:17000 → 198.51.100.31:9443 → 10.0.0.9:7000</div></div><span class="pill bad" data-fa="قطع" data-en="Down"></span></div>
   <div class="actions"><button class="primary" data-go="wizard" data-fa="+ تونل جدید" data-en="+ New tunnel"></button></div>
 </div></section>
 
@@ -101,15 +102,17 @@ input,select{font:inherit;width:100%;min-height:42px;padding:6px 10px;border:1px
   <div class="step" data-s="2" hidden><p data-fa="در حال انتظار برای اتصال نود…" data-en="Waiting for the node to connect…"></p>
     <div class="alert ok" data-fa="نود «de-1» وصل شد (نمایشی)." data-en="Node “de-1” connected (demo)."></div></div>
   <div class="step" data-s="3" hidden>
-    <label for="n" data-fa="نام تونل" data-en="Tunnel name"></label><input id="n" value="web-443">
-    <label for="p" data-fa="پورت" data-en="Port"></label><input id="p" value="443" inputmode="numeric" dir="ltr">
-    <label for="t" data-fa="مقصد" data-en="Target"></label><select id="t" dir="ltr"><option>de-1</option><option>nl-2</option></select>
+    <label for="n" data-fa="شناسه تونل (tunnel_id)" data-en="Tunnel ID (tunnel_id)"></label><input id="n" value="demo-tunnel" dir="ltr">
+    <label for="p" data-fa="پورت محلی (listen): کلاینت‌ها به این پورت وصل می‌شوند" data-en="Local listen port: clients connect here"></label><input id="p" value="127.0.0.1:18080" dir="ltr">
+    <label for="r" data-fa="پورت لینک بین دو نود (remote): اتصال TCP/TLS به نود سرور" data-en="Node link port (remote): TCP/TLS to the server node"></label><input id="r" value="203.0.113.10:9443" dir="ltr">
+    <label for="d" data-fa="مقصد: فقط روی نود سرور تنظیم می‌شود و کلاینت نمی‌تواند عوض کند" data-en="Destination: set only on the server node, a client cannot change it"></label><input id="d" value="10.0.0.5:443" dir="ltr">
+    <label for="t" data-fa="جهت (direction)" data-en="Direction"></label><select id="t" dir="ltr"><option>direct</option><option>reverse</option></select>
     <div class="alert ok" id="done" hidden data-fa="تونل ساخته شد (نمایشی، چیزی ایجاد نشد)." data-en="Tunnel created (demo, nothing was created)."></div></div>
   <div class="actions"><button id="back" data-fa="قبلی" data-en="Back"></button><button id="next" class="primary" data-fa="بعدی" data-en="Next"></button></div>
 </div></section>
 
 <section id="diag" class="view" hidden><div class="grid">
-  <div class="card span"><h2 data-fa="چرا تونل «backup-7000» قطع است؟" data-en="Why is tunnel “backup-7000” down?"></h2>
+  <div class="card span"><h2 data-fa="چرا تونل «backup-demo» قطع است؟" data-en="Why is tunnel “backup-demo” down?"></h2>
     <div class="alert bad"><b data-fa="مشکل:" data-en="Problem:"></b> <span data-fa="نود «fi-3» ۱۴ دقیقه است به پنل پیام نداده." data-en="Node “fi-3” has not reported to the panel for 14 minutes."></span></div>
     <p data-fa="احتمال زیاد سرور خاموش شده یا اینترنتش قطع است. تونل‌های دیگر سالم‌اند." data-en="The server is probably off or has lost its internet link. Your other tunnels are fine."></p>
     <b data-fa="چه کنم؟" data-en="What to do"></b>
