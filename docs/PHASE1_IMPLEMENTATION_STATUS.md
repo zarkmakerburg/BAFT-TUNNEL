@@ -287,3 +287,10 @@ New `src/engine.rs`: `StreamEngine` trait (`id`, `accept`, `dial`) producing a b
 Three dispatches of `phase1-two-host-e2e.yml` on main (runs 42404833577 @4a38561, 42405069748 and 42405579721 @f8e8b82) all failed in the first job (`validate-confirmation`) within about 2 seconds with correct inputs, and the LAB job was skipped. No LAB host was contacted. The same instant failure affects every PR-triggered job since #20, so the likely cause is the hosted Actions runner/quota, not the code. Job logs are not retrievable (HTTP 404).
 
 Status: the behaviour-neutral refactor (P2-003) is verified locally only (cargo test, clippy, fmt). Real-host E2E for the refactor remains OPEN and will be re-run once runners are available.
+
+## P2-004c: `engine` config field and `noise-tcp` wiring (local evidence only), 2026-11-07
+
+- Config accepts `engine: "tcp-tls"` (default, unchanged behaviour) or `"noise-tcp"`. Noise uses the existing `key`/`key_credential` custody for a hex static private key, plus `noise_peer_public` (64 hex). `ca`, `crl`, `cert`, `peer_fingerprint` and `server_name` must be omitted for Noise and are required for TLS; mixed or missing material fails validation (fail closed).
+- `baft-tunnel noise-keygen --out FILE` writes the private key (0600, never overwrites) and prints the public key.
+- In-process tunnel test over Noise passes (2x framed payload through Yamux), and a dialer pinning the wrong server key and a client with an unenrolled key are both refused.
+- Evidence: cargo test (49 pass), clippy `-D warnings`, fmt. Not yet run on real LAB hosts (hosted runners unavailable, see P2-003 note). Detectability: Noise has no TLS fingerprint but is a high-entropy stream and is NOT claimed undetectable.

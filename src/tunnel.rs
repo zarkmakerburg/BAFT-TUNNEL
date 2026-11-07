@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use crate::{
     authorization::{ConnectionDirection, StreamCapability},
-    engine::{BoxedSecureStream, StreamEngine, TlsEngine},
+    engine::{BoxedSecureStream, NoiseEngine, NoiseSettings, StreamEngine, TlsEngine},
     handshake, tls,
 };
 use anyhow::{Context, Result, bail};
@@ -68,6 +68,8 @@ pub struct ServerOptions {
     pub crl: PathBuf,
     pub cert: PathBuf,
     pub key: PathBuf,
+    /// `Some` selects the `noise-tcp` engine; the TLS fields are then unused.
+    pub noise: Option<NoiseSettings>,
     pub max_streams: usize,
 }
 
@@ -84,6 +86,8 @@ pub struct ForwardOptions {
     pub crl: PathBuf,
     pub cert: PathBuf,
     pub key: PathBuf,
+    /// `Some` selects the `noise-tcp` engine; the TLS fields are then unused.
+    pub noise: Option<NoiseSettings>,
     pub max_streams: usize,
 }
 
@@ -201,12 +205,24 @@ fn next_backoff(current: Duration) -> Duration {
 pub async fn serve(options: ServerOptions) -> Result<()> {
     let listen = socket(&options.listen, "--listen")?;
     let target = destination(&options.target)?;
-    let acceptor = tls::server_config(&options.ca, &options.crl, &options.cert, &options.key)?;
-    let engine: Arc<dyn StreamEngine> = Arc::new(TlsEngine::listener(
-        acceptor,
-        options.peer_id.clone(),
-        options.peer_fingerprint.clone(),
-    ));
+    let engine: Arc<dyn StreamEngine> = match &options.noise {
+        Some(noise) => Arc::new(NoiseEngine::from_settings(
+            noise,
+            &options.peer_id,
+            &options.local_id,
+            &options.tunnel_id,
+            options.direction,
+        )?),
+        None => {
+            let acceptor =
+                tls::server_config(&options.ca, &options.crl, &options.cert, &options.key)?;
+            Arc::new(TlsEngine::listener(
+                acceptor,
+                options.peer_id.clone(),
+                options.peer_fingerprint.clone(),
+            ))
+        }
+    };
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("bind {listen}"))?;
@@ -389,17 +405,26 @@ async fn server_session<S>(
 async fn connect_peer(options: &ForwardOptions) -> Result<Session<BoxedSecureStream>> {
     let remote = socket(&options.remote, "--remote")?;
     // Rebuilt on every (re)connect so a refreshed CRL on disk is picked up.
-    let engine = TlsEngine::dialer(
-        tls::connector(tls::client_config(
-            &options.ca,
-            &options.crl,
-            &options.cert,
-            &options.key,
+    let engine: Box<dyn StreamEngine> = match &options.noise {
+        Some(noise) => Box::new(NoiseEngine::from_settings(
+            noise,
+            &options.local_id,
+            &options.peer_id,
+            &options.tunnel_id,
+            options.direction,
         )?),
-        tls::server_name(&options.server_name)?,
-        options.peer_id.clone(),
-        options.peer_fingerprint.clone(),
-    );
+        None => Box::new(TlsEngine::dialer(
+            tls::connector(tls::client_config(
+                &options.ca,
+                &options.crl,
+                &options.cert,
+                &options.key,
+            )?),
+            tls::server_name(&options.server_name)?,
+            options.peer_id.clone(),
+            options.peer_fingerprint.clone(),
+        )),
+    };
     let mut secure = engine.dial(remote).await?;
     timeout(
         HANDSHAKE_TIMEOUT,
@@ -803,6 +828,7 @@ mod tests {
             crl: crl_path.clone(),
             cert: server_cert_path,
             key: server_key_path,
+            noise: None,
             max_streams: 8,
         }));
 
@@ -829,6 +855,7 @@ mod tests {
             crl: crl_path,
             cert: client_cert_path,
             key: client_key_path,
+            noise: None,
             max_streams: 8,
         };
         let session = timeout(Duration::from_secs(10), connect_peer(&forward_options))
@@ -885,6 +912,156 @@ mod tests {
     async fn authenticated_tcp_tls_forwarding_works_with_each_side_as_dialer() {
         authenticated_forwarding_case("iran", "abroad").await;
         authenticated_forwarding_case("abroad", "iran").await;
+    }
+
+    #[tokio::test]
+    async fn noise_tcp_forwarding_works_end_to_end_and_rejects_wrong_peer_key() {
+        let directory = std::env::temp_dir().join(format!(
+            "baft-noise-e2e-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let server_key = directory.join("server.noise");
+        let client_key = directory.join("client.noise");
+        let rogue_key = directory.join("rogue.noise");
+        let server_public = crate::engine::write_noise_keypair(&server_key).unwrap();
+        let client_public = crate::engine::write_noise_keypair(&client_key).unwrap();
+        let rogue_public = crate::engine::write_noise_keypair(&rogue_key).unwrap();
+
+        let echo_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let echo_address = echo_listener.local_addr().unwrap();
+        let echo_task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = echo_listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buffer = [0_u8; 1024];
+                    while let Ok(count) = stream.read(&mut buffer).await {
+                        if count == 0 || stream.write_all(&buffer[..count]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_address = reservation.local_addr().unwrap();
+        drop(reservation);
+        let local_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_address = local_listener.local_addr().unwrap();
+
+        let direction = ConnectionDirection::Direct;
+        let server_task = tokio::spawn(serve(ServerOptions {
+            listen: server_address.to_string(),
+            target: echo_address.to_string(),
+            local_id: "abroad".to_owned(),
+            peer_id: "iran".to_owned(),
+            tunnel_id: "noise-e2e".to_owned(),
+            direction,
+            peer_fingerprint: String::new(),
+            ca: PathBuf::new(),
+            crl: PathBuf::new(),
+            cert: PathBuf::new(),
+            key: server_key.clone(),
+            noise: Some(NoiseSettings {
+                private_key: server_key,
+                peer_public: client_public,
+            }),
+            max_streams: 8,
+        }));
+        for _ in 0..100 {
+            if TcpStream::connect(server_address).await.is_ok() {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        let options = |private: PathBuf, peer_public: String| ForwardOptions {
+            listen: local_address.to_string(),
+            remote: server_address.to_string(),
+            server_name: String::new(),
+            local_id: "iran".to_owned(),
+            peer_id: "abroad".to_owned(),
+            tunnel_id: "noise-e2e".to_owned(),
+            direction,
+            peer_fingerprint: String::new(),
+            ca: PathBuf::new(),
+            crl: PathBuf::new(),
+            cert: PathBuf::new(),
+            key: private.clone(),
+            noise: Some(NoiseSettings {
+                private_key: private,
+                peer_public,
+            }),
+            max_streams: 8,
+        };
+
+        // A dialer that pins the wrong server key must not obtain a session.
+        let wrong = timeout(
+            Duration::from_secs(10),
+            connect_peer(&options(client_key.clone(), rogue_public)),
+        )
+        .await
+        .expect("wrong-key attempt timed out");
+        assert!(wrong.is_err(), "dialer accepted an unpinned server key");
+        // A dialer using an unenrolled static key must be refused by the server.
+        let unenrolled = timeout(
+            Duration::from_secs(10),
+            connect_peer(&options(rogue_key, server_public.clone())),
+        )
+        .await
+        .expect("unenrolled-key attempt timed out");
+        assert!(
+            unenrolled.is_err(),
+            "server accepted an unenrolled client key"
+        );
+
+        let session = timeout(
+            Duration::from_secs(10),
+            connect_peer(&options(client_key, server_public)),
+        )
+        .await
+        .expect("noise peer connection timed out")
+        .expect("noise peer connection failed");
+        let (sender, mut receiver) = mpsc::channel(8);
+        let stream_slots = Arc::new(Semaphore::new(8));
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let forward_task = tokio::spawn(async move {
+            run_forward_session(
+                session,
+                &mut receiver,
+                &stream_slots,
+                direction,
+                "noise-e2e",
+                shutdown_rx,
+            )
+            .await
+        });
+        let mut local_client = TcpStream::connect(local_address).await.unwrap();
+        let (local_stream, _) = local_listener.accept().await.unwrap();
+        sender.send(local_stream).await.unwrap();
+        let payload: Vec<u8> = (0..(512 * 1024 + 29)).map(|i| (i % 253) as u8).collect();
+        timeout(Duration::from_secs(10), async {
+            local_client.write_all(&payload).await.unwrap();
+            let mut received = vec![0_u8; payload.len()];
+            local_client.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, payload);
+        })
+        .await
+        .expect("noise forwarded payload timed out");
+
+        drop(local_client);
+        forward_task.abort();
+        server_task.abort();
+        echo_task.abort();
+        let _ = forward_task.await;
+        let _ = server_task.await;
+        let _ = echo_task.await;
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]

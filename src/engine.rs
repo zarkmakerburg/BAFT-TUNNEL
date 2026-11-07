@@ -116,16 +116,79 @@ impl StreamEngine for TlsEngine {
 /// peer static key. No certificates or CA; trust is the enrolled peer static public key.
 /// The prologue binds the protocol version, both node identities, the tunnel and the
 /// direction, so a key enrolled for one tunnel cannot be replayed into another.
-// Not selectable from configuration yet (P2-004c); covered by the engine tests below.
-#[allow(dead_code)]
 pub struct NoiseEngine {
     local_private: Vec<u8>,
     peer_public: Vec<u8>,
     prologue: Vec<u8>,
 }
 
-#[allow(dead_code)]
+/// Where the Noise static keys come from. The private key file holds 64 hex characters
+/// (written by `noise-keygen`); the peer public key is 64 hex characters in the config.
+#[derive(Debug, Clone)]
+pub struct NoiseSettings {
+    pub private_key: std::path::PathBuf,
+    pub peer_public: String,
+}
+
+/// Generate a static keypair, write the private key as hex (create-new, 0600) and return
+/// the public key as hex.
+pub fn write_noise_keypair(path: &std::path::Path) -> Result<String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let pair = noise::generate_static_keypair()?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("create {} (it must not already exist)", path.display()))?;
+    file.write_all(hex::encode(&pair.private).as_bytes())?;
+    file.write_all(b"\n")?;
+    Ok(hex::encode(&pair.public))
+}
+
+impl NoiseSettings {
+    /// Check key material without touching the network.
+    pub fn validate(&self) -> Result<()> {
+        let text = std::fs::read_to_string(&self.private_key).context("read Noise private key")?;
+        decode_key(&text, "Noise private key")?;
+        decode_key(&self.peer_public, "noise_peer_public")?;
+        Ok(())
+    }
+}
+
+fn decode_key(hex_text: &str, what: &str) -> Result<Vec<u8>> {
+    let bytes = hex::decode(hex_text.trim()).with_context(|| format!("{what} must be hex"))?;
+    if bytes.len() != 32 {
+        anyhow::bail!("{what} must be exactly 32 bytes (64 hex characters)");
+    }
+    Ok(bytes)
+}
+
 impl NoiseEngine {
+    /// Build from config. The initiator is the dialing node, the responder the listening one.
+    pub fn from_settings(
+        settings: &NoiseSettings,
+        initiator_id: &str,
+        responder_id: &str,
+        tunnel_id: &str,
+        direction: crate::authorization::ConnectionDirection,
+    ) -> Result<Self> {
+        let private = std::fs::read_to_string(&settings.private_key)
+            .context("read Noise private key")
+            .and_then(|text| decode_key(&text, "Noise private key"))?;
+        let peer_public = decode_key(&settings.peer_public, "noise_peer_public")?;
+        Ok(Self::new(
+            private,
+            peer_public,
+            initiator_id,
+            responder_id,
+            tunnel_id,
+            direction,
+        ))
+    }
+
     /// `initiator_id` is the dialing node and `responder_id` the listening node, on both
     /// sides, so the two prologues are byte-identical.
     pub fn new(
