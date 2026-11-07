@@ -36,10 +36,10 @@ Engine rollout order: (1) TCP+TLS mTLS, (2) Noise+TCP, (3) BAFT main engine (aft
 - **P1-004** Phase 1 acceptance tracking.
 
 ## TO DO (priority order)
-1. **P1-002** CRL distribution and CA/pin rollover. Blocked on owner decision of ADR-0017 (PR #16); recommended A1+B1.
+1. **P1-002** CRL distribution and CA/pin rollover. ADR-0017 accepted (A1+B1); implement.
 2. **P1-005** Fuzz targets (frame, hello, config) and CI smoke run (review finding 8).
 3. **P1-004** Acceptance closure with latest SHA; Issue #2 body update.
-4. **P2-001** ADR-0018 engine framework (trait, registry, Go sidecar boundary, rotation) for owner decision.
+4. **P2-001** ADR-0018 engine framework (trait, registry, Go sidecar boundary, rotation) (accepted).
 5. **P2-002** Import health-check of BAFT / C-BAFT engine code (licence, secrets, quality) — report only.
 6. **P2-003** Engine trait refactor of existing TCP+TLS path, behaviour unchanged.
 7. **P2-004** Promote Noise+TCP to an engine behind the trait.
