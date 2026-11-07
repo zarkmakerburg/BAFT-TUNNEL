@@ -7,6 +7,7 @@
 **Current phase:** Phase 1 — Rust tunnel runtime, PKI, installer and LAB validation  
 **Latest documented change:** Main `e913f34`-based head after PR #13/#14/#15 (آخرین SHA ادغام‌شده: `8bcafc9ff2f1c5f67d0f394f82bb5ffb8067cfa1`)  
 **PR status:** PR #3 Merged (owner-approved)؛ PR #9/#10/#13/#14/#15 Merged؛ PR #16 (ADR-0017) باز و منتظر تصمیم مالک؛ PR #17 (Web Panel mockup) باز  
+**Revised phased product plan (MVP, engines, Phase 2–6):** [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md) — ADR-0017 و ADR-0018 توسط مالک تأیید شد.  
 **Production status:** Not production-ready — فقط Pre-release `v0.1.0-phase1-pre` منتشر شده (با Workflow امضای Cosign در `release.yml`)
 
 ## Phase 0 — Foundation and Architecture

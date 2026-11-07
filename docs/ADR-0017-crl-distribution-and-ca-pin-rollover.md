@@ -1,6 +1,6 @@
 # ADR-0017: remote CRL distribution and CA/pin rollover
 
-- **Status:** PROPOSED — owner decision required. Nothing here is implemented.
+- **Status:** ACCEPTED (owner approved 2026-11-07; recommended A1+B1). Nothing here is implemented yet.
 - **Date:** 2026-11-07
 - **Scope:** Phase 1 two-node deployment, offline CA (ADR-0012, ADR-0015). Closes the open gates "remote CRL distribution" and "CA/pin rollover" as design only.
 
