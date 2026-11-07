@@ -55,6 +55,8 @@ Ubuntu 22.04 with systemd 249 is the default supported baseline. Use standard sy
 
 This baseline uses plaintext source material protected by root-only filesystem permissions. It is **not encrypted at rest**. Full-disk encryption and host access controls are still recommended. Root compromise or offline disk access without disk encryption can expose the source key. The service receives a scoped credential, but the Rustls process still holds key material in memory.
 
+Automated alternative to steps 1-2: `sudo scripts/install.sh --instance INSTANCE --node-key ./node.key` creates the directory, key file and drop-in with the exact ownership and modes above (it refuses symlinks, replaces a different existing key only with `--replace-credential`, and keeps the previous key in a root-only backup). `scripts/uninstall.sh` keeps credentials and configuration unless `--purge-config --yes` is given.
+
 ## Optional encrypted credential delivery (systemd 250+)
 
 On hosts that independently support systemd 250+ and `systemd-creds`, operators may explicitly select `LoadCredentialEncrypted=` as an enhanced option. Follow the encrypted provisioning procedure below. Confirm the actual systemd version and `systemd-creds encrypt` capability; distribution labels alone are not sufficient. If encrypted mode is selected and unavailable, startup must fail closed. Never silently fall back to standard credentials or a filesystem key.

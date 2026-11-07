@@ -4,8 +4,10 @@ usage() {
   cat <<'EOF'
 Usage: uninstall.sh [--destdir ROOT] [--stop] [--purge-config --yes]
 
-Removes the binary and systemd template. Config, keys, state, and service
-account are retained unless --purge-config --yes is explicitly supplied.
+Removes the binary and systemd template. Config, node-key credentials
+(/etc/baft-tunnel/credentials), their instance drop-ins, state, and the
+service account are retained unless --purge-config --yes is explicitly
+supplied (the service account is always retained).
 Running/enabled instances must be stopped with --stop first.
 EOF
 }
@@ -50,8 +52,22 @@ if [[ "$STAGING" == "0" ]]; then
 fi
 rm -f "$ROOT_PREFIX/usr/local/bin/baft-tunnel" "$ROOT_PREFIX/etc/systemd/system/baft-tunnel@.service"
 if [[ "$PURGE" == "1" ]]; then
+  # Remove only drop-ins written by install.sh; leave any operator-owned files.
+  shopt -s nullglob
+  for dropin in "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel@*.service.d/credentials.conf; do
+    if grep -Fqx '# Managed by BAFT-TUNNEL scripts/install.sh' "$dropin"; then
+      rm -f "$dropin"
+      rmdir "$(dirname "$dropin")" 2>/dev/null || true
+    fi
+  done
+  shopt -u nullglob
   rm -rf "$ROOT_PREFIX/etc/baft-tunnel" "$ROOT_PREFIX/var/lib/baft-tunnel"
 fi
 if [[ "$STAGING" == "0" ]]; then systemctl daemon-reload; fi
 echo "Removed binary and systemd template. Service account was retained."
-if [[ "$PURGE" == "0" ]]; then echo "Configuration, private keys, and state were retained."; fi
+if [[ "$PURGE" == "0" ]]; then
+  echo "Configuration, node-key credentials, instance drop-ins, and state were retained."
+  echo "Remove them only with: uninstall.sh --purge-config --yes"
+else
+  echo "Configuration, node-key credentials, managed drop-ins, and state were purged."
+fi
