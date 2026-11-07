@@ -115,7 +115,7 @@ This evidence is not a security certification. Phase 1 remains Draft and is not 
 - Test-only commit 5249b3e15624a148c3169aa1696b2bcd65784daf adds eight independent client-side checks that reject malformed or mismatched ServerHello bindings; its exact-head Phase 0/Phase 1 push/PR workflows passed.
 - Follow-up commit df39f155eeb6565f732fb8a80590591fe2173b17 adds eight server-side rejection cases for protocol version, client identity, server identity, tunnel ID, direction, empty/duplicate capabilities, and malformed client nonce. These are historical changes, superseded as the latest branch head by d901d11.
 
-## Latest exact-head verification — d901d11 PASS
+## Historical exact-head verification — d901d11 PASS
 
 - Commit: [d901d11bc37541c069b5a402d2ee78576f32be8c](https://github.com/zarkmakerburg/BAFT-TUNNEL/commit/d901d11bc37541c069b5a402d2ee78576f32be8c).
 - Phase 1 push [42336031466](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42336031466) and PR [42336035061](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42336035061): SUCCESS.
@@ -125,7 +125,7 @@ This evidence is not a security certification. Phase 1 remains Draft and is not 
 - This closes exact-head CI only. It does not close online enrollment/control-plane authorization, automated CRL distribution/refresh/rotation, independent security review, persistent operator-host custody/lifecycle/signal-stop verification, or longer real-host soak. No new real-host LAB run is claimed for d901d11.
 
 
-## Latest exact-head verification — 6afaf9a PASS
+## Historical exact-head verification — 6afaf9a PASS
 
 - Commit: [6afaf9a8758c435986c9f60ad50863491e67266c](https://github.com/zarkmakerburg/BAFT-TUNNEL/commit/6afaf9a8758c435986c9f60ad50863491e67266c).
 - Phase 1 push [42338027443](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42338027443) and PR [42338030998](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42338030998): PASS.
@@ -134,3 +134,14 @@ This evidence is not a security certification. Phase 1 remains Draft and is not 
 - Local exact-head validation: 37/37 Rust tests, rustfmt, Clippy, optimized release build, RustSec audit (157 dependencies; no vulnerability, unmaintained, unsound, or yanked findings), and diff check — PASS.
 - This closes exact-head CI only. No new two-host LAB run is claimed for this SHA. Persistent operator-controlled Linux lifecycle, online enrollment/control-plane authorization, automated CRL distribution/refresh/rollover, independent security review, and longer real-host soak remain open.
 - PR #3 remains Draft/open/unmerged. No release or deployment.
+
+
+## Latest branch-head verification — e987e7a PASS
+
+- Branch head: [e987e7a1fe336feea3a1d748d953379fcd59fbb6](https://github.com/zarkmakerburg/BAFT-TUNNEL/commit/e987e7a1fe336feea3a1d748d953379fcd59fbb6) (documentation-only follow-up to runtime head 6afaf9a).
+- Phase 1 push [42343084813](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42343084813) and PR [42343080891](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42343080891): PASS.
+- Phase 0 push [42343081031](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42343081031) and PR [42343084816](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42343084816): PASS.
+- Phase 1 exact-head jobs completed pinned Rust 1.88.0 and cargo-audit 0.22.1 installation, RustSec audit with warnings denied, formatting, 37 Rust tests, Clippy with warnings denied, optimized release build, encrypted systemd credential runtime validation, and installed systemd service lifecycle.
+- Phase 0 jobs completed the isolated Docker netem integration workflow successfully.
+- Local exact-head validation of runtime code remains the 6afaf9a result documented above; e987e7a changes documentation only.
+- CI passing on this branch head does not close remaining Phase 1 acceptance gates or constitute a new two-host LAB run. PR #3 remains Draft/open/unmerged; no release or deployment.
