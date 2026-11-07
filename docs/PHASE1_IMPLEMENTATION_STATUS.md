@@ -294,3 +294,10 @@ Status: the behaviour-neutral refactor (P2-003) is verified locally only (cargo 
 - `baft-tunnel noise-keygen --out FILE` writes the private key (0600, never overwrites) and prints the public key.
 - In-process tunnel test over Noise passes (2x framed payload through Yamux), and a dialer pinning the wrong server key and a client with an unenrolled key are both refused.
 - Evidence: cargo test (49 pass), clippy `-D warnings`, fmt. Not yet run on real LAB hosts (hosted runners unavailable, see P2-003 note). Detectability: Noise has no TLS fingerprint but is a high-entropy stream and is NOT claimed undetectable.
+
+## P1-001 real-host LAB: TCP packet loss and 3600 s soak PASS, 2026-11-07
+
+- Real TCP packet loss (nftables, dedicated table, removed after the test): run 42412456810 on main, `LOSS_RESULT percent=2 dropped_packets=15`, `PHASE1_TWO_HOST_E2E=PASS` (Direct, Reverse, integrity, recovery, revocation).
+- 3600 s soak (no impairment): run 42412781202 on main, 266 rounds, `forward_fd=11->11`, `serve_fd=11->11`, RSS growth under 200 KB, `PHASE1_TWO_HOST_E2E=PASS`.
+- Logs checked: no host addresses printed (hosts are masked Environment secrets).
+- This engine path is the refactored one (P2-003), so it also serves as the real-host confirmation for P2-003. `noise-tcp` (P2-004) is NOT yet covered by a LAB run.

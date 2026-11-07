@@ -374,7 +374,7 @@
 | Ubuntu 22.04 Credential (P1-000) | تکمیل | CI + LAB واقعی |
 | Protocol adversarial coverage (P1-003) | تکمیل | PR #13/#14 |
 | Soak ۳۰ دقیقه‌ای (P1-001) | PASS | run 42398701622؛ Soak طولانی‌تر (ساعت‌ها) هنوز انجام نشده |
-| Controlled impairment (P1-001) | **باز / جزئی** | فقط تأخیر/Jitter در سطح Application؛ Packet Loss واقعی انجام نشده |
+| Controlled impairment (P1-001) | **انجام شد** | Packet Loss واقعی ۲٪ با nftables PASS (run 42412456810) و Soak ۳۶۰۰ ثانیه PASS (run 42412781202) |
 | Remote CRL distribution (P1-002) | باز | ADR-0017 پیشنهادی، منتظر مالک |
 | CA / Pin rollover (P1-002) | باز | ADR-0017 پیشنهادی، پیاده‌سازی نشده |
 | Independent review | Waived | معافیت مالک؛ انجام نشده |
