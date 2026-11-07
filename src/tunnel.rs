@@ -2,6 +2,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use crate::{
     authorization::{ConnectionDirection, StreamCapability},
+    engine::{BoxedSecureStream, StreamEngine, TlsEngine},
     handshake, tls,
 };
 use anyhow::{Context, Result, bail};
@@ -17,7 +18,6 @@ use tokio::{
     task::JoinSet,
     time::{sleep, timeout},
 };
-use tokio_rustls::client::TlsStream as ClientTlsStream;
 use tokio_yamux::{Config as YamuxConfig, Session};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -202,6 +202,11 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
     let listen = socket(&options.listen, "--listen")?;
     let target = destination(&options.target)?;
     let acceptor = tls::server_config(&options.ca, &options.crl, &options.cert, &options.key)?;
+    let engine: Arc<dyn StreamEngine> = Arc::new(TlsEngine::listener(
+        acceptor,
+        options.peer_id.clone(),
+        options.peer_fingerprint.clone(),
+    ));
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("bind {listen}"))?;
@@ -213,7 +218,10 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
     let mut tasks = JoinSet::new();
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
-    eprintln!("BAFT-TUNNEL server listening on {listen}");
+    eprintln!(
+        "BAFT-TUNNEL server listening on {listen} (engine {})",
+        engine.id()
+    );
 
     loop {
         while tasks.try_join_next().is_some() {}
@@ -238,13 +246,12 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                     continue;
                 };
                 let sessions = sessions.clone();
-                let acceptor = acceptor.clone();
-                let (local, peer, tunnel, direction, pin, target, max, stream_slots) = (
+                let engine = engine.clone();
+                let (local, peer, tunnel, direction, target, max, stream_slots) = (
                     options.local_id.clone(),
                     options.peer_id.clone(),
                     options.tunnel_id.clone(),
                     options.direction,
-                    options.peer_fingerprint.clone(),
                     target,
                     options.max_streams,
                     streams.clone(),
@@ -252,11 +259,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                 let session_shutdown = shutdown_rx.clone();
                 tasks.spawn(async move {
                     let result: Result<()> = async {
-                        let mut secure = timeout(HANDSHAKE_TIMEOUT, acceptor.accept(socket))
-                            .await
-                            .context("TLS handshake timeout")??;
-                        handshake::verify_peer_fingerprint(secure.get_ref().1.peer_certificates(), &pin)?;
-                        handshake::verify_peer_identity(secure.get_ref().1.peer_certificates(), &peer)?;
+                        let mut secure = engine.accept(socket).await?;
                         timeout(
                             HANDSHAKE_TIMEOUT,
                             handshake::server_handshake(&mut secure, &local, &peer, &tunnel, direction),
@@ -383,27 +386,21 @@ async fn server_session<S>(
     drain_stream_tasks(&mut stream_tasks, "server").await;
 }
 
-async fn connect_peer(options: &ForwardOptions) -> Result<Session<ClientTlsStream<TcpStream>>> {
+async fn connect_peer(options: &ForwardOptions) -> Result<Session<BoxedSecureStream>> {
     let remote = socket(&options.remote, "--remote")?;
-    let connector = tls::connector(tls::client_config(
-        &options.ca,
-        &options.crl,
-        &options.cert,
-        &options.key,
-    )?);
-    let server_name = tls::server_name(&options.server_name)?;
-    let socket = timeout(CONNECT_TIMEOUT, TcpStream::connect(remote))
-        .await
-        .context("remote connect timeout")??;
-    let mut secure: ClientTlsStream<TcpStream> =
-        timeout(HANDSHAKE_TIMEOUT, connector.connect(server_name, socket))
-            .await
-            .context("TLS handshake timeout")??;
-    handshake::verify_peer_fingerprint(
-        secure.get_ref().1.peer_certificates(),
-        &options.peer_fingerprint,
-    )?;
-    handshake::verify_peer_identity(secure.get_ref().1.peer_certificates(), &options.peer_id)?;
+    // Rebuilt on every (re)connect so a refreshed CRL on disk is picked up.
+    let engine = TlsEngine::dialer(
+        tls::connector(tls::client_config(
+            &options.ca,
+            &options.crl,
+            &options.cert,
+            &options.key,
+        )?),
+        tls::server_name(&options.server_name)?,
+        options.peer_id.clone(),
+        options.peer_fingerprint.clone(),
+    );
+    let mut secure = engine.dial(remote).await?;
     timeout(
         HANDSHAKE_TIMEOUT,
         handshake::client_handshake(
@@ -424,7 +421,7 @@ async fn connect_peer(options: &ForwardOptions) -> Result<Session<ClientTlsStrea
 }
 
 async fn run_forward_session(
-    mut session: Session<ClientTlsStream<TcpStream>>,
+    mut session: Session<BoxedSecureStream>,
     receiver: &mut Receiver<TcpStream>,
     slots: &Arc<Semaphore>,
     direction: ConnectionDirection,
