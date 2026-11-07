@@ -36,6 +36,8 @@ jobs:
         run: cargo +1.88.0 clippy --locked --all-targets -- -D warnings
       - name: Build release binary
         run: cargo +1.88.0 build --locked --release
+      - name: Validate staged installer, credential provisioning and rollback
+        run: bash scripts/test-install.sh
       - name: Validate systemd encrypted credential delivery
         run: |
           bash -n scripts/pki/test-systemd-credential-runtime.sh
@@ -48,3 +50,21 @@ jobs:
         run: |
           bash -n scripts/pki/test-crl-activation-systemd.sh
           bash scripts/pki/test-crl-activation-systemd.sh
+  ubuntu-2204-baseline:
+    # Baseline gate: Ubuntu 22.04 / systemd 249 with LoadCredential= (no encrypted credentials).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build release binary
+        run: cargo +1.88.0 build --locked --release
+      - name: Record host systemd version
+        run: systemctl --version | head -n 1
+      - name: Validate baseline LoadCredential= service lifecycle
+        run: |
+          bash -n scripts/pki/test-systemd-baseline-lifecycle.sh
+          bash scripts/pki/test-systemd-baseline-lifecycle.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"

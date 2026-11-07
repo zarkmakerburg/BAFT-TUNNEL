@@ -50,10 +50,12 @@ Ubuntu 22.04 with systemd 249 is the default supported baseline. Use standard sy
    LoadCredential=node-key:/etc/baft-tunnel/credentials/INSTANCE/node-key
    ```
 3. In the instance JSON, remove `key` and set `key_credential` to `node-key`. Never set both fields.
-4. Run `systemctl daemon-reload`, then start only the explicitly selected instance. `ExecStartPre` validates the key inside the service context; manual validation outside that context is expected to fail closed.
+4. Run `systemctl daemon-reload`, then start only the explicitly selected instance. `apply` validates the config and resolves the credential inside the service context (systemd 249 hides `/run/credentials` from `ExecStartPre`, so the unit has no pre-start validation); manual validation outside that context is expected to fail closed.
 5. Verify service health and that the source remains root:root 0600 under a root:root 0700 directory. Do not copy the staged credential out of `CREDENTIALS_DIRECTORY` or log its contents.
 
 This baseline uses plaintext source material protected by root-only filesystem permissions. It is **not encrypted at rest**. Full-disk encryption and host access controls are still recommended. Root compromise or offline disk access without disk encryption can expose the source key. The service receives a scoped credential, but the Rustls process still holds key material in memory.
+
+Automated alternative to steps 1-2: `sudo scripts/install.sh --instance INSTANCE --node-key ./node.key` creates the directory, key file and drop-in with the exact ownership and modes above (it refuses symlinks, replaces a different existing key only with `--replace-credential`, and keeps the previous key in a root-only backup). `scripts/uninstall.sh` keeps credentials and configuration unless `--purge-config --yes` is given.
 
 ## Optional encrypted credential delivery (systemd 250+)
 
@@ -74,7 +76,7 @@ The application supports a key_credential JSON source. This mode must be paired 
       [Service]
       LoadCredentialEncrypted=node-key:/etc/credstore.encrypted/baft-tunnel/INSTANCE-node-key
 4. In the instance JSON, remove key and set key_credential to node-key; see examples/forward-systemd-credential.json. Never set both fields.
-5. Run systemctl daemon-reload, then start only the explicitly selected instance. Its ExecStartPre validation runs in the service context where systemd supplies CREDENTIALS_DIRECTORY; manual validation outside that context is expected to fail closed.
+5. Run systemctl daemon-reload, then start only the explicitly selected instance. Its `apply` validation runs in the service context where systemd supplies CREDENTIALS_DIRECTORY; manual validation outside that context is expected to fail closed.
 6. Confirm the unit's credential is loaded and the tunnel starts. Do not copy decrypted credentials out of the service credential directory or log their contents.
 
 If encrypted delivery is selected but the host, encrypted credential file, credential ID, or service-manager delivery is unavailable, startup must fail. Do not fall back to a plaintext key path or LoadCredential=. Systemd's selected host and/or TPM2 key binds the credential to the host OS and/or TPM device; this is not a claim of TPM non-exportable signing. The Rustls TLS stack still consumes the decrypted key in process memory. The Ubuntu 22.04 baseline uses standard LoadCredential=; the optional encrypted mode is not required for baseline support.
