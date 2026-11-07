@@ -13,7 +13,7 @@ trap cleanup EXIT
 usage() {
   cat <<'EOF'
 Usage:
-  baft-pki.sh init-ca CA_DIR
+  baft-pki.sh init-ca CA_DIR [CA_NAME]
   baft-pki.sh new-node NODE_ID NODE_DIR
   baft-pki.sh issue-node CA_DIR NODE_ID CSR_FILE OUTPUT_DIR SERVER_NAME [VALID_DAYS]
   baft-pki.sh revoke-node CA_DIR NODE_CERT OUTPUT_DIR
@@ -54,7 +54,10 @@ require_ca() {
 }
 
 init_ca() {
-  local dir="$1"
+  local dir="$1" ca_name="${2:-BAFT-TUNNEL Private CA}"
+  # Rollover (ADR-0017 B1): old and new CAs must have different subjects, because
+  # each CRL is matched to its issuing CA by name.
+  [[ "$ca_name" =~ ^[A-Za-z0-9][A-Za-z0-9\ ._-]{0,63}$ ]] || die "CA_NAME must be 1-64 characters of letters, digits, space, dot, dash or underscore"
   if [[ -e "$dir" ]] && find "$dir" -mindepth 1 -print -quit | grep -q .; then
     die "refusing to initialize a non-empty directory: $dir"
   fi
@@ -89,7 +92,7 @@ EOF
   echo "Creating encrypted offline CA key; OpenSSL will prompt for a passphrase."
   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384 -aes-256-cbc -out "$dir/ca.key"
   openssl req -new -x509 -key "$dir/ca.key" -out "$dir/ca.crt" \
-    -days 3650 -sha384 -subj "/CN=BAFT-TUNNEL Private CA" \
+    -days 3650 -sha384 -subj "/CN=$ca_name" \
     -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
     -addext "keyUsage=critical,keyCertSign,cRLSign"
   openssl ca -gencrl -batch -config "$dir/openssl.cnf" -out "$dir/ca.crl"
@@ -204,7 +207,7 @@ verify_node() {
 command="$1"
 shift
 case "$command" in
-  init-ca) [[ $# == 1 ]] || { usage; exit 2; }; init_ca "$1" ;;
+  init-ca) [[ $# == 1 || $# == 2 ]] || { usage; exit 2; }; init_ca "$@" ;;
   new-node) [[ $# == 2 ]] || { usage; exit 2; }; new_node "$1" "$2" ;;
   issue-node) [[ $# == 5 || $# == 6 ]] || { usage; exit 2; }; issue_node "$@" ;;
   revoke-node) [[ $# == 3 ]] || { usage; exit 2; }; revoke_node "$@" ;;
