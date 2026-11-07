@@ -1,0 +1,16 @@
+{
+  "mode": "forward",
+  "listen": "127.0.0.1:18080",
+  "remote": "203.0.113.10:9443",
+  "server_name": "tunnel.example.test",
+  "local_id": "node-iran",
+  "peer_id": "node-abroad",
+  "tunnel_id": "demo-tunnel",
+  "direction": "direct",
+  "peer_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "ca": "./pki/ca.pem",
+  "cert": "./pki/iran.pem",
+  "key": "./pki/iran-key.pem",
+  "max_streams": 8,
+  "crl": "./pki/ca.crl"
+}

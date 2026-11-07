@@ -1,0 +1,48 @@
+[Unit]
+Description=BAFT-TUNNEL authenticated TCP tunnel instance %i
+Documentation=https://github.com/zarkmakerburg/BAFT-TUNNEL
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/baft-tunnel/%i.json
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=baft-tunnel
+Group=baft-tunnel
+WorkingDirectory=/etc/baft-tunnel
+# No ExecStartPre= validation: on systemd 249 (Ubuntu 22.04) /run/credentials is
+# inaccessible to pre-start commands, so credential-based validation can only
+# run in ExecStart. `apply` validates the config and resolves the credential
+# itself and fails closed before opening any connection.
+ExecStart=/usr/local/bin/baft-tunnel apply --config /etc/baft-tunnel/%i.json --confirm
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+UMask=0077
+LimitNOFILE=4096
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

@@ -27,12 +27,12 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 
 ## Project status
 
-<sub>Updated: 6 November 2026</sub>
+<sub>Updated: 7 November 2026</sub>
 
 <blockquote>
 **Active development — Phase 1**
 
-The Rust TCP transport has passed a two-host LAB integrity test in both Direct and Reverse directions, including certificate-revocation checks. The implementation is still under review and is **not production-ready**.
+The Rust TCP transport has passed a two-host LAB integrity test in both Direct and Reverse directions, including certificate-revocation checks. The Ubuntu 22.04 / systemd 249 baseline credential path (`LoadCredential=`) passes hosted CI and an isolated test on both LAB hosts (see the [implementation status](docs/PHASE1_IMPLEMENTATION_STATUS.md) for commits and runs). The project is a **pre-release and not production-ready**; long-duration soak, controlled network impairment, remote CRL distribution and CA/pin rollover remain open, and online enrollment is deferred. A separate independent security review was waived by the owner and has not been performed.
 </blockquote>
 
 | Area | Current state |
@@ -42,7 +42,8 @@ The Rust TCP transport has passed a two-host LAB integrity test in both Direct a
 | Direct + Reverse | Real two-host LAB evidence available |
 | Mutual TLS and peer identity | Implemented with negative tests |
 | Offline PKI and CRL revocation | Experimental; manual workflow |
-| Installer and systemd unit | Implemented; staged lifecycle CI passes |
+| Installer and systemd unit | Implemented; Ubuntu 22.04 / systemd 249 baseline passes CI and isolated LAB test |
+| Controlled SIGTERM / Ctrl-C shutdown | Implemented; bounded session close (20 seconds); active streams close on stop |
 | Online enrollment / control plane | Not complete |
 | Web dashboard and guided wizard | Planned |
 | Production release | Not available |
@@ -62,7 +63,7 @@ Security is part of the transport design, not an optional add-on.
 - No forwarded-payload logging.
 - Least-privilege service execution and hardened systemd defaults.
 
-The current node private keys are unencrypted PEM files. Offline CA issuance and CRL distribution are manual. Encrypted key custody, online enrollment, automated revocation distribution, key/pin rotation, further adversarial testing, and independent security review remain open work. This project does not claim to be undetectable or to provide censorship-proof connectivity.
+The current node private keys are unencrypted PEM files. Offline CA issuance and CRL distribution are manual. Encrypted key custody, online enrollment, automated revocation distribution, key/pin rotation, and further adversarial testing remain open work; independent security review was waived by the owner and has not been performed. This project does not claim to be undetectable or to provide censorship-proof connectivity.
 
 ## Technology
 

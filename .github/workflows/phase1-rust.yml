@@ -1,0 +1,70 @@
+name: phase1-rust
+on:
+  pull_request:
+    branches:
+      - main
+      - phase0/six-host-lab-foundation
+  push:
+    branches:
+      - phase1/rust-tcp-transport
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+      - name: Install pinned cargo-audit
+        run: cargo +1.88.0 install cargo-audit --version 0.22.1 --locked
+      - name: Audit locked dependencies
+        run: cargo +1.88.0 audit -D warnings
+      - name: Install pinned cargo-deny
+        run: cargo +1.88.0 install cargo-deny --version 0.18.4 --locked
+      - name: Check dependency licenses
+        run: cargo +1.88.0 deny check licenses sources
+      - name: Check formatting
+        run: cargo +1.88.0 fmt --all -- --check
+      - name: Run focused Rust tests
+        run: cargo +1.88.0 test --locked --all-targets
+      - name: Run Clippy
+        run: cargo +1.88.0 clippy --locked --all-targets -- -D warnings
+      - name: Build release binary
+        run: cargo +1.88.0 build --locked --release
+      - name: Validate staged installer, credential provisioning and rollback
+        run: bash scripts/test-install.sh
+      - name: Validate systemd encrypted credential delivery
+        run: |
+          bash -n scripts/pki/test-systemd-credential-runtime.sh
+          bash scripts/pki/test-systemd-credential-runtime.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"
+      - name: Validate installed systemd service lifecycle
+        run: |
+          bash -n scripts/pki/test-systemd-service-lifecycle.sh
+          bash scripts/pki/test-systemd-service-lifecycle.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"
+      - name: Validate CRL activation and rollback on systemd
+        run: |
+          bash -n scripts/pki/test-crl-activation-systemd.sh
+          bash scripts/pki/test-crl-activation-systemd.sh
+  ubuntu-2204-baseline:
+    # Baseline gate: Ubuntu 22.04 / systemd 249 with LoadCredential= (no encrypted credentials).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build release binary
+        run: cargo +1.88.0 build --locked --release
+      - name: Record host systemd version
+        run: systemctl --version | head -n 1
+      - name: Validate baseline LoadCredential= service lifecycle
+        run: |
+          bash -n scripts/pki/test-systemd-baseline-lifecycle.sh
+          bash scripts/pki/test-systemd-baseline-lifecycle.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"
