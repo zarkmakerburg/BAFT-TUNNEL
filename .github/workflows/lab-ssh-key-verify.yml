@@ -34,7 +34,7 @@ jobs:
           trap 'rm -rf "$work"' EXIT
           key_file="$work/id_key"
           public_file="$work/derived.pub"
-          printf '%s\\n' "$SSH_PRIVATE_KEY" > "$key_file"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$key_file"
           chmod 600 "$key_file"
           unset SSH_PRIVATE_KEY
           if ! ssh-keygen -y -P '' -f "$key_file" > "$public_file" 2>/dev/null; then
