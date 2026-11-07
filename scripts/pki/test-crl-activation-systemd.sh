@@ -61,22 +61,27 @@ openssl ca -gencrl -batch -config "$TMP/openssl.cnf" -out "$TMP/candidate-succes
 
 "$APPLY" check "$TMP/ca.crt" "$TMP/current.crl" "$TMP/candidate-rollback.crl" >/dev/null
 
-# The transient service starts normally. A marker makes exactly the next
-# systemd restart fail; the helper must restore the old CRL and restart again.
-cat > "$TMP/service.sh" <<CFG
+# A dedicated ExecStartPre hook fails synchronously exactly once. Unlike a
+# service process that exits just after startup, this makes systemctl restart
+# report failure deterministically before the helper attempts rollback.
+cat > "$TMP/prestart.sh" <<CFG
 #!/usr/bin/env bash
 set -Eeuo pipefail
 if [[ -e '$TMP/fail-once' ]]; then
   rm -f '$TMP/fail-once'
   exit 42
 fi
+CFG
+cat > "$TMP/service.sh" <<'CFG'
+#!/usr/bin/env bash
+set -Eeuo pipefail
 exec /usr/bin/sleep infinity
 CFG
-chmod 0755 "$TMP/service.sh"
+chmod 0755 "$TMP/prestart.sh" "$TMP/service.sh"
 if sudo systemctl cat "$SERVICE" >/dev/null 2>&1; then
   echo "CRL systemd test: refusing pre-existing unit $SERVICE" >&2; exit 1
 fi
-sudo systemd-run --unit="$SERVICE" --property=Restart=on-failure --property=RestartSec=30s "$TMP/service.sh" >/dev/null
+sudo systemd-run --unit="$SERVICE" --property="ExecStartPre=$TMP/prestart.sh" "$TMP/service.sh" >/dev/null
 wait_active() {
   local attempt
   for attempt in $(seq 1 40); do
