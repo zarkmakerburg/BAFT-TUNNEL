@@ -43,6 +43,7 @@ The Rust TCP transport has passed a two-host LAB integrity test in both Direct a
 | Mutual TLS and peer identity | Implemented with negative tests |
 | Offline PKI and CRL revocation | Experimental; manual workflow |
 | Installer and systemd unit | Implemented; staged lifecycle CI passes |
+| Controlled SIGTERM / Ctrl-C shutdown | Implemented; bounded session close (20 seconds); active streams close on stop |
 | Online enrollment / control plane | Not complete |
 | Web dashboard and guided wizard | Planned |
 | Production release | Not available |

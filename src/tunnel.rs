@@ -13,7 +13,9 @@ use tokio::{
     sync::{
         Semaphore,
         mpsc::{self, Receiver},
+        watch,
     },
+    task::JoinSet,
     time::{sleep, timeout},
 };
 use tokio_rustls::client::TlsStream as ClientTlsStream;
@@ -27,6 +29,24 @@ const MAX_SESSIONS: usize = 8;
 const MAX_STREAM_WINDOW_SIZE: u32 = 4 * 1024 * 1024;
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("register SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
 
 pub struct ServerOptions {
     pub listen: String,
@@ -97,52 +117,76 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
         .with_context(|| format!("bind {listen}"))?;
     let sessions = Arc::new(Semaphore::new(MAX_SESSIONS));
     let streams = Arc::new(Semaphore::new(options.max_streams));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut tasks = JoinSet::new();
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
     eprintln!("BAFT-TUNNEL server listening on {listen}");
 
     loop {
-        let (socket, remote) = listener.accept().await?;
-        let permit = match sessions.clone().try_acquire_owned() {
-            Ok(p) => p,
-            Err(_) => {
-                eprintln!("connection rejected: session capacity reached");
-                drop(socket);
-                continue;
+        while tasks.try_join_next().is_some() {}
+        tokio::select! {
+            _ = &mut shutdown => {
+                eprintln!("shutdown requested; stopping new peer sessions");
+                break;
             }
-        };
-        let acceptor = acceptor.clone();
-        let (local, peer, tunnel, direction, pin, target, max, stream_slots) = (
-            options.local_id.clone(),
-            options.peer_id.clone(),
-            options.tunnel_id.clone(),
-            options.direction,
-            options.peer_fingerprint.clone(),
-            target,
-            options.max_streams,
-            streams.clone(),
-        );
-        tokio::spawn(async move {
-            let _permit = permit;
-            let result: Result<()> = async {
-                let mut secure = timeout(HANDSHAKE_TIMEOUT, acceptor.accept(socket))
-                    .await
-                    .context("TLS handshake timeout")??;
-                handshake::verify_peer_fingerprint(secure.get_ref().1.peer_certificates(), &pin)?;
-                handshake::verify_peer_identity(secure.get_ref().1.peer_certificates(), &peer)?;
-                timeout(
-                    HANDSHAKE_TIMEOUT,
-                    handshake::server_handshake(&mut secure, &local, &peer, &tunnel, direction),
-                )
-                .await
-                .context("protocol handshake timeout")??;
-                server_session(secure, target, max, stream_slots, tunnel, direction).await;
-                Ok(())
+            accepted = listener.accept() => {
+                let (socket, remote) = accepted?;
+                let permit = match sessions.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        eprintln!("connection rejected: session capacity reached");
+                        drop(socket);
+                        continue;
+                    }
+                };
+                let acceptor = acceptor.clone();
+                let (local, peer, tunnel, direction, pin, target, max, stream_slots) = (
+                    options.local_id.clone(),
+                    options.peer_id.clone(),
+                    options.tunnel_id.clone(),
+                    options.direction,
+                    options.peer_fingerprint.clone(),
+                    target,
+                    options.max_streams,
+                    streams.clone(),
+                );
+                let session_shutdown = shutdown_rx.clone();
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    let result: Result<()> = async {
+                        let mut secure = timeout(HANDSHAKE_TIMEOUT, acceptor.accept(socket))
+                            .await
+                            .context("TLS handshake timeout")??;
+                        handshake::verify_peer_fingerprint(secure.get_ref().1.peer_certificates(), &pin)?;
+                        handshake::verify_peer_identity(secure.get_ref().1.peer_certificates(), &peer)?;
+                        timeout(
+                            HANDSHAKE_TIMEOUT,
+                            handshake::server_handshake(&mut secure, &local, &peer, &tunnel, direction),
+                        )
+                        .await
+                        .context("protocol handshake timeout")??;
+                        server_session(secure, target, max, stream_slots, tunnel, direction, session_shutdown).await;
+                        Ok(())
+                    }
+                    .await;
+                    if let Err(error) = result {
+                        eprintln!("peer session from {remote} closed: {error:#}");
+                    }
+                });
             }
-            .await;
-            if let Err(error) = result {
-                eprintln!("peer session from {remote} closed: {error:#}");
-            }
-        });
+        }
     }
+
+    let _ = shutdown_tx.send(true);
+    let drain = async { while tasks.join_next().await.is_some() {} };
+    if timeout(SHUTDOWN_TIMEOUT, drain).await.is_err() {
+        eprintln!("graceful peer-session drain timed out; aborting remaining sessions");
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
+    eprintln!("BAFT-TUNNEL server stopped");
+    Ok(())
 }
 
 async fn server_session<S>(
@@ -152,11 +196,28 @@ async fn server_session<S>(
     slots: Arc<Semaphore>,
     tunnel: String,
     direction: ConnectionDirection,
+    mut shutdown: watch::Receiver<bool>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let mut session = Session::new_server(stream, yamux_config(max));
-    while let Some(item) = session.next().await {
+    let mut control = session.control();
+    loop {
+        let item = tokio::select! {
+            item = session.next() => item,
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    let close = tokio::spawn(async move { control.close().await });
+                    while session.next().await.is_some() {}
+                    let _ = close.await;
+                    break;
+                }
+                continue;
+            }
+        };
+        let Some(item) = item else {
+            break;
+        };
         match item {
             Ok(mut logical) => {
                 eprintln!("yamux stream accepted; connecting fixed destination");
@@ -248,8 +309,9 @@ async fn run_forward_session(
     slots: &Arc<Semaphore>,
     direction: ConnectionDirection,
     tunnel: &str,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    let control = session.control();
+    let mut control = session.control();
     let mut driver = tokio::spawn(async move {
         while let Some(item) = session.next().await {
             match item {
@@ -264,7 +326,19 @@ async fn run_forward_session(
         tokio::select! {
             local = receiver.recv() => {
                 let Some(mut local) = local else {
-                    bail!("local connection queue closed");
+                    control.close().await;
+                    match timeout(SHUTDOWN_TIMEOUT, &mut driver).await {
+                        Ok(Ok(Err(error))) if error.to_string() == "yamux session closed" => {},
+                        Ok(Ok(Ok(()))) => {},
+                        Ok(Ok(Err(error))) => eprintln!("session closed during shutdown: {error:#}"),
+                        Ok(Err(error)) => eprintln!("session driver failed during shutdown: {error}"),
+                        Err(_) => {
+                            eprintln!("session driver did not stop before shutdown deadline; aborting it");
+                            driver.abort();
+                            let _ = driver.await;
+                        }
+                    }
+                    return Ok(());
                 };
                 let permit = match slots.clone().try_acquire_owned() {
                     Ok(p) => p,
@@ -305,6 +379,16 @@ async fn run_forward_session(
                     }
                 });
             }
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    control.close().await;
+                    if timeout(SHUTDOWN_TIMEOUT, &mut driver).await.is_err() {
+                        driver.abort();
+                        let _ = driver.await;
+                    }
+                    return Ok(());
+                }
+            }
             result = &mut driver => {
                 match result {
                     Ok(Err(error)) => return Err(error),
@@ -320,10 +404,21 @@ async fn supervise_forward(
     options: ForwardOptions,
     mut receiver: Receiver<TcpStream>,
     slots: Arc<Semaphore>,
+    mut shutdown: watch::Receiver<bool>,
 ) {
     let mut backoff = INITIAL_BACKOFF;
     loop {
-        match connect_peer(&options).await {
+        if receiver.is_closed() || *shutdown.borrow() {
+            break;
+        }
+        let connection = tokio::select! {
+            result = connect_peer(&options) => result,
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() { break; }
+                continue;
+            }
+        };
+        match connection {
             Ok(session) => {
                 eprintln!("authenticated tunnel session established");
                 backoff = INITIAL_BACKOFF;
@@ -333,19 +428,33 @@ async fn supervise_forward(
                     &slots,
                     options.direction,
                     &options.tunnel_id,
+                    shutdown.clone(),
                 )
                 .await
                 {
-                    eprintln!("tunnel session lost: {error:#}");
+                    if !receiver.is_closed() {
+                        eprintln!("tunnel session lost: {error:#}");
+                    }
                 }
             }
             Err(error) => {
+                if receiver.is_closed() {
+                    break;
+                }
                 eprintln!("tunnel connection attempt failed: {error:#}");
             }
         }
 
+        if receiver.is_closed() {
+            break;
+        }
         let jitter_ms = u64::from(OsRng.next_u32() % 500);
-        sleep(backoff + Duration::from_millis(jitter_ms)).await;
+        tokio::select! {
+            _ = sleep(backoff + Duration::from_millis(jitter_ms)) => {},
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() { break; }
+            }
+        }
         backoff = next_backoff(backoff);
     }
 }
@@ -357,15 +466,36 @@ pub async fn forward(options: ForwardOptions) -> Result<()> {
         .with_context(|| format!("bind {listen}"))?;
     let (sender, receiver) = mpsc::channel(options.max_streams);
     let slots = Arc::new(Semaphore::new(options.max_streams));
-    tokio::spawn(supervise_forward(options, receiver, slots));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let supervisor = tokio::spawn(supervise_forward(options, receiver, slots, shutdown_rx));
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
 
     eprintln!("BAFT-TUNNEL local forwarder listening on {listen}");
     loop {
-        let (local, _) = listener.accept().await?;
-        if sender.try_send(local).is_err() {
-            eprintln!("local connection rejected: bounded pending queue is full");
+        tokio::select! {
+            _ = &mut shutdown => {
+                eprintln!("shutdown requested; stopping new local connections");
+                break;
+            }
+            accepted = listener.accept() => {
+                let (local, _) = accepted?;
+                if sender.try_send(local).is_err() {
+                    eprintln!("local connection rejected: bounded pending queue is full");
+                }
+            }
         }
     }
+    let _ = shutdown_tx.send(true);
+    drop(sender);
+    let mut supervisor = supervisor;
+    if timeout(SHUTDOWN_TIMEOUT, &mut supervisor).await.is_err() {
+        eprintln!("forwarder supervisor did not stop before shutdown deadline; aborting it");
+        supervisor.abort();
+        let _ = supervisor.await;
+    }
+    eprintln!("BAFT-TUNNEL forwarder stopped");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -575,6 +705,7 @@ mod tests {
 
         let (sender, mut receiver) = mpsc::channel(8);
         let stream_slots = Arc::new(Semaphore::new(8));
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let forward_task = tokio::spawn(async move {
             run_forward_session(
                 session,
@@ -582,6 +713,7 @@ mod tests {
                 &stream_slots,
                 direction,
                 "e2e-tunnel",
+                shutdown_rx,
             )
             .await
         });

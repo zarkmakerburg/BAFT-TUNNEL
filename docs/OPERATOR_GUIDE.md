@@ -57,3 +57,10 @@ If encrypted delivery is selected but the host, encrypted credential file, crede
 ## Remaining operator workflow
 
 Before production use, this guide still needs tunnel plans, apply receipts, key rotation, backups, restore drills, monitoring, incident response, upgrade/rollback, and safe uninstall. The current real-host LAB uses temporary processes and files under `/tmp`; it does not install BAFT-TUNNEL as a persistent service.
+
+
+## Controlled service shutdown
+
+The `serve` and `forward` runtime handles SIGTERM (systemd stop) and Ctrl-C. It stops accepting new peer/local connections, signals the active Yamux session to close with GOAWAY, and waits for session cleanup up to the configured 20-second shutdown deadline. If the deadline expires, remaining session tasks are aborted so systemd is not left waiting indefinitely. Active forwarded TCP streams are closed with their Yamux session; they are not migrated or transparently resumed. Clients may reconnect and establish new streams after the service starts again.
+
+For systemd, use `systemctl stop baft-tunnel@INSTANCE`; the unit's `TimeoutStopSec=20s` bounds the same shutdown window. Do not use SIGKILL for routine stops.
