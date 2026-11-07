@@ -273,3 +273,7 @@ Added `scripts/pki/crl-status.sh` (report-only, per-CRL issuer/number/nextUpdate
 ## 2026-11-07 — P1-002e CRL bundle activation (ADR-0017 B1)
 
 `scripts/pki/apply-crl.sh` now validates and activates CRL bundles: 1–4 CA certificates, one CRL per CA, per-issuer signature, per-issuer increasing CRL number, expiry, fail closed on a missing CRL for any configured CA, a CRL from an unconfigured CA, duplicate issuers, or duplicate CA subjects. Single-CA behavior is unchanged except that the `CRL_CHECK=PASS` line now reads `cas=N old_numbers=… candidate_numbers=…`. `test-apply-crl.sh` extended (local PASS); systemd activation/rollback logic is unchanged and still covered by the existing CI job, not re-run here. Remaining for P1-002: full rollover sequence test and LAB run.
+
+## 2026-11-07 — P2-003 stream engine seam (ADR-0018, behaviour-neutral)
+
+New `src/engine.rs`: `StreamEngine` trait (`id`, `accept`, `dial`) producing a boxed, mutually authenticated byte stream, with `TlsEngine` (id `tcp-tls`) wrapping the existing TLS 1.3 accept/dial plus SHA-256 pin(s) and URI SAN identity verification. `tunnel.rs` now obtains its secure stream from the engine; hello/authorization, Yamux, limits, reconnect, CRL reload on reconnect and shutdown are unchanged. Local: 45/45 tests (including the in-process tunnel E2E tests), rustfmt, Clippy `-D warnings`. Local evidence only; no new LAB run yet, so the real-host E2E will be repeated before the next pre-release. Next: config `engine:` field and Noise+TCP as a second engine (P2-004).
