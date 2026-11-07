@@ -171,14 +171,27 @@ wait_active() {
 }
 
 dump_service() {
-  # Diagnostic: how does this systemd expose LoadCredential= to the service user?
-  local probe
-  for probe in "" "CapabilityBoundingSet=" "ProtectSystem=strict" "PrivateTmp=true" "NoNewPrivileges=true"; do
-    echo "--- probe [${probe:-plain}]" >&2
-    sudo systemd-run --wait --pipe --collect --quiet --uid=baft-tunnel --gid=baft-tunnel \
-      ${probe:+--property="$probe"} --property="LoadCredential=node-key:$CREDENTIAL_DIR/node-key" \
-      /bin/sh -c 'id; ls -ldn "$CREDENTIALS_DIRECTORY" /run/credentials; ls -ln "$CREDENTIALS_DIRECTORY"; (getfacl -p "$CREDENTIALS_DIRECTORY" 2>&1 || true)' >&2 || true
-  done
+  # Diagnostic: look at the credential directory from inside the real unit.
+  sudo mkdir -p "$DROPIN_DIR"
+  cat > "$TMP/diag.sh" <<'EOF_DIAG'
+#!/bin/sh
+id
+echo "CD=$CREDENTIALS_DIRECTORY"
+ls -ldn /run /run/credentials /run/credentials/* 2>&1
+ls -ldn "$CREDENTIALS_DIRECTORY" 2>&1
+ls -ln "$CREDENTIALS_DIRECTORY" 2>&1
+grep Cap /proc/self/status
+grep credentials /proc/self/mountinfo
+exit 1
+EOF_DIAG
+  chmod 755 "$TMP/diag.sh"
+  printf '[Service]\nExecStartPre=\nExecStartPre=%s\n' "$TMP/diag.sh" | sudo tee "$DROPIN_DIR/99-diag.conf" >/dev/null
+  sudo systemctl daemon-reload
+  sudo systemctl reset-failed "$SERVICE_UNIT" >/dev/null 2>&1 || true
+  sudo systemctl start "$SERVICE_UNIT" >/dev/null 2>&1 || true
+  sudo journalctl -u "$SERVICE_UNIT" -n 40 --no-pager >&2 || true
+  sudo rm -f "$DROPIN_DIR/99-diag.conf"
+  sudo systemctl daemon-reload
   sudo systemctl status --no-pager "$SERVICE_UNIT" >&2 || true
   sudo journalctl -u "$SERVICE_UNIT" -n 80 --no-pager >&2 || true
 }
