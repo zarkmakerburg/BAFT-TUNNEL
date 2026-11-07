@@ -2,9 +2,9 @@
 
 **Authorization:** Owner-approved 2026-11-06.
 **Branch:** phase1/rust-tcp-transport.
-**Latest exact-head CI-verified commit:** 6afaf9a8758c435986c9f60ad50863491e67266c (2026-11-07; all four Phase 0/Phase 1 push/PR workflows PASS).
+**Latest branch-head CI-verified commit:** 4baba491499faacfc051b66ef78f3db1263695ee (documentation-only; all four Phase 0/Phase 1 push/PR workflows PASS).
 **Current security remediation:** Rust 1.88.0 baseline, `time 0.3.47`, removal of unmaintained `rustls-pemfile`; exact-head CI PASS (2026-11-07).
-**Latest runtime product-code SHA:** 6afaf9a8758c435986c9f60ad50863491e67266c (includes tracked per-stream task cleanup and nested bounded shutdown budgets).
+**Latest runtime product-code SHA:** 6afaf9a8758c435986c9f60ad50863491e67266c (includes tracked per-stream task cleanup and nested bounded shutdown budgets; no runtime code changed in later docs-only commits).
 **Status:** In progress; not production-ready. ADR-0010 is the current transport decision; ADR-0009 is superseded. Offline PKI tooling is defined by ADR-0012.
 
 ## Implemented
@@ -145,3 +145,13 @@ This evidence is not a security certification. Phase 1 remains Draft and is not 
 - Phase 0 jobs completed the isolated Docker netem integration workflow successfully.
 - Local exact-head validation of runtime code remains the 6afaf9a result documented above; e987e7a changes documentation only.
 - CI passing on this branch head does not close remaining Phase 1 acceptance gates or constitute a new two-host LAB run. PR #3 remains Draft/open/unmerged; no release or deployment.
+
+
+## Latest branch-head verification — 4baba49 PASS
+
+- Branch head: [4baba491499faacfc051b66ef78f3db1263695ee](https://github.com/zarkmakerburg/BAFT-TUNNEL/commit/4baba491499faacfc051b66ef78f3db1263695ee), documentation-only; runtime code remains at 6afaf9a.
+- Phase 0 push [42344000561](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42344000561) and PR [42343996322](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42343996322): PASS.
+- Phase 1 push [42344000576](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42344000576) and PR [42343996324](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42343996324): PASS.
+- Phase 1 exact-head jobs passed pinned Rust 1.88.0/cargo-audit 0.22.1 installation, RustSec audit with warnings denied, formatting, 37 Rust tests, Clippy with warnings denied, optimized release build, encrypted systemd credential runtime validation, and installed systemd service lifecycle.
+- Phase 0 exact-head jobs passed installer/control-script checks and isolated Docker netem integration.
+- These workflows verify branch-head CI only. They do not constitute a new two-host LAB run or close the remaining Phase 1 acceptance gates. PR #3 remains Draft/open/unmerged; no release or deployment.
