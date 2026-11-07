@@ -27,7 +27,7 @@ jobs:
       - name: Install pinned cargo-deny
         run: cargo +1.88.0 install cargo-deny --version 0.18.4 --locked
       - name: Check dependency licenses
-        run: cargo +1.88.0 deny check licenses
+        run: cargo +1.88.0 deny check licenses sources
       - name: Check formatting
         run: cargo +1.88.0 fmt --all -- --check
       - name: Run focused Rust tests
