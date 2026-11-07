@@ -277,3 +277,7 @@ Added `scripts/pki/crl-status.sh` (report-only, per-CRL issuer/number/nextUpdate
 ## 2026-11-07 — P2-003 stream engine seam (ADR-0018, behaviour-neutral)
 
 New `src/engine.rs`: `StreamEngine` trait (`id`, `accept`, `dial`) producing a boxed, mutually authenticated byte stream, with `TlsEngine` (id `tcp-tls`) wrapping the existing TLS 1.3 accept/dial plus SHA-256 pin(s) and URI SAN identity verification. `tunnel.rs` now obtains its secure stream from the engine; hello/authorization, Yamux, limits, reconnect, CRL reload on reconnect and shutdown are unchanged. Local: 45/45 tests (including the in-process tunnel E2E tests), rustfmt, Clippy `-D warnings`. Local evidence only; no new LAB run yet, so the real-host E2E will be repeated before the next pre-release. Next: config `engine:` field and Noise+TCP as a second engine (P2-004).
+
+## 2026-11-07 — P2-004b Noise+TCP engine (ADR-0018, not yet configurable)
+
+`NoiseEngine` (`noise-tcp`) implements `StreamEngine` on the existing Noise IK adapter: X25519/ChaCha20-Poly1305/BLAKE2s, pinned peer static key (no CA), prologue binding protocol version, both node identities, tunnel and direction. Tests: enrolled keys authenticate and relay bytes; an unenrolled key, a mismatched tunnel id and a mismatched direction are all rejected (47/47 local tests, Clippy `-D warnings`, rustfmt). The engine is not selectable from configuration yet and is not part of any release claim. Next (P2-004c): config `engine:` field with `noise` settings, `noise-keygen` command, and an in-process tunnel E2E over Noise; then a LAB E2E.
