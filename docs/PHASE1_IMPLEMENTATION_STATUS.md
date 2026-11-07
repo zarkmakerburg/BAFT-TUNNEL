@@ -209,3 +209,17 @@ This addendum supersedes earlier statements in this document about the latest br
 3. CRL lifecycle expansion: authenticated remote publication/distribution/refresh coordination and safe CA/pin rollover with explicit overlap and rollback. Current issuance remains offline and activation remains explicit/local per ADR-0015.
 
 Dependency/license/security CI is green for the exact head and is retained as verified evidence, not an open gate. PR #3 remains OPEN / Draft / unmerged. No production/LAB persistent host changes, merge, release, or deployment have been performed.
+
+
+## 2026-11-07 — Ubuntu 22.04 / systemd 249 baseline decision
+
+This addendum supersedes prior statements that treated systemd 250+ encrypted credentials as a universal Phase 1 host requirement. Historical evidence above remains preserved.
+
+- Accepted [ADR-0016](ADR-0016-ubuntu-2204-systemd-compatibility.md): Ubuntu 22.04 LTS with systemd 249 is the default supported Linux baseline. Do not upgrade the current LAB hosts or require Ubuntu 24.04/systemd 250+.
+- Baseline node-key delivery uses systemd `LoadCredential=` with a root:root 0600 source file in a root:root 0700 directory and the existing strict `key_credential` resolver. The source remains plaintext at rest; filesystem permissions and service-scoped delivery are not encryption.
+- `LoadCredentialEncrypted=` remains an optional enhanced mode on systemd 250+ and is not a baseline release requirement. Explicit selection must fail closed when unavailable; no silent downgrade.
+- Operator guidance updated to distinguish baseline and optional encrypted modes.
+- Both configured LAB hosts were upgraded through the approved conservative package-upgrade workflow, without distribution upgrade or reboot. They remain Ubuntu 22.04/systemd 249.11. Iran host: 45 packages upgraded; abroad host: 172 packages upgraded. Post-upgrade apt simulations showed no installable upgrades; `dpkg --audit` was empty on both; no reboot required. The upgrade did not change systemd major version.
+- **Implementation/testing still required:** installer/service integration for baseline credential delivery, an actual systemd 249 lifecycle test on the LAB baseline, and updated exact-head CI. This documentation/decision commit alone does not claim that the baseline credential path has been implemented or tested.
+- Existing systemd 255 encrypted-delivery CI remains valid evidence for the optional enhanced mode only. It does not establish systemd 249 compatibility.
+- PR #3 remains Draft. Persistent service lifecycle, real-host soak/impairment, and remote CRL/CA/pin rollover gates remain open.
