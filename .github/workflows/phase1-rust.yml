@@ -76,4 +76,4 @@ jobs:
       - name: Validate the agent control helper on real systemd (path units, permissions, start, stop, Apply start, rollback)
         run: |
           bash -n scripts/pki/test-agent-control-lifecycle.sh
-          bash scripts/pki/test-agent-control-lifecycle.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"
+          timeout 600 bash scripts/pki/test-agent-control-lifecycle.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"

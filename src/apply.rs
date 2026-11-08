@@ -156,6 +156,7 @@ pub struct UnitState {
     pub sub: String,
     pub restarts: u32,
     pub result: String,
+    pub main_pid: u32,
 }
 
 /// Control of `baft-tunnel@NAME`. The real implementation only drops a request file that the
@@ -165,6 +166,11 @@ pub trait Units {
     fn state(&self, name: &str) -> UnitState;
     fn settle(&self, d: std::time::Duration) {
         std::thread::sleep(d);
+    }
+    /// The session indicator written by the running unit (see `session_status`): `Some` only when
+    /// the file is valid, says "authorized" and belongs to the unit's current main process.
+    fn session(&self, _name: &str, _main_pid: u32) -> Option<Value> {
+        None
     }
 }
 
@@ -222,6 +228,8 @@ impl Units for SystemUnits {
                 "NRestarts",
                 "-p",
                 "Result",
+                "-p",
+                "MainPID",
                 "--no-pager",
             ])
             .output();
@@ -236,11 +244,27 @@ impl Units for SystemUnits {
                     Some(("SubState", v)) => st.sub = v.into(),
                     Some(("NRestarts", v)) => st.restarts = v.parse().unwrap_or(0),
                     Some(("Result", v)) => st.result = v.into(),
+                    Some(("MainPID", v)) => st.main_pid = v.parse().unwrap_or(0),
                     _ => {}
                 }
             }
         }
         st
+    }
+
+    fn session(&self, name: &str, main_pid: u32) -> Option<Value> {
+        if !valid_instance(name) || main_pid == 0 {
+            return None;
+        }
+        let path = Path::new("/run/baft-tunnel")
+            .join(name)
+            .join("session.json");
+        let meta = std::fs::symlink_metadata(&path).ok()?;
+        if !meta.is_file() || meta.len() > 4096 {
+            return None;
+        }
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+        (v["state"] == "authorized" && v["pid"].as_u64() == Some(u64::from(main_pid))).then_some(v)
     }
 }
 
@@ -632,7 +656,39 @@ fn run_start(
         ));
     }
     let failed = v.iter().any(|c| c["result"] != "pass");
+    // Authorized peer session: observed only if the unit itself reports one. Waiting for a peer is
+    // not a failure, so a missing session stays Unknown and never turns the stage into a rollback.
+    let mut session = None;
+    if !failed {
+        let pid = units.state(&name).main_pid;
+        for _ in 0..20 {
+            session = units.session(&name, pid);
+            if session.is_some() {
+                break;
+            }
+            units.settle(std::time::Duration::from_millis(500));
+        }
+    }
+    let session_seen = session.is_some();
     receipt["verification"] = json!(v);
+    receipt["stages"] = json!({
+        "files_applied": "unknown (this stage does not write files)",
+        "service_state": if failed { "failed" } else { "observed" },
+        "authenticated_peer": if session_seen { "observed" } else { "unknown" },
+        "authorized_session": if session_seen { "observed" } else { "unknown" },
+        "data_path_integrity": "unknown",
+        "rollback": if failed { "performed" } else { "not needed" },
+    });
+    if let Some(sess) = &session {
+        receipt["session"] = json!({
+            "authorized_sessions": sess["authorized_sessions"],
+            "since_unix": sess["since_unix"],
+            "tunnel_id": sess["tunnel_id"],
+            "direction": sess["direction"],
+        });
+    }
+    // Never "ready" from this stage: no observation of bytes crossing the tunnel exists here.
+    receipt["ready"] = json!("unknown");
     receipt["changes"] = json!([{"kind": "service", "action": "started", "unit": format!("baft-tunnel@{name}.service")}]);
     if failed {
         let stop = units.request(&name, "stop");
@@ -651,9 +707,13 @@ fn run_start(
         receipt["not_done"] = json!([
             "the unit is not enabled at boot (run: systemctl enable baft-tunnel@NAME)",
             "no firewall rule was changed or inspected; open the tunnel port by hand where needed",
-            "the connection to the peer is not verified: the agent has no session indicator, and an accepted local connection proves nothing about the peer",
+            if session_seen {
+                "an authorized peer session was observed; the peer node itself was not checked from here"
+            } else {
+                "no authorized peer session was observed yet (the peer may not be started, or may be unreachable); an accepted local connection proves nothing about the peer"
+            },
             "the peer node was not verified from here; start and check it too",
-            "data integrity over the tunnel is not tested by Apply (LAB tests cover it)",
+            "data integrity over the tunnel is Unknown: Apply does not move test data through it (the P0-5 acceptance run does)",
         ]);
     }
     receipt["finished_at"] = json!(now());
@@ -839,6 +899,7 @@ mod tests {
     struct Fake {
         st: Mutex<UnitState>,
         comes_up: bool,
+        session: bool,
         log: Mutex<Vec<String>>,
     }
 
@@ -850,8 +911,10 @@ mod tests {
                     sub: "x".into(),
                     result: "success".into(),
                     restarts: 0,
+                    main_pid: 4242,
                 }),
                 comes_up,
+                session: false,
                 log: Mutex::new(vec![]),
             }
         }
@@ -875,6 +938,9 @@ mod tests {
             self.st.lock().unwrap().clone()
         }
         fn settle(&self, _: std::time::Duration) {}
+        fn session(&self, _: &str, pid: u32) -> Option<Value> {
+            (self.session && pid == 4242).then(|| json!({"state":"authorized","pid":4242,"authorized_sessions":1,"since_unix":1,"tunnel_id":"t","direction":"direct"}))
+        }
     }
 
     /// A paired, validated serve instance named `edge` whose tunnel port the test controls.
@@ -941,6 +1007,34 @@ mod tests {
         }
         assert!(out["not_done"].to_string().contains("firewall"));
         assert_eq!(*units.log.lock().unwrap(), vec!["start edge"]);
+        // No session indicator: the peer stays Unknown, and nothing is ever "ready" from Apply.
+        assert_eq!(out["stages"]["authorized_session"], "unknown");
+        assert_eq!(out["stages"]["authenticated_peer"], "unknown");
+        assert_eq!(out["stages"]["data_path_integrity"], "unknown");
+        assert_eq!(out["ready"], "unknown");
+        assert!(
+            out["not_done"]
+                .to_string()
+                .contains("no authorized peer session")
+        );
+    }
+
+    #[test]
+    fn start_records_an_observed_session_but_still_not_ready() {
+        let (dir, _listener) = paired_instance("st-sess");
+        let mut units = Fake::new(true, "inactive");
+        units.session = true;
+        let (code, out) = run_with(
+            &start_req(&dir, "key-start-0003"),
+            &dir.join("r"),
+            None,
+            &units,
+        );
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["stages"]["authorized_session"], "observed");
+        assert_eq!(out["session"]["authorized_sessions"], 1);
+        assert_eq!(out["stages"]["data_path_integrity"], "unknown");
+        assert_eq!(out["ready"], "unknown");
     }
 
     #[test]

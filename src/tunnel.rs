@@ -481,6 +481,7 @@ async fn server_session<S>(
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let session = Session::new_server(stream, yamux_config(max));
+    let _mark = crate::session_status::SessionMark::open(&tunnel, direction);
     serve_streams(session, target, slots, tunnel, direction, shutdown).await;
 }
 
@@ -616,6 +617,7 @@ async fn run_forward_session(
     tunnel: &str,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
+    let _mark = crate::session_status::SessionMark::open(tunnel, direction);
     let mut control = session.control();
     let mut stream_tasks = JoinSet::new();
     let mut driver = tokio::spawn(async move {
