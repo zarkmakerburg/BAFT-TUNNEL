@@ -32,6 +32,8 @@ const DESIRED_FILE: &str = "desired.json";
 const AUDIT_FILE: &str = "audit.log";
 const MAX_CONNECTIONS: usize = 16;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
+/// Whole-request bound. Must exceed the Apply `start` wait (20 s) plus settle.
+const HANDLER_TIMEOUT: Duration = Duration::from_secs(45);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const PEER_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -174,7 +176,7 @@ pub async fn serve(listener: TcpListener, ctx: Arc<Ctx>) -> Result<()> {
         };
         let ctx = ctx.clone();
         tokio::spawn(async move {
-            let _ = timeout(IO_TIMEOUT * 2, handle(stream, &ctx)).await;
+            let _ = timeout(HANDLER_TIMEOUT, handle(stream, &ctx)).await;
             drop(permit);
         });
     }
