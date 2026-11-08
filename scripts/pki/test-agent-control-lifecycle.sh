@@ -243,6 +243,8 @@ out="$(apply "$SERVE" serve ctl-serve-0001 null null)"
 step "3 serve applied"
 [[ "$(echo "$out" | field result)" == applied ]] || { echo "$out" >&2; die "Apply start (serve) was not applied"; }
 active "$SERVE" || die "Apply start left $SERVE inactive"
+# No peer exists: the session and data path stay Unknown, and Apply never claims ready.
+[[ "$(echo "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["stages"]["authorized_session"], d["stages"]["data_path_integrity"], d["ready"])')" == "unknown unknown unknown" ]] || { echo "$out" >&2; die "receipt claims an observation that does not exist"; }
 step "3 malformed names via API"
 # A malformed or unregistered instance name is refused by the API and creates nothing.
 for bad in '../etc' 'bad name' '-x'; do
