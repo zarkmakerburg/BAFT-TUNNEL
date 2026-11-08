@@ -157,8 +157,48 @@ async fn handle(mut stream: TcpStream, ctx: &Ctx) -> Result<()> {
         buf.extend_from_slice(&chunk[..n]);
     }
     let body = &buf[head_end..head_end + length];
+    if let Some((kind, text)) = static_asset(&head) {
+        return respond_static(&mut stream, kind, text).await;
+    }
     let (status, out) = route(&head, body, ctx).await;
     respond(&mut stream, status, &out).await
+}
+
+/// The panel is three fixed files compiled into the binary; they hold no secrets and no data.
+fn static_asset(head: &str) -> Option<(&'static str, &'static str)> {
+    let mut parts = head.split("\r\n").next()?.split(' ');
+    if parts.next()? != "GET" {
+        return None;
+    }
+    match parts.next()? {
+        "/" | "/index.html" => Some((
+            "text/html; charset=utf-8",
+            include_str!("../panel/index.html"),
+        )),
+        "/panel.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../panel/panel.js"),
+        )),
+        "/panel.css" => Some((
+            "text/css; charset=utf-8",
+            include_str!("../panel/panel.css"),
+        )),
+        _ => None,
+    }
+}
+
+async fn respond_static(stream: &mut TcpStream, kind: &str, text: &str) -> Result<()> {
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
+        text.len()
+    );
+    timeout(IO_TIMEOUT, async {
+        stream.write_all(head.as_bytes()).await?;
+        stream.write_all(text.as_bytes()).await?;
+        stream.shutdown().await
+    })
+    .await??;
+    Ok(())
 }
 
 fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
@@ -179,7 +219,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             (405, json!({"error": "method not allowed"}))
         };
     }
-    if !matches!(path, "/v1/status" | "/v1/desired") {
+    if !matches!(path, "/v1/status" | "/v1/desired" | "/v1/setup/plan") {
         return (404, json!({"error": "not found"}));
     }
     let presented = header(head, "authorization")
@@ -192,7 +232,110 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         ("GET", "/v1/status") => (200, status(&ctx.config).await),
         ("GET", "/v1/desired") => get_desired(ctx),
         ("PUT", "/v1/desired") => put_desired(ctx, body).await,
+        ("POST", "/v1/setup/plan") => setup_plan(body),
         _ => (405, json!({"error": "method not allowed"})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanBody {
+    engine: crate::config::EngineKind,
+    role: crate::setup::Role,
+    direction: crate::authorization::ConnectionDirection,
+    node_id: String,
+    peer_id: String,
+    tunnel_id: String,
+    service_port: u16,
+    tunnel_port: Option<u16>,
+    peer_host: Option<String>,
+    server_name: Option<String>,
+    dir: Option<PathBuf>,
+}
+
+fn shell_quote(value: &str) -> Result<String> {
+    if value.contains('\'') || value.chars().any(char::is_control) {
+        bail!("value contains characters that cannot be quoted safely");
+    }
+    Ok(format!("'{value}'"))
+}
+
+/// Wizard backend: the same validated `setup::plan` as the CLI. Writes nothing and runs nothing;
+/// it returns the exact commands the operator then runs on the host.
+fn setup_plan(body: &[u8]) -> (u16, Value) {
+    let request: PlanBody = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(error) => {
+            return (
+                422,
+                json!({"error": "invalid request", "detail": error.to_string()}),
+            );
+        }
+    };
+    let result = (|| -> Result<Value> {
+        let req = crate::setup::PlanRequest {
+            engine: request.engine,
+            role: request.role,
+            direction: request.direction,
+            node_id: request.node_id.clone(),
+            peer_id: request.peer_id.clone(),
+            tunnel_id: request.tunnel_id.clone(),
+            service_port: request.service_port,
+            tunnel_port: request
+                .tunnel_port
+                .unwrap_or(crate::setup::DEFAULT_TUNNEL_PORT),
+            peer_host: request.peer_host.clone(),
+            server_name: request.server_name.clone(),
+            dir: request
+                .dir
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("/etc/baft-tunnel")),
+        };
+        let plan = crate::setup::plan(&req)?;
+        let dir = shell_quote(&req.dir.to_string_lossy())?;
+        let enum_arg = |v: &Value| v.as_str().unwrap_or_default().to_string();
+        let engine = req.engine.as_str().to_string();
+        let role = enum_arg(&serde_json::to_value(req.role)?);
+        let direction = enum_arg(&serde_json::to_value(req.direction)?);
+        let mut init = format!(
+            "baft-tunnel setup init --engine {engine} --role {role} --direction {direction} --node-id {} --peer-id {} --tunnel-id {} --service-port {} --tunnel-port {} --dir {dir}",
+            shell_quote(&req.node_id)?,
+            shell_quote(&req.peer_id)?,
+            shell_quote(&req.tunnel_id)?,
+            req.service_port,
+            req.tunnel_port
+        );
+        if let Some(h) = &req.peer_host {
+            init += &format!(" --peer-host {}", shell_quote(h)?);
+        }
+        if let Some(n) = &req.server_name {
+            init += &format!(" --server-name {}", shell_quote(n)?);
+        }
+        let commands = [
+            init,
+            format!(
+                "baft-tunnel setup join --dir {dir} --bundle <peer bundle.json> --checksum <peer checksum>"
+            ),
+            format!(
+                "baft-tunnel apply --config {}/config.json --confirm",
+                req.dir.to_string_lossy()
+            ),
+        ];
+        let files: Vec<Value> = plan
+            .files
+            .iter()
+            .map(|f| json!({"path": f.path.to_string_lossy(), "mode": f.mode, "note": f.note}))
+            .collect();
+        Ok(
+            json!({"config": plan.config, "files": files, "pending": plan.pending, "commands": commands, "applied": false}),
+        )
+    })();
+    match result {
+        Ok(v) => (200, v),
+        Err(error) => (
+            422,
+            json!({"error": "plan rejected", "detail": format!("{error:#}")}),
+        ),
     }
 }
 
@@ -278,6 +421,7 @@ async fn status(config: &RuntimeConfig) -> Value {
     json!({
         "agent": "baft-tunnel",
         "version": env!("CARGO_PKG_VERSION"),
+        "engine": config.engine_name(),
         "config": config.support_report(),
         "listener_accepting": listening,
     })
@@ -459,6 +603,56 @@ mod tests {
         assert_eq!(code, 200);
         assert!(!out.contains("192.0.2.1") && !out.contains(&peer));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn panel_is_served_without_token_under_a_strict_csp() {
+        let (code, out) = call(None, "GET", "/", None, "").await;
+        assert_eq!(code, 200);
+        assert!(out.contains("script-src 'self'") && out.contains("frame-ancestors 'none'"));
+        assert!(out.contains("<title>BAFT-TUNNEL</title>"));
+        let (code, out) = call(None, "GET", "/panel.js", None, "").await;
+        assert_eq!(code, 200);
+        assert!(
+            !out.contains("innerHTML"),
+            "panel must only use textContent"
+        );
+        assert_eq!(call(None, "POST", "/", None, "").await.0, 404);
+    }
+
+    fn plan_body(dir: &str) -> String {
+        json!({
+            "engine": "noise-tcp", "role": "serve", "direction": "direct", "node_id": "node-a",
+            "peer_id": "node-b", "tunnel_id": "tunnel-1", "service_port": 8080, "dir": dir
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn wizard_plan_needs_token_returns_commands_and_writes_nothing() {
+        let body = plan_body("/etc/baft-tunnel");
+        assert_eq!(
+            call(None, "POST", "/v1/setup/plan", None, &body).await.0,
+            401
+        );
+        let (code, out) = call(None, "POST", "/v1/setup/plan", Some(TOKEN), &body).await;
+        assert_eq!(code, 200, "{out}");
+        assert!(out.contains("setup init --engine noise-tcp --role serve --direction direct"));
+        assert!(out.contains("\"applied\":false"));
+        assert!(!std::path::Path::new("/etc/baft-tunnel/config.json").exists());
+    }
+
+    #[tokio::test]
+    async fn wizard_plan_rejects_bad_input_and_shell_metacharacters() {
+        for body in [
+            plan_body("/tmp/x'; touch /tmp/pwned; echo '"),
+            plan_body("relative/dir"),
+            r#"{"engine":"noise-tcp"}"#.to_string(),
+            r#"{"engine":"noise-tcp","unknown":1}"#.to_string(),
+        ] {
+            let (code, _) = call(None, "POST", "/v1/setup/plan", Some(TOKEN), &body).await;
+            assert_eq!(code, 422, "{body}");
+        }
     }
 
     #[test]

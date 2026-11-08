@@ -158,3 +158,6 @@ Loopback only; the output is the redacted support report plus `listener_acceptin
 Desired state (A2): add `--state-dir /var/lib/baft-tunnel/agent` (must exist). `PUT /v1/desired` with a JSON config validates it and stores `desired.json`; every attempt is logged in `audit.log` (hash and result only). The agent never applies it: review it, then run `baft-tunnel apply --config ... --confirm`.
 
 Automation only: `BAFT_PKI_PASSFILE=/path/to/file` makes `baft-pki.sh` read the CA passphrase from a file instead of prompting (used by the LAB stage with an ephemeral CA). Operators should leave it unset.
+
+## Local panel and wizard (P4-001)
+Start the agent as above and open `http://127.0.0.1:18080/` (from another machine use an SSH tunnel: `ssh -L 18080:127.0.0.1:18080 host`). Paste the token from the token file. The panel shows status and the stored desired state; the wizard (engine, direct/reverse, role, one service port) prints the exact `setup init`, `setup join` and `apply` commands for that host. The panel never creates keys or starts a tunnel itself.
