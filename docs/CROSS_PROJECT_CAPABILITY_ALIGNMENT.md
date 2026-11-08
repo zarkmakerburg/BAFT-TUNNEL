@@ -74,7 +74,7 @@ Merged PR #85 connects `baft.store` to the launcher:
 3. The resolved SHA-256 must match the SHA pinned in the tunnel config; a mismatch fails closed.
 4. Without `baft.store`, the pinned `baft.binary` path is verified and used.
 
-This is **MAIN-CODE**, not yet Store-path **REAL-LAB** evidence. The earlier BAFT systemd LAB run predates PR #85's Store-path change. The PR itself says its real-host Store proof must follow the merge. Required next proof: install from the release manifest into the Store on a real Ubuntu 22.04/systemd 249 host, start through the Store path, kill/recover the child process under the launcher, and prove a wrong config pin is refused. Keep BAFT absent from `/v1/engines` and the Wizard until the owner-approved integration gate is closed.
+**Update 2026-11-08 (REAL-LAB):** the Store path has real-host evidence. [Run 42510577167](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42510577167) on `2d2718b` (local-build engine) proved store install/verify, hardened systemd 249 launch through `baft.store`, engine-kill recovery and wrong-pin refusal. [Run 42522105698](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42522105698) on `06c273e` repeated it with the **signed `v0.1.0-rc.2` release asset** (cosign-verified `SHA256SUMS`, digest equal to the manifest pin) and added rollback: release B installed over A, a pin that is not `current` refused, B carried 2 MiB, rollback to A, pin B then refused, rollback to a tampered release refused, A carried 2 MiB again, cleanup OK. Keep BAFT absent from `/v1/engines` and the Wizard until the owner-approved integration gate is closed; that exposure gate is separate from this LAB gate.
 
 Also correct an obsolete comment at the top of `src/baft_engine.rs` that still says the adapter is not wired into engine selection. The executable path is wired through `RuntimeConfig::apply`; the capability catalog intentionally still hides BAFT. Update the comment only in a focused code PR with tests, not as part of this documentation-only change.
 
@@ -199,7 +199,7 @@ Do not expose buttons for “Deploy best”, Direct/Reverse selection, firewall 
 | TCP-TLS Reverse | Preview; one dedicated two-host LAB pass | Close R3 breadth before any Stable promotion |
 | Noise-TCP Direct | Experimental, Direct LAB pass | Keep Experimental; test impairments before promotion |
 | Noise-TCP Reverse | Unavailable / unproven | Keep hidden until its own real data-path gate |
-| BAFT engine | Separate process, config adapter and supervised launcher; Store resolver in main | Run Store-path LAB, verify release provenance/rollback; keep Wizard-hidden until accepted |
+| BAFT engine | Separate process, config adapter and supervised launcher; Store path, rollback and signed asset REAL-LAB passed (P0-3) | Keep Wizard-hidden until an owner-approved exposure gate |
 | Local setup CLI | Implemented; setup plan/init/join and prior two-host setup evidence | Make the signed-release path the actual operator acceptance path |
 | Local Agent/API | Implemented | Extend only with evidence-backed lifecycle and session telemetry |
 | Apply init/join | Implemented on main | Preserve receipts, idempotency and rollback boundary |
@@ -231,7 +231,7 @@ Do not expose buttons for “Deploy best”, Direct/Reverse selection, firewall 
 - Record each stage independently in receipt: files applied, service state, authenticated peer, authorized session, data-path integrity, rollback and what remains Unknown.
 - Any missing observation stays Unknown; never return an overall Ready result from listener-only evidence.
 
-**P0-3 — BAFT Engine Store real-host verification**
+**P0-3 — BAFT Engine Store real-host verification** — *LAB gate closed 2026-11-08: runs 42510577167 and 42522105698 (signed rc.2 asset), see §3.2.*
 - Use the pinned signed engine artifact and its matching `release/engine-manifest.json`.
 - Install into Store, verify `current`, run BAFT through `baft.store` under the hardened systemd 249 service, verify data, kill child and prove supervisor recovery.
 - Change the configured pin to a different SHA and prove launch is refused.
