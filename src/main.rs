@@ -5,7 +5,6 @@ mod baft_engine;
 mod capabilities;
 mod config;
 mod engine;
-#[allow(dead_code)] // consumed by the launcher in a later slice (ADR-0020)
 mod engine_store;
 mod handshake;
 pub mod key_custody;

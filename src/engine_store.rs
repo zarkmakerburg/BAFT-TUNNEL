@@ -6,6 +6,10 @@
 //!   `current`  -> `releases/<sha>`             what the launcher runs
 //!   `previous` -> `releases/<sha>`             what `rollback` returns to
 //!
+//! The store holds only public engine binaries and manifests (no secrets), so its
+//! directories are world-readable and the service user can run `current`; nobody but the
+//! installing user can write there.
+//!
 //! Nothing is downloaded: the binary comes from a signed release the operator already
 //! holds. Every switch re-verifies the target against its own stored manifest first, so a
 //! tampered or truncated release is refused and `current` is left untouched.
@@ -85,15 +89,16 @@ pub fn install(store: &Path, manifest: &Path, id: &str, binary: &Path) -> Result
     let rel = dir.join("releases").join(&sha);
     fs::DirBuilder::new()
         .recursive(true)
-        .mode(0o700)
+        .mode(0o755)
         .create(dir.join("releases"))?;
     if !rel.join("engine").exists() {
         let tmp = dir.join("releases").join(format!(".{sha}.tmp"));
         let _ = fs::remove_dir_all(&tmp);
-        fs::DirBuilder::new().mode(0o700).create(&tmp)?;
+        fs::DirBuilder::new().mode(0o755).create(&tmp)?;
         fs::copy(binary, tmp.join("engine")).context("copy engine")?;
         fs::set_permissions(tmp.join("engine"), fs::Permissions::from_mode(0o755))?;
         fs::copy(manifest, tmp.join("manifest.json")).context("copy manifest")?;
+        fs::set_permissions(tmp.join("manifest.json"), fs::Permissions::from_mode(0o644))?;
         fs::rename(&tmp, &rel).context("publish release directory")?;
     }
     // Re-verify what is now on disk, not what we were handed.
@@ -113,6 +118,17 @@ pub fn install(store: &Path, manifest: &Path, id: &str, binary: &Path) -> Result
 pub fn verify_current(store: &Path, id: &str) -> Result<PathBuf> {
     let dir = engine_dir(store, id)?;
     let sha = read_link_name(&dir.join("current")).context("no current engine installed")?;
+    verify_release(&dir, id, &sha)
+}
+
+/// Launcher entry: verify `current` and require that it is the release the config pins.
+/// After a rollback the config pin must be changed to match, otherwise the launcher refuses.
+pub fn resolve_for_launch(store: &Path, id: &str, pinned_sha256: &str) -> Result<PathBuf> {
+    let dir = engine_dir(store, id)?;
+    let sha = read_link_name(&dir.join("current")).context("no current engine installed")?;
+    if !sha.eq_ignore_ascii_case(pinned_sha256) {
+        bail!("installed engine release {sha} is not the release pinned in the config");
+    }
     verify_release(&dir, id, &sha)
 }
 
@@ -196,6 +212,12 @@ mod tests {
         assert_eq!(rollback(&store, "demo").unwrap(), sha1);
         assert_eq!(read_link_name(&dir.join("current")).unwrap(), sha1);
         assert_eq!(rollback(&store, "demo").unwrap(), sha2);
+
+        // Launcher resolution follows the config pin exactly.
+        assert!(resolve_for_launch(&store, "demo", &sha2).is_ok());
+        assert!(resolve_for_launch(&store, "demo", &sha1).is_err());
+        assert!(resolve_for_launch(&store, "demo", &"0".repeat(64)).is_err());
+        assert!(resolve_for_launch(&t.0.join("empty"), "demo", &sha2).is_err());
 
         // A tampered stored binary is refused and current is not switched to it.
         let victim = dir.join("releases").join(&sha1).join("engine");
