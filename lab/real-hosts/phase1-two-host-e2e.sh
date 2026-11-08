@@ -566,7 +566,7 @@ if (( BAFT == 1 )); then
   echo "=== BAFT ENGINE: pinned Go engine host (Direct, unauthorized identity, restart, Reverse, bad hash, revocation) ==="
   BAFT_SHA="$(sha256sum "$BAFT_BINARY_PATH" | awk '{print $1}')"
   # BAFT requires exactly one URI SAN, urn:baft:node:<id>. Same CA, engine-specific identity profile.
-  for node in iran abroad control baftrev; do
+  for node in iran abroad control baftrev revsrv; do
     openssl req -new -newkey rsa:2048 -nodes -keyout "$LOCAL_TMP/b-$node.key" \
       -out "$LOCAL_TMP/b-$node.csr" -subj "/CN=b-$node.lab" >/dev/null 2>&1
     printf '[ b_%s_ext ]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=DNS:%s.lab,URI:urn:baft:node:%s\n' "$node" "$node" "$node" >> "$LOCAL_TMP/openssl.cnf"
@@ -577,13 +577,15 @@ if (( BAFT == 1 )); then
     copy_to_host "$side" "$BAFT_BINARY_PATH" "$LOCAL_TMP"/b-*.crt "$LOCAL_TMP"/b-*.key
     ssh_host "$side" "mv '$REMOTE_DIR/$(basename "$BAFT_BINARY_PATH")' '$REMOTE_DIR/baft-engine' 2>/dev/null || true; chmod 700 '$REMOTE_DIR/baft-engine'; chmod 600 '$REMOTE_DIR/'*.key"
   done
-  baft_cfg() { # role local_id peer_id cert key [peer_host peer_dns] [sha]
-    local role="$1" local_id="$2" peer_id="$3" cert="$4" key="$5" peer_host="${6:-}" peer_dns="${7:-}" sha="${8:-$BAFT_SHA}" common
+  cert_pin() { openssl x509 -in "$LOCAL_TMP/$1" -outform DER | sha256sum | awk '{print $1}'; }
+  baft_cfg() { # role local_id peer_id cert key [peer_host peer_dns] [sha] [listener_cert_pin]
+    local role="$1" local_id="$2" peer_id="$3" cert="$4" key="$5" peer_host="${6:-}" peer_dns="${7:-}" sha="${8:-$BAFT_SHA}" pin="${9:-}" common pinfield=""
+    [[ -z "$pin" ]] || pinfield="\"peer_fingerprint\":\"$pin\","
     common="\"local_id\":\"$local_id\",\"peer_id\":\"$peer_id\",\"tunnel_id\":\"lab-e2e\",\"direction\":\"direct\",\"engine\":\"baft\",\"ca\":\"$REMOTE_DIR/ca.crt\",\"crl\":\"$REMOTE_DIR/ca.crl\",\"cert\":\"$REMOTE_DIR/$cert\",\"key\":\"$REMOTE_DIR/$key\",\"max_streams\":8,\"baft\":{\"binary\":\"$REMOTE_DIR/baft-engine\",\"sha256\":\"$sha\"}"
     if [[ "$role" == serve ]]; then
       printf '{"mode":"serve","listen":"0.0.0.0:%s","target":"127.0.0.1:%s",%s}' "$E2E_PORT" "$ECHO_PORT" "$common"
     else
-      printf '{"mode":"forward","listen":"127.0.0.1:%s","remote":"%s:%s","server_name":"%s",%s}' "$LOCAL_PORT" "$peer_host" "$E2E_PORT" "$peer_dns" "$common"
+      printf '{"mode":"forward","listen":"127.0.0.1:%s","remote":"%s:%s","server_name":"%s",%s%s}' "$LOCAL_PORT" "$peer_host" "$E2E_PORT" "$peer_dns" "$pinfield" "$common"
     fi
   }
   baft_start() { # side role cfgjson
@@ -602,7 +604,7 @@ if (( BAFT == 1 )); then
   }
   echo "--- BAFT Direct: Iran dials abroad ---"
   baft_start abroad serve "$(baft_cfg serve abroad iran b-abroad.crt b-abroad.key)"
-  baft_start iran forward "$(baft_cfg forward iran abroad b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
+  baft_start iran forward "$(baft_cfg forward iran abroad b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab "" "$(cert_pin b-abroad.crt)")"
   probe_host iran 65536
   probe_host iran 2097289
   BAFT_RSS_SERVE="$(baft_rss abroad serve)"; BAFT_RSS_FWD="$(baft_rss iran forward)"
@@ -610,6 +612,10 @@ if (( BAFT == 1 )); then
   stop_role iran forward; sleep 1
   baft_start iran forward "$(baft_cfg forward control abroad b-control.crt b-control.key "$LAB_ABROAD_HOST" abroad.lab)"
   expect_refused iran "a certificate whose identity is not the allowed peer"
+  stop_role iran forward; sleep 1
+  echo "--- BAFT listener pin: a pin that does not match the listener certificate must be refused ---"
+  baft_start iran forward "$(baft_cfg forward iran abroad b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab "" "$(cert_pin b-control.crt)")"
+  expect_refused iran "a listener certificate that differs from the pin"
   stop_role iran forward; sleep 1
   echo "--- BAFT restart: listener killed and started again, dialer must recover on its own ---"
   baft_start iran forward "$(baft_cfg forward iran abroad b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
@@ -650,7 +656,20 @@ if (( BAFT == 1 )); then
   baft_start iran forward "$(baft_cfg forward baftrev abroad b-baftrev.crt b-baftrev.key "$LAB_ABROAD_HOST" abroad.lab)"
   expect_refused iran "a revoked client certificate"
   stop_role iran forward; stop_role abroad serve
-  echo "BAFT_RESULT direct_ok=1 unauthorized_refused=1 restart_recovered=1 restart_recovery_s=$BAFT_RECOVERY_S dialer_restarted=$BAFT_DIALER_RESTARTED bad_hash_refused=1 reverse_ok=1 revoked_refused=1 rss_kb_serve=$BAFT_RSS_SERVE rss_kb_forward=$BAFT_RSS_FWD"
+  echo "--- BAFT revoked listener: the dialer must refuse a revoked listener certificate ---"
+  # Control first: the same listener certificate works while it is not revoked (old CRL has only baftrev).
+  baft_start abroad serve "$(baft_cfg serve revsrv iran b-revsrv.crt b-revsrv.key)"
+  baft_start iran forward "$(baft_cfg forward iran revsrv b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
+  probe_host iran 65536
+  stop_role iran forward; stop_role abroad serve; sleep 1
+  openssl ca -batch -config "$LOCAL_TMP/openssl.cnf" -revoke "$LOCAL_TMP/b-revsrv.crt" >/dev/null 2>&1
+  openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.crl" >/dev/null 2>&1
+  for side in iran abroad; do copy_to_host "$side" "$LOCAL_TMP/ca.crl"; done
+  baft_start abroad serve "$(baft_cfg serve revsrv iran b-revsrv.crt b-revsrv.key)"
+  baft_start iran forward "$(baft_cfg forward iran revsrv b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
+  expect_refused iran "a revoked listener certificate"
+  stop_role iran forward; stop_role abroad serve
+  echo "BAFT_RESULT direct_ok=1 unauthorized_refused=1 restart_recovered=1 restart_recovery_s=$BAFT_RECOVERY_S dialer_restarted=$BAFT_DIALER_RESTARTED bad_hash_refused=1 reverse_ok=1 revoked_refused=1 pin_ok=1 wrong_pin_refused=1 revoked_listener_refused=1 rss_kb_serve=$BAFT_RSS_SERVE rss_kb_forward=$BAFT_RSS_FWD"
 fi
 
 echo "=== CERTIFICATE REVOCATION: server rejects revoked client certificate ==="
