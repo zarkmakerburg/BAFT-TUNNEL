@@ -133,3 +133,16 @@ During a CA rollover the trust bundle holds the old and the new CA, each with it
 6. If the old CA key may be compromised, do NOT use the overlap: replace everything at once (flag day) and check pins out of band.
 
 Status: the CA bundle, per-CA CRLs, dual pins, bundle activation and the push helper are implemented and unit/mock tested; the full sequence has not yet been run on the real LAB hosts.
+
+## Guided setup (P3-001)
+
+Two hosts, no hand-written JSON. On each host, the commands are `setup init` and `setup join`; a third, `setup plan`, previews without writing anything.
+
+1. `baft-tunnel setup plan --engine noise-tcp --role forward --direction direct --node-id iran --peer-id abroad --tunnel-id demo --service-port 8080 --peer-host PEER_IP` shows the configuration and files. Nothing is written.
+2. `setup init` (same arguments) on both hosts. The serving host uses `--role serve` and no `--peer-host`. With `noise-tcp` it creates the node key (mode 0600, never overwritten, never exported). With `tcp-tls` it expects the `baft-pki.sh` output already in `--dir` (`node.key`, `node.crt`, `ca.crt`, `ca.crl`), checks that key, certificate, CA and CRL fit together, that the certificate belongs to this node, that `node.key` is private and that the CRL has at least 24 hours left. It then writes a public bundle (`bundle.json`) and prints a checksum.
+3. Copy each bundle to the other host and compare the printed checksums over a channel you trust (for example read them aloud or send them in another messenger).
+4. `setup join --bundle PEER_BUNDLE --checksum CHECKSUM_FROM_PEER` on each host verifies the bundle (checksum, engine, direction, tunnel id, ports, identities, opposite roles) and writes `config.json`. Existing files are never overwritten.
+5. Review with `baft-tunnel config plan --config /etc/baft-tunnel/config.json`, then start the service as usual.
+
+The bundle holds only public material (Noise public key or certificate pin, ids, ports, and for `tcp-tls` serving nodes the certificate name). It never contains a private key.
+
