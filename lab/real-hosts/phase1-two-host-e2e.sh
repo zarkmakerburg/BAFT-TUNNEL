@@ -872,7 +872,7 @@ if (( BAFT == 1 )); then
         ssh_host "$side" "systemctl stop baft-lab-serve baft-lab-forward 2>/dev/null; systemctl reset-failed baft-lab-serve baft-lab-forward 2>/dev/null; rm -rf '$SD_DIR'; userdel baftlab 2>/dev/null; true" || true
       done
     }
-    trap 'sd_status=$?; sd_cleanup; (exit "$sd_status"); cleanup' EXIT
+    trap 'sd_status=$?; set +e; sd_cleanup; (exit "$sd_status"); cleanup' EXIT
     sd_prepare abroad; sd_prepare iran
     # Engine store -> launcher: the abroad listener runs the store's verified `current` release.
     SD_MANIFEST="$(dirname "${BASH_SOURCE[0]}")/../../release/engine-manifest.json"
