@@ -5,6 +5,13 @@ umask 077
 
 die() { echo "baft-pki: $*" >&2; exit 2; }
 TMP_DIR=""
+# Automation and tests only: BAFT_PKI_PASSFILE names a file holding the CA passphrase so that no
+# terminal prompt is needed. Operators should leave it unset and type the passphrase.
+PASSIN=(); PASSOUT=()
+if [[ -n "${BAFT_PKI_PASSFILE:-}" ]]; then
+  [[ -f "$BAFT_PKI_PASSFILE" && -r "$BAFT_PKI_PASSFILE" ]] || die "BAFT_PKI_PASSFILE is not a readable file"
+  PASSIN=(-passin "file:$BAFT_PKI_PASSFILE"); PASSOUT=(-pass "file:$BAFT_PKI_PASSFILE")
+fi
 cleanup() {
   if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then rm -rf "$TMP_DIR"; fi
 }
@@ -90,12 +97,12 @@ commonName = supplied
 authorityKeyIdentifier = keyid:always
 EOF
   echo "Creating encrypted offline CA key; OpenSSL will prompt for a passphrase."
-  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384 -aes-256-cbc -out "$dir/ca.key"
-  openssl req -new -x509 -key "$dir/ca.key" -out "$dir/ca.crt" \
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384 -aes-256-cbc "${PASSOUT[@]}" -out "$dir/ca.key"
+  openssl req -new -x509 "${PASSIN[@]}" -key "$dir/ca.key" -out "$dir/ca.crt" \
     -days 3650 -sha384 -subj "/CN=$ca_name" \
     -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
     -addext "keyUsage=critical,keyCertSign,cRLSign"
-  openssl ca -gencrl -batch -config "$dir/openssl.cnf" -out "$dir/ca.crl"
+  openssl ca "${PASSIN[@]}" -gencrl -batch -config "$dir/openssl.cnf" -out "$dir/ca.crl"
   chmod 600 "$dir/ca.key" "$dir/index.txt" "$dir/serial" "$dir/crlnumber"
   chmod 644 "$dir/ca.crt" "$dir/ca.crl" "$dir/openssl.cnf"
   echo "CA initialized: $dir"
@@ -149,10 +156,10 @@ subjectAltName=URI:urn:baft-tunnel:node:$node_id,$server_san
 subjectKeyIdentifier=hash
 authorityKeyIdentifier=keyid,issuer
 EOF
-  openssl ca -batch -notext -config "$ca_dir/openssl.cnf" \
+  openssl ca "${PASSIN[@]}" -batch -notext -config "$ca_dir/openssl.cnf" \
     -extfile "$TMP_DIR/extensions.cnf" -extensions node_ext -days "$days" \
     -in "$csr" -out "$out_dir/node.crt"
-  openssl ca -gencrl -batch -config "$ca_dir/openssl.cnf" -out "$TMP_DIR/ca.crl"
+  openssl ca "${PASSIN[@]}" -gencrl -batch -config "$ca_dir/openssl.cnf" -out "$TMP_DIR/ca.crl"
   cp "$ca_dir/ca.crt" "$out_dir/ca.crt"
   cp "$TMP_DIR/ca.crl" "$out_dir/ca.crl"
   chmod 644 "$out_dir/node.crt" "$out_dir/ca.crt" "$out_dir/ca.crl"
@@ -174,8 +181,8 @@ revoke_node() {
   mkdir -p "$out_dir"
   chmod 700 "$out_dir"
   TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/baft-pki.XXXXXX")"
-  openssl ca -batch -config "$ca_dir/openssl.cnf" -revoke "$cert"
-  openssl ca -gencrl -batch -config "$ca_dir/openssl.cnf" -out "$TMP_DIR/ca.crl"
+  openssl ca "${PASSIN[@]}" -batch -config "$ca_dir/openssl.cnf" -revoke "$cert"
+  openssl ca "${PASSIN[@]}" -gencrl -batch -config "$ca_dir/openssl.cnf" -out "$TMP_DIR/ca.crl"
   cp "$ca_dir/ca.crt" "$out_dir/ca.crt"
   cp "$TMP_DIR/ca.crl" "$out_dir/ca.crl"
   chmod 644 "$out_dir/ca.crt" "$out_dir/ca.crl"

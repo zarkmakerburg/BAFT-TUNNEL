@@ -116,7 +116,7 @@ cleanup() {
   fi
   for side in iran abroad; do
     if (( LOSS > 0 )); then ssh_host "$side" "nft delete table inet $LOSS_TABLE 2>/dev/null || true" || true; fi
-    ssh_host "$side" "for role in serve forward echo echo2 impair; do f='$REMOTE_DIR/'\$role'.pid'; if [ -s \"\$f\" ]; then kill \$(cat \"\$f\") 2>/dev/null || true; fi; done; sleep 0.2; rm -rf '$REMOTE_DIR'" || status=1
+    ssh_host "$side" "for role in serve forward echo echo2 impair agent; do f='$REMOTE_DIR/'\$role'.pid'; if [ -s \"\$f\" ]; then kill \$(cat \"\$f\") 2>/dev/null || true; fi; done; sleep 0.2; rm -rf '$REMOTE_DIR'" || status=1
   done
   rm -rf "$LOCAL_TMP"
   if (( status != 0 )); then
@@ -384,9 +384,25 @@ if (( SETUP == 1 )); then
     local engine="$1" name="$2" d="$SEP-$2" sum_a sum_i
     ssh_host abroad "mkdir -p '$d'"; ssh_host iran "mkdir -p '$d'"
     if [[ "$engine" == tcp-tls ]]; then
-      # Stand-ins for the baft-pki.sh output the operator would already have installed.
-      ssh_host abroad "cp '$REMOTE_DIR/abroad.crt' '$d/node.crt'; cp '$REMOTE_DIR/abroad.key' '$d/node.key'; cp '$REMOTE_DIR/ca.crt' '$REMOTE_DIR/ca.crl' '$d/'; chmod 600 '$d/node.key'"
-      ssh_host iran "cp '$REMOTE_DIR/iran.crt' '$d/node.crt'; cp '$REMOTE_DIR/iran.key' '$d/node.key'; cp '$REMOTE_DIR/ca.crt' '$REMOTE_DIR/ca.crl' '$d/'; chmod 600 '$d/node.key'"
+      # Real offline-PKI output (scripts/pki/baft-pki.sh) generated on the runner, which plays the
+      # offline admin machine. Only node.key/node.crt/ca.crt/ca.crl reach each host.
+      local node dir_n
+      for node in abroad iran; do
+        dir_n="$LOCAL_TMP/realpki/$node"
+        host_ip="$LAB_ABROAD_HOST"; [[ "$node" == iran ]] && host_ip="$LAB_IRAN_HOST"
+        bash scripts/pki/baft-pki.sh new-node "$node" "$dir_n" >/dev/null
+        bash scripts/pki/baft-pki.sh issue-node "$LOCAL_TMP/realpki/ca" "$node" "$dir_n/node.csr" "$LOCAL_TMP/realpki/issued-$node" "$host_ip" 30 >/dev/null
+        bash scripts/pki/baft-pki.sh verify-node "$LOCAL_TMP/realpki/ca" "$LOCAL_TMP/realpki/issued-$node/ca.crl" "$LOCAL_TMP/realpki/issued-$node/node.crt" "$node" "$host_ip" >/dev/null
+        mkdir -p "$LOCAL_TMP/realpki/send-$node"
+        cp "$dir_n/node.key" "$LOCAL_TMP/realpki/issued-$node/"{node.crt,ca.crt,ca.crl} "$LOCAL_TMP/realpki/send-$node/"
+        chmod 600 "$LOCAL_TMP/realpki/send-$node/node.key"
+        for f in node.key node.crt ca.crt ca.crl; do
+          cp "$LOCAL_TMP/realpki/send-$node/$f" "$LOCAL_TMP/realpki/send-$node/$node-$f"
+          copy_to_host "$node" "$LOCAL_TMP/realpki/send-$node/$node-$f"
+          ssh_host "$node" "mv '$REMOTE_DIR/$node-$f' '$d/$f'"
+        done
+        ssh_host "$node" "chmod 600 '$d/node.key'"
+      done
     fi
     local common="--engine $engine --direction direct --tunnel-id lab-setup --service-port $SVC_PORT --tunnel-port $TPORT --dir '$d'"
     sum_a="$(ssh_host abroad "'$BIN' setup init $common --role serve --node-id abroad --peer-id iran" | awk '/^Checksum/{print $NF}')"
@@ -411,9 +427,33 @@ if (( SETUP == 1 )); then
   setup_pair noise-tcp noise
   noise_s=$((SECONDS - t0))
   stop_role iran forward; stop_role abroad serve; sleep 1
+  mkdir -p "$LOCAL_TMP/realpki"; umask 077
+  printf 'lab-ephemeral-ca-passphrase-%s\n' "$RANDOM$RANDOM" > "$LOCAL_TMP/realpki/pass"
+  export BAFT_PKI_PASSFILE="$LOCAL_TMP/realpki/pass"
+  bash scripts/pki/baft-pki.sh init-ca "$LOCAL_TMP/realpki/ca" >/dev/null 2>&1
   t1=$SECONDS
   setup_pair tcp-tls tls
   switch_s=$((SECONDS - t1))
+  # P3-002 A3: the agent reports the live tunnel and accepts a validated desired state.
+  ad="$SEP-tls"
+  ssh_host abroad "'$BIN' agent-token --out '$ad/agent.token' >/dev/null; mkdir -p '$ad/state'; nohup '$BIN' agent --config '$ad/config.json' --token-file '$ad/agent.token' --state-dir '$ad/state' --listen 127.0.0.1:18081 > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid'"
+  sleep 1
+  agent_call() {
+    ssh_host abroad "python3 - '$ad' $1 $2 <<'PY'
+import sys, urllib.request
+d, method, path = sys.argv[1:4]
+tok = open(d + '/agent.token').read().strip()
+body = open(d + '/config.json','rb').read() if method == 'PUT' else None
+r = urllib.request.Request('http://127.0.0.1:18081' + path, data=body, method=method, headers={'Authorization': 'Bearer ' + tok})
+print(urllib.request.urlopen(r, timeout=5).read().decode())
+PY"
+  }
+  agent_status="$(agent_call GET /v1/status)"
+  [[ "$agent_status" == *'"listener_accepting":true'* ]] || { echo "agent does not see the live listener" >&2; exit 1; }
+  agent_put="$(agent_call PUT /v1/desired)"
+  [[ "$agent_put" == *'"accepted":true'* && "$agent_put" == *'"applied":false'* ]] || { echo "agent refused a valid desired state" >&2; exit 1; }
+  echo "AGENT_RESULT status_listener_accepting=1 desired_state_accepted=1 applied=0"
+  stop_role abroad agent
   stop_role iran forward; stop_role abroad serve
   ssh_host abroad "p=\$(cat '$REMOTE_DIR/echo2.pid' 2>/dev/null); [ -n \"\$p\" ] && kill \$p 2>/dev/null; true"
   LOCAL_PORT="$OLD_LOCAL_PORT"
