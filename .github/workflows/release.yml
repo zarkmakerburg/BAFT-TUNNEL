@@ -31,7 +31,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   release:
-    runs-on: ubuntu-24.04
+    # Build on the oldest supported target (Ubuntu 22.04, glibc 2.35): a binary
+    # linked on 24.04 needs GLIBC_2.39 and fails to start on 22.04 hosts (rc.3).
+    runs-on: ubuntu-22.04
     timeout-minutes: 40
     permissions:
       contents: write   # create release/tag
@@ -74,6 +76,11 @@ jobs:
           set -euo pipefail
           mkdir dist
           cp target/release/baft-tunnel "dist/baft-tunnel-${{ steps.v.outputs.tag }}-linux-x86_64"
+          # Refuse to publish a binary that needs a newer glibc than Ubuntu 22.04 ships.
+          need="$(objdump -T target/release/baft-tunnel | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)"
+          [ "$(printf '%s\n2.35\n' "$need" | sort -V | tail -1)" = "2.35" ] \
+            || { echo "::error::baft-tunnel needs GLIBC_$need; supported floor is 2.35 (Ubuntu 22.04)"; exit 1; }
+          echo "baft-tunnel glibc floor: GLIBC_$need"
       - name: Build, verify and stage the pinned BAFT engine (Engine #3)
         run: |
           set -euo pipefail
