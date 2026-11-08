@@ -168,3 +168,6 @@ Start the agent as above and open `http://127.0.0.1:18080/` (from another machin
 3. `systemctl daemon-reload && systemctl restart baft-tunnel@NAME`; check `systemctl is-active baft-tunnel@NAME` and the status API/panel.
 4. To roll back: `scripts/rollback.sh BACKUP_DIR`, then restart the instance. Rollback restores the previous binary and unit only; it does not start or restart anything itself.
 The CI job `ubuntu-2204-baseline` runs exactly this sequence from the previous pre-release on Ubuntu 22.04 / systemd 249.
+
+## Guided setup as an installed service (`--instance`)
+`setup init ... --instance NAME` writes `NAME.json` (the file `baft-tunnel@NAME` reads) instead of `config.json`. With the default `--dir /etc/baft-tunnel` the sequence per host is: `scripts/install.sh --binary ./baft-tunnel`, `baft-tunnel setup init ... --instance NAME`, `baft-tunnel setup join ...`, `chown baft-tunnel:baft-tunnel /etc/baft-tunnel/node.noise` (or `node.key` for tcp-tls), `systemctl enable --now baft-tunnel@NAME`. The key stays mode 0600 and is owned by the service user; the wizard prints these commands when an instance name is given. This path uses a key file, not `LoadCredential=`; credential delivery for setup-generated keys is a later step.

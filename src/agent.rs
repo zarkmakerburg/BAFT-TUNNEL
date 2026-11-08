@@ -273,6 +273,7 @@ struct PlanBody {
     peer_host: Option<String>,
     server_name: Option<String>,
     dir: Option<PathBuf>,
+    instance: Option<String>,
 }
 
 fn shell_quote(value: &str) -> Result<String> {
@@ -312,6 +313,7 @@ fn setup_plan(body: &[u8]) -> (u16, Value) {
                 .dir
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("/etc/baft-tunnel")),
+            instance: request.instance.clone(),
         };
         let plan = crate::setup::plan(&req)?;
         let dir = shell_quote(&req.dir.to_string_lossy())?;
@@ -333,16 +335,40 @@ fn setup_plan(body: &[u8]) -> (u16, Value) {
         if let Some(n) = &req.server_name {
             init += &format!(" --server-name {}", shell_quote(n)?);
         }
-        let commands = [
-            init,
-            format!(
-                "baft-tunnel setup join --dir {dir} --bundle <peer bundle.json> --checksum <peer checksum>"
-            ),
-            format!(
-                "baft-tunnel apply --config {}/config.json --confirm",
-                req.dir.to_string_lossy()
-            ),
-        ];
+        if let Some(name) = &req.instance {
+            init += &format!(" --instance {}", shell_quote(name)?);
+        }
+        let join = format!(
+            "baft-tunnel setup join --dir {dir} --bundle <peer bundle.json> --checksum <peer checksum>"
+        );
+        let commands: Vec<String> = match &req.instance {
+            // Installed service: the unit runs as the baft-tunnel user, so it must own its key.
+            Some(name) => {
+                let key = if req.engine == crate::config::EngineKind::TcpTls {
+                    "node.key"
+                } else {
+                    "node.noise"
+                };
+                let d = req.dir.to_string_lossy();
+                vec![
+                    init,
+                    join,
+                    format!(
+                        "chown baft-tunnel:baft-tunnel {}",
+                        shell_quote(&format!("{d}/{key}"))?
+                    ),
+                    format!("systemctl enable --now baft-tunnel@{name}"),
+                ]
+            }
+            None => vec![
+                init,
+                join,
+                format!(
+                    "baft-tunnel apply --config {}/config.json --confirm",
+                    req.dir.to_string_lossy()
+                ),
+            ],
+        };
         let files: Vec<Value> = plan
             .files
             .iter()
@@ -662,6 +688,28 @@ mod tests {
         assert!(out.contains("setup init --engine noise-tcp --role serve --direction direct"));
         assert!(out.contains("\"applied\":false"));
         assert!(!std::path::Path::new("/etc/baft-tunnel/config.json").exists());
+    }
+
+    #[tokio::test]
+    async fn wizard_plan_for_a_service_instance_names_the_systemd_steps() {
+        let body = json!({
+            "engine": "noise-tcp", "role": "serve", "direction": "direct", "node_id": "node-a",
+            "peer_id": "node-b", "tunnel_id": "tunnel-1", "service_port": 8080, "instance": "edge"
+        })
+        .to_string();
+        let (code, out) = call(None, "POST", "/v1/setup/plan", Some(TOKEN), &body).await;
+        assert_eq!(code, 200, "{out}");
+        assert!(out.contains("--instance 'edge'"));
+        assert!(out.contains("chown baft-tunnel:baft-tunnel '/etc/baft-tunnel/node.noise'"));
+        assert!(out.contains("systemctl enable --now baft-tunnel@edge"));
+        assert!(out.contains("/etc/baft-tunnel/edge.json"));
+        let bad = body.replace("edge", "../edge");
+        assert_eq!(
+            call(None, "POST", "/v1/setup/plan", Some(TOKEN), &bad)
+                .await
+                .0,
+            422
+        );
     }
 
     #[tokio::test]
