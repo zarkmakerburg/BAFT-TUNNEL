@@ -57,6 +57,21 @@ pub fn crl_seconds_remaining(path: &Path) -> Result<i64> {
     Ok(earliest.context("certificate revocation list file contains no CRLs")? - now)
 }
 
+/// Seconds until the first (leaf) certificate in the file expires (negative once expired).
+pub fn certificate_seconds_remaining(path: &Path) -> Result<i64> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_secs() as i64;
+    let certs = certificates(path)?;
+    let leaf = certs
+        .first()
+        .context("certificate file contains no certificates")?;
+    let (_, parsed) = x509_parser::parse_x509_certificate(leaf.as_ref())
+        .map_err(|_| anyhow::anyhow!("certificate is not valid X.509 DER"))?;
+    Ok(parsed.validity().not_after.timestamp() - now)
+}
+
 fn private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
     let file =
         File::open(path).with_context(|| format!("open private key file {}", path.display()))?;
