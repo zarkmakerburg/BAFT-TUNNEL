@@ -162,6 +162,9 @@ enum SetupCommand {
         server_name: Option<String>,
         #[arg(long, default_value = "/etc/baft-tunnel")]
         dir: PathBuf,
+        /// systemd instance name: write NAME.json (read by baft-tunnel@NAME) instead of config.json.
+        #[arg(long)]
+        instance: Option<String>,
         /// Print only the configuration template as JSON.
         #[arg(long)]
         json: bool,
@@ -188,6 +191,9 @@ enum SetupCommand {
         peer_host: Option<String>,
         #[arg(long, default_value = "/etc/baft-tunnel")]
         dir: PathBuf,
+        /// systemd instance name: write NAME.json (read by baft-tunnel@NAME) instead of config.json.
+        #[arg(long)]
+        instance: Option<String>,
         /// Where to write the public bundle (default: DIR/bundle.json).
         #[arg(long)]
         bundle_out: Option<PathBuf>,
@@ -338,6 +344,7 @@ async fn main() -> Result<()> {
                     peer_host,
                     server_name,
                     dir,
+                    instance,
                     json,
                 },
         } => {
@@ -353,6 +360,7 @@ async fn main() -> Result<()> {
                 peer_host,
                 server_name,
                 dir,
+                instance,
             })?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&plan.config)?);
@@ -383,6 +391,7 @@ async fn main() -> Result<()> {
                     tunnel_port,
                     peer_host,
                     dir,
+                    instance,
                     bundle_out,
                 },
         } => {
@@ -399,6 +408,7 @@ async fn main() -> Result<()> {
                     peer_host,
                     server_name: None,
                     dir,
+                    instance,
                 },
                 bundle_out.as_deref(),
             )?;

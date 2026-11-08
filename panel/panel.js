@@ -91,6 +91,7 @@
       node_id: f.node_id.value, peer_id: f.peer_id.value, tunnel_id: f.tunnel_id.value,
       service_port: Number(f.service_port.value), tunnel_port: Number(f.tunnel_port.value), dir: f.dir.value
     };
+    if (f.instance.value.trim()) { b.instance = f.instance.value.trim(); }
     if (f.role.value === 'forward') {
       b.peer_host = f.peer_host.value.trim();
       if (f.engine.value === 'tcp-tls') { b.server_name = f.server_name.value.trim(); }

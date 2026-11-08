@@ -47,6 +47,9 @@ pub struct PlanRequest {
     /// Required for `tcp-tls` + `forward`; rejected otherwise.
     pub server_name: Option<String>,
     pub dir: PathBuf,
+    /// Name of a systemd instance (`baft-tunnel@NAME`): the config is then written to `NAME.json`,
+    /// the file that unit reads, instead of `config.json`.
+    pub instance: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -145,7 +148,7 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
     }
 
     let mut files = vec![PlannedFile {
-        path: path("config.json"),
+        path: path(&config_file_name(req.instance.as_deref())?),
         mode: "0640",
         note: "tunnel configuration (no secrets)",
     }];
@@ -200,6 +203,33 @@ const BUNDLE_MAX_BYTES: u64 = 4096;
 const STATE_FILE: &str = "pairing-state.json";
 const KEY_FILE: &str = "node.noise";
 const CONFIG_FILE: &str = "config.json";
+
+fn default_config_file() -> String {
+    CONFIG_FILE.into()
+}
+
+/// `config.json`, or `NAME.json` for a systemd instance (same name rules as scripts/install.sh).
+pub fn config_file_name(instance: Option<&str>) -> Result<String> {
+    let Some(name) = instance else {
+        return Ok(CONFIG_FILE.into());
+    };
+    let valid = !name.is_empty()
+        && name.len() <= 63
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        && !name.contains("..");
+    if !valid {
+        bail!(
+            "instance must be 1-63 ASCII letters, digits, '.', '_' or '-' and start with an alphanumeric"
+        );
+    }
+    Ok(format!("{name}.json"))
+}
 
 /// Public pairing bundle. It never contains a private key, a credential or a host address.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,6 +289,8 @@ struct State {
     tunnel_port: u16,
     peer_host: Option<String>,
     own_public: String,
+    #[serde(default = "default_config_file")]
+    config_file: String,
 }
 
 fn write_new(path: &Path, mode: u32, bytes: &[u8]) -> Result<()> {
@@ -289,7 +321,8 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
     }
     plan(&checked)?; // full request validation, no side effects
     let dir = &req.dir;
-    for name in [CONFIG_FILE, STATE_FILE] {
+    let config_file = config_file_name(req.instance.as_deref())?;
+    for name in [config_file.as_str(), STATE_FILE] {
         if dir.join(name).exists() {
             bail!(
                 "{} already exists; setup never overwrites",
@@ -354,6 +387,7 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
         tunnel_port: req.tunnel_port,
         peer_host: req.peer_host.clone(),
         own_public: public,
+        config_file: config_file.clone(),
     };
     write_new(
         &dir.join(STATE_FILE),
@@ -427,7 +461,7 @@ pub fn join(dir: &Path, bundle_path: &Path, checksum: &str) -> Result<PathBuf> {
         &std::fs::read(dir.join(STATE_FILE)).context("read pairing state; run setup init first")?,
     )
     .context("pairing state is invalid")?;
-    let config_path = dir.join(CONFIG_FILE);
+    let config_path = dir.join(&state.config_file);
     if config_path.exists() {
         bail!(
             "{} already exists; setup never overwrites",
@@ -505,6 +539,7 @@ pub fn join(dir: &Path, bundle_path: &Path, checksum: &str) -> Result<PathBuf> {
         peer_host: state.peer_host,
         server_name,
         dir: dir.to_path_buf(),
+        instance: None,
     };
     let mut config = plan(&req)?.config;
     let key = if engine == EngineKind::TcpTls {
@@ -541,6 +576,7 @@ mod tests {
             server_name: (engine == EngineKind::TcpTls && role == Role::Forward)
                 .then(|| "abroad.lab".to_owned()),
             dir: PathBuf::from("/etc/baft-tunnel"),
+            instance: None,
         }
     }
 
@@ -612,6 +648,43 @@ mod tests {
         let mut tls = request(EngineKind::TcpTls, Role::Forward);
         tls.server_name = None;
         assert!(plan(&tls).is_err());
+    }
+
+    #[test]
+    fn instance_names_the_config_file_the_systemd_unit_reads() {
+        assert_eq!(config_file_name(None).unwrap(), "config.json");
+        assert_eq!(config_file_name(Some("edge-1")).unwrap(), "edge-1.json");
+        for bad in ["", "../x", "a/b", ".hidden", "a..b", "x y", &"a".repeat(64)] {
+            assert!(config_file_name(Some(bad)).is_err(), "{bad}");
+        }
+        let mut req = request(EngineKind::NoiseTcp, Role::Serve);
+        req.instance = Some("edge".into());
+        let planned = plan(&req).unwrap();
+        assert!(planned.files.iter().any(|f| f.path.ends_with("edge.json")));
+        assert!(
+            !planned
+                .files
+                .iter()
+                .any(|f| f.path.ends_with("config.json"))
+        );
+    }
+
+    #[test]
+    fn instance_pairing_writes_and_never_overwrites_named_config() {
+        let root = temp("instance");
+        let mut serve = side(&root, Role::Serve, "abroad", "iran", "serve");
+        let mut forward = side(&root, Role::Forward, "iran", "abroad", "forward");
+        serve.instance = Some("edge".into());
+        forward.instance = Some("edge".into());
+        let a = init(&serve, None).unwrap();
+        let b = init(&forward, None).unwrap();
+        let path = join(&forward.dir, &a.bundle_path, &a.checksum).unwrap();
+        assert!(path.ends_with("edge.json"));
+        assert!(!forward.dir.join("config.json").exists());
+        assert!(join(&forward.dir, &a.bundle_path, &a.checksum).is_err());
+        join(&serve.dir, &b.bundle_path, &b.checksum).unwrap();
+        assert!(serve.dir.join("edge.json").exists());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
