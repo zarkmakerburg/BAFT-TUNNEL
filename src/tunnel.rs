@@ -60,6 +60,10 @@ async fn shutdown_signal() {
 pub struct ServerOptions {
     pub listen: String,
     pub target: String,
+    /// `Some(addr)`: reverse ingress (ADR-0021). The node still listens for the tunnel on
+    /// `listen`, but it owns the user-facing listener `addr` and sends those connections to the
+    /// dialing peer instead of dialing a `target` itself. `target` is then unused.
+    pub ingress: Option<String>,
     pub local_id: String,
     pub peer_id: String,
     pub tunnel_id: String,
@@ -76,6 +80,9 @@ pub struct ServerOptions {
 
 pub struct ForwardOptions {
     pub listen: String,
+    /// `Some(addr)`: reverse service node (ADR-0021). This node dials `remote` but does not open
+    /// streams or bind `listen`: it accepts streams from the peer and relays them to `addr`.
+    pub target: Option<String>,
     pub remote: String,
     pub server_name: String,
     pub local_id: String,
@@ -203,9 +210,42 @@ fn next_backoff(current: Duration) -> Duration {
     current.saturating_mul(2).min(MAX_BACKOFF)
 }
 
+/// User-facing side of a reverse tunnel on the reachable node: local connections wait here for the
+/// one active peer session. A newly authenticated session replaces the previous one, so a peer that
+/// reconnects after a network cut is not locked out while the stale session times out.
+struct IngressSide {
+    listener: TcpListener,
+    sender: mpsc::Sender<TcpStream>,
+    receiver: tokio::sync::Mutex<Receiver<TcpStream>>,
+    active: std::sync::Mutex<Option<watch::Sender<bool>>>,
+}
+
 pub async fn serve(options: ServerOptions) -> Result<()> {
     let listen = socket(&options.listen, "--listen")?;
-    let target = destination(&options.target)?;
+    let ingress_addr = options
+        .ingress
+        .as_deref()
+        .map(|a| socket(a, "--ingress"))
+        .transpose()?;
+    let target = match ingress_addr {
+        Some(_) => SocketAddr::from(([127, 0, 0, 1], 9)),
+        None => destination(&options.target)?,
+    };
+    let ingress = match ingress_addr {
+        Some(addr) => {
+            let listener = TcpListener::bind(addr)
+                .await
+                .with_context(|| format!("bind {addr}"))?;
+            let (sender, receiver) = mpsc::channel::<TcpStream>(options.max_streams);
+            Some(Arc::new(IngressSide {
+                listener,
+                sender,
+                receiver: tokio::sync::Mutex::new(receiver),
+                active: std::sync::Mutex::new(None),
+            }))
+        }
+        None => None,
+    };
     let engine: Arc<dyn StreamEngine> = match &options.noise {
         Some(noise) => Arc::new(NoiseEngine::from_settings(
             noise,
@@ -247,6 +287,25 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                 eprintln!("shutdown requested; stopping new peer sessions");
                 break;
             }
+            local = async {
+                match &ingress {
+                    Some(side) => side.listener.accept().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let Some(side) = &ingress else { continue };
+                match local {
+                    Ok((conn, _)) => {
+                        if side.sender.try_send(conn).is_err() {
+                            eprintln!("local connection rejected: bounded pending queue is full");
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("local accept failed: {error}");
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
+                    }
+                }
+            }
             accepted = listener.accept() => {
                 let (socket, remote) = match accepted {
                     Ok(pair) => pair,
@@ -274,6 +333,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                     streams.clone(),
                 );
                 let session_shutdown = shutdown_rx.clone();
+                let ingress_side = ingress.clone();
                 tasks.spawn(async move {
                     let result: Result<()> = async {
                         let mut secure = engine.accept(socket).await?;
@@ -288,7 +348,35 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                         let _session_permit = sessions
                             .try_acquire_owned()
                             .map_err(|_| anyhow::anyhow!("session capacity reached"))?;
-                        server_session(secure, target, max, stream_slots, tunnel, direction, session_shutdown).await;
+                        match ingress_side {
+                            None => {
+                                server_session(secure, target, max, stream_slots, tunnel, direction, session_shutdown).await;
+                            }
+                            Some(side) => {
+                                // Reverse: the dialing peer holds the service. This node opens the streams.
+                                let (replace_tx, replace_rx) = watch::channel(false);
+                                if let Some(previous) = side.active.lock().unwrap().replace(replace_tx) {
+                                    let _ = previous.send(true);
+                                }
+                                let mut stop = session_shutdown.clone();
+                                let mut replaced = replace_rx.clone();
+                                let (end_tx, end_rx) = watch::channel(false);
+                                let relay_end = tokio::spawn(async move {
+                                    tokio::select! {
+                                        _ = stop.changed() => {},
+                                        _ = replaced.changed() => {},
+                                    }
+                                    let _ = end_tx.send(true);
+                                });
+                                let mut receiver = side.receiver.lock().await;
+                                let session = Session::new_server(secure, yamux_config(max));
+                                let outcome = run_forward_session(session, &mut receiver, &stream_slots, direction, &tunnel, end_rx).await;
+                                relay_end.abort();
+                                if let Err(error) = outcome {
+                                    eprintln!("reverse session ended: {error:#}");
+                                }
+                            }
+                        }
                         Ok(())
                     }
                     .await;
@@ -330,11 +418,27 @@ async fn server_session<S>(
     slots: Arc<Semaphore>,
     tunnel: String,
     direction: ConnectionDirection,
+    shutdown: watch::Receiver<bool>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let session = Session::new_server(stream, yamux_config(max));
+    serve_streams(session, target, slots, tunnel, direction, shutdown).await;
+}
+
+/// Accept multiplexed streams on an established, authenticated session and relay each to the
+/// fixed `target`. Which node dialed the TCP connection does not matter here: Direct runs this on
+/// the listener, Reverse (ADR-0021) runs it on the dialer.
+async fn serve_streams<S>(
+    mut session: Session<S>,
+    target: SocketAddr,
+    slots: Arc<Semaphore>,
+    tunnel: String,
+    direction: ConnectionDirection,
     mut shutdown: watch::Receiver<bool>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let mut session = Session::new_server(stream, yamux_config(max));
     let mut control = session.control();
     let mut stream_tasks = JoinSet::new();
     loop {
@@ -611,7 +715,99 @@ async fn supervise_forward(
     }
 }
 
+/// Reverse service node (ADR-0021): dial the reachable node, authenticate, then accept streams
+/// from it and relay each to the fixed target. No inbound connection to this node is needed.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn reverse_service(options: ForwardOptions) -> Result<()> {
+    let target = destination(options.target.as_deref().unwrap_or_default())?;
+    let slots = Arc::new(Semaphore::new(options.max_streams));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
+    eprintln!(
+        "BAFT-TUNNEL reverse service node dialing {} (no inbound listener)",
+        options.remote
+    );
+    // Aborting this future (or dropping it) must also stop the supervisor and its tunnel session.
+    let mut supervisor = AbortOnDrop(tokio::spawn(supervise_reverse_service(
+        options,
+        target,
+        slots,
+        shutdown_rx,
+    )));
+    tokio::select! {
+        _ = &mut shutdown => eprintln!("shutdown requested; stopping reverse service node"),
+        _ = &mut supervisor.0 => {}
+    }
+    let _ = shutdown_tx.send(true);
+    if timeout(SHUTDOWN_TIMEOUT, &mut supervisor.0).await.is_err() {
+        eprintln!("reverse supervisor did not stop before shutdown deadline; aborting it");
+        supervisor.0.abort();
+    }
+    eprintln!("BAFT-TUNNEL reverse service node stopped");
+    Ok(())
+}
+
+async fn supervise_reverse_service(
+    options: ForwardOptions,
+    target: SocketAddr,
+    slots: Arc<Semaphore>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut backoff = INITIAL_BACKOFF;
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+        let connection = tokio::select! {
+            result = connect_peer(&options) => result,
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() { break; }
+                continue;
+            }
+        };
+        match connection {
+            Ok(session) => {
+                eprintln!("authenticated reverse tunnel session established");
+                backoff = INITIAL_BACKOFF;
+                serve_streams(
+                    session,
+                    target,
+                    slots.clone(),
+                    options.tunnel_id.clone(),
+                    options.direction,
+                    shutdown.clone(),
+                )
+                .await;
+                if *shutdown.borrow() {
+                    break;
+                }
+                eprintln!("reverse tunnel session lost; reconnecting");
+            }
+            Err(error) => eprintln!("tunnel connection attempt failed: {error:#}"),
+        }
+        let jitter_ms = u64::from(OsRng.next_u32() % 500);
+        tokio::select! {
+            _ = sleep(backoff + Duration::from_millis(jitter_ms)) => {},
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() { break; }
+            }
+        }
+        backoff = next_backoff(backoff);
+    }
+}
+
 pub async fn forward(options: ForwardOptions) -> Result<()> {
+    if options.target.is_some() {
+        return reverse_service(options).await;
+    }
     let listen = socket(&options.listen, "--listen")?;
     let listener = TcpListener::bind(listen)
         .await
@@ -820,6 +1016,7 @@ mod tests {
         let server_task = tokio::spawn(serve(ServerOptions {
             listen: server_address.to_string(),
             target: echo_address.to_string(),
+            ingress: None,
             local_id: server_id.to_owned(),
             peer_id: client_id.to_owned(),
             tunnel_id: "e2e-tunnel".to_owned(),
@@ -845,6 +1042,7 @@ mod tests {
 
         let forward_options = ForwardOptions {
             listen: local_address.to_string(),
+            target: None,
             remote: server_address.to_string(),
             server_name: "localhost".to_owned(),
             local_id: client_id.to_owned(),
@@ -960,6 +1158,7 @@ mod tests {
         let server_task = tokio::spawn(serve(ServerOptions {
             listen: server_address.to_string(),
             target: echo_address.to_string(),
+            ingress: None,
             local_id: "abroad".to_owned(),
             peer_id: "iran".to_owned(),
             tunnel_id: "noise-e2e".to_owned(),
@@ -983,6 +1182,7 @@ mod tests {
         }
         let options = |private: PathBuf, peer_public: String| ForwardOptions {
             listen: local_address.to_string(),
+            target: None,
             remote: server_address.to_string(),
             server_name: String::new(),
             local_id: "iran".to_owned(),
@@ -1061,6 +1261,138 @@ mod tests {
         echo_task.abort();
         let _ = forward_task.await;
         let _ = server_task.await;
+        let _ = echo_task.await;
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Reverse (ADR-0021) over Noise, in process: the node that hosts the service dials out, the
+    /// reachable node owns the user-facing listener. Local evidence only, not a LAB result.
+    #[tokio::test]
+    async fn reverse_tunnel_carries_user_traffic_to_the_dialing_service_node_and_recovers() {
+        let directory = std::env::temp_dir().join(format!(
+            "baft-reverse-e2e-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let public_key = directory.join("public.noise");
+        let private_key = directory.join("private.noise");
+        let public_pub = crate::engine::write_noise_keypair(&public_key).unwrap();
+        let private_pub = crate::engine::write_noise_keypair(&private_key).unwrap();
+
+        // The service lives on the private (dialing) node.
+        let echo_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let echo_address = echo_listener.local_addr().unwrap();
+        let echo_task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = echo_listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buffer = [0_u8; 1024];
+                    while let Ok(count) = stream.read(&mut buffer).await {
+                        if count == 0 || stream.write_all(&buffer[..count]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        let reserve = || async {
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let a = l.local_addr().unwrap();
+            drop(l);
+            a
+        };
+        let tunnel_address = reserve().await;
+        let ingress_address = reserve().await;
+
+        let direction = ConnectionDirection::Reverse;
+        let public_task = tokio::spawn(serve(ServerOptions {
+            listen: tunnel_address.to_string(),
+            target: String::new(),
+            ingress: Some(ingress_address.to_string()),
+            local_id: "public".to_owned(),
+            peer_id: "private".to_owned(),
+            tunnel_id: "reverse-e2e".to_owned(),
+            direction,
+            peer_fingerprint: String::new(),
+            ca: PathBuf::new(),
+            crl: PathBuf::new(),
+            cert: PathBuf::new(),
+            key: public_key.clone(),
+            noise: Some(NoiseSettings {
+                private_key: public_key,
+                peer_public: private_pub,
+            }),
+            max_streams: 8,
+        }));
+        for _ in 0..100 {
+            if TcpStream::connect(tunnel_address).await.is_ok() {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        let service_options = |direction: ConnectionDirection| ForwardOptions {
+            listen: String::new(),
+            target: Some(echo_address.to_string()),
+            remote: tunnel_address.to_string(),
+            server_name: String::new(),
+            local_id: "private".to_owned(),
+            peer_id: "public".to_owned(),
+            tunnel_id: "reverse-e2e".to_owned(),
+            direction,
+            peer_fingerprint: String::new(),
+            ca: PathBuf::new(),
+            crl: PathBuf::new(),
+            cert: PathBuf::new(),
+            key: private_key.clone(),
+            noise: Some(NoiseSettings {
+                private_key: private_key.clone(),
+                peer_public: public_pub.clone(),
+            }),
+            max_streams: 8,
+        };
+
+        // A service node that disagrees on the direction label is refused at the hello.
+        let mismatched = timeout(
+            Duration::from_secs(10),
+            connect_peer(&service_options(ConnectionDirection::Direct)),
+        )
+        .await
+        .expect("mismatched-direction attempt timed out");
+        assert!(mismatched.is_err(), "direction mismatch was accepted");
+
+        let payload: Vec<u8> = (0..(256 * 1024 + 17)).map(|i| (i % 251) as u8).collect();
+        let roundtrip = |payload: Vec<u8>| async move {
+            let mut user = TcpStream::connect(ingress_address).await.unwrap();
+            timeout(Duration::from_secs(20), async {
+                user.write_all(&payload).await.unwrap();
+                let mut received = vec![0_u8; payload.len()];
+                user.read_exact(&mut received).await.unwrap();
+                assert_eq!(received, payload);
+            })
+            .await
+            .expect("reverse payload timed out");
+        };
+
+        let service_task = tokio::spawn(forward(service_options(direction)));
+        roundtrip(payload.clone()).await;
+
+        // Recovery: the service node disappears and comes back; a new session carries traffic again.
+        service_task.abort();
+        let _ = service_task.await;
+        let service_task = tokio::spawn(forward(service_options(direction)));
+        roundtrip(payload).await;
+
+        service_task.abort();
+        public_task.abort();
+        echo_task.abort();
+        let _ = service_task.await;
+        let _ = public_task.await;
         let _ = echo_task.await;
         std::fs::remove_dir_all(directory).unwrap();
     }

@@ -467,6 +467,7 @@ impl RuntimeConfig {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 let noise = noise_settings(engine, &key, noise_peer_public);
                 tunnel::serve(ServerOptions {
+                    ingress: None,
                     listen,
                     target,
                     local_id,
@@ -506,6 +507,7 @@ impl RuntimeConfig {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 let noise = noise_settings(engine, &key, noise_peer_public);
                 tunnel::forward(ForwardOptions {
+                    target: None,
                     listen,
                     remote,
                     server_name,
