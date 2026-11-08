@@ -268,8 +268,11 @@
       var pf = w.pf;
       var list = pf ? h('ul', { class: 'pf' }, pf.checks.map(function (c) {
         var ev = c.result === 'unknown' && BAFT_I18N.en['pfu.' + c.id] ? t('pfu.' + c.id) : c.evidence;
+        var fix = c.result !== 'pass' && c.remediation ? (BAFT_I18N.en['pfr.' + c.id] ? t('pfr.' + c.id) : c.remediation) : null;
         return h('li', null, h('strong', { text: t('pfc.' + c.id) === 'pfc.' + c.id ? c.id : t('pfc.' + c.id) }),
-          pill({ pass: 'ok', warning: 'warn', blocked: 'bad', unknown: 'unknown' }[c.result], t('res.' + c.result)), h('span', { class: 'ev' }, c.result === 'unknown' ? ev : BAFT.ltr(ev)));
+          h('span', { class: 'muted', text: ' · ' + t(c.scope === 'peer' ? 'pf.scope.peer' : 'pf.scope.local') + ' ' }),
+          pill({ pass: 'ok', warning: 'warn', blocked: 'bad', unknown: 'unknown' }[c.result], t('res.' + c.result)), h('span', { class: 'ev' }, c.result === 'unknown' ? ev : BAFT.ltr(ev)),
+          fix ? h('span', { class: 'muted', text: ' ' + t('pf.fix') + ': ' + fix }) : null);
       })) : null;
       return h('div', null, h('h2', { text: t('pf.title') }), h('p', { class: 'sub', text: t('pf.note') }),
         h('button', { class: 'primary', type: 'button', disabled: w.busy ? true : null, onclick: runPreflight, text: w.busy ? t('pf.running') : t('pf.run') }),
