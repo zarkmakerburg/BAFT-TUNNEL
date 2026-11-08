@@ -14,8 +14,13 @@ fn tcp_tls() -> Value {
     json!({
         "id": "tcp-tls",
         "status": "stable",
-        "directions": ["direct"],
-        "reverse": {"state": "unavailable", "reason": "reverse-is-a-label-only"},
+        "directions": ["direct", "reverse"],
+        "reverse": {
+            "state": "preview",
+            "reason": "real Reverse (ADR-0021): the service node dials out, the public node owns the user ingress; proven once on a two-host LAB, not yet production-grade",
+            "evidence": {"lab_run": "42506805986", "sha": "2d8cd5e", "checks": "outbound-only, 64KiB+2MiB integrity, reconnect both sides, busy port, wrong identity, wrong pin, revoked certificate"},
+            "open": "R3 breadth: agent restart, repeated runs, longer soak"
+        },
         "security": "TLS 1.3 mutual authentication, offline CA, mandatory CRL",
         "transport": {"carrier": "tcp", "encapsulation": "tls1.3-mtls+yamux", "udp": false},
         "roles": {"listener": true, "dialer": true},
@@ -32,7 +37,8 @@ fn tcp_tls() -> Value {
         "platform": {"os": ["linux"], "min_agent": "0.1.0"},
         "evidence": {
             "unit_tests": true,
-            "lab_two_host": {"direct": "pass", "reverse": "label-only"},
+            "lab_two_host": {"direct": "pass", "reverse": "pass"},
+            "reverse_lab_run": "42506805986",
             "source": "docs/PHASE1_IMPLEMENTATION_STATUS.md"
         }
     })
@@ -43,7 +49,10 @@ fn noise_tcp() -> Value {
         "id": "noise-tcp",
         "status": "experimental",
         "directions": ["direct"],
-        "reverse": {"state": "unavailable", "reason": "reverse-is-a-label-only"},
+        "reverse": {
+            "state": "unproven",
+            "reason": "implemented in the core and config, but no two-host LAB proof for Noise yet (ADR-0021 R3); not offered and blocked by preflight"
+        },
         "security": "Noise static keys pinned per peer, no CA",
         "transport": {"carrier": "tcp", "encapsulation": "noise-ik+yamux", "udp": false},
         "roles": {"listener": true, "dialer": true},
@@ -60,23 +69,21 @@ fn noise_tcp() -> Value {
         "platform": {"os": ["linux"], "min_agent": "0.1.0"},
         "evidence": {
             "unit_tests": true,
-            "lab_two_host": {"direct": "pass", "reverse": "label-only"},
+            "lab_two_host": {"direct": "pass", "reverse": "unproven"},
             "source": "docs/PHASE1_IMPLEMENTATION_STATUS.md"
         }
     })
 }
 
-/// The verified connection model of this build (ADR-0021), traced from the socket code: the
-/// `serve` node binds the tunnel port and accepts the authenticated session; the `forward` node
-/// dials it, listens on its own loopback for application connections and opens one stream per
-/// connection; the `serve` node dials the fixed target for each stream. The `direction` label is
-/// only compared between the peers in the hello; it does not change who dials, where traffic
-/// enters or where it leaves. A real Reverse (the node that holds the service dials out, the
-/// reachable node receives users and sends them back through that connection) is NOT implemented,
-/// so Reverse is reported as unavailable instead of being offered.
+/// The verified connection model of this build (ADR-0021). Direct: the `serve` node binds the
+/// tunnel port, the `forward` node dials it, owns the loopback ingress and opens one stream per
+/// connection, and `serve` dials the fixed target. Reverse (tcp-tls only, preview): the same
+/// listener/dialer roles, but the service node (the dialer) dials out and dials the fixed target,
+/// while the public node (the listener) owns the user ingress and opens the streams. Reverse for
+/// Noise is implemented but unproven and is not offered. BAFT is not part of this model.
 fn direction_model() -> Value {
     json!({
-        "topology_contract_version": 1,
+        "topology_contract_version": 2,
         "label_agreed_by_both_peers": true,
         "implemented": {
             "direct": {
@@ -88,12 +95,24 @@ fn direction_model() -> Value {
                 "return_path": "same stream, same connection",
                 "relay_node": "none",
                 "public_reachability_needed": "serve (inbound tunnel port)"
+            },
+            "reverse": {
+                "engines": ["tcp-tls"],
+                "state": "preview",
+                "connection_initiator": "forward (the service node, outbound only)",
+                "connection_listener": "serve (the public node)",
+                "traffic_ingress": "serve (user ingress listener, loopback unless explicitly allowed)",
+                "traffic_egress": "forward (fixed target next to the service)",
+                "service_target": "next to the forward (service) node",
+                "return_path": "same stream, same connection",
+                "relay_node": "none",
+                "public_reachability_needed": "serve (inbound tunnel port); the service node needs no inbound port"
             }
         },
         "reverse": {
-            "state": "unavailable",
-            "reason": "the direction label does not change connection initiation or traffic ingress; a real reverse mode (service-side node dials out) is not implemented",
-            "label_only_lab": "the earlier 'reverse' LAB runs prove the label is accepted and data flows exactly as in direct"
+            "state": "preview",
+            "engines": {"tcp-tls": "preview (two-host LAB run 42506805986)", "noise-tcp": "unproven (no two-host LAB)", "baft": "not part of Rust Reverse; hidden"},
+            "open": "R3 breadth (agent restart, repeated runs, soak) before it can be called stable"
         },
         "nat": "the dialing side needs outbound reachability to the listener's tunnel port; the listener needs that port reachable inbound",
         "firewall": "inbound allow on the listener's tunnel port; not inspected by the agent (unknown)"
@@ -160,18 +179,19 @@ mod tests {
     }
 
     #[test]
-    fn runtime_limits_come_from_the_runtime_and_reverse_makes_no_initiator_claim() {
+    fn runtime_limits_come_from_the_runtime_and_reverse_is_preview_for_tcp_tls_only() {
         let doc = catalog();
         assert_eq!(doc["runtime"]["keepalive_interval_s"], 15);
         assert_eq!(doc["runtime"]["reconnect"]["max_backoff_s"], 60);
-        assert_eq!(doc["direction_model"]["reverse"]["state"], "unavailable");
+        assert_eq!(doc["direction_model"]["reverse"]["state"], "preview");
         assert_eq!(
             doc["direction_model"]["implemented"]["direct"]["connection_initiator"],
             "forward"
         );
         assert!(supports_direction("tcp-tls", "direct"));
-        assert!(!supports_direction("tcp-tls", "reverse"));
+        assert!(supports_direction("tcp-tls", "reverse"));
         assert!(!supports_direction("noise-tcp", "reverse"));
+        assert!(!supports_direction("baft", "reverse"));
     }
 
     #[test]
@@ -183,6 +203,10 @@ mod tests {
             assert_eq!(e["network"]["ipv6"], "unknown");
         }
         let noise = engines.iter().find(|e| e["id"] == "noise-tcp").unwrap();
-        assert_eq!(noise["evidence"]["lab_two_host"]["reverse"], "label-only");
+        assert_eq!(noise["evidence"]["lab_two_host"]["reverse"], "unproven");
+        assert_eq!(noise["reverse"]["state"], "unproven");
+        let tls = engines.iter().find(|e| e["id"] == "tcp-tls").unwrap();
+        assert_eq!(tls["reverse"]["state"], "preview");
+        assert_eq!(tls["evidence"]["reverse_lab_run"], "42506805986");
     }
 }

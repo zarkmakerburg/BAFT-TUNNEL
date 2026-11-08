@@ -109,7 +109,7 @@
       h('li', null, t('cap.audit') + ': ', pill(d.audit === null ? 'unknown' : 'ok', d.audit === null ? t('cap.off') : t('cap.on'))),
       h('li', null, t('cap.desired') + ': ', pill(d.audit === null ? 'unknown' : 'ok', d.audit === null ? t('cap.off') : t('cap.on'))),
       h('li', null, t('cap.plan') + ': ', pill('ok', t('cap.on'))),
-      h('li', null, t('cap.apply') + ': ', pill('unknown', t('cap.unsupported'))));
+      h('li', null, t('cap.apply') + ': ', pill('ok', t('cap.on'))));
     var trust = sec.tls === false ? h('p', { class: 'muted', text: t('trust.noise') }) : kv([
       [t('trust.pin'), pill(c.peer_certificate_pin_configured ? 'ok' : 'warn', c.peer_certificate_pin_configured ? t('yes') : t('no'))],
       [t('trust.ca'), pill(c.ca_file_present ? 'ok' : 'bad', c.ca_file_present ? t('yes') : t('no'))],
@@ -240,7 +240,7 @@
         h('div', { class: 'choices', role: 'radiogroup', 'aria-label': t('dir.q') },
           ['direct', 'reverse'].map(function (k) {
             var avail = engines.some(function (e) { return e.directions.indexOf(k) >= 0; });
-            return choice('direction', k, w.direction === k, avail ? t('dir.' + k + '.t') : [t('dir.' + k + '.t'), pill('unknown', t('dir.na.pill'))], avail ? t('dir.' + k + '.d') : t('dir.na.d'),
+            return choice('direction', k, w.direction === k, avail ? (k === 'reverse' ? [t('dir.reverse.t'), pill('warn', t('dir.preview'))] : t('dir.' + k + '.t')) : [t('dir.' + k + '.t'), pill('unknown', t('dir.na.pill'))], avail ? t('dir.' + k + '.d') : t('dir.na.d'),
               function (v) { w.direction = v; w.errors = {}; invalidate(); draw(); }, topology(k), !avail);
           })),
         h('p', { class: 'sub', text: t('dir.same') }), w.errors.direction ? h('p', { class: 'fielderr', role: 'alert', text: w.errors.direction }) : null);
@@ -310,12 +310,43 @@
         p ? h('div', null, h('h3', { text: t('pv.files') }), h('pre', { text: p.files.map(function (x) { return x.path + ' [' + x.mode + '] ' + x.note; }).join('\n') }),
           h('h3', { text: t('pv.pending') }), h('pre', { text: p.pending.join('\n') }), h('h3', { text: t('pv.cfg') }), h('pre', { text: JSON.stringify(p.config, null, 2) })) : null);
     }
+    function applyKey() {
+      if (!w.applyKey) {
+        var a = new Uint8Array(12); (window.crypto || {}).getRandomValues && window.crypto.getRandomValues(a);
+        w.applyKey = 'ui-' + Array.prototype.map.call(a, function (x) { return ('0' + x.toString(16)).slice(-2); }).join('');
+      }
+      return w.applyKey;
+    }
+    function runApply() {
+      w.busy = true; w.applyErr = null; draw();
+      BAFT.api('POST', '/v1/setup/apply', { stage: 'init', confirm: true, idempotency_key: applyKey(), plan: body(w) }).then(function (r) {
+        w.applyReceipt = r.body && r.body.result ? r.body : null;
+        if (!w.applyReceipt) { w.applyErr = (r.body && (r.body.detail || r.body.error)) || t('fail'); }
+      }, function (e) { w.applyErr = e.message; }).then(function () { w.busy = false; draw(); });
+    }
+    function receiptView(rc) {
+      var ok = rc.result === 'applied';
+      return h('section', { class: 'card', 'aria-live': 'polite' }, h('h3', { text: t('rc.title') }),
+        h('p', null, pill(ok ? 'ok' : 'warn', t('rc.' + rc.result)), ' ', BAFT.ltr(rc.id || '')),
+        rc.reason ? h('p', { text: rc.reason }) : null,
+        h('h3', { text: t('rc.verify') }), h('ul', null, (rc.verification || []).map(function (v) { return h('li', null, pill(v.result === 'pass' ? 'ok' : 'warn', v.result), ' ', BAFT.ltr(v.id), h('span', { class: 'muted', text: ' · ' + v.evidence })); })),
+        h('h3', { text: t('rc.changes') }), h('pre', { text: (rc.changes || []).map(function (c) { return c.action + ' ' + c.path + ' [' + c.mode + ']'; }).join('\n') || '—' }),
+        rc.rollback && rc.rollback.performed ? h('p', { class: 'error', text: t('rc.rolled') + ' ' + (rc.rollback.removed || []).join(', ') }) : null,
+        rc.pairing ? h('p', null, t('rc.checksum') + ' ', BAFT.ltr(rc.pairing.checksum)) : null,
+        rc.not_done ? h('div', null, h('h3', { text: t('rc.notdone') }), h('ul', null, rc.not_done.map(function (x) { return h('li', { text: x }); }))) : null,
+        rc.next_commands ? h('div', null, h('h3', { text: t('rc.next') }), h('pre', { text: rc.next_commands.join('\n') })) : null,
+        h('p', { class: 'sub', text: t('rc.nosecret') }));
+    }
     function stepApply() {
       var cmds = w.plan ? w.plan.commands.join('\n') : '';
       var copy = h('button', { type: 'button', text: t('ap.copy'), onclick: function () {
         if (navigator.clipboard) { navigator.clipboard.writeText(cmds).then(function () { BAFT.toast(t('ap.copied')); }, function () {}); }
       } });
+      var gated = w.pf && w.pf.overall === 'blocked';
+      var go = h('button', { type: 'button', class: 'primary', text: t('ap.go'), disabled: (!w.applyConfirm || w.busy || gated || (w.applyReceipt && w.applyReceipt.result === 'applied')) ? 'disabled' : null, onclick: runApply });
+      var chk = h('label', null, h('input', { type: 'checkbox', checked: w.applyConfirm ? 'checked' : null, onchange: function (e) { w.applyConfirm = e.target.checked; draw(); } }), ' ', t('ap.confirm'));
       return h('div', null, h('div', { class: 'banner' }, h('h2', { text: t('ap.title') }), h('p', { text: t('ap.body') })),
+        chk, go, w.applyErr ? h('p', { class: 'error', role: 'alert', text: w.applyErr }) : null, w.applyReceipt ? receiptView(w.applyReceipt) : null,
         h('p', { text: t('ap.run') }), h('pre', { text: cmds }), copy, h('p', { class: 'sub', text: t('ap.after') }));
     }
     function summary() {
@@ -364,7 +395,7 @@
           h('li', null, t('cap.audit') + ': ', pill(d.audit === null ? 'unknown' : 'ok', d.audit === null ? t('cap.off') : t('cap.on'))),
           h('li', null, t('cap.desired') + ': ', pill(d.audit === null ? 'unknown' : 'ok', d.audit === null ? t('cap.off') : t('cap.on'))),
           h('li', null, t('cap.plan') + ': ', pill('ok', t('cap.on'))),
-          h('li', null, t('cap.apply') + ': ', pill('unknown', t('cap.unsupported')))),
+          h('li', null, t('cap.apply') + ': ', pill('ok', t('cap.on')))),
         h('p', { class: 'sub', text: t('agent.loopback') }), h('p', { class: 'sub', text: t('agent.secret') }))));
   } });
 

@@ -14,7 +14,7 @@ State column: I = implemented, P = partial, M = missing (backend gap, hidden or 
 | 6 | Direct/Reverse first, plain-language, small topology diagram (1.7, 5C) | `pages.js` wizard step 1 | M | I | Browser: direction required before continuing | Diagram is generic; initiator semantics are not claimed (ADR-0011: direction is a mutually agreed label) | P1 |
 | 7 | Wizard steps, one decision per step, Back/Next, inline validation, state kept, summary (5C, 6) | `pages.js` wizard | P (single form) | I | Browser: required-field errors, port range, same-id check, choices kept on Back, summary card | None | P1 |
 | 8 | Preflight Pass/Warning/Blocked/Unknown with evidence; unknown never Pass; block on Blocked (5C, 6) | `src/agent.rs` `preflight`, `POST /v1/setup/preflight` | M | I (local checks) | Unit tests `preflight_*`; browser: tcp-tls without PKI is Blocked and disables Continue; peer reachability, peer identity and firewall are always Unknown | Remote checks need a peer-contact capability (gap G3) | P0 |
-| 9 | Explicit Apply, verify, receipt only with a real authorized path (1.4, 6) | wizard step 6 | P (plan only) | I (honest) | No Apply button exists; step 6 states that apply is unavailable and lists the commands to run; browser test asserts no Apply control | Missing authorized apply/verify API and receipts (gap G4) | P0 |
+| 9 | Explicit Apply, verify, receipt only with a real authorized path (1.4, 6) | wizard step 6, `POST /v1/setup/apply`, `src/apply.rs` | M (local stages) | I | Unit tests in `apply.rs` and `agent.rs` (gate refusal, idempotent replay, rollback of only created files, join verification, no secret in receipt); browser: Apply is disabled until the confirm box is ticked; live agent run produced a verified receipt | Apply covers only `setup init`/`join`: no service start, no firewall, no peer contact (see receipt `not_done`) | P0 |
 | 10 | Activity: timestamp, actor, operation, target, result, receipt; real filters; no secrets (5F) | `pages.js` activity, `/v1/audit` | P | P | Result filter on real records; hash as receipt; cards on mobile | Audit records have no actor or target field (gap G5) | P1 |
 | 11 | Agent page: version, capabilities, freshness, diagnostics, no secrets (4.5) | `pages.js` agent, `/v1/health` | M | I | Live health check with measured latency; "updated N s ago" in top bar | No enrollment flow exists | P1 |
 | 12 | Firewall and traffic visibility only if real (4.6, 4.7) | none | NA | NA | Traffic card says counters are not exposed; no chart, no number | Runtime counters and firewall inspection (gaps G6, G7) | P2 |
@@ -28,7 +28,7 @@ State column: I = implemented, P = partial, M = missing (backend gap, hidden or 
 - G1 Enrolled-server inventory and per-server remote state.
 - G2 End-to-end tunnel verification (peer connection, last verified time).
 - G3 Preflight checks that need the peer: reachability, identity, port ownership on the peer.
-- G4 Authorized apply API with idempotency, verification, rollback and a durable receipt.
+- G4 (closed for local init/join by ADR-0022) Authorized apply API with idempotency, verification, rollback and a durable receipt. Still open: service start and rollback of a started service.
 - G5 Actor and target fields in the audit log.
 - G6 Runtime traffic and throughput counters exposed through the API.
 - G7 Read-only firewall inspection.

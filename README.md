@@ -32,14 +32,18 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 <blockquote>
 **Active development — Phase 1**
 
-The Rust TCP transport has passed a two-host LAB integrity test in both Direct and Reverse directions, including certificate-revocation checks. The Ubuntu 22.04 / systemd 249 baseline credential path (`LoadCredential=`) passes hosted CI and an isolated test on both LAB hosts (see the [implementation status](docs/PHASE1_IMPLEMENTATION_STATUS.md) for commits and runs). The project is a **pre-release and not production-ready**; long-duration soak, controlled network impairment, remote CRL distribution and CA/pin rollover remain open, and online enrollment is deferred. A separate independent security review was waived by the owner and has not been performed.
+The Rust TCP transport has passed a two-host LAB integrity test in the Direct direction, and the tcp-tls Reverse preview passed its first two-host LAB run (42506805986), including certificate-revocation checks. The Ubuntu 22.04 / systemd 249 baseline credential path (`LoadCredential=`) passes hosted CI and an isolated test on both LAB hosts (see the [implementation status](docs/PHASE1_IMPLEMENTATION_STATUS.md) for commits and runs). The project is a **pre-release and not production-ready**; long-duration soak, controlled network impairment, remote CRL distribution and CA/pin rollover remain open, and online enrollment is deferred. A separate independent security review was waived by the owner and has not been performed.
 </blockquote>
 
 | Area | Current state |
 |---|---|
 | Architecture and threat model | Defined |
 | Rust TCP transport | Implemented; review and acceptance ongoing |
-| Direct + Reverse | Real two-host LAB evidence available |
+| Direct | Real two-host LAB evidence, stable engines (tcp-tls; Noise experimental) |
+| Reverse (tcp-tls) | **Preview.** Real in Core and Config; two-host LAB PASS (run 42506805986: outbound-only service node, 64 KiB + 2 MiB integrity, reconnect, wrong identity/pin, revoked certificate). Breadth (R3) still open |
+| Reverse (Noise) | Implemented in the core, **unproven** (no two-host LAB); not offered |
+| BAFT engine | Hidden until its gates pass (ADR-0019/0020); Engine Store → Launcher execution cycle is not complete |
+| Apply → Verify → Receipt | Local `setup init` / `setup join` stages through the agent and panel, gated, verified, rolled back on failure, receipt without secrets (ADR-0022). No service start, no firewall change |
 | Mutual TLS and peer identity | Implemented with negative tests |
 | Offline PKI and CRL revocation | Experimental; manual workflow |
 | Installer and systemd unit | Implemented; Ubuntu 22.04 / systemd 249 baseline passes CI and isolated LAB test |

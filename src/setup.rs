@@ -219,9 +219,9 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
 
 // ---- Slice S2: `setup init` and `setup join` for noise-tcp -------------------------------
 
-const BUNDLE_MAX_BYTES: u64 = 4096;
-const STATE_FILE: &str = "pairing-state.json";
-const KEY_FILE: &str = "node.noise";
+pub(crate) const BUNDLE_MAX_BYTES: u64 = 4096;
+pub(crate) const STATE_FILE: &str = "pairing-state.json";
+pub(crate) const KEY_FILE: &str = "node.noise";
 const CONFIG_FILE: &str = "config.json";
 
 fn default_config_file() -> String {

@@ -328,6 +328,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/desired"
             | "/v1/setup/plan"
             | "/v1/setup/preflight"
+            | "/v1/setup/apply"
             | "/v1/history"
             | "/v1/security"
             | "/v1/audit"
@@ -351,6 +352,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         ("PUT", "/v1/desired") => put_desired(ctx, body).await,
         ("POST", "/v1/setup/plan") => setup_plan(body),
         ("POST", "/v1/setup/preflight") => preflight(body).await,
+        ("POST", "/v1/setup/apply") => setup_apply(ctx, body).await,
         _ => (405, json!({"error": "method not allowed"})),
     }
 }
@@ -455,7 +457,7 @@ async fn preflight(body: &[u8]) -> (u16, Value) {
             checks.push(check(
                 "direction_support",
                 "blocked",
-                format!("the {direction} direction is not operational for {} in this build (the label does not change how the connection is made)", req.engine.as_str()),
+                format!("the {direction} direction is not offered for {} in this build (Reverse is a preview on tcp-tls only; Noise Reverse is unproven)", req.engine.as_str()),
             ));
         }
     }
@@ -633,7 +635,9 @@ async fn probe_peer(host: &str, port: u16) -> Value {
 fn remediation(id: &str) -> &'static str {
     match id {
         "planner" => "Fix the highlighted setting; the same rule applies on the command line.",
-        "direction_support" => "Choose the Direct direction; Reverse is not available yet.",
+        "direction_support" => {
+            "Choose a direction this engine offers: Direct, or Reverse with tcp-tls (preview)."
+        }
         "directory" => "Create the setup directory or choose another one.",
         "existing_pairing" => {
             "Choose another directory or instance; setup never overwrites a pairing."
@@ -698,7 +702,113 @@ fn preflight_report(checks: Vec<Value>) -> Value {
     } else {
         "pass"
     };
-    json!({"overall": overall, "checks": checks, "applied": false, "apply_available": false})
+    json!({"overall": overall, "checks": checks, "applied": false, "apply_available": true})
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApplyBody {
+    stage: crate::apply::Stage,
+    /// Must be literally `true`: Apply writes files on this host.
+    confirm: bool,
+    idempotency_key: String,
+    plan: serde_json::Value,
+    bundle: Option<String>,
+    checksum: Option<String>,
+}
+
+/// Authorized, gated Apply -> Verify -> Receipt for the two local setup stages (ADR-0022).
+async fn setup_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
+    let Some(state_dir) = &ctx.state_dir else {
+        return (
+            404,
+            json!({"error": "desired state is disabled; receipts need the state directory"}),
+        );
+    };
+    let req: ApplyBody = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(error) => {
+            return (
+                422,
+                json!({"error": "invalid request", "detail": error.to_string()}),
+            );
+        }
+    };
+    if !req.confirm {
+        return (422, json!({"error": "apply requires \"confirm\": true"}));
+    }
+    if !crate::apply::valid_key(&req.idempotency_key) {
+        return (
+            422,
+            json!({"error": "idempotency_key must be 8-64 characters of A-Z a-z 0-9 - _"}),
+        );
+    }
+    let plan_bytes = req.plan.to_string().into_bytes();
+    let plan: PlanBody = match serde_json::from_slice(&plan_bytes) {
+        Ok(p) => p,
+        Err(error) => {
+            return (
+                422,
+                json!({"error": "invalid plan", "detail": error.to_string()}),
+            );
+        }
+    };
+    let request = crate::apply::ApplyRequest {
+        stage: req.stage,
+        plan: plan.to_request(),
+        key: req.idempotency_key,
+        bundle: req.bundle,
+        checksum: req.checksum,
+    };
+    // One apply at a time per agent.
+    let _guard = ctx.lock.lock().await;
+    let gate = if request.stage == crate::apply::Stage::Init {
+        let (code, report) = preflight(&plan_bytes).await;
+        if code != 200 {
+            return (code, report);
+        }
+        let list = report["checks"].as_array().cloned().unwrap_or_default();
+        // Only checks about this host gate the local init; peer reachability is reported, not required.
+        let blocked = list
+            .iter()
+            .filter(|c| c["result"] == "blocked" && c["scope"] != "peer")
+            .filter_map(|c| c["id"].as_str().map(str::to_string))
+            .collect();
+        Some(crate::apply::Gate {
+            overall: report["overall"].as_str().unwrap_or("unknown").to_string(),
+            checks: list
+                .iter()
+                .map(|c| {
+                    (
+                        c["id"].as_str().unwrap_or("").to_string(),
+                        c["result"].as_str().unwrap_or("").to_string(),
+                    )
+                })
+                .collect(),
+            blocked,
+        })
+    } else {
+        None
+    };
+    let (code, receipt) = crate::apply::run(&request, &state_dir.join("receipts"), gate.as_ref());
+    let digest = receipt["request_sha256"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let result = receipt["result"].as_str().unwrap_or("conflict");
+    if receipt["replayed"] != json!(true) {
+        let _ = audit_action(
+            state_dir,
+            "apply",
+            result,
+            &digest,
+            match request.stage {
+                crate::apply::Stage::Init => "init",
+                crate::apply::Stage::Join => "join",
+            },
+        );
+    }
+    (code, receipt)
 }
 
 fn shell_quote(value: &str) -> Result<String> {
@@ -887,6 +997,21 @@ fn store(dir: &Path, body: &[u8]) -> Result<()> {
     file.write_all(body)?;
     file.sync_all()?;
     std::fs::rename(&tmp, dir.join(DESIRED_FILE))?;
+    Ok(())
+}
+
+fn audit_action(dir: &Path, action: &str, result: &str, sha256: &str, detail: &str) -> Result<()> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(dir.join(AUDIT_FILE))?;
+    let line =
+        json!({"ts": ts, "action": action, "result": result, "sha256": sha256, "detail": detail});
+    writeln!(file, "{line}")?;
     Ok(())
 }
 
@@ -1126,7 +1251,7 @@ mod tests {
         let v: Value = serde_json::from_str(&out[out.find('{').unwrap()..]).unwrap();
         assert_eq!(v["overall"], "unknown", "{out}");
         assert_eq!(v["applied"], false);
-        assert_eq!(v["apply_available"], false);
+        assert_eq!(v["apply_available"], true);
         let result = |id: &str| {
             v["checks"]
                 .as_array()
@@ -1213,7 +1338,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preflight_blocks_the_reverse_label_because_it_is_not_operational() {
+    async fn preflight_blocks_noise_reverse_because_it_is_unproven() {
         let body = plan_body("/nonexistent-baft-dir").replace("\"direct\"", "\"reverse\"");
         let (_, out) = call(None, "POST", "/v1/setup/preflight", Some(TOKEN), &body).await;
         let v: Value = serde_json::from_str(&out[out.find('{').unwrap()..]).unwrap();
@@ -1226,6 +1351,66 @@ mod tests {
             .unwrap();
         assert_eq!(c["result"], "blocked");
         assert_eq!(c["code"], "pf.direction_support.blocked");
+    }
+
+    fn apply_body(dir: &str, key: &str, confirm: bool, direction: &str) -> String {
+        json!({
+            "stage": "init", "confirm": confirm, "idempotency_key": key,
+            "plan": {
+                "engine": "noise-tcp", "role": "serve", "direction": direction, "node_id": "node-a",
+                "peer_id": "node-b", "tunnel_id": "tunnel-1", "service_port": 8080, "dir": dir
+            }
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn apply_needs_token_state_dir_confirm_and_a_passing_gate() {
+        let state = state_dir("apply");
+        let work = state_dir("apply-work");
+        let dir = work.to_string_lossy().to_string();
+        let ok = apply_body(&dir, "key-apply-0001", true, "direct");
+        assert_eq!(
+            call(Some(&state), "POST", "/v1/setup/apply", None, &ok)
+                .await
+                .0,
+            401
+        );
+        assert_eq!(
+            call(None, "POST", "/v1/setup/apply", Some(TOKEN), &ok)
+                .await
+                .0,
+            404
+        );
+        let no_confirm = apply_body(&dir, "key-apply-0001", false, "direct");
+        assert_eq!(
+            call(
+                Some(&state),
+                "POST",
+                "/v1/setup/apply",
+                Some(TOKEN),
+                &no_confirm
+            )
+            .await
+            .0,
+            422
+        );
+        // Noise Reverse is unproven: the gate refuses and nothing is written.
+        let rev = apply_body(&dir, "key-apply-0002", true, "reverse");
+        let (code, out) = call(Some(&state), "POST", "/v1/setup/apply", Some(TOKEN), &rev).await;
+        assert_eq!(code, 409, "{out}");
+        assert!(out.contains("\"result\":\"refused\""));
+        assert!(!work.join("node.noise").exists());
+        // Direct is applied, verified and receipted; the audit records it without secrets.
+        let (code, out) = call(Some(&state), "POST", "/v1/setup/apply", Some(TOKEN), &ok).await;
+        assert_eq!(code, 200, "{out}");
+        assert!(out.contains("\"result\":\"applied\""));
+        assert!(work.join("node.noise").exists());
+        let audit = std::fs::read_to_string(state.join("audit.log")).unwrap_or_default();
+        assert!(audit.contains("\"action\":\"apply\""), "{audit}");
+        let (code, again) = call(Some(&state), "POST", "/v1/setup/apply", Some(TOKEN), &ok).await;
+        assert_eq!(code, 200);
+        assert!(again.contains("\"replayed\":true"));
     }
 
     fn plan_body(dir: &str) -> String {
