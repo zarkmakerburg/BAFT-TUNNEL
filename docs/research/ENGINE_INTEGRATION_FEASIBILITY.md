@@ -74,6 +74,22 @@ Adapter-provided systemd drop-ins (all available in 249): `NoNewPrivileges=yes`,
 | rathole (Apache-2.0) | Small, Noise/TLS/WebSocket. | Rust: could be built as a **crate or fork** rather than a process; token auth per service; no mux. | Use as design reference for the native Rust Reverse. |
 | spoof-tunnel, Pahlavi, scripts | Not engines. | See comparison doc. | Excluded. |
 
+### 4.1 C-BAFT (`ctunnel`)
+
+Checked against the same clauses (source in `ENGINE_ECOSYSTEM_COMPARISON.md` 2.1):
+
+| Clause | Finding | Result |
+|---|---|---|
+| One process per instance | `ctunnel-engine@<name>.service`, `-config <env file>` | Matches for userspace transports only |
+| Config | Env file per tunnel; created from a `ctunnel://` link | Renderer feasible |
+| Host effects | Kernel L3/L2 methods run `ctunnel-kernel up` (ip/iptables/sysctl) before the engine | **Conflicts with "no hidden host effects"**; would need a host-change preview like the wizard preview (PR #75) |
+| Readiness | No listener contract for userspace UDP; no status socket seen | Needs the `unix_status` kind or a wrapper |
+| Identity | Shared secret, HMAC-derived AES-GCM subkeys, no revocation | Same class as BackPack (ADR-0022) |
+| Licence | AGPL-3.0, CIAUB copyright, BackPack-ported files | Separate process only; owner acknowledgement D5 |
+| Build | Go 1.22, no module dependencies | Easiest build and audit of the Go candidates |
+
+Verdict: not a first-wave engine. Reuse as ideas: measured Connection Test (real protocol probes with measured MTU), `rudp-fec`, setup-link provisioning.
+
 ## 5. Do not assume list (explicit checks before any manifest entry)
 
 - A running process is not a healthy tunnel (ADR-0020 clause 5). For BackPack, `connected` from the status op, plus a Rust-side end-to-end byte probe, are both required before `healthy`.

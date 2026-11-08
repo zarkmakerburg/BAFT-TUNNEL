@@ -17,7 +17,8 @@
 | Phormal | GPL-3.0 | Schmi7zz | Strong copyleft | No | Not planned (script orchestrator) |
 | rathole-tunnel | GPL-3.0 | Musixal | Strong copyleft | No | No; contains committed binaries of unknown provenance |
 | Pahlavi-tunnel | **No LICENSE file** | - | All rights reserved by default | **No**: no permission granted | No |
-| M-R-R-X/ctunnel | unknown (repository not verified) | - | - | No | No |
+| C-BAFT (`zarkmakerburg/C-BAFT`, module `ctunnel`) | AGPL-3.0 + `NOTICE` s.7 terms | **CIAUB** (C-Tunnel), with files ported from **BackPack** (Amin Mohammadi) | Strong copyleft, network clause | **No** | Only as a separate process under the same obligations as BackPack, plus CIAUB's; not planned |
+| M-R-R-X/ctunnel | URL not found (the owner says "ctunnel" means C-BAFT, row above) | - | - | - | - |
 
 ## 2. BackPack obligations in detail
 
@@ -32,6 +33,15 @@ Source: `LICENSE` (AGPL-3.0 text) and `NOTICE`.
 7. **Security disclosure channel.** Upstream asks for disclosures to the address in `SECURITY.md`; our process for upstream bugs should use it rather than public issues.
 
 Decision needed from the owner/legal (not decided here): accept the above obligations for BackPack as a separately packaged engine. Until recorded in an ADR, the manifest entry must not be added. Because the owner has stated BAFT and C-BAFT are their own code, a *separate* arrangement with the BackPack author (a commercial licence or an explicit exception) is also possible, but that is a business decision.
+
+## 2.1 C-BAFT: owner-controlled repository, third-party copyright
+
+The owner's repository `zarkmakerburg/C-BAFT` is **not** original owner code: its history and `NOTICE` show CIAUB as author and copyright holder (AGPL-3.0 plus s.7: attribution line `Based on C-Tunnel by CIAUB https://github.com/CIAUB/C-Tunnel`, and the "C-Tunnel" mark not licensed; a modified version needs another name). Part of it (Manage menu, proxy, schedule, netscore) is ported from BackPack and must keep `Based on BackPack by Amin Mohammadi (AminMGMT)`. Consequences:
+
+1. The earlier project note "BAFT and C-BAFT are both the owner's, so importing code is allowed" is correct for the **repository** but not for **copyright**. Owner control of the fork does not remove the AGPL duties to CIAUB and AminMGMT, and it does not allow relicensing into proprietary BAFT-TUNNEL Rust. BAFT (`zarkmakerburg/BAFT`) has its own contributor question, already recorded in ADR-0019.
+2. Dependency scope is small: `go.mod` declares **no** third-party modules (stdlib only), so the licence surface is the project's own AGPL files plus the ported BackPack files. The kernel helper uses system tools (`iproute2`, `iptables`, `wireguard-tools`, GPL/other licences, used as separate programs).
+3. If the owner wants a different arrangement, the route is a written permission or dual licence from CIAUB (and AminMGMT for ported files), which is a business step, not an engineering one.
+4. Decision D5 in the proposal asks the owner to confirm this reading.
 
 ## 3. Other licence notes
 

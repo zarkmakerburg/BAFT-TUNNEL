@@ -21,6 +21,7 @@ Ordered by value divided by risk. "LAB" items need the shared LAB hosts, which o
 | 9 | **Transport fallback chain in the supervisor** (BackPack idea): ordered `engine_fallbacks` per ADR-0018 clause 2, same list on both ends, dwell-based meeting, capped backoff | Direct value against transport-specific filtering; ADR-0018 already commits to it | Medium | Yes | at least two working engines |
 | 10 | **Native `ws-tls` Rust engine** (rathole/chisel as references) for camouflage over WebSocket | ADR-0018 engine #4 | Medium | Yes | items 3, 9 |
 | 11 | Evaluate chisel as an MIT, SSH-pinned independent engine for Reverse over WebSocket | Cleanest licence among Go candidates | Medium | Yes | items 4, 5 |
+| 11b | Measured Connection Test modelled on C-BAFT's real-protocol probes (extends item 8: GRE/IPIP/ESP/QUIC/DTLS-style reachability and measured MTU) | Same as 8, richer evidence | Medium | Partly | item 8 |
 | 12 | Operational ideas backlog: frp-style `allowPorts`, bandwidth limit, Prometheus metrics | Nice to have | Low | No | later |
 
 Do not do: integrate spoof-tunnel, Pahlavi-tunnel, rathole-tunnel or TAQ-BOSTAN/Phormal scripts; copy GPL, AGPL or unlicensed code into the Rust tree; run upstream installers on any host.
@@ -56,7 +57,8 @@ Do not do: integrate spoof-tunnel, Pahlavi-tunnel, rathole-tunnel or TAQ-BOSTAN/
 | D1 | Accept AGPL-3.0 + NOTICE s.7 obligations for shipping an unmodified, pinned BackPack as a separate binary | Yes, conditional on unmodified builds, source archive in each release, and the renaming rule for any patched build | Legal commitment; the owner delegated engineering decisions on 2026-11-07, but this one creates a licence duty, so it is listed for explicit acknowledgement |
 | D2 | Add the "shared-secret engine" capability class with a WARNING state | Yes | Honest alternative to refusing all token-authenticated engines |
 | D3 | Allow a schema bump of `engine-manifest.json` for a second readiness kind | Yes | Needed for any dialing-role engine |
-| D4 | Provide the exact URL of M-R-R-X/ctunnel if it is meant to be a different repository | Optional | Could not be verified; excluded |
+| D4 | `ctunnel` = C-BAFT (`zarkmakerburg/C-BAFT`), as stated by the owner | Confirmed and documented; the `M-R-R-X/ctunnel` URL stays unverified | No action unless a different repository was meant |
+| D5 | Confirm that C-BAFT carries CIAUB's (and BackPack author's) AGPL copyright, so it follows the same separate-process rules as BackPack and cannot be copied into the proprietary Rust tree | Yes; ask CIAUB for written permission only if a different arrangement is wanted | See licence matrix 2.1 |
 
 ## 4. Next actions
 
