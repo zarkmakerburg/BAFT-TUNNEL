@@ -152,6 +152,7 @@ dependencies = [
  "clap",
  "futures",
  "hex",
+ "libc",
  "libfuzzer-sys",
  "rand",
  "rustls",
