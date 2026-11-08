@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: Type RUN_PHASE1_E2E to start temporary Direct/Reverse tunnel tests on the two LAB hosts
+        description: Type RUN_PHASE1_E2E to start temporary tunnel tests on the two LAB hosts
         required: true
         type: string
         default: ''
@@ -45,6 +45,11 @@ on:
         default: '0'
       setup:
         description: Also run the guided-setup stage (init/join/apply on clean directories, then engine switch) (0 or 1)
+        required: false
+        type: string
+        default: '0'
+      reverse:
+        description: Also run the real Reverse stage (ADR-0021, tcp-tls; service node dials out) (0 or 1)
         required: false
         type: string
         default: '0'
@@ -102,6 +107,7 @@ jobs:
       LAB_LOSS_PERCENT: ${{ inputs.loss_percent }}
       LAB_NOISE: ${{ inputs.noise }}
       LAB_BAFT: ${{ inputs.baft }}
+      LAB_REVERSE: ${{ inputs.reverse }}
       LAB_BAFT_SYSTEMD: ${{ inputs.baft_systemd }}
       LAB_ROLLOVER: ${{ inputs.rollover }}
       LAB_SETUP: ${{ inputs.setup }}
@@ -141,7 +147,7 @@ jobs:
           chmod 600 "$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" "$RUNNER_TEMP/baft-tunnel-ssh/known_hosts"
           echo "SSH_KEY_FILE=$RUNNER_TEMP/baft-tunnel-ssh/id_ed25519" >> "$GITHUB_ENV"
           echo "SSH_KNOWN_HOSTS_FILE=$RUNNER_TEMP/baft-tunnel-ssh/known_hosts" >> "$GITHUB_ENV"
-      - name: Run temporary two-host Direct/Reverse E2E and recovery
+      - name: Run temporary two-host E2E, optional Reverse stage and recovery
         run: bash lab/real-hosts/phase1-two-host-e2e.sh
       - name: Remove ephemeral runner credentials
         if: always()

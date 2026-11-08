@@ -100,6 +100,10 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
         (Role::Serve, Some(_)) => bail!("role serve must not set a peer host"),
         (Role::Serve, None) => None,
     };
+    let reverse = req.direction == ConnectionDirection::Reverse;
+    if reverse && req.engine == EngineKind::Baft {
+        bail!("the baft engine does not support reverse");
+    }
     match (req.engine, req.role, req.server_name.as_deref()) {
         (EngineKind::TcpTls, Role::Forward, Some(name)) => validate_identity(name)?,
         (EngineKind::TcpTls, Role::Forward, None) => {
@@ -127,17 +131,33 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
                 "listen".into(),
                 json!(format!("0.0.0.0:{}", req.tunnel_port)),
             );
-            map.insert(
-                "target".into(),
-                json!(format!("127.0.0.1:{}", req.service_port)),
-            );
+            if reverse {
+                // Public node: the service port is the user-facing ingress (ADR-0021).
+                map.insert(
+                    "ingress".into(),
+                    json!(format!("127.0.0.1:{}", req.service_port)),
+                );
+            } else {
+                map.insert(
+                    "target".into(),
+                    json!(format!("127.0.0.1:{}", req.service_port)),
+                );
+            }
         }
         Role::Forward => {
             map.insert("mode".into(), json!("forward"));
-            map.insert(
-                "listen".into(),
-                json!(format!("127.0.0.1:{}", req.service_port)),
-            );
+            if reverse {
+                // Service node: dials out and relays streams to the local service (ADR-0021).
+                map.insert(
+                    "target".into(),
+                    json!(format!("127.0.0.1:{}", req.service_port)),
+                );
+            } else {
+                map.insert(
+                    "listen".into(),
+                    json!(format!("127.0.0.1:{}", req.service_port)),
+                );
+            }
             let ip = peer_ip.expect("checked above");
             let remote = std::net::SocketAddr::new(ip, req.tunnel_port).to_string();
             map.insert("remote".into(), json!(remote));
@@ -609,6 +629,25 @@ mod tests {
         let forward = plan(&request(EngineKind::NoiseTcp, Role::Forward)).unwrap();
         assert_eq!(forward.config["listen"], "127.0.0.1:8080");
         assert_eq!(forward.config["remote"], "203.0.113.7:8443");
+    }
+
+    #[test]
+    fn reverse_moves_the_ingress_to_the_listening_node_and_the_target_to_the_dialing_node() {
+        for engine in [EngineKind::NoiseTcp, EngineKind::TcpTls] {
+            let mut serve = request(engine, Role::Serve);
+            serve.direction = ConnectionDirection::Reverse;
+            let serve = plan(&serve).unwrap();
+            assert_eq!(serve.config["ingress"], "127.0.0.1:8080");
+            assert!(serve.config.get("target").is_none());
+            parses_as_runtime_config(&serve);
+            let mut forward = request(engine, Role::Forward);
+            forward.direction = ConnectionDirection::Reverse;
+            let forward = plan(&forward).unwrap();
+            assert_eq!(forward.config["target"], "127.0.0.1:8080");
+            assert!(forward.config.get("listen").is_none());
+            assert_eq!(forward.config["remote"], "203.0.113.7:8443");
+            parses_as_runtime_config(&forward);
+        }
     }
 
     #[test]

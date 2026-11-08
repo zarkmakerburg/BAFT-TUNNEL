@@ -191,6 +191,25 @@ pub enum Phase {
     Failed,
 }
 
+/// A freshly installed executable can be reported busy (ETXTBSY) for a few milliseconds while a
+/// concurrent fork still holds its write descriptor; retry briefly instead of failing the start.
+async fn retry_busy<T, F, Fut>(mut attempt: F) -> std::io::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<T>>,
+{
+    let mut tries = 0;
+    loop {
+        match attempt().await {
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 20 => {
+                tries += 1;
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            other => return other,
+        }
+    }
+}
+
 fn command(spec: &ChildSpec, args: &[String]) -> Command {
     let mut cmd = Command::new(&spec.binary);
     cmd.args(args)
@@ -244,8 +263,7 @@ pub async fn supervise(
 ) -> Result<()> {
     on_phase(Phase::Starting);
     if let Some(args) = &spec.validate_args {
-        let status = command(spec, args)
-            .status()
+        let status = retry_busy(|| async { command(spec, args).status().await })
             .await
             .context("run engine validate step")?;
         if !status.success() {
@@ -256,8 +274,8 @@ pub async fn supervise(
     tokio::pin!(shutdown);
     let mut restarts: Vec<Instant> = Vec::new();
     loop {
-        let mut child = command(spec, &spec.run_args)
-            .spawn()
+        let mut child = retry_busy(|| async { command(spec, &spec.run_args).spawn() })
+            .await
             .context("start engine")?;
         match wait_ready(spec, &mut child).await {
             Ok(()) => on_phase(Phase::Ready),
