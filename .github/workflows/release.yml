@@ -74,6 +74,18 @@ jobs:
           set -euo pipefail
           mkdir dist
           cp target/release/baft-tunnel "dist/baft-tunnel-${{ steps.v.outputs.tag }}-linux-x86_64"
+      - name: Build, verify and stage the pinned BAFT engine (Engine #3)
+        run: |
+          set -euo pipefail
+          tag="${{ steps.v.outputs.tag }}"
+          scripts/build-baft-engine.sh "$RUNNER_TEMP/baft-out" >/dev/null
+          want="$(python3 -c 'import json;m=json.load(open("release/engine-manifest.json"));print([e for e in m["engines"] if e["id"]=="baft"][0]["artifact_sha256"])')"
+          have="$(sha256sum "$RUNNER_TEMP/baft-out/baft" | cut -d' ' -f1)"
+          [ "$want" = "$have" ] || { echo "::error::engine build $have differs from engine-manifest.json $want"; exit 1; }
+          cp "$RUNNER_TEMP/baft-out/baft" "dist/baft-engine-${tag}-linux-amd64"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "dist/baft-engine-${tag}-licenses.tar.gz" -C "$RUNNER_TEMP/baft-out" licenses
+          cp release/engine-manifest.json "dist/engine-manifest-${tag}.json"
       - name: Generate SBOM (CycloneDX)
         run: |
           set -euo pipefail
