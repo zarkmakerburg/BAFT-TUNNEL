@@ -161,3 +161,10 @@ Automation only: `BAFT_PKI_PASSFILE=/path/to/file` makes `baft-pki.sh` read the 
 
 ## Local panel and wizard (P4-001)
 Start the agent as above and open `http://127.0.0.1:18080/` (from another machine use an SSH tunnel: `ssh -L 18080:127.0.0.1:18080 host`). Paste the token from the token file. The panel shows status and the stored desired state; the wizard (engine, direct/reverse, role, one service port) prints the exact `setup init`, `setup join` and `apply` commands for that host. The panel never creates keys or starts a tunnel itself.
+
+## Upgrade and rollback
+1. Stop the instance: `systemctl stop baft-tunnel@NAME`. Config and credentials are not touched by an upgrade.
+2. `scripts/install.sh --binary ./baft-tunnel` and note the printed `Backup:` directory.
+3. `systemctl daemon-reload && systemctl restart baft-tunnel@NAME`; check `systemctl is-active baft-tunnel@NAME` and the status API/panel.
+4. To roll back: `scripts/rollback.sh BACKUP_DIR`, then restart the instance. Rollback restores the previous binary and unit only; it does not start or restart anything itself.
+The CI job `ubuntu-2204-baseline` runs exactly this sequence from the previous pre-release on Ubuntu 22.04 / systemd 249.
