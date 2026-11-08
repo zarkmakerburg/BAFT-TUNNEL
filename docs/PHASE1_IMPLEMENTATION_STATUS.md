@@ -329,3 +329,9 @@ Added `scripts/pki/push-crl.sh` (stages the CRL on each node over SSH and runs t
 - S1 `setup plan` (PR #42), S2 `noise-tcp` init/join (PR #43), S3 `tcp-tls` from `baft-pki.sh` output (PR #44): CI green.
 - S4 LAB: run 42461145830 on `54bebff`, `SETUP_RESULT noise_install_s=38 engine_switch_to_tls_s=42 commands_per_host=3 probe_ok=1`, `PHASE1_TWO_HOST_E2E=PASS ... setup=1`. Both hosts configured only through `setup` (init, join, apply); 64 KiB and 2 MiB probes passed for both engines. Targets met (at most 5 min, at most 3 commands, switch at most 60 s). No host addresses in the log.
 - Caveats: the hosts were the LAB hosts cleaned by the stage, not freshly provisioned VMs; tcp-tls PKI files were the ephemeral LAB certs standing in for `baft-pki.sh` output. Bundle copy and checksum comparison are manual steps outside the 3 commands.
+
+## P3-002 agent and local API (A1 to A3)
+- A1 read-only status API (PR #47), A2 validated desired state with audit log (PR #48): CI green, 71 unit tests.
+- A3 LAB: run 42466445718 on `d05b727`: `AGENT_RESULT status_listener_accepting=1 desired_state_accepted=1 applied=0`, `SETUP_RESULT noise_install_s=34 engine_switch_to_tls_s=34 commands_per_host=3 probe_ok=1`, `PHASE1_TWO_HOST_E2E=PASS ... setup=1`. The tcp-tls pair was built from real `scripts/pki/baft-pki.sh` output (ephemeral CA on the runner). No host addresses in the log.
+- Incident: run 42465515538 passed the agent check but failed the 60 s switch limit (81 s) because PKI issuance and delivery were inside the timed window; PKI installation is a one-time step, so the stage now times only the switch (PR #50).
+- Caveats: hosts are the LAB hosts cleaned by the stage, not freshly provisioned VMs; the agent is read/validate/store only and never applies a config; the CA passphrase came from `BAFT_PKI_PASSFILE` (automation only).
