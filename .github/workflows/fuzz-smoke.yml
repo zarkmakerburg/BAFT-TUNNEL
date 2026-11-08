@@ -1,0 +1,42 @@
+name: fuzz-smoke
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'fuzz/**'
+      - '.github/workflows/fuzz-smoke.yml'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per target (default 30 for PRs)
+        required: false
+        default: '300'
+permissions:
+  contents: read
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned nightly and cargo-fuzz
+        run: |
+          rustup toolchain install nightly-2026-11-07 --profile minimal
+          cargo +nightly-2026-11-07 install cargo-fuzz --version 0.13.2 --locked
+      - name: Fuzz each parser for a short time
+        env:
+          SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '30' }}
+        run: |
+          cd fuzz
+          for target in config_json pairing_bundle agent_http handshake_server; do
+            echo "== $target"
+            cargo +nightly-2026-11-07 fuzz run "$target" -- -max_total_time="$SECONDS_PER_TARGET" -max_len=4096
+          done
+      - name: Print crashing inputs (base64)
+        if: failure()
+        run: |
+          for f in fuzz/artifacts/*/*; do [ -f "$f" ] && { echo "== $f"; base64 "$f"; }; done || true

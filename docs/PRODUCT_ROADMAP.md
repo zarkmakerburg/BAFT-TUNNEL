@@ -43,7 +43,7 @@ Evidence kinds are kept apart: **code** (in main), **CI** (hosted runners, Ubunt
 | Soak and impairment (TLS, Direct) | yes | n/a | PASS 30 min with app-level impairment; PASS 3600 s; PASS 2% real TCP loss | longer than 1 h and Reverse soak not run |
 | CRL distribution, CA/pin rollover | yes (`push-crl.sh`, bundle CRLs, two pins) | mock tests | rollover sequence PASS | `push-crl.sh` not yet run on real hosts |
 | Adversarial handshake tests | yes | yes | n/a | P1-003 |
-| Fuzz targets | **no** | no | n/a | P1-005 open; no `fuzz/` directory |
+| Fuzz targets | yes (`fuzz/`: config JSON, pairing bundle, agent HTTP, handshake) | smoke run on PRs (`fuzz-smoke`) | n/a | P1-005 done; longer runs are P6 |
 | Engine trait, `engine:` config | yes (ADR-0018) | yes | covered by TLS runs | no fallbacks or supervisor |
 | `setup` CLI | yes (S1 to S4) | yes | PASS run 42461145830 (noise 38 s, switch 42 s) and run 42466445718 (tcp-tls from real `baft-pki.sh` output) | enrollment (online) not planned for MVP |
 | Agent and local API (read-only status, validated desired state, audit) | yes (A1 to A3) | yes | PASS run 42466445718 (`applied=0`: the agent never applies) | loopback only, bearer token |
@@ -77,7 +77,7 @@ Not in MVP: central control plane, UDP/QUIC, camouflage sidecar, `baft` engine, 
 
 ## IN PROGRESS
 - **P3-001** `setup` CLI: plan written; S1 (`setup plan`) done (PR #42); S2 (`noise-tcp` init/join) done (PR #43); S3 (`tcp-tls` from `baft-pki.sh` output) done (PR #44); S4 (LAB) PASS, run 42461145830 on `54bebff`: noise-tcp install 38 s, engine switch to tcp-tls 42 s, 3 commands per host (bundle copy and checksum comparison manual). P3-001 closed.
-- **P4-001** Panel and wizard: plan in [PLAN-P4-001-panel.md](PLAN-P4-001-panel.md); W1 (panel served by the agent, PR #52), W2 (wizard backed by `POST /v1/setup/plan`, PR #52) and W3 (LAB, PASS run 42469113232 on `1080dbd`: panel served, wizard plan matches the setup commands) done. P4-001 closed; next R-001 upgrade/rollback test, P1-005 fuzz, then A-001 integrated acceptance.
+- **P4-001** Panel and wizard: plan in [PLAN-P4-001-panel.md](PLAN-P4-001-panel.md); W1 (panel served by the agent, PR #52), W2 (wizard backed by `POST /v1/setup/plan`, PR #52) and W3 (LAB, PASS run 42469113232 on `1080dbd`: panel served, wizard plan matches the setup commands) done. P4-001 closed; next R-001 upgrade/rollback test, then A-001 integrated acceptance. P1-005 fuzz targets done (PR in this commit).
 - **P3-002** Agent and local API: plan in [PLAN-P3-002-agent-api.md](PLAN-P3-002-agent-api.md); A1 (read-only status API) done (PR #47); A2 (validated desired state + audit) done (PR #48); A3 (LAB) PASS, run 42466445718 on `d05b727`. P3-002 closed; next P4-001 panel on the API.
 
 ## TO DO (priority order)
@@ -90,13 +90,13 @@ Not in MVP: central control plane, UDP/QUIC, camouflage sidecar, `baft` engine, 
 Phase 0 (PR #1); Phase 1 runtime, PKI, installer, systemd; P1-000; P1-001 (soak 3600 s, 2% real loss, impairment); P1-002 (ADR-0017: dual pins, CA bundle with per-CA CRLs, freshness report, push helper, rollover LAB PASS); P1-003; P1-004 closed with documented exceptions (2026-11-08); review findings 1,2,3,4,7; PR #3; release pipeline and pre-release; P2-001 (ADR-0018); P2-003 (engine trait); P2-004 (`noise-tcp` behind the trait, Direct and Reverse LAB PASS); M0.
 
 ## Documented exceptions carried forward
-Soak beyond 1 h; `push-crl.sh` on real hosts; Noise under packet loss and soak; independent security review (waived, not performed); fuzzing (P1-005).
+Soak beyond 1 h; `push-crl.sh` on real hosts; Noise under packet loss and soak; independent security review (waived, not performed); fuzzing beyond smoke runs (P6).
 
 ## Acceptance gates
 | Gate | Status |
 |---|---|
 | Phase 1 core (runtime, mTLS, PKI, installer, 22.04 path, E2E, soak, loss, rollover) | PASS with documented exceptions |
-| Fuzz targets in CI | OPEN (P1-005) |
+| Fuzz targets in CI | PASS (P1-005): 4 targets, 40 s each locally with no crash; `fuzz-smoke` runs 30 s per target on PRs |
 | Second engine with equal evidence | PASS (M0, Direct and Reverse) |
 | Guided setup, API | PASS (P3-001, P3-002 LAB) |
 | Panel and wizard | PASS (P4-001, LAB run 42469113232) |

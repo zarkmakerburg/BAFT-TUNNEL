@@ -164,6 +164,28 @@ async fn handle(mut stream: TcpStream, ctx: &Ctx) -> Result<()> {
     respond(&mut stream, status, &out).await
 }
 
+/// Fuzz entry (see fuzz/): the request parser and router with no state directory.
+#[allow(dead_code)] // used by the fuzz harness only
+pub fn fuzz_route(head: &str, body: &[u8]) -> (u16, Value) {
+    let ctx = Ctx {
+        config: serde_json::from_value(json!({
+            "mode": "forward", "listen": "127.0.0.1:1", "remote": "192.0.2.1:8443",
+            "server_name": "x", "local_id": "a", "peer_id": "b", "tunnel_id": "t",
+            "direction": "direct", "peer_fingerprint": "00", "key": "/nonexistent/key.pem"
+        }))
+        .expect("fixed config"),
+        token: "t".repeat(40),
+        state_dir: None,
+        lock: Mutex::new(()),
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let _ = static_asset(head);
+    runtime.block_on(route(head, body, &ctx))
+}
+
 /// The panel is three fixed files compiled into the binary; they hold no secrets and no data.
 fn static_asset(head: &str) -> Option<(&'static str, &'static str)> {
     let mut parts = head.split("\r\n").next()?.split(' ');
