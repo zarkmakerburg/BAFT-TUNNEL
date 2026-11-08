@@ -591,7 +591,10 @@ fn run_start(
         );
     }
     let config_path = r.plan.dir.join(format!("{name}.json"));
-    let config = match crate::config::load(&config_path).and_then(|c| c.validate().map(|()| c)) {
+    // Parse only: validate() resolves a `key_credential` through the systemd credential directory,
+    // which exists only inside the unit. The unit validates itself and fails closed; the verify
+    // checks below catch a unit that does not come up.
+    let config = match crate::config::load(&config_path) {
         Ok(c) => c,
         Err(e) => return refuse(receipt, format!("configuration is not ready: {e:#}"), 409),
     };
