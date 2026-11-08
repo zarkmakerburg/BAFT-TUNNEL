@@ -22,6 +22,8 @@ LOSS="${LAB_LOSS_PERCENT:-0}"
 [[ "$LOSS" =~ ^[0-9]+$ ]] && (( LOSS <= 20 )) || { echo "LAB_LOSS_PERCENT must be 0-20" >&2; exit 2; }
 LOSS_TABLE=baft_lab_loss
 NOISE="${LAB_NOISE:-0}"
+ROLLOVER="${LAB_ROLLOVER:-0}"
+[[ "$ROLLOVER" == 0 || "$ROLLOVER" == 1 ]] || { echo "LAB_ROLLOVER must be 0 or 1" >&2; exit 2; }
 [[ "$NOISE" == 0 || "$NOISE" == 1 ]] || { echo "LAB_NOISE must be 0 or 1" >&2; exit 2; }
 [[ "$SOAK_SECONDS" =~ ^[0-9]+$ ]] && (( SOAK_SECONDS <= 3600 )) || { echo "LAB_SOAK_SECONDS must be 0-3600" >&2; exit 2; }
 [[ "$IMPAIR" == 0 || "$IMPAIR" == 1 ]] || { echo "LAB_IMPAIR must be 0 or 1" >&2; exit 2; }
@@ -367,6 +369,75 @@ start_forward abroad abroad iran "$LAB_IRAN_HOST" iran.lab reverse "$IRAN_PIN" a
 probe_host abroad 65536
 probe_host abroad 2097289
 
+if (( ROLLOVER == 1 )); then
+  echo "=== ROLLOVER (ADR-0017 B1): two CAs with per-CA CRLs, two pins, then old CA removed ==="
+  R="$LOCAL_TMP/ca2"; mkdir -p "$R/newcerts" "$R/bundle"
+  : > "$R/index.txt"; printf '2000\n' > "$R/serial"; printf '2000\n' > "$R/crlnumber"
+  openssl req -x509 -newkey rsa:3072 -nodes -keyout "$R/ca.key" -out "$R/ca.crt" \
+    -days 2 -sha256 -subj "/CN=BAFT-TUNNEL ephemeral LAB CA 2" \
+    -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1
+  cat > "$R/openssl.cnf" <<CNF
+[ ca ]
+default_ca = CA_default
+[ CA_default ]
+database = $R/index.txt
+new_certs_dir = $R/newcerts
+certificate = $R/ca.crt
+private_key = $R/ca.key
+serial = $R/serial
+crlnumber = $R/crlnumber
+default_md = sha256
+default_days = 2
+default_crl_days = 2
+policy = policy_any
+copy_extensions = copy
+[ policy_any ]
+commonName = supplied
+CNF
+  for node in iran abroad; do
+    openssl req -new -newkey rsa:2048 -nodes -keyout "$LOCAL_TMP/${node}2.key" \
+      -out "$R/$node.csr" -subj "/CN=$node.lab" >/dev/null 2>&1
+    printf '[ %s_ext ]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=DNS:%s.lab,URI:urn:baft-tunnel:node:%s\n' "$node" "$node" "$node" >> "$R/openssl.cnf"
+    openssl ca -batch -notext -config "$R/openssl.cnf" -extensions "${node}_ext" \
+      -in "$R/$node.csr" -out "$LOCAL_TMP/${node}2.crt" -days 2 >/dev/null 2>&1
+  done
+  openssl ca -gencrl -batch -config "$R/openssl.cnf" -out "$R/ca.crl" >/dev/null 2>&1
+  cat "$LOCAL_TMP/ca.crt" "$R/ca.crt" > "$R/bundle/ca.crt"
+  cat "$LOCAL_TMP/ca.crl" "$R/ca.crl" > "$R/bundle/ca.crl"
+  IRAN_PIN2="$(openssl x509 -in "$LOCAL_TMP/iran2.crt" -outform DER | sha256sum | awk '{print $1}')"
+  ABROAD_PIN2="$(openssl x509 -in "$LOCAL_TMP/abroad2.crt" -outform DER | sha256sum | awk '{print $1}')"
+  for side in iran abroad; do
+    copy_to_host "$side" "$LOCAL_TMP/iran2.crt" "$LOCAL_TMP/iran2.key" "$LOCAL_TMP/abroad2.crt" "$LOCAL_TMP/abroad2.key" "$R/bundle/ca.crt" "$R/bundle/ca.crl"
+    ssh_host "$side" "chmod 600 '$REMOTE_DIR/'*.key"
+  done
+  echo "--- ROLLOVER 1/3: overlap, old certificates, bundle trust, two pins each side ---"
+  start_serve abroad abroad iran direct "$IRAN_PIN,$IRAN_PIN2" abroad.crt abroad.key
+  start_forward iran iran abroad "$LAB_ABROAD_HOST" abroad.lab direct "$ABROAD_PIN,$ABROAD_PIN2" iran.crt iran.key
+  probe_host iran 65536
+  stop_role iran forward; stop_role abroad serve; sleep 1
+  echo "--- ROLLOVER 2/3: new CA certificates, bundle trust, two pins each side ---"
+  start_serve abroad abroad iran direct "$IRAN_PIN,$IRAN_PIN2" abroad2.crt abroad2.key
+  start_forward iran iran abroad "$LAB_ABROAD_HOST" abroad.lab direct "$ABROAD_PIN,$ABROAD_PIN2" iran2.crt iran2.key
+  probe_host iran 65536
+  probe_host iran 2097289
+  stop_role iran forward; stop_role abroad serve; sleep 1
+  echo "--- ROLLOVER 3/3: old CA and old pins removed; old-CA client must be refused ---"
+  for side in iran abroad; do copy_to_host "$side" "$R/ca.crt" "$R/ca.crl"; done
+  start_serve abroad abroad iran direct "$IRAN_PIN2" abroad2.crt abroad2.key
+  start_forward iran iran abroad "$LAB_ABROAD_HOST" abroad.lab direct "$ABROAD_PIN2" iran2.crt iran2.key
+  probe_host iran 65536
+  stop_role iran forward; sleep 1
+  start_forward iran iran abroad "$LAB_ABROAD_HOST" abroad.lab direct "$ABROAD_PIN2" iran.crt iran.key
+  sleep 2
+  if probe_host iran 65536 >/dev/null 2>&1; then
+    echo "Server accepted a certificate from the removed CA" >&2
+    exit 1
+  fi
+  echo "ROLLOVER_RESULT overlap_ok=1 new_certs_ok=1 old_ca_removed_refused=1"
+  stop_role iran forward; stop_role abroad serve
+  for side in iran abroad; do copy_to_host "$side" "$LOCAL_TMP/ca.crt" "$LOCAL_TMP/ca.crl"; done
+fi
+
 echo "=== CERTIFICATE REVOCATION: server rejects revoked client certificate ==="
 openssl ca -batch -config "$LOCAL_TMP/openssl.cnf" -revoke "$LOCAL_TMP/iran.crt" >/dev/null 2>&1
 openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.crl" >/dev/null 2>&1
@@ -428,4 +499,4 @@ if (( NOISE == 1 )); then
   stop_role abroad serve
 fi
 
-echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE (Direct, Reverse, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
+echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER (Direct, Reverse, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
