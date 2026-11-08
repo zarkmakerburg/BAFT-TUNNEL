@@ -32,7 +32,7 @@ mvp_cleanup() {
     ssh_host "$side" "for i in $SRV $CLI; do touch /run/baft-tunnel/control/\$i.stop 2>/dev/null; systemctl stop baft-tunnel@\$i.service 2>/dev/null; bash '$REMOTE_DIR/pkg/scripts/install-agent-control.sh' --remove --instance \$i >/dev/null 2>&1; done;
       [ -s '$REMOTE_DIR/agent.pid' ] && kill \$(cat '$REMOTE_DIR/agent.pid') 2>/dev/null; rm -f '$REMOTE_DIR/agent.pid';
       [ -x '$REMOTE_DIR/pkg/scripts/uninstall.sh' ] && bash '$REMOTE_DIR/pkg/scripts/uninstall.sh' --stop --purge-config --yes >/dev/null 2>&1;
-      systemctl daemon-reload; true" || true
+      systemctl reset-failed 'baft-tunnel*' 2>/dev/null; systemctl daemon-reload; true" || true
   done
   for side in iran abroad; do
     if [[ " ${MVP_USER_BEFORE[*]} " != *" $side "* ]]; then ssh_host "$side" "userdel baft-tunnel 2>/dev/null; groupdel baft-tunnel 2>/dev/null; true" || true; fi
@@ -164,25 +164,29 @@ stop_role iran impair; sleep 1
 mvp_wait 60 >/dev/null || { echo "tunnel did not come back after the rollback" >&2; exit 1; }
 
 echo "--- MVP refusals with the installed binary: wrong pin, wrong identity ---"
+# Stop the previous foreground forward by its pidfile. Never 'pkill -f <path>': the remote shell's own
+# command line contains the path, so pkill would kill that shell (run 42535679925 failed this way).
+NEG_STOP="if [ -s '$REMOTE_DIR/neg.pid' ]; then kill \$(cat '$REMOTE_DIR/neg.pid') 2>/dev/null || true; rm -f '$REMOTE_DIR/neg.pid'; sleep 1; fi"
+neg_log() { ssh_host iran "tail -n 20 '$REMOTE_DIR/neg.log'" >&2 || true; }
 mvp_neg() { # json-edit-python expect(ok|refused) : foreground forward on $MALT with an edited copy of the iran config
   local want=\! ; [[ "$2" == ok ]] && want=""
-  ssh_host iran "set -e; pkill -f '$REMOTE_DIR/neg.json' 2>/dev/null || true; sleep 1; python3 - <<'PY'
+  ssh_host iran "set -e; $NEG_STOP; python3 - <<'PY'
 import json
 c = json.load(open('$EB/$CLI.json')); c['listen'] = '127.0.0.1:$MALT'
 $1
 json.dump(c, open('$REMOTE_DIR/neg.json', 'w'))
 PY
 chown baft-tunnel '$REMOTE_DIR/neg.json'; chmod 711 '$REMOTE_DIR'
-nohup setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups timeout 25 $UB apply --config '$REMOTE_DIR/neg.json' --confirm > '$REMOTE_DIR/neg.log' 2>&1 < /dev/null & sleep 4
+nohup setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups timeout 25 $UB apply --config '$REMOTE_DIR/neg.json' --confirm > '$REMOTE_DIR/neg.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/neg.pid'; sleep 4
 $want python3 '$REMOTE_DIR/probe.py' 127.0.0.1 $MALT 4096 >/dev/null 2>&1"
 }
 # Control: an unchanged copy carries data, so a refusal below is caused by the edit alone.
-mvp_neg "pass" ok || { echo "control forward with an unchanged config did not carry data" >&2; exit 1; }
-mvp_neg "c['peer_fingerprint'] = '0' * 64" refused || { echo "a wrong peer pin carried data" >&2; exit 1; }
+mvp_neg "pass" ok || { neg_log; echo "control forward with an unchanged config did not carry data" >&2; exit 1; }
+mvp_neg "c['peer_fingerprint'] = '0' * 64" refused || { neg_log; echo "a wrong peer pin carried data" >&2; exit 1; }
 copy_to_host iran "$MP/mvpctl/node.key" "$MP/issued-mvpctl/node.crt"
 ssh_host iran "install -o baft-tunnel -m 0600 '$REMOTE_DIR/node.key' '$REMOTE_DIR/ctl.key'; install -m 0644 '$REMOTE_DIR/node.crt' '$REMOTE_DIR/ctl.crt'; rm -f '$REMOTE_DIR/node.key'"
-mvp_neg "c['local_id'] = 'mvpctl'; c['cert'] = '$REMOTE_DIR/ctl.crt'; c['key'] = '$REMOTE_DIR/ctl.key'" refused || { echo "a valid certificate of another node carried data" >&2; exit 1; }
-ssh_host iran "pkill -f '$REMOTE_DIR/neg.json' 2>/dev/null || true"
+mvp_neg "c['local_id'] = 'mvpctl'; c['cert'] = '$REMOTE_DIR/ctl.crt'; c['key'] = '$REMOTE_DIR/ctl.key'" refused || { neg_log; echo "a valid certificate of another node carried data" >&2; exit 1; }
+ssh_host iran "$NEG_STOP"
 mvp_wait 60 >/dev/null || { echo "main tunnel did not carry data after the refusal checks" >&2; exit 1; }
 
 echo "--- MVP revocation: iran certificate revoked, new CRL on the serve host, serve restarted ---"
