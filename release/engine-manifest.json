@@ -4,19 +4,34 @@
     {
       "id": "baft",
       "runtime_language": "go",
-      "version": "0.5.0",
+      "version": "0.5.0+dialer-checks",
       "source_repository": "https://github.com/zarkmakerburg/BAFT",
-      "source_commit": "2c8e14efdecabff392f061b2ea9538808597f2a2",
+      "source_commit": "2acb495eafe5f31d8f89c3dc72bd264b8ecc40ef",
       "artifact": "engines/baft-linux-amd64",
-      "artifact_sha256": "2c040ed84e17827c855a392c0e6c61587ab7678c636ca957b9ce2653f2dfd141",
-      "platforms": ["linux-amd64"],
+      "artifact_sha256": "e4f04837253f83b7e52bca29bd93f0e4b2bd627325a75dee37d93b1057513647",
+      "platforms": [
+        "linux-amd64"
+      ],
       "config_adapter": "baft-v1",
-      "required_capabilities": ["mtls", "revocation-listener", "same-process-recovery"],
-      "readiness": { "kind": "tcp_listen", "timeout_seconds": 30 },
-      "resources": { "max_restarts": 5, "restart_window_seconds": 300, "max_memory_mib": 512 },
+      "required_capabilities": [
+        "mtls",
+        "revocation-listener",
+        "revocation-dialer",
+        "listener-cert-pin",
+        "same-process-recovery"
+      ],
+      "readiness": {
+        "kind": "tcp_listen",
+        "timeout_seconds": 30
+      },
+      "resources": {
+        "max_restarts": 5,
+        "restart_window_seconds": 300,
+        "max_memory_mib": 512
+      },
       "license": {
         "spdx": "AGPL-3.0-only",
-        "source_url": "https://github.com/zarkmakerburg/BAFT/tree/2c8e14efdecabff392f061b2ea9538808597f2a2"
+        "source_url": "https://github.com/zarkmakerburg/BAFT/tree/2acb495eafe5f31d8f89c3dc72bd264b8ecc40ef"
       }
     }
   ]

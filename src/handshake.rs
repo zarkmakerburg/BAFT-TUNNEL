@@ -51,7 +51,7 @@ pub fn validate_identity(value: &str) -> Result<()> {
 /// Maximum number of simultaneously accepted peer pins (ADR-0017 B1 rollover window).
 pub const MAX_PEER_PINS: usize = 2;
 
-fn normalize_pin(pin: &str) -> String {
+pub(crate) fn normalize_pin(pin: &str) -> String {
     pin.replace(':', "").to_ascii_lowercase()
 }
 

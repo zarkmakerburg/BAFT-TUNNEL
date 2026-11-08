@@ -7,11 +7,11 @@ baft="${1:?usage: $0 /path/to/baft}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-for name in serve forward; do
+for name in serve forward forward-hardened; do
   sed "s#/run/baft-tunnel/t1#$work#g" "$here/src/testdata/baft/$name.json" > "$work/$name.json"
 done
 : > "$work/revocation.json"
-for name in serve forward; do
+for name in serve forward forward-hardened; do
   "$baft" config validate --file "$work/$name.json"
 done
 # Negative control: a config BAFT must refuse (plaintext payload logging).

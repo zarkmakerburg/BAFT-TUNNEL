@@ -47,6 +47,8 @@ pub enum Side {
         remote: SocketAddr,
         server_name: String,
         allow_non_loopback_listen: bool,
+        /// Exact listener certificate (hex SHA-256 of the DER), enforced by the BAFT dialer.
+        peer_pin: Option<String>,
     },
 }
 
@@ -56,7 +58,8 @@ pub struct BaftPaths {
     pub ca: PathBuf,
     pub cert: PathBuf,
     pub key: PathBuf,
-    /// Listener only. Absent on dialers (BAFT enforces revocation on listeners only).
+    /// Revocation list for this node. Listeners refuse revoked clients; dialers refuse a
+    /// revoked listener (BAFT with dialer-side checks, see the pinned commit).
     pub revocation: Option<PathBuf>,
     pub unix_socket: PathBuf,
     pub metrics_listen: SocketAddr,
@@ -173,6 +176,7 @@ pub fn render(input: &BaftRenderInput) -> Result<Value> {
             remote,
             server_name: name,
             allow_non_loopback_listen,
+            peer_pin,
         } => {
             not_ssh(*listen, "listen")?;
             not_ssh(*remote, "remote")?;
@@ -191,15 +195,18 @@ pub fn render(input: &BaftRenderInput) -> Result<Value> {
             if *allow_non_loopback_listen && !listen.ip().is_loopback() {
                 route["public"] = json!(true);
             }
-            (
-                "dialer",
-                json!({"peer": {
-                    "address": remote.to_string(),
-                    "server_name": name,
-                    "allowed_identity": peer_uri.clone(),
-                }}),
-                route,
-            )
+            let mut peer = json!({
+                "address": remote.to_string(),
+                "server_name": name,
+                "allowed_identity": peer_uri.clone(),
+            });
+            if let Some(pin) = peer_pin {
+                if pin.len() != 64 || !pin.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    bail!("peer pin must be a 64-digit hexadecimal SHA-256");
+                }
+                peer["certificate_sha256"] = json!(pin.to_ascii_lowercase());
+            }
+            ("dialer", json!({"peer": peer}), route)
         }
     };
 
@@ -242,12 +249,8 @@ pub fn render(input: &BaftRenderInput) -> Result<Value> {
             config[name] = value.clone();
         }
     }
-    match (&paths.revocation, role) {
-        (Some(file), "listener") => {
-            config["revocation"] = json!({"file": absolute(file, "revocation")?});
-        }
-        (Some(_), _) => bail!("revocation is only enforced by BAFT listeners"),
-        (None, _) => {}
+    if let Some(file) = &paths.revocation {
+        config["revocation"] = json!({"file": absolute(file, "revocation")?});
     }
     Ok(config)
 }
@@ -334,6 +337,7 @@ pub fn prepare_bundle(cfg: &RuntimeConfig, runtime_dir: &Path, now_unix: i64) ->
                 key,
                 key_credential,
                 allow_non_loopback_listen,
+                peer_fingerprint,
                 ..
             } => (
                 local_id,
@@ -350,26 +354,21 @@ pub fn prepare_bundle(cfg: &RuntimeConfig, runtime_dir: &Path, now_unix: i64) ->
                     remote: remote.parse().context("remote")?,
                     server_name: server_name.clone(),
                     allow_non_loopback_listen: *allow_non_loopback_listen,
+                    peer_pin: (!peer_fingerprint.is_empty())
+                        .then(|| crate::handshake::normalize_pin(peer_fingerprint)),
                 },
             ),
         };
-    let is_listener = matches!(side, Side::Serve { .. });
     let key_source = private_key_path(key.as_deref(), key_credential.as_deref())?;
 
     // Render the revocation list first: an expired or unreadable CRL stops the start.
-    let revocation = if is_listener {
-        Some(revocation_from_crl(crl, now_unix)?)
-    } else {
-        None
-    };
+    let revocation = revocation_from_crl(crl, now_unix)?;
 
     let paths = BaftPaths {
         ca: runtime_dir.join("ca.pem"),
         cert: runtime_dir.join("node.pem"),
         key: runtime_dir.join("node.key"),
-        revocation: revocation
-            .as_ref()
-            .map(|_| runtime_dir.join("revocation.json")),
+        revocation: Some(runtime_dir.join("revocation.json")),
         unix_socket: runtime_dir.join("admin.sock"),
         metrics_listen: SocketAddr::from(([127, 0, 0, 1], metrics_port(tunnel_id, local_id))),
     };
@@ -386,8 +385,8 @@ pub fn prepare_bundle(cfg: &RuntimeConfig, runtime_dir: &Path, now_unix: i64) ->
     write_private(&paths.ca, &fs::read(ca).context("read ca")?)?;
     write_private(&paths.cert, &fs::read(cert).context("read cert")?)?;
     write_private(&paths.key, &fs::read(&key_source).context("read key")?)?;
-    if let (Some(path), Some(list)) = (&paths.revocation, &revocation) {
-        write_private(path, serde_json::to_string(list)?.as_bytes())?;
+    if let Some(path) = &paths.revocation {
+        write_private(path, serde_json::to_string(&revocation)?.as_bytes())?;
     }
     let config_file = runtime_dir.join("baft.json");
     write_private(
@@ -549,6 +548,7 @@ mod tests {
                 remote: "198.51.100.10:8443".parse().unwrap(),
                 server_name: "abroad-1.baft-tunnel.invalid".into(),
                 allow_non_loopback_listen: false,
+                peer_pin: None,
             },
             max_streams: 8,
             paths: paths(false),
@@ -559,6 +559,7 @@ mod tests {
         let text = match name {
             "serve" => include_str!("testdata/baft/serve.json"),
             "forward" => include_str!("testdata/baft/forward.json"),
+            "forward-hardened" => include_str!("testdata/baft/forward-hardened.json"),
             _ => unreachable!(),
         };
         serde_json::from_str(text).unwrap()
@@ -567,6 +568,33 @@ mod tests {
     #[test]
     fn serve_matches_golden() {
         assert_eq!(render(&serve()).unwrap(), golden("serve"));
+    }
+
+    fn forward_hardened() -> BaftRenderInput {
+        let mut input = forward();
+        input.paths = paths(true);
+        if let Side::Forward { peer_pin, .. } = &mut input.side {
+            *peer_pin = Some("0123456789abcdef".repeat(4));
+        }
+        input
+    }
+
+    #[test]
+    fn forward_with_revocation_and_pin_matches_golden() {
+        if std::env::var_os("UPDATE_BAFT_GOLDEN").is_some() {
+            std::fs::write(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/src/testdata/baft/forward-hardened.json"
+                ),
+                serde_json::to_string_pretty(&render(&forward_hardened()).unwrap()).unwrap() + "\n",
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            render(&forward_hardened()).unwrap(),
+            golden("forward-hardened")
+        );
     }
 
     #[test]
@@ -607,6 +635,7 @@ mod tests {
             remote: "198.51.100.10:8443".parse().unwrap(),
             server_name: "a.invalid".into(),
             allow_non_loopback_listen: false,
+            peer_pin: None,
         };
         assert!(render(&input).is_err());
     }
@@ -622,6 +651,7 @@ mod tests {
             remote: "198.51.100.10:8443".parse().unwrap(),
             server_name: "a.invalid".into(),
             allow_non_loopback_listen: false,
+            peer_pin: None,
         };
         assert!(render(&input).is_err());
     }
@@ -634,6 +664,7 @@ mod tests {
             remote: "198.51.100.10:8443".parse().unwrap(),
             server_name: "a.invalid".into(),
             allow_non_loopback_listen: true,
+            peer_pin: None,
         };
         let config = render(&input).unwrap();
         assert_eq!(config["routes"][0]["public"], json!(true));
@@ -660,13 +691,37 @@ mod tests {
     }
 
     #[test]
-    fn revocation_only_on_listeners() {
+    fn revocation_and_pin_are_rendered_for_dialers_too() {
+        let pin = "AB".repeat(32);
         let mut input = forward();
         input.paths.revocation = Some("/run/baft-tunnel/t1/revocation.json".into());
-        assert!(render(&input).is_err());
-        let mut input = serve();
+        if let Side::Forward { peer_pin, .. } = &mut input.side {
+            *peer_pin = Some(pin.clone());
+        }
+        let rendered = render(&input).unwrap();
+        assert_eq!(
+            rendered["revocation"]["file"],
+            json!("/run/baft-tunnel/t1/revocation.json")
+        );
+        // BAFT matches the lowercase digest.
+        assert_eq!(
+            rendered["peer"]["certificate_sha256"],
+            json!(pin.to_ascii_lowercase())
+        );
+        // No pin configured means no field, never an empty one.
+        let mut input = forward();
         input.paths.revocation = None;
-        assert!(render(&input).unwrap().get("revocation").is_none());
+        let rendered = render(&input).unwrap();
+        assert!(rendered["peer"].get("certificate_sha256").is_none());
+        assert!(rendered.get("revocation").is_none());
+        // A malformed pin stops the start.
+        for bad in ["", "zz", &"a".repeat(63)] {
+            let mut input = forward();
+            if let Side::Forward { peer_pin, .. } = &mut input.side {
+                *peer_pin = Some(bad.to_string());
+            }
+            assert!(render(&input).is_err(), "accepted pin {bad:?}");
+        }
     }
 
     fn make_crl(dir: &Path, next_year: i32, serials: &[u64]) -> PathBuf {
@@ -891,6 +946,33 @@ mod tests {
             base(json!({"baft": {"binary": "baft", "sha256": "a".repeat(64)}}))
                 .validate()
                 .is_err()
+        );
+        // a dialer may pin exactly one listener certificate; a listener cannot pin clients
+        let forward = |fingerprint: &str| -> RuntimeConfig {
+            serde_json::from_value(json!({
+                "mode": "forward", "listen": "127.0.0.1:1443", "remote": "198.51.100.10:8443",
+                "server_name": "abroad-1.baft-tunnel.invalid", "peer_fingerprint": fingerprint,
+                "local_id": "iran-1", "peer_id": "abroad-1", "tunnel_id": "svc-main",
+                "direction": "direct", "engine": "baft",
+                "ca": "/x/ca.crt", "crl": "/x/ca.crl", "cert": "/x/node.crt", "key": "/x/node.key",
+                "baft": good_baft
+            }))
+            .unwrap()
+        };
+        // These paths do not exist, so validation stops at the key/TLS material check; the
+        // pin rules run before it and are what these assertions pin down.
+        let message = |cfg: RuntimeConfig| format!("{:#}", cfg.validate().unwrap_err());
+        assert!(!message(forward(&"ab".repeat(32))).contains("pin"));
+        assert!(
+            message(forward(&format!("{},{}", "ab".repeat(32), "cd".repeat(32))))
+                .contains("exactly one")
+        );
+        assert!(message(forward("zz")).contains("SHA-256"));
+        assert!(
+            message(base(
+                json!({"baft": good_baft, "peer_fingerprint": "ab".repeat(32)})
+            ))
+            .contains("listener")
         );
         // unknown field inside baft is refused
         assert!(
