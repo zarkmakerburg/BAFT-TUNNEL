@@ -159,19 +159,20 @@ impl RuntimeConfig {
             } => {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
                 parse_socket(listen, "listen")?;
-                match direction {
-                    ConnectionDirection::Direct => {
+                // The baft engine keeps its previous behaviour (direction is a label there; it
+                // is not part of the Rust Reverse mode, ADR-0021 Amendment 1).
+                let reverse =
+                    *direction == ConnectionDirection::Reverse && *engine != EngineKind::Baft;
+                match reverse {
+                    false => {
                         if !ingress.is_empty() {
                             bail!("ingress is only valid for reverse");
                         }
                         validate_target(parse_socket(target, "target")?)?;
                     }
-                    ConnectionDirection::Reverse => {
+                    true => {
                         if !target.is_empty() {
                             bail!("a reverse public node has no target; the service node owns it");
-                        }
-                        if *engine == EngineKind::Baft {
-                            bail!("the baft engine does not support reverse");
                         }
                         validate_forward_listen(
                             parse_socket(ingress, "ingress")?,
@@ -231,8 +232,10 @@ impl RuntimeConfig {
                 baft,
             } => {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
-                match direction {
-                    ConnectionDirection::Direct => {
+                let reverse =
+                    *direction == ConnectionDirection::Reverse && *engine != EngineKind::Baft;
+                match reverse {
+                    false => {
                         if !target.is_empty() {
                             bail!("target is only valid for reverse");
                         }
@@ -241,14 +244,11 @@ impl RuntimeConfig {
                             *allow_non_loopback_listen,
                         )?;
                     }
-                    ConnectionDirection::Reverse => {
+                    true => {
                         if !listen.is_empty() {
                             bail!(
                                 "a reverse service node has no listener; the peer owns the ingress"
                             );
-                        }
-                        if *engine == EngineKind::Baft {
-                            bail!("the baft engine does not support reverse");
                         }
                         validate_target(parse_socket(target, "target")?)?;
                     }

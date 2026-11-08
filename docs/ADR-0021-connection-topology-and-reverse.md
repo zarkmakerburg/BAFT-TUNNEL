@@ -70,11 +70,11 @@ Rules:
 - The target is one configured address on the service node; the public node cannot choose a destination.
 - Mutual TLS or Noise, pinning, identity and CRL checks are identical in both directions.
 - A newly authenticated session replaces the previous one, so a restarted service node takes over the ingress; the dialer reconnects with the existing bounded backoff.
-- The baft engine does not support Reverse.
+- The baft engine keeps its previous behaviour: `direction` stays a label there and is not part of this Reverse mode (BAFT stays hidden).
 
 Deliveries:
 - **R1** (merged in #76 plus config/setup plumbing): connection roles, outbound connection from the service-owning node, config schema, setup plan.
-- **R2**: real data and return path on two hosts (tcp-tls first): 64 KiB and 2 MiB integrity, private side outbound only.
+- **R2**: real data and return path on two hosts (tcp-tls first): 64 KiB and 2 MiB integrity, private side outbound only. LAB stage: workflow input `reverse=1` (`REVERSE_RESULT` line). The old label-only Reverse and Noise-Reverse LAB stages were removed.
 - **R3**: reconnect, wrong identity, wrong pin, revoked certificate, busy port, agent restart, cleanup; Noise judged separately.
 
 Evidence so far: in-process test only (256 KiB round trip, recovery after service-node restart, direction mismatch refused). That is local evidence, not LAB.

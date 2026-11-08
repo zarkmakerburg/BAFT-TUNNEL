@@ -26,6 +26,8 @@ SETUP="${LAB_SETUP:-0}"
 [[ "$SETUP" == 0 || "$SETUP" == 1 ]] || { echo "LAB_SETUP must be 0 or 1" >&2; exit 2; }
 ROLLOVER="${LAB_ROLLOVER:-0}"
 [[ "$ROLLOVER" == 0 || "$ROLLOVER" == 1 ]] || { echo "LAB_ROLLOVER must be 0 or 1" >&2; exit 2; }
+REVERSE="${LAB_REVERSE:-0}"
+[[ "$REVERSE" == 0 || "$REVERSE" == 1 ]] || { echo "LAB_REVERSE must be 0 or 1" >&2; exit 2; }
 BAFT="${LAB_BAFT:-0}"
 [[ "$BAFT" == 0 || "$BAFT" == 1 ]] || { echo "LAB_BAFT must be 0 or 1" >&2; exit 2; }
 BAFT_BINARY_PATH="${BAFT_ENGINE_BINARY:-}"
@@ -182,10 +184,24 @@ EOF
   openssl ca -batch -notext -config "$LOCAL_TMP/openssl.cnf" -extensions "${node}_ext" \
     -in "$LOCAL_TMP/$node.csr" -out "$LOCAL_TMP/$node.crt" -days 2 >/dev/null 2>&1
 done
+# A second certificate carrying the abroad identity; it is revoked only by the Reverse stage.
+openssl req -new -newkey rsa:2048 -nodes -keyout "$LOCAL_TMP/revabroad.key" \
+  -out "$LOCAL_TMP/revabroad.csr" -subj "/CN=revabroad.lab" >/dev/null 2>&1
+cat > "$LOCAL_TMP/revabroad.ext" <<EOF
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature
+extendedKeyUsage=serverAuth,clientAuth
+subjectAltName=DNS:abroad.lab,URI:urn:baft-tunnel:node:abroad
+EOF
+printf '[ revabroad_ext ]\n' >> "$LOCAL_TMP/openssl.cnf"
+cat "$LOCAL_TMP/revabroad.ext" >> "$LOCAL_TMP/openssl.cnf"
+openssl ca -batch -notext -config "$LOCAL_TMP/openssl.cnf" -extensions revabroad_ext \
+  -in "$LOCAL_TMP/revabroad.csr" -out "$LOCAL_TMP/revabroad.crt" -days 2 >/dev/null 2>&1
 openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.crl" >/dev/null 2>&1
 IRAN_PIN="$(openssl x509 -in "$LOCAL_TMP/iran.crt" -outform DER | sha256sum | awk '{print $1}')"
 ABROAD_PIN="$(openssl x509 -in "$LOCAL_TMP/abroad.crt" -outform DER | sha256sum | awk '{print $1}')"
 CONTROL_PIN="$(openssl x509 -in "$LOCAL_TMP/control.crt" -outform DER | sha256sum | awk '{print $1}')"
+REVABROAD_PIN="$(openssl x509 -in "$LOCAL_TMP/revabroad.crt" -outform DER | sha256sum | awk '{print $1}')"
 
 cat > "$LOCAL_TMP/echo.py" <<'PY'
 import socket, sys, threading
@@ -290,7 +306,7 @@ for side in iran abroad; do
   ssh_host "$side" "mkdir -p '$REMOTE_DIR' && chmod 700 '$REMOTE_DIR'"
   copy_to_host "$side" "$BINARY" "$LOCAL_TMP/ca.crt" "$LOCAL_TMP/ca.crl" \
     "$LOCAL_TMP/iran.crt" "$LOCAL_TMP/iran.key" "$LOCAL_TMP/abroad.crt" "$LOCAL_TMP/abroad.key" \
-    "$LOCAL_TMP/control.crt" "$LOCAL_TMP/control.key" \
+    "$LOCAL_TMP/control.crt" "$LOCAL_TMP/control.key" "$LOCAL_TMP/revabroad.crt" "$LOCAL_TMP/revabroad.key" \
     "$LOCAL_TMP/echo.py" "$LOCAL_TMP/impair.py" "$LOCAL_TMP/probe.py" "$LOCAL_TMP/check-ports.py"
   ssh_host "$side" "chmod 700 '$REMOTE_DIR/baft-tunnel' && chmod 600 '$REMOTE_DIR/'*.key"
   ssh_host "$side" "python3 '$REMOTE_DIR/check-ports.py' '$E2E_PORT' '$LOCAL_PORT' '$ECHO_PORT' '$IMPAIR_PORT'"
@@ -369,11 +385,82 @@ stop_role iran forward
 stop_role abroad serve
 sleep 1
 
-echo "=== REVERSE: Abroad dials Iran ==="
-start_serve iran iran abroad reverse "$ABROAD_PIN" iran.crt iran.key
-start_forward abroad abroad iran "$LAB_IRAN_HOST" iran.lab reverse "$IRAN_PIN" abroad.crt abroad.key
-probe_host abroad 65536
-probe_host abroad 2097289
+if [[ "$REVERSE" == 1 ]]; then
+  echo "=== REVERSE (ADR-0021, tcp-tls): abroad (service node) dials iran (public node) ==="
+  BIN="$REMOTE_DIR/baft-tunnel"
+  # rev_public SIDE LOCAL PEER PEER_PIN CERT KEY: tunnel listener + user ingress, no target.
+  rev_public() {
+    local json
+    json="{\"mode\":\"serve\",\"engine\":\"tcp-tls\",\"direction\":\"reverse\",\"listen\":\"0.0.0.0:$E2E_PORT\",\"ingress\":\"127.0.0.1:$LOCAL_PORT\",\"local_id\":\"$2\",\"peer_id\":\"$3\",\"tunnel_id\":\"lab-e2e\",\"peer_fingerprint\":\"$4\",\"ca\":\"$REMOTE_DIR/ca.crt\",\"crl\":\"$REMOTE_DIR/ca.crl\",\"cert\":\"$REMOTE_DIR/$5\",\"key\":\"$REMOTE_DIR/$6\",\"max_streams\":8}"
+    ssh_host "$1" "printf '%s' '$json' > '$REMOTE_DIR/rev-public.json'; nohup '$BIN' apply --config '$REMOTE_DIR/rev-public.json' --confirm > '$REMOTE_DIR/serve.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/serve.pid'"
+  }
+  # rev_service SIDE LOCAL PEER PEER_HOST PEER_DNS PEER_PIN CERT KEY: dials out, relays to the local echo.
+  rev_service() {
+    local json
+    json="{\"mode\":\"forward\",\"engine\":\"tcp-tls\",\"direction\":\"reverse\",\"target\":\"127.0.0.1:$ECHO_PORT\",\"remote\":\"$4:$E2E_PORT\",\"server_name\":\"$5\",\"local_id\":\"$2\",\"peer_id\":\"$3\",\"tunnel_id\":\"lab-e2e\",\"peer_fingerprint\":\"$6\",\"ca\":\"$REMOTE_DIR/ca.crt\",\"crl\":\"$REMOTE_DIR/ca.crl\",\"cert\":\"$REMOTE_DIR/$7\",\"key\":\"$REMOTE_DIR/$8\",\"max_streams\":8}"
+    ssh_host "$1" "printf '%s' '$json' > '$REMOTE_DIR/rev-service.json'; nohup '$BIN' apply --config '$REMOTE_DIR/rev-service.json' --confirm > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/forward.pid'"
+  }
+  rev_expect_refused() { # description
+    if probe_host iran 4096 >/dev/null 2>&1; then
+      echo "Reverse tunnel carried data for $1" >&2
+      exit 1
+    fi
+  }
+  # Make sure the only echo that can answer is the one on the service node.
+  stop_role iran echo
+  sleep 1
+  rev_public iran iran abroad "$ABROAD_PIN" iran.crt iran.key
+  sleep 1
+  rev_service abroad abroad iran "$LAB_IRAN_HOST" iran.lab "$IRAN_PIN" abroad.crt abroad.key
+  probe_host iran 65536
+  probe_host iran 2097289
+  # The private (service) side initiates outbound only: it must not listen on the tunnel port.
+  ssh_host abroad "! ss -H -ltn | grep -q ':$E2E_PORT '" || { echo "service node listens on the tunnel port" >&2; exit 1; }
+  ssh_host abroad "ss -H -tn state established | grep -q '$LAB_IRAN_HOST:$E2E_PORT'" || { echo "service node has no outbound tunnel connection" >&2; exit 1; }
+  echo "--- REVERSE reconnect: restart the service node ---"
+  stop_role abroad forward; sleep 2
+  rev_service abroad abroad iran "$LAB_IRAN_HOST" iran.lab "$IRAN_PIN" abroad.crt abroad.key
+  probe_host iran 65536
+  echo "--- REVERSE reconnect: restart the public node ---"
+  stop_role iran serve; sleep 2
+  rev_public iran iran abroad "$ABROAD_PIN" iran.crt iran.key
+  probe_host iran 65536
+  probe_host iran 2097289
+  echo "--- REVERSE busy port: a second public node on the same port must fail and not disturb the first ---"
+  ssh_host iran "cp '$REMOTE_DIR/rev-public.json' '$REMOTE_DIR/rev-public2.json'"
+  if ssh_host iran "timeout 15 '$BIN' apply --config '$REMOTE_DIR/rev-public2.json' --confirm" >/dev/null 2>&1; then
+    echo "second Reverse public node started on a busy port" >&2
+    exit 1
+  fi
+  probe_host iran 65536
+  echo "--- REVERSE wrong identity: a valid certificate of another node must not relay ---"
+  stop_role abroad forward; sleep 1
+  rev_service abroad control iran "$LAB_IRAN_HOST" iran.lab "$IRAN_PIN" control.crt control.key
+  sleep 3
+  rev_expect_refused "a certificate of another node"
+  echo "--- REVERSE wrong pin: the service node must refuse a public node with a different certificate ---"
+  stop_role abroad forward; sleep 1
+  rev_service abroad abroad iran "$LAB_IRAN_HOST" iran.lab "$CONTROL_PIN" abroad.crt abroad.key
+  sleep 3
+  rev_expect_refused "a wrongly pinned peer"
+  echo "--- REVERSE recovery after refusals ---"
+  stop_role abroad forward; sleep 1
+  rev_service abroad abroad iran "$LAB_IRAN_HOST" iran.lab "$IRAN_PIN" abroad.crt abroad.key
+  probe_host iran 65536
+  echo "--- REVERSE revoked certificate: a revoked service-node certificate must be refused ---"
+  openssl ca -batch -config "$LOCAL_TMP/openssl.cnf" -revoke "$LOCAL_TMP/revabroad.crt" >/dev/null 2>&1
+  openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.crl" >/dev/null 2>&1
+  for side in iran abroad; do copy_to_host "$side" "$LOCAL_TMP/ca.crl"; done
+  stop_role abroad forward; stop_role iran serve; sleep 1
+  rev_public iran iran abroad "$REVABROAD_PIN" iran.crt iran.key
+  rev_service abroad abroad iran "$LAB_IRAN_HOST" iran.lab "$IRAN_PIN" revabroad.crt revabroad.key
+  sleep 4
+  ssh_host iran "grep -qi 'revok' '$REMOTE_DIR/serve.log'" || { echo "revoked service-node certificate was not rejected" >&2; exit 1; }
+  rev_expect_refused "a revoked certificate"
+  stop_role abroad forward; stop_role iran serve; sleep 1
+  start_echo iran
+  echo "REVERSE_RESULT engine=tcp-tls outbound_only=1 integrity_64k_2m=1 reconnect_service=1 reconnect_public=1 busy_port_refused=1 wrong_identity_refused=1 wrong_pin_refused=1 revoked_refused=1"
+fi
 
 if (( SETUP == 1 )); then
   echo "=== SETUP (P3-001 S4): clean directories configured only through 'setup', then engine switch ==="
@@ -731,29 +818,7 @@ if (( NOISE == 1 )); then
   fi
   stop_role iran forward
   stop_role abroad serve
-  sleep 1
-  echo "--- NOISE Reverse: abroad dials iran ---"
-  # The earlier TLS Reverse stage leaves its serve process on the Iran host; free the port first.
-  stop_role iran serve; stop_role abroad forward; sleep 1
-  NDIR=reverse
-  ROGUE2_NPUB="$(noise_pub abroad rogue2)"
-  [[ "$ROGUE2_NPUB" =~ ^[0-9a-f]{64}$ ]] || { echo "noise-keygen output invalid" >&2; exit 1; }
-  noise_serve iran iran abroad "$ABROAD_NPUB" iran
-  noise_forward abroad abroad iran "$LAB_IRAN_HOST" "$IRAN_NPUB" abroad
-  sleep 2
-  probe_host abroad 65536
-  probe_host abroad 2097289
-  stop_role abroad forward
-  noise_forward abroad abroad iran "$LAB_IRAN_HOST" "$IRAN_NPUB" rogue2
-  sleep 2
-  if probe_host abroad 65536 >/dev/null 2>&1; then
-    echo "Noise Reverse server accepted an unenrolled client key" >&2
-    exit 1
-  fi
-  echo "NOISE_RESULT direct_ok=1 direct_rogue_refused=1 reverse_ok=1 reverse_rogue_refused=1"
-  stop_role abroad forward
-  stop_role iran serve
-  NDIR=direct
+  echo "NOISE_RESULT direct_ok=1 direct_rogue_refused=1 (Reverse is judged separately, ADR-0021)"
 fi
 
-echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT (Direct, Reverse, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
+echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
