@@ -661,14 +661,14 @@ if (( BAFT == 1 )); then
   echo "--- BAFT revoked listener: the dialer must refuse a revoked listener certificate ---"
   # Control first: the same listener certificate works while it is not revoked (old CRL has only baftrev).
   baft_start abroad serve "$(baft_cfg serve revsrv iran b-revsrv.crt b-revsrv.key)"
-  baft_start iran forward "$(baft_cfg forward iran revsrv b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
+  baft_start iran forward "$(baft_cfg forward iran revsrv b-iran.crt b-iran.key "$LAB_ABROAD_HOST" revsrv.lab)"
   probe_host iran 65536
   stop_role iran forward; stop_role abroad serve; sleep 1
   openssl ca -batch -config "$LOCAL_TMP/openssl.cnf" -revoke "$LOCAL_TMP/b-revsrv.crt" >/dev/null 2>&1
   openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.crl" >/dev/null 2>&1
   for side in iran abroad; do copy_to_host "$side" "$LOCAL_TMP/ca.crl"; done
   baft_start abroad serve "$(baft_cfg serve revsrv iran b-revsrv.crt b-revsrv.key)"
-  baft_start iran forward "$(baft_cfg forward iran revsrv b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
+  baft_start iran forward "$(baft_cfg forward iran revsrv b-iran.crt b-iran.key "$LAB_ABROAD_HOST" revsrv.lab)"
   expect_refused iran "a revoked listener certificate"
   stop_role iran forward; stop_role abroad serve
   if (( BAFT_SYSTEMD == 1 )); then
