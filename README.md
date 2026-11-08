@@ -8,7 +8,7 @@ A security-first, Linux-native tunnel platform built around authenticated connec
 
 <br />
 
-**Private project · Rust core · TCP + TLS 1.3 · Direct / Reverse**
+**Public repository, all rights reserved · Rust core · TCP + TLS 1.3 · Direct / Reverse**
 
 </div>
 
@@ -27,28 +27,33 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 
 ## Project status
 
-<sub>Updated: 7 November 2026</sub>
+<sub>Updated: 8 November 2026 · evidence tied to `main` at `2d8cd5e`</sub>
 
 <blockquote>
-**Active development — Phase 1**
+**Active development — Phase 1, pre-release, not production-ready**
 
-The Rust TCP transport has passed a two-host LAB integrity test in both Direct and Reverse directions, including certificate-revocation checks. The Ubuntu 22.04 / systemd 249 baseline credential path (`LoadCredential=`) passes hosted CI and an isolated test on both LAB hosts (see the [implementation status](docs/PHASE1_IMPLEMENTATION_STATUS.md) for commits and runs). The project is a **pre-release and not production-ready**; long-duration soak, controlled network impairment, remote CRL distribution and CA/pin rollover remain open, and online enrollment is deferred. A separate independent security review was waived by the owner and has not been performed.
+- **Direct** is the supported mode. It passed the two-host LAB (Iran and abroad hosts, Ubuntu 22.04 / systemd 249) with 64 KiB and 2 MiB integrity checks, listener-restart recovery and certificate-revocation checks.
+- **Reverse** for `tcp-tls` is **implemented in the Rust core and configuration** (the service node dials out; the public node accepts and ingresses). It passed a dedicated two-host LAB run (see below). It is a **preview**: it is **not Stable**, the panel, wizard and capability API still report it as unavailable, and `noise-tcp` Reverse has not been tested.
+- The **BAFT engine** (pinned Go binary, separate process) passed a two-host LAB run under hardened systemd 249 units. It is still hidden from the wizard; the Engine Store is not yet read by the Launcher.
+- Still open: multi-hour soak, real packet-loss test, remote CRL distribution and CA/pin rollover, online enrollment, the Apply, Verify and Receipt lifecycle. An independent security review was waived by the owner and has **not** been performed.
 </blockquote>
 
 | Area | Current state |
 |---|---|
 | Architecture and threat model | Defined |
-| Rust TCP transport | Implemented; review and acceptance ongoing |
-| Direct + Reverse | Real two-host LAB evidence available |
+| Rust TCP transport (`tcp-tls`) | Implemented; review and acceptance ongoing |
+| Direct | Real two-host LAB evidence |
+| Reverse (`tcp-tls`) | Implemented; real two-host LAB PASS; preview, not Stable; not yet exposed in panel or wizard |
+| Reverse (`noise-tcp`) | Not tested |
 | Mutual TLS and peer identity | Implemented with negative tests |
 | Offline PKI and CRL revocation | Experimental; manual workflow |
 | Installer and systemd unit | Implemented; Ubuntu 22.04 / systemd 249 baseline passes CI and isolated LAB test |
-| Controlled SIGTERM / Ctrl-C shutdown | Implemented; bounded session close (20 seconds); active streams close on stop |
+| BAFT engine host | Pinned engine built and shipped in signed releases; LAB PASS under systemd 249; Engine Store to Launcher wiring open; hidden from the wizard |
+| Web panel and guided wizard | Read-only preview; Apply, Verify and Receipt not implemented |
 | Online enrollment / control plane | Not complete |
-| Web dashboard and guided wizard | Planned |
 | Production release | Not available |
 
-**Current engineering work:** [Phase 1 implementation PR #3](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/3)
+Project record: [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
 ## Security model
 
@@ -81,19 +86,16 @@ QUIC is a planned optional transport, not part of the current production data pl
 
 ## Verified LAB evidence
 
-The two-host test exercised the current Rust runtime on the configured Iran and abroad LAB hosts:
+All runs used the configured Iran and abroad LAB hosts with temporary files and processes only; cleanup passed. Each result is tied to one commit and one workflow run.
 
-| Test | Result |
-|---|---|
-| Direct forwarding | 2,097,289 bytes transferred; SHA-256 matched |
-| Reverse forwarding | Same byte count and SHA-256 |
-| Listener restart | Direct forwarding recovered; integrity probe passed |
-| Certificate revocation | Revoked client and server certificates rejected |
-| Cleanup | Temporary LAB processes and files cleaned up |
+| Run | Commit | Result |
+|---|---|---|
+| [42506805986](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42506805986) (Reverse, `tcp-tls`) | `2d8cd5e` | PASS: outbound-only service node, 64 KiB and 2 MiB integrity (SHA-256 matched), reconnect after restarting either node, busy port refused, wrong identity refused, wrong pin refused, revoked certificate refused, recovery after refusals; Direct and revocation checks also passed |
+| [42504156305](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42504156305) (BAFT engine) | `2d8cd5e` | PASS: Direct and BAFT's own reverse path with 2 MiB integrity, unauthorized identity, wrong pin, revoked client and revoked listener refused, bad binary hash refused to start, hardened systemd 249 units (`NoNewPrivileges`, `MemoryDenyWriteExecute`), listener-unit recovery and engine SIGKILL recovery |
 
-[View the real-host LAB run](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42246759289)
+Earlier "Reverse" LAB results (before 8 November 2026) tested a label only, not a reverse data path, and are **not** evidence for the current Reverse implementation (see [ADR-0021](docs/ADR-0021-connection-topology-and-reverse.md)).
 
-This is a bounded LAB result, not a production-readiness certification or a long-duration reliability claim.
+These are bounded LAB results, not a production-readiness certification or a long-duration reliability claim. Soak, real packet loss and `noise-tcp` Reverse are untested.
 
 ## Engineering principles
 
@@ -119,13 +121,15 @@ A phase is complete only when its acceptance evidence is reviewed. A roadmap ite
 
 ## Repository guide
 
-- [Architecture and component boundaries](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/ARCHITECTURE.md)
-- [Threat model](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/THREAT_MODEL.md)
-- [Security guide](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/SECURITY_GUIDE.md)
-- [Phase 1 implementation status and acceptance gaps](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/PHASE1_IMPLEMENTATION_STATUS.md)
-- [Operator guide](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/OPERATOR_GUIDE.md)
-- [Real-host LAB setup](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/phase1/rust-tcp-transport/docs/REAL_HOSTS_LAB.md)
-- [Open Phase 1 pull request](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/3)
+- [Architecture and component boundaries](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/ARCHITECTURE.md)
+- [Threat model](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/THREAT_MODEL.md)
+- [Security guide](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/SECURITY_GUIDE.md)
+- [Phase 1 implementation status and acceptance gaps](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/PHASE1_IMPLEMENTATION_STATUS.md)
+- [Operator guide](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/OPERATOR_GUIDE.md)
+- [Real-host LAB setup](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/REAL_HOSTS_LAB.md)
+- [Connection topology and Reverse (ADR-0021)](docs/ADR-0021-connection-topology-and-reverse.md)
+- [Product roadmap](docs/PRODUCT_ROADMAP.md)
+- [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2)
 - [Engineering guardrails](docs/ENGINEERING_GUARDRAILS.md)
 - [Product UX and installer acceptance](docs/PRODUCT_UX_ACCEPTANCE.md)
 - [Phase 0 two-host LAB instructions](docs/PHASE0_TWO_HOST_LAB.md)
@@ -133,7 +137,7 @@ A phase is complete only when its acceptance evidence is reviewed. A roadmap ite
 
 ## Repository access and use
 
-This is a private, owner-controlled project. No public open-source license is granted. Do not redistribute, sublicense, publish, or reuse this code without the owner's explicit written permission.
+The source is publicly viewable on GitHub, but this is an owner-controlled project and **no open-source license is granted**: all rights are reserved. Do not redistribute, sublicense, or reuse this code without the owner's explicit written permission.
 
 ---
 
