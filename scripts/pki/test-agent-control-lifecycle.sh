@@ -138,10 +138,10 @@ snapshot() {
     sudo iptables-save 2>/dev/null | grep -v '^#' | sed -E 's/\[[0-9]+:[0-9]+\]//' || true; } >"$TMP/fw-$1.txt"
   sha256sum <"$TMP/fw-$1.txt" | cut -d' ' -f1
   ss -ltnH | awk '{print $4}' | grep -vE ':(18090|18443|18444|18445|18081|18082|18099)$' | sort
-  # Units outside BAFT-TUNNEL. polkit.service is started on demand by the denied direct systemctl
-  # attempt in this test and the control slices belong to this helper's own services.
+  # Units outside BAFT-TUNNEL. Slices and scopes are skipped: the host agent and logins create them at
+  # any time. polkit.service is started on demand by the denied direct systemctl attempt in this test.
   systemctl list-units --all --plain --no-legend --state=active,failed 2>/dev/null | awk '{print $1}' \
-    | grep -vE '^(baft-tunnel|system-baft|polkit\.service)' | sort
+    | grep -E '\.(service|socket|path|timer)$' | grep -vE '^(baft-tunnel|polkit\.service|azure|walinuxagent|waagent|hv-|cloud-|session-|user@|systemd-(tmpfiles|journal-flush))' | sort
 }
 snapshot before >"$TMP/side-before.txt"
 
