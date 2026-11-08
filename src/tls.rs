@@ -23,7 +23,7 @@ fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
     Ok(items)
 }
 
-fn revocation_lists(path: &Path) -> Result<Vec<CertificateRevocationListDer<'static>>> {
+pub(crate) fn revocation_lists(path: &Path) -> Result<Vec<CertificateRevocationListDer<'static>>> {
     let file = File::open(path)
         .with_context(|| format!("open certificate revocation list {}", path.display()))?;
     let items = CertificateRevocationListDer::pem_reader_iter(BufReader::new(file))

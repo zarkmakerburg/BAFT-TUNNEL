@@ -340,6 +340,7 @@ Do not change: `StreamEngine`, `tcp-tls` and `noise-tcp` behaviour, authorizatio
 | R7 | Reverse-direction mapping unconfirmed | [INF] |
 | R8 | Binary size/dependencies (SQLite, utls) for unused features | audit in Phase B |
 | R9 | P4-001 touching `agent.rs`/`panel/` concurrently | sequence F after it |
+| R11 | BAFT enforces revocation on **listeners only** (`validateRevocation`, `internal/config/revocation.go:36`) and its revocation `identities` accept only the `urn:baft:node:` prefix. A dialer does not check revocation of the listener cert, and the converter uses serials. Mitigation: pins and short-lived listener certs; verify in LAB. | [SRC] |
 | R10 | Real packet loss, multi-hour soak, ADR-0017 distribution still open for the product | existing gates |
 
 ## 22. Exact next actions

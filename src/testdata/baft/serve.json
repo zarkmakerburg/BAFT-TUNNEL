@@ -1,0 +1,61 @@
+{
+  "limits": {
+    "data_memory_mib": 64,
+    "max_flows": 8,
+    "receive_initial_kib": 64,
+    "receive_max_mib": 8,
+    "replay_max_mib": 8
+  },
+  "logging": {
+    "level": "info",
+    "payload": false
+  },
+  "management": {
+    "metrics_listen": "127.0.0.1:9191",
+    "unix_socket": "/run/baft-tunnel/t1/admin.sock"
+  },
+  "node": {
+    "id": "abroad-1",
+    "role": "listener"
+  },
+  "recovery": {
+    "enabled": true,
+    "mode": "same_process",
+    "retention_seconds": 30
+  },
+  "revocation": {
+    "file": "/run/baft-tunnel/t1/revocation.json"
+  },
+  "routes": [
+    {
+      "allowed_peers": [
+        "urn:baft-tunnel:node:iran-1"
+      ],
+      "direction": "inbound",
+      "id": "svc-main",
+      "target": "127.0.0.1:2080",
+      "traffic_class": "interactive"
+    }
+  ],
+  "schema_version": 1,
+  "server": {
+    "allowed_peer_identities": [
+      "urn:baft-tunnel:node:iran-1"
+    ],
+    "listen": "198.51.100.10:8443",
+    "server_name": "abroad-1.baft-tunnel.invalid"
+  },
+  "tls": {
+    "ca_file": "/run/baft-tunnel/t1/ca.pem",
+    "cert_file": "/run/baft-tunnel/t1/node.pem",
+    "key_file": "/run/baft-tunnel/t1/node.key",
+    "min_version": "1.3",
+    "session_tickets": false
+  },
+  "transport": {
+    "h3_enabled": false,
+    "primary": "h2",
+    "profile": "secure-fast",
+    "shards": 1
+  }
+}
