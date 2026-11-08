@@ -472,14 +472,15 @@ stop_role abroad serve
 
 if (( NOISE == 1 )); then
   echo "=== NOISE-TCP: pinned static keys, no CA (Direct, then rogue key must be refused) ==="
+  NDIR=direct
   noise_pub() { ssh_host "$1" "'$REMOTE_DIR/baft-tunnel' noise-keygen --out '$REMOTE_DIR/$2.noise'" | tr -d '[:space:]'; }
   IRAN_NPUB="$(noise_pub iran iran)"; ABROAD_NPUB="$(noise_pub abroad abroad)"; ROGUE_NPUB="$(noise_pub iran rogue)"
   for v in "$IRAN_NPUB" "$ABROAD_NPUB" "$ROGUE_NPUB"; do [[ "$v" =~ ^[0-9a-f]{64}$ ]] || { echo "noise-keygen output invalid" >&2; exit 1; }; done
   noise_serve() { # side local_id peer_id peer_pub keyfile
-    ssh_host "$1" "printf '{\"mode\":\"serve\",\"engine\":\"noise-tcp\",\"direction\":\"direct\",\"listen\":\"0.0.0.0:$E2E_PORT\",\"target\":\"127.0.0.1:$ECHO_PORT\",\"local_id\":\"$2\",\"peer_id\":\"$3\",\"tunnel_id\":\"lab-e2e\",\"key\":\"$REMOTE_DIR/$5.noise\",\"noise_peer_public\":\"$4\",\"max_streams\":8}' > '$REMOTE_DIR/noise-serve.json'; nohup '$REMOTE_DIR/baft-tunnel' apply --config '$REMOTE_DIR/noise-serve.json' --confirm > '$REMOTE_DIR/serve.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/serve.pid'"
+    ssh_host "$1" "printf '{\"mode\":\"serve\",\"engine\":\"noise-tcp\",\"direction\":\"$NDIR\",\"listen\":\"0.0.0.0:$E2E_PORT\",\"target\":\"127.0.0.1:$ECHO_PORT\",\"local_id\":\"$2\",\"peer_id\":\"$3\",\"tunnel_id\":\"lab-e2e\",\"key\":\"$REMOTE_DIR/$5.noise\",\"noise_peer_public\":\"$4\",\"max_streams\":8}' > '$REMOTE_DIR/noise-serve.json'; nohup '$REMOTE_DIR/baft-tunnel' apply --config '$REMOTE_DIR/noise-serve.json' --confirm > '$REMOTE_DIR/serve.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/serve.pid'"
   }
   noise_forward() { # side local_id peer_id peer_host peer_pub keyfile
-    ssh_host "$1" "printf '{\"mode\":\"forward\",\"engine\":\"noise-tcp\",\"direction\":\"direct\",\"listen\":\"127.0.0.1:$LOCAL_PORT\",\"remote\":\"$4:$E2E_PORT\",\"local_id\":\"$2\",\"peer_id\":\"$3\",\"tunnel_id\":\"lab-e2e\",\"key\":\"$REMOTE_DIR/$6.noise\",\"noise_peer_public\":\"$5\",\"max_streams\":8}' > '$REMOTE_DIR/noise-forward.json'; nohup '$REMOTE_DIR/baft-tunnel' apply --config '$REMOTE_DIR/noise-forward.json' --confirm > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/forward.pid'"
+    ssh_host "$1" "printf '{\"mode\":\"forward\",\"engine\":\"noise-tcp\",\"direction\":\"$NDIR\",\"listen\":\"127.0.0.1:$LOCAL_PORT\",\"remote\":\"$4:$E2E_PORT\",\"local_id\":\"$2\",\"peer_id\":\"$3\",\"tunnel_id\":\"lab-e2e\",\"key\":\"$REMOTE_DIR/$6.noise\",\"noise_peer_public\":\"$5\",\"max_streams\":8}' > '$REMOTE_DIR/noise-forward.json'; nohup '$REMOTE_DIR/baft-tunnel' apply --config '$REMOTE_DIR/noise-forward.json' --confirm > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/forward.pid'"
   }
   noise_serve abroad abroad iran "$IRAN_NPUB" abroad
   noise_forward iran iran abroad "$LAB_ABROAD_HOST" "$ABROAD_NPUB" iran
@@ -494,9 +495,29 @@ if (( NOISE == 1 )); then
     echo "Noise server accepted an unenrolled client key" >&2
     exit 1
   fi
-  echo "NOISE_RESULT enrolled_ok=1 rogue_refused=1"
   stop_role iran forward
   stop_role abroad serve
+  sleep 1
+  echo "--- NOISE Reverse: abroad dials iran ---"
+  NDIR=reverse
+  ROGUE2_NPUB="$(noise_pub abroad rogue2)"
+  [[ "$ROGUE2_NPUB" =~ ^[0-9a-f]{64}$ ]] || { echo "noise-keygen output invalid" >&2; exit 1; }
+  noise_serve iran iran abroad "$ABROAD_NPUB" iran
+  noise_forward abroad abroad iran "$LAB_IRAN_HOST" "$IRAN_NPUB" abroad
+  sleep 2
+  probe_host abroad 65536
+  probe_host abroad 2097289
+  stop_role abroad forward
+  noise_forward abroad abroad iran "$LAB_IRAN_HOST" "$IRAN_NPUB" rogue2
+  sleep 2
+  if probe_host abroad 65536 >/dev/null 2>&1; then
+    echo "Noise Reverse server accepted an unenrolled client key" >&2
+    exit 1
+  fi
+  echo "NOISE_RESULT direct_ok=1 direct_rogue_refused=1 reverse_ok=1 reverse_rogue_refused=1"
+  stop_role abroad forward
+  stop_role iran serve
+  NDIR=direct
 fi
 
 echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER (Direct, Reverse, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
