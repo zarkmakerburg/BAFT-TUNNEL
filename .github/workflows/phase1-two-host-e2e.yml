@@ -33,6 +33,11 @@ on:
         required: false
         type: string
         default: '0'
+      setup:
+        description: Also run the guided-setup stage (init/join/apply on clean directories, then engine switch) (0 or 1)
+        required: false
+        type: string
+        default: '0'
       cleanup_stale:
         description: Only remove leftover temp processes/dirs of earlier runs of this test (0 or 1)
         required: false
@@ -87,6 +92,7 @@ jobs:
       LAB_LOSS_PERCENT: ${{ inputs.loss_percent }}
       LAB_NOISE: ${{ inputs.noise }}
       LAB_ROLLOVER: ${{ inputs.rollover }}
+      LAB_SETUP: ${{ inputs.setup }}
       LAB_CLEANUP_STALE: ${{ inputs.cleanup_stale }}
       LAB_E2E_PORT: '18300'
       LAB_E2E_LOCAL_PORT: '18080'

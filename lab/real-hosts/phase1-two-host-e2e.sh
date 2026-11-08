@@ -22,6 +22,8 @@ LOSS="${LAB_LOSS_PERCENT:-0}"
 [[ "$LOSS" =~ ^[0-9]+$ ]] && (( LOSS <= 20 )) || { echo "LAB_LOSS_PERCENT must be 0-20" >&2; exit 2; }
 LOSS_TABLE=baft_lab_loss
 NOISE="${LAB_NOISE:-0}"
+SETUP="${LAB_SETUP:-0}"
+[[ "$SETUP" == 0 || "$SETUP" == 1 ]] || { echo "LAB_SETUP must be 0 or 1" >&2; exit 2; }
 ROLLOVER="${LAB_ROLLOVER:-0}"
 [[ "$ROLLOVER" == 0 || "$ROLLOVER" == 1 ]] || { echo "LAB_ROLLOVER must be 0 or 1" >&2; exit 2; }
 [[ "$NOISE" == 0 || "$NOISE" == 1 ]] || { echo "LAB_NOISE must be 0 or 1" >&2; exit 2; }
@@ -114,7 +116,7 @@ cleanup() {
   fi
   for side in iran abroad; do
     if (( LOSS > 0 )); then ssh_host "$side" "nft delete table inet $LOSS_TABLE 2>/dev/null || true" || true; fi
-    ssh_host "$side" "for role in serve forward echo impair; do f='$REMOTE_DIR/'\$role'.pid'; if [ -s \"\$f\" ]; then kill \$(cat \"\$f\") 2>/dev/null || true; fi; done; sleep 0.2; rm -rf '$REMOTE_DIR'" || status=1
+    ssh_host "$side" "for role in serve forward echo echo2 impair; do f='$REMOTE_DIR/'\$role'.pid'; if [ -s \"\$f\" ]; then kill \$(cat \"\$f\") 2>/dev/null || true; fi; done; sleep 0.2; rm -rf '$REMOTE_DIR'" || status=1
   done
   rm -rf "$LOCAL_TMP"
   if (( status != 0 )); then
@@ -369,6 +371,59 @@ start_forward abroad abroad iran "$LAB_IRAN_HOST" iran.lab reverse "$IRAN_PIN" a
 probe_host abroad 65536
 probe_host abroad 2097289
 
+if (( SETUP == 1 )); then
+  echo "=== SETUP (P3-001 S4): clean directories configured only through 'setup', then engine switch ==="
+  SVC_PORT=18091; TPORT=18310; SEP="$REMOTE_DIR/setup"
+  stop_role iran serve; stop_role abroad serve; stop_role iran forward; stop_role abroad forward; sleep 1
+  ssh_host abroad "nohup python3 '$REMOTE_DIR/echo.py' '$SVC_PORT' > '$REMOTE_DIR/echo2.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/echo2.pid'"
+  OLD_LOCAL_PORT="$LOCAL_PORT"; LOCAL_PORT="$SVC_PORT"
+  BIN="$REMOTE_DIR/baft-tunnel"
+  # setup_pair ENGINE DIRNAME: runs init+join on both hosts and starts both processes.
+  # Per host the operator runs three commands: init, join, apply.
+  setup_pair() {
+    local engine="$1" name="$2" d="$SEP-$2" sum_a sum_i
+    ssh_host abroad "mkdir -p '$d'"; ssh_host iran "mkdir -p '$d'"
+    if [[ "$engine" == tcp-tls ]]; then
+      # Stand-ins for the baft-pki.sh output the operator would already have installed.
+      ssh_host abroad "cp '$REMOTE_DIR/abroad.crt' '$d/node.crt'; cp '$REMOTE_DIR/abroad.key' '$d/node.key'; cp '$REMOTE_DIR/ca.crt' '$REMOTE_DIR/ca.crl' '$d/'; chmod 600 '$d/node.key'"
+      ssh_host iran "cp '$REMOTE_DIR/iran.crt' '$d/node.crt'; cp '$REMOTE_DIR/iran.key' '$d/node.key'; cp '$REMOTE_DIR/ca.crt' '$REMOTE_DIR/ca.crl' '$d/'; chmod 600 '$d/node.key'"
+    fi
+    local common="--engine $engine --direction direct --tunnel-id lab-setup --service-port $SVC_PORT --tunnel-port $TPORT --dir '$d'"
+    sum_a="$(ssh_host abroad "'$BIN' setup init $common --role serve --node-id abroad --peer-id iran" | awk '/^Checksum/{print $NF}')"
+    sum_i="$(ssh_host iran "'$BIN' setup init $common --role forward --node-id iran --peer-id abroad --peer-host '$LAB_ABROAD_HOST'" | awk '/^Checksum/{print $NF}')"
+    [[ -n "$sum_a" && -n "$sum_i" ]] || { echo "setup init printed no checksum" >&2; exit 1; }
+    # Bundle transfer and the out-of-band checksum comparison are the operator's manual steps.
+    ssh_host abroad "cat '$d/bundle.json'" > "$LOCAL_TMP/bundle-abroad.json"
+    ssh_host iran "cat '$d/bundle.json'" > "$LOCAL_TMP/bundle-iran.json"
+    cp "$LOCAL_TMP/bundle-abroad.json" "$LOCAL_TMP/peer-bundle-abroad-$name.json"
+    cp "$LOCAL_TMP/bundle-iran.json" "$LOCAL_TMP/peer-bundle-iran-$name.json"
+    copy_to_host iran "$LOCAL_TMP/peer-bundle-abroad-$name.json"
+    copy_to_host abroad "$LOCAL_TMP/peer-bundle-iran-$name.json"
+    ssh_host abroad "'$BIN' setup join --dir '$d' --bundle '$REMOTE_DIR/peer-bundle-iran-$name.json' --checksum '$sum_i'"
+    ssh_host iran "'$BIN' setup join --dir '$d' --bundle '$REMOTE_DIR/peer-bundle-abroad-$name.json' --checksum '$sum_a'"
+    ssh_host abroad "nohup '$BIN' apply --config '$d/config.json' --confirm > '$REMOTE_DIR/serve.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/serve.pid'"
+    ssh_host iran "nohup '$BIN' apply --config '$d/config.json' --confirm > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/forward.pid'"
+    sleep 2
+    probe_host iran 65536
+    probe_host iran 2097289
+  }
+  t0=$SECONDS
+  setup_pair noise-tcp noise
+  noise_s=$((SECONDS - t0))
+  stop_role iran forward; stop_role abroad serve; sleep 1
+  t1=$SECONDS
+  setup_pair tcp-tls tls
+  switch_s=$((SECONDS - t1))
+  stop_role iran forward; stop_role abroad serve
+  ssh_host abroad "p=\$(cat '$REMOTE_DIR/echo2.pid' 2>/dev/null); [ -n \"\$p\" ] && kill \$p 2>/dev/null; true"
+  LOCAL_PORT="$OLD_LOCAL_PORT"
+  echo "SETUP_RESULT noise_install_s=$noise_s engine_switch_to_tls_s=$switch_s commands_per_host=3 (init, join, apply; bundle copy and checksum comparison are manual) probe_ok=1"
+  if (( switch_s > 60 )); then
+    echo "Engine switch took ${switch_s}s (limit 60s)" >&2
+    exit 1
+  fi
+fi
+
 if (( ROLLOVER == 1 )); then
   echo "=== ROLLOVER (ADR-0017 B1): two CAs with per-CA CRLs, two pins, then old CA removed ==="
   R="$LOCAL_TMP/ca2"; mkdir -p "$R/newcerts" "$R/bundle"
@@ -522,4 +577,4 @@ if (( NOISE == 1 )); then
   NDIR=direct
 fi
 
-echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER (Direct, Reverse, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
+echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP (Direct, Reverse, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
