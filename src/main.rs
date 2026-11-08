@@ -119,7 +119,7 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Run the read-only local status API (loopback only, bearer token). Does not start a tunnel.
+    /// Run the local API (loopback only, bearer token): status, and validated desired state storage. Never starts a tunnel or applies a config.
     Agent {
         #[arg(long)]
         config: PathBuf,
@@ -127,6 +127,9 @@ enum Command {
         token_file: PathBuf,
         #[arg(long, default_value = "127.0.0.1:18080")]
         listen: String,
+        /// Directory (must exist) for desired.json and audit.log; enables PUT/GET /v1/desired.
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
     },
 }
 
@@ -433,11 +436,12 @@ async fn main() -> Result<()> {
             config: path,
             token_file,
             listen,
+            state_dir,
         } => {
             let config = config::load(&path)?;
             config.validate()?;
             let token = agent::read_token(&token_file)?;
-            agent::run(config, agent::parse_listen(&listen)?, token).await
+            agent::run(config, agent::parse_listen(&listen)?, token, state_dir).await
         }
         Command::SupportBundle { config: path } => {
             let config = config::load(&path)?;

@@ -76,7 +76,7 @@ Not in MVP: central control plane, UDP/QUIC, camouflage sidecar, `baft` engine, 
 
 ## IN PROGRESS
 - **P3-001** `setup` CLI: plan written; S1 (`setup plan`) done (PR #42); S2 (`noise-tcp` init/join) done (PR #43); S3 (`tcp-tls` from `baft-pki.sh` output) done (PR #44); S4 (LAB) PASS, run 42461145830 on `54bebff`: noise-tcp install 38 s, engine switch to tcp-tls 42 s, 3 commands per host (bundle copy and checksum comparison manual). P3-001 closed.
-- **P3-002** Agent and local API: plan in [PLAN-P3-002-agent-api.md](PLAN-P3-002-agent-api.md); A1 (read-only status API) in review.
+- **P3-002** Agent and local API: plan in [PLAN-P3-002-agent-api.md](PLAN-P3-002-agent-api.md); A1 (read-only status API) done (PR #47); A2 (validated desired state + audit) in review; A3 (LAB) next.
 
 ## TO DO (priority order)
 1. **P3-001** slices S1 to S4 (plan file).
