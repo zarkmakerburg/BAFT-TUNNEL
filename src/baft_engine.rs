@@ -11,18 +11,17 @@ use std::{
     net::{IpAddr, SocketAddr},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    process::Stdio,
     time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::process::Command;
 
 use crate::{
     config::{BaftSettings, RuntimeConfig, private_key_path},
     handshake::validate_identity,
+    runtime_host::ChildSpec,
 };
 
 /// BAFT refuses this port for transport, routes and metrics.
@@ -400,71 +399,48 @@ pub fn prepare_bundle(cfg: &RuntimeConfig, runtime_dir: &Path, now_unix: i64) ->
 
 /// Refuse a BAFT binary whose SHA-256 differs from the pinned value, or that others can write.
 pub fn verify_binary(settings: &BaftSettings) -> Result<()> {
-    let meta = fs::metadata(&settings.binary)
-        .with_context(|| format!("stat {}", settings.binary.display()))?;
-    if !meta.is_file() || meta.permissions().mode() & 0o022 != 0 {
-        bail!("baft binary must be a regular file not writable by group or other");
-    }
-    let digest = hex::encode(Sha256::digest(
-        fs::read(&settings.binary).context("read baft binary")?,
-    ));
-    if !digest.eq_ignore_ascii_case(&settings.sha256) {
-        bail!("baft binary SHA-256 does not match the pinned value; refusing to start it");
-    }
-    Ok(())
+    crate::runtime_host::verify_artifact(&settings.binary, &settings.sha256)
 }
 
-/// Run `baft config validate`, then `baft run`, until `shutdown` resolves or the child exits.
-/// The child gets an empty environment and no stdin. On shutdown it receives SIGTERM and,
-/// after `grace`, SIGKILL. A child exit is always an error: the tunnel is down, never healthy.
-pub async fn supervise(
-    binary: &Path,
-    config_file: &Path,
-    shutdown: impl std::future::Future<Output = ()>,
-    grace: Duration,
-) -> Result<()> {
-    let validated = Command::new(binary)
-        .args(["config", "validate", "--file"])
-        .arg(config_file)
-        .env_clear()
-        .stdin(Stdio::null())
-        .status()
-        .await
-        .context("run baft config validate")?;
-    if !validated.success() {
-        bail!("baft rejected the rendered configuration: {validated}");
-    }
-    let mut child = Command::new(binary)
-        .args(["run", "--file"])
-        .arg(config_file)
-        .env_clear()
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .context("start baft")?;
-    tokio::pin!(shutdown);
-    tokio::select! {
-        status = child.wait() => bail!("baft exited unexpectedly: {}", status?),
-        () = &mut shutdown => {
-            if let Some(pid) = child.id() {
-                // SIGTERM lets BAFT drain; SIGKILL follows after `grace`.
-                // SAFETY: plain kill(2) on the pid of a child this function owns.
-                unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-            }
-            if tokio::time::timeout(grace, child.wait()).await.is_err() {
-                child.kill().await.ok();
-            }
-            Ok(())
-        }
+/// The BAFT adapter's start recipe for the generic runtime host: `baft config validate`
+/// first, `baft run` second, ready when the local listener accepts TCP.
+pub fn child_spec(binary: &Path, config_file: &Path, listen: SocketAddr) -> ChildSpec {
+    let file = config_file.display().to_string();
+    let ready_ip = if listen.ip().is_unspecified() {
+        std::net::Ipv4Addr::LOCALHOST.into()
+    } else {
+        listen.ip()
+    };
+    ChildSpec {
+        binary: binary.to_path_buf(),
+        validate_args: Some(vec![
+            "config".into(),
+            "validate".into(),
+            "--file".into(),
+            file.clone(),
+        ]),
+        run_args: vec!["run".into(), "--file".into(), file],
+        ready_addr: SocketAddr::new(ready_ip, listen.port()),
+        ready_timeout: Duration::from_secs(30),
+        // Covers the dialer giving up after BAFT's recovery retention (risk R14).
+        max_restarts: 5,
+        restart_window: Duration::from_secs(300),
+        grace: Duration::from_secs(10),
     }
 }
 
 /// `apply` entry for engine `baft`: verify the pinned binary, build the bundle, supervise.
 pub async fn run(cfg: RuntimeConfig) -> Result<()> {
-    let settings = match &cfg {
-        RuntimeConfig::Serve { baft, .. } | RuntimeConfig::Forward { baft, .. } => baft
-            .clone()
-            .context("engine baft requires a baft section")?,
+    let (settings, listen) = match &cfg {
+        RuntimeConfig::Serve { baft, listen, .. } | RuntimeConfig::Forward { baft, listen, .. } => {
+            (
+                baft.clone()
+                    .context("engine baft requires a baft section")?,
+                listen
+                    .parse::<SocketAddr>()
+                    .context("listen must be an ip:port address")?,
+            )
+        }
     };
     verify_binary(&settings)?;
     let runtime_dir = std::env::var("RUNTIME_DIRECTORY")
@@ -477,9 +453,8 @@ pub async fn run(cfg: RuntimeConfig) -> Result<()> {
         .as_secs() as i64;
     let bundle = prepare_bundle(&cfg, &runtime_dir, now)?;
     eprintln!("Starting the pinned BAFT engine; payload stays inside that process.");
-    supervise(
-        &settings.binary,
-        &bundle.config_file,
+    crate::runtime_host::supervise(
+        &child_spec(&settings.binary, &bundle.config_file, listen),
         async {
             let mut term =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -489,7 +464,7 @@ pub async fn run(cfg: RuntimeConfig) -> Result<()> {
                 _ = tokio::signal::ctrl_c() => {},
             }
         },
-        Duration::from_secs(10),
+        |phase| eprintln!("baft engine phase: {phase:?}"),
     )
     .await
 }
@@ -883,55 +858,6 @@ mod tests {
         assert!(verify_binary(&wrong).is_err());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o775)).unwrap();
         assert!(verify_binary(&settings).is_err());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn supervise_stops_the_child_on_shutdown() {
-        let dir = temp_dir("sup-ok");
-        let bin = script(
-            &dir,
-            "if [ \"$1\" = config ]; then exit 0; fi\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done",
-            0o755,
-        );
-        let cfg = write_file(&dir, "baft.json", b"{}");
-        let started = std::time::Instant::now();
-        supervise(
-            &bin,
-            &cfg,
-            tokio::time::sleep(Duration::from_millis(300)),
-            Duration::from_secs(5),
-        )
-        .await
-        .unwrap();
-        assert!(started.elapsed() < Duration::from_secs(4));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn supervise_reports_rejected_config_and_unexpected_exit() {
-        let dir = temp_dir("sup-bad");
-        let cfg = write_file(&dir, "baft.json", b"{}");
-        let reject = script(&dir, "exit 3", 0o755);
-        assert!(
-            supervise(
-                &reject,
-                &cfg,
-                std::future::pending(),
-                Duration::from_secs(1)
-            )
-            .await
-            .is_err()
-        );
-        let dies = script(
-            &dir,
-            "if [ \"$1\" = config ]; then exit 0; fi\nexit 7",
-            0o755,
-        );
-        let error = supervise(&dies, &cfg, std::future::pending(), Duration::from_secs(1))
-            .await
-            .unwrap_err();
-        assert!(format!("{error:#}").contains("exited unexpectedly"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
