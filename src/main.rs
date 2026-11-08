@@ -146,6 +146,42 @@ enum SetupCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Create this node's key and a public pairing bundle (noise-tcp). Never overwrites.
+    Init {
+        #[arg(long, value_enum)]
+        engine: config::EngineKind,
+        #[arg(long, value_enum)]
+        role: setup::Role,
+        #[arg(long, value_enum)]
+        direction: ConnectionDirection,
+        #[arg(long)]
+        node_id: String,
+        #[arg(long)]
+        peer_id: String,
+        #[arg(long)]
+        tunnel_id: String,
+        #[arg(long)]
+        service_port: u16,
+        #[arg(long, default_value_t = setup::DEFAULT_TUNNEL_PORT)]
+        tunnel_port: u16,
+        #[arg(long)]
+        peer_host: Option<String>,
+        #[arg(long, default_value = "/etc/baft-tunnel")]
+        dir: PathBuf,
+        /// Where to write the public bundle (default: DIR/bundle.json).
+        #[arg(long)]
+        bundle_out: Option<PathBuf>,
+    },
+    /// Check the peer's bundle (and the checksum you compared out of band) and write config.json.
+    Join {
+        #[arg(long, default_value = "/etc/baft-tunnel")]
+        dir: PathBuf,
+        #[arg(long)]
+        bundle: PathBuf,
+        /// Checksum printed by `setup init` on the peer node.
+        #[arg(long)]
+        checksum: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -310,6 +346,62 @@ async fn main() -> Result<()> {
                     println!("  - {item}");
                 }
             }
+            Ok(())
+        }
+        Command::Setup {
+            command:
+                SetupCommand::Init {
+                    engine,
+                    role,
+                    direction,
+                    node_id,
+                    peer_id,
+                    tunnel_id,
+                    service_port,
+                    tunnel_port,
+                    peer_host,
+                    dir,
+                    bundle_out,
+                },
+        } => {
+            let result = setup::init(
+                &setup::PlanRequest {
+                    engine,
+                    role,
+                    direction,
+                    node_id,
+                    peer_id,
+                    tunnel_id,
+                    service_port,
+                    tunnel_port,
+                    peer_host,
+                    server_name: None,
+                    dir,
+                },
+                bundle_out.as_deref(),
+            )?;
+            println!("Key created (mode 0600, never exported).");
+            println!("Public bundle: {}", result.bundle_path.display());
+            println!(
+                "Checksum (compare with the other node out of band): {}",
+                result.checksum
+            );
+            Ok(())
+        }
+        Command::Setup {
+            command:
+                SetupCommand::Join {
+                    dir,
+                    bundle,
+                    checksum,
+                },
+        } => {
+            let path = setup::join(&dir, &bundle, &checksum)?;
+            println!("Configuration written: {}", path.display());
+            println!(
+                "Review it with: baft-tunnel config plan --config {}",
+                path.display()
+            );
             Ok(())
         }
         Command::NoiseKeygen { out } => {
