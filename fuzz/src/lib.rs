@@ -26,6 +26,8 @@ pub mod key_custody;
 pub mod noise;
 #[path = "../../src/runtime_host.rs"]
 pub mod runtime_host;
+#[path = "../../src/session_status.rs"]
+pub mod session_status;
 #[path = "../../src/setup.rs"]
 pub mod setup;
 #[path = "../../src/tls.rs"]
