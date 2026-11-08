@@ -75,7 +75,7 @@ No engine is claimed undetectable.
 Not in MVP: central control plane, UDP/QUIC, camouflage sidecar, `baft` engine, fallback supervisor, multi-hour soak (P6).
 
 ## IN PROGRESS
-- **P3-001** `setup` CLI: plan written; slice S1 (`setup plan`) implemented, in review. S2 is next.
+- **P3-001** `setup` CLI: plan written; S1 (`setup plan`) done (PR #42); S2 (`setup init` / `setup join` for `noise-tcp`, pairing bundle with checksum) implemented, in review; S3 (tcp-tls) and S4 (LAB) next.
 
 ## TO DO (priority order)
 1. **P3-001** slices S1 to S4 (plan file).
