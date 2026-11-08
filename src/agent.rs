@@ -457,7 +457,7 @@ async fn preflight(body: &[u8]) -> (u16, Value) {
             checks.push(check(
                 "direction_support",
                 "blocked",
-                format!("the {direction} direction is not offered for {} in this build (Reverse is a preview on tcp-tls only; Noise Reverse is unproven)", req.engine.as_str()),
+                format!("the {direction} direction is not operational for {} in this build (no real data path has been proven for it)", req.engine.as_str()),
             ));
         }
     }
@@ -636,7 +636,7 @@ fn remediation(id: &str) -> &'static str {
     match id {
         "planner" => "Fix the highlighted setting; the same rule applies on the command line.",
         "direction_support" => {
-            "Choose a direction this engine offers: Direct, or Reverse with tcp-tls (preview)."
+            "Choose the Direct direction, or tcp-tls for the Reverse preview; Reverse is not available for this engine yet."
         }
         "directory" => "Create the setup directory or choose another one.",
         "existing_pairing" => {
@@ -1338,7 +1338,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preflight_blocks_noise_reverse_because_it_is_unproven() {
+    async fn preflight_blocks_noise_reverse_because_it_is_not_proven() {
         let body = plan_body("/nonexistent-baft-dir").replace("\"direct\"", "\"reverse\"");
         let (_, out) = call(None, "POST", "/v1/setup/preflight", Some(TOKEN), &body).await;
         let v: Value = serde_json::from_str(&out[out.find('{').unwrap()..]).unwrap();
@@ -1411,6 +1411,22 @@ mod tests {
         let (code, again) = call(Some(&state), "POST", "/v1/setup/apply", Some(TOKEN), &ok).await;
         assert_eq!(code, 200);
         assert!(again.contains("\"replayed\":true"));
+    }
+
+    #[tokio::test]
+    async fn preflight_accepts_tcp_tls_reverse_as_a_preview_direction() {
+        let body = plan_body("/nonexistent-baft-dir")
+            .replace("\"direct\"", "\"reverse\"")
+            .replace("noise-tcp", "tcp-tls");
+        let (_, out) = call(None, "POST", "/v1/setup/preflight", Some(TOKEN), &body).await;
+        let v: Value = serde_json::from_str(&out[out.find('{').unwrap()..]).unwrap();
+        let c = v["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "direction_support")
+            .unwrap();
+        assert_eq!(c["result"], "pass", "{out}");
     }
 
     fn plan_body(dir: &str) -> String {

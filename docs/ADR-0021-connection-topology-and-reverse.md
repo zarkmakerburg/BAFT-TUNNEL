@@ -78,3 +78,5 @@ Deliveries:
 - **R3**: reconnect, wrong identity, wrong pin, revoked certificate, busy port, agent restart, cleanup; Noise judged separately.
 
 Evidence so far: in-process test only (256 KiB round trip, recovery after service-node restart, direction mismatch refused). That is local evidence, not LAB.
+
+**Evidence (2026-11-08):** two-host LAB run 42506805986 (main `2d8cd5e`, `reverse=1`, tcp-tls) passed every Reverse check (outbound-only service node, 64 KiB/2 MiB integrity, reconnect of both nodes, busy port, wrong identity, wrong pin, revoked certificate). Reverse is therefore offered for tcp-tls as a **preview**; stable/production status and noise-tcp Reverse remain unclaimed.

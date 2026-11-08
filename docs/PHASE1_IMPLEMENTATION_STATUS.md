@@ -360,3 +360,9 @@ Added `scripts/pki/push-crl.sh` (stages the CRL on each node over SSH and runs t
 - The preflight check asserts `applied:false`, `apply_available:false`, planner pass, peer reachability and firewall unknown (never pass).
 - Lesson: LAB hosts are shared. Concurrent runs from different threads collide (port 18300 in use; `cleanup_stale` kills other runs' processes and only cleans, it does not run the test). Dispatch one run at a time and wait for the other thread.
 - Not covered: the outbound peer reachability probe (#71) and the `/v1/engines` capability contract on real hosts.
+
+## Reverse (ADR-0021 Amendment 1) real two-host LAB, 2026-11-08
+
+- Run [42506805986](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42506805986) on main `2d8cd5e`, `reverse=1`, tcp-tls: `REVERSE_RESULT engine=tcp-tls outbound_only=1 integrity_64k_2m=1 reconnect_service=1 reconnect_public=1 busy_port_refused=1 wrong_identity_refused=1 wrong_pin_refused=1 revoked_refused=1`; `PHASE1_TWO_HOST_E2E=PASS ... reverse=1`.
+- The service node dials out only (no listener on the tunnel port, one established outbound connection); 64 KiB and 2 MiB payloads kept their SHA-256 through the user ingress on the public node; both nodes recovered after a restart; a second public node on a busy port failed without disturbing the first; a valid certificate of another node, a wrong pin and a revoked certificate were refused.
+- Capabilities, wizard and preflight now offer Reverse for **tcp-tls as a preview only**. It is NOT stable or production-ready: one LAB run, no soak, no packet loss, no agent-restart scenario. `noise-tcp` Reverse has no real data-path evidence and stays unavailable. The older "reverse" results (including `NOISE_RESULT reverse_ok=1`) were label-acceptance only.
