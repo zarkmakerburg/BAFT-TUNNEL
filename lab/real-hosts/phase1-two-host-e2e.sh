@@ -122,6 +122,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Operator-requested recovery: remove ONLY leftovers of earlier runs of this script
+# (/tmp/baft-tunnel-e2e-* directories and the processes recorded in their pid files).
+if [[ "${LAB_CLEANUP_STALE:-0}" == 1 ]]; then
+  for side in iran abroad; do
+    ssh_host "$side" "for f in /tmp/baft-tunnel-e2e-*/*.pid; do [ -s \"\$f\" ] && kill \$(cat \"\$f\") 2>/dev/null; done; sleep 1; rm -rf /tmp/baft-tunnel-e2e-*; echo CLEANUP_STALE_DONE" || true
+  done
+  exit 0
+fi
+
 # Generate a short-lived private LAB CA, two node certificates, and an authenticated CRL.
 # The CA key stays on the runner; the CRL is mandatory on both TLS peers.
 mkdir -p "$LOCAL_TMP/newcerts"
