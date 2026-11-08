@@ -14,6 +14,8 @@ pub mod capabilities;
 pub mod config;
 #[path = "../../src/engine.rs"]
 pub mod engine;
+#[path = "../../src/engine_store.rs"]
+pub mod engine_store;
 #[path = "../../src/handshake.rs"]
 pub mod handshake;
 #[path = "../../src/key_custody.rs"]

@@ -401,6 +401,18 @@ pub fn verify_binary(settings: &BaftSettings) -> Result<()> {
     crate::runtime_host::verify_artifact(&settings.binary, &settings.sha256)
 }
 
+/// The binary the launcher runs: the engine store's verified `current` release when
+/// `baft.store` is set (it must have the configured pin), else the pinned `baft.binary`.
+pub fn resolve_binary(settings: &BaftSettings) -> Result<PathBuf> {
+    match &settings.store {
+        Some(store) => crate::engine_store::resolve_for_launch(store, "baft", &settings.sha256),
+        None => {
+            verify_binary(settings)?;
+            Ok(settings.binary.clone())
+        }
+    }
+}
+
 /// The BAFT adapter's start recipe for the generic runtime host: `baft config validate`
 /// first, `baft run` second, ready when the local listener accepts TCP.
 pub fn child_spec(binary: &Path, config_file: &Path, listen: SocketAddr) -> ChildSpec {
@@ -441,7 +453,7 @@ pub async fn run(cfg: RuntimeConfig) -> Result<()> {
             )
         }
     };
-    verify_binary(&settings)?;
+    let binary = resolve_binary(&settings)?;
     let runtime_dir = std::env::var("RUNTIME_DIRECTORY")
         .ok()
         .and_then(|value| value.split(':').next().map(PathBuf::from))
@@ -453,7 +465,7 @@ pub async fn run(cfg: RuntimeConfig) -> Result<()> {
     let bundle = prepare_bundle(&cfg, &runtime_dir, now)?;
     eprintln!("Starting the pinned BAFT engine; payload stays inside that process.");
     crate::runtime_host::supervise(
-        &child_spec(&settings.binary, &bundle.config_file, listen),
+        &child_spec(&binary, &bundle.config_file, listen),
         async {
             let mut term =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -904,11 +916,13 @@ mod tests {
         let settings = BaftSettings {
             binary: path.clone(),
             sha256: good.clone(),
+            store: None,
         };
         verify_binary(&settings).unwrap();
         let wrong = BaftSettings {
             binary: path.clone(),
             sha256: "0".repeat(64),
+            store: None,
         };
         assert!(verify_binary(&wrong).is_err());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o775)).unwrap();
