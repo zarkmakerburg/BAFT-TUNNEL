@@ -338,5 +338,5 @@ A task is complete only when all applicable rows are satisfied:
 - [Phase 1 implementation evidence](PHASE1_IMPLEMENTATION_STATUS.md)
 - [ADR-0021: connection topology and Reverse](ADR-0021-connection-topology-and-reverse.md)
 - [ADR-0022: Apply, Verify, Receipt](ADR-0022-apply-verify-receipt.md)
-- [ADR-0023: agent control helper](ADR-0023-agent-control-helper.md) — proposed in PR #88, not merged at this baseline
+- [PR #88 — agent control helper](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/88) — proposed, not merged at this baseline
 - [BAFT engine integration design](BAFT_ENGINE_INTEGRATION_DESIGN.md)
