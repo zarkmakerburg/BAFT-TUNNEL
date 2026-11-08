@@ -25,6 +25,15 @@ pub enum EngineKind {
     NoiseTcp,
 }
 
+impl EngineKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TcpTls => "tcp-tls",
+            Self::NoiseTcp => "noise-tcp",
+        }
+    }
+}
+
 const CRL_WARNING_SECONDS: i64 = 24 * 3600;
 
 fn default_max_streams() -> usize {
@@ -256,6 +265,11 @@ impl RuntimeConfig {
                 security_description(*engine)
             ),
         }
+    }
+
+    pub fn engine_name(&self) -> &'static str {
+        let (Self::Serve { engine, .. } | Self::Forward { engine, .. }) = self;
+        engine.as_str()
     }
 
     pub fn listen_addr(&self) -> &str {

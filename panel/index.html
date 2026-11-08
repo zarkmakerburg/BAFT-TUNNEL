@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BAFT-TUNNEL</title>
+<link rel="stylesheet" href="/panel.css">
+</head>
+<body>
+<header>
+  <h1>BAFT-TUNNEL</h1>
+  <button id="lang" type="button">English</button>
+</header>
+<main>
+  <section id="login">
+    <label><span data-i18n="token">Token</span>
+      <input id="token" type="password" autocomplete="off"></label>
+    <button id="connect" type="button" data-i18n="connect">Connect</button>
+    <p id="login-error" class="error" hidden></p>
+  </section>
+  <div id="app" hidden>
+    <section>
+      <h2 data-i18n="status">Status</h2>
+      <p><span id="badge" class="badge"></span></p>
+      <dl id="status-list"></dl>
+    </section>
+    <section>
+      <h2 data-i18n="desired">Stored desired state</h2>
+      <p id="desired-text"></p>
+    </section>
+    <section>
+      <h2 data-i18n="wizard">Setup wizard</h2>
+      <form id="wizard">
+        <label><span data-i18n="engine">Engine</span>
+          <select name="engine">
+            <option value="tcp-tls">tcp-tls (TLS 1.3 mTLS)</option>
+            <option value="noise-tcp">noise-tcp (experimental)</option>
+          </select></label>
+        <label><span data-i18n="direction">Direction</span>
+          <select name="direction">
+            <option value="direct" data-i18n="direct">Direct</option>
+            <option value="reverse" data-i18n="reverse">Reverse</option>
+          </select></label>
+        <label><span data-i18n="role">This host</span>
+          <select name="role">
+            <option value="serve" data-i18n="serve">Hosts the service</option>
+            <option value="forward" data-i18n="forward">Users connect here</option>
+          </select></label>
+        <label><span data-i18n="port">Service port</span>
+          <input name="service_port" type="number" min="1024" max="65535" value="8080" required></label>
+        <label id="peer-host-row"><span data-i18n="peer_host">Peer IP address</span>
+          <input name="peer_host" inputmode="decimal" autocomplete="off"></label>
+        <label id="server-name-row"><span data-i18n="server_name">Peer certificate name</span>
+          <input name="server_name" autocomplete="off"></label>
+        <details>
+          <summary data-i18n="advanced">Advanced (defaults are fine)</summary>
+          <label>node_id <input name="node_id" value="node-a"></label>
+          <label>peer_id <input name="peer_id" value="node-b"></label>
+          <label>tunnel_id <input name="tunnel_id" value="tunnel-1"></label>
+          <label>tunnel_port <input name="tunnel_port" type="number" min="1024" max="65535" value="8443"></label>
+          <label>dir <input name="dir" value="/etc/baft-tunnel"></label>
+        </details>
+        <button type="submit" data-i18n="plan">Show plan</button>
+      </form>
+      <p id="wizard-error" class="error" hidden></p>
+      <div id="plan" hidden>
+        <h3 data-i18n="commands">Run these commands on this host</h3>
+        <pre id="plan-commands"></pre>
+        <h3 data-i18n="files">Files</h3>
+        <pre id="plan-files"></pre>
+        <h3 data-i18n="pending">Still needed</h3>
+        <pre id="plan-pending"></pre>
+      </div>
+    </section>
+  </div>
+</main>
+<script src="/panel.js"></script>
+</body>
+</html>

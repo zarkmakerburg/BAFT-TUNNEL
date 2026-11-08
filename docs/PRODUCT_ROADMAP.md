@@ -45,8 +45,9 @@ Evidence kinds are kept apart: **code** (in main), **CI** (hosted runners, Ubunt
 | Adversarial handshake tests | yes | yes | n/a | P1-003 |
 | Fuzz targets | **no** | no | n/a | P1-005 open; no `fuzz/` directory |
 | Engine trait, `engine:` config | yes (ADR-0018) | yes | covered by TLS runs | no fallbacks or supervisor |
-| Agent, local API, `setup` CLI, enrollment | **no** | no | no | Phase 3 not started |
-| Web panel | mockup only (draft PR #17, fake data) | no | no | no backend |
+| `setup` CLI | yes (S1 to S4) | yes | PASS run 42461145830 (noise 38 s, switch 42 s) and run 42466445718 (tcp-tls from real `baft-pki.sh` output) | enrollment (online) not planned for MVP |
+| Agent and local API (read-only status, validated desired state, audit) | yes (A1 to A3) | yes | PASS run 42466445718 (`applied=0`: the agent never applies) | loopback only, bearer token |
+| Web panel and wizard | yes (P4-001 W1/W2, no build chain, served by the agent) | unit tests + headless browser check | not yet | wizard shows the plan and exact commands; it does not run setup |
 | Signed release, upgrade, rollback | release pipeline and `rollback.sh` yes | partial | no | no automated upgrade/rollback test |
 | Independent security review | waived by owner, not performed | | | |
 
@@ -76,6 +77,7 @@ Not in MVP: central control plane, UDP/QUIC, camouflage sidecar, `baft` engine, 
 
 ## IN PROGRESS
 - **P3-001** `setup` CLI: plan written; S1 (`setup plan`) done (PR #42); S2 (`noise-tcp` init/join) done (PR #43); S3 (`tcp-tls` from `baft-pki.sh` output) done (PR #44); S4 (LAB) PASS, run 42461145830 on `54bebff`: noise-tcp install 38 s, engine switch to tcp-tls 42 s, 3 commands per host (bundle copy and checksum comparison manual). P3-001 closed.
+- **P4-001** Panel and wizard: plan in [PLAN-P4-001-panel.md](PLAN-P4-001-panel.md); W1 (panel served by the agent) and W2 (wizard backed by `POST /v1/setup/plan`) in review; W3 (LAB) next.
 - **P3-002** Agent and local API: plan in [PLAN-P3-002-agent-api.md](PLAN-P3-002-agent-api.md); A1 (read-only status API) done (PR #47); A2 (validated desired state + audit) done (PR #48); A3 (LAB) PASS, run 42466445718 on `d05b727`. P3-002 closed; next P4-001 panel on the API.
 
 ## TO DO (priority order)
@@ -96,7 +98,8 @@ Soak beyond 1 h; `push-crl.sh` on real hosts; Noise under packet loss and soak; 
 | Phase 1 core (runtime, mTLS, PKI, installer, 22.04 path, E2E, soak, loss, rollover) | PASS with documented exceptions |
 | Fuzz targets in CI | OPEN (P1-005) |
 | Second engine with equal evidence | PASS (M0, Direct and Reverse) |
-| Guided setup, API, panel | NOT STARTED (P3-001 next) |
+| Guided setup, API | PASS (P3-001, P3-002 LAB) |
+| Panel and wizard | IN PROGRESS (P4-001; LAB check pending) |
 | Upgrade and rollback test | OPEN (R-001) |
 | MVP v0.2.0 | NOT DONE |
 | Production release | NOT DONE |
