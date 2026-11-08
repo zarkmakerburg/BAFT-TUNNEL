@@ -256,7 +256,9 @@ impl Units for SystemUnits {
         if !valid_instance(name) || main_pid == 0 {
             return None;
         }
-        let path = Path::new("/run/baft-tunnel").join(name).join("session.json");
+        let path = Path::new("/run/baft-tunnel")
+            .join(name)
+            .join("session.json");
         let meta = std::fs::symlink_metadata(&path).ok()?;
         if !meta.is_file() || meta.len() > 4096 {
             return None;
@@ -1010,7 +1012,11 @@ mod tests {
         assert_eq!(out["stages"]["authenticated_peer"], "unknown");
         assert_eq!(out["stages"]["data_path_integrity"], "unknown");
         assert_eq!(out["ready"], "unknown");
-        assert!(out["not_done"].to_string().contains("no authorized peer session"));
+        assert!(
+            out["not_done"]
+                .to_string()
+                .contains("no authorized peer session")
+        );
     }
 
     #[test]

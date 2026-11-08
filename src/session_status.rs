@@ -12,7 +12,15 @@ pub const FILE: &str = "session.json";
 
 fn dir() -> Option<PathBuf> {
     std::env::var_os("RUNTIME_DIRECTORY")
-        .map(|v| PathBuf::from(v.to_string_lossy().split(':').next().unwrap_or("").to_owned()))
+        .map(|v| {
+            PathBuf::from(
+                v.to_string_lossy()
+                    .split(':')
+                    .next()
+                    .unwrap_or("")
+                    .to_owned(),
+            )
+        })
         .filter(|p| p.is_absolute() && p.is_dir())
 }
 
