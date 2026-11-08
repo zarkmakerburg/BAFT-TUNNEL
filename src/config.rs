@@ -61,7 +61,15 @@ pub(crate) fn default_max_streams() -> usize {
 pub enum RuntimeConfig {
     Serve {
         listen: String,
+        /// Direct: the fixed destination dialled per stream. Empty for Reverse.
+        #[serde(default)]
         target: String,
+        /// Reverse only (ADR-0021): the user-facing ingress listener on this (public) node.
+        #[serde(default)]
+        ingress: String,
+        /// Reverse only: allow `ingress` on a non-loopback address (explicit, unauthenticated).
+        #[serde(default)]
+        allow_non_loopback_ingress: bool,
         local_id: String,
         peer_id: String,
         tunnel_id: String,
@@ -87,7 +95,12 @@ pub enum RuntimeConfig {
         baft: Option<BaftSettings>,
     },
     Forward {
+        /// Direct: local ingress listener. Empty for Reverse (the peer owns the ingress).
+        #[serde(default)]
         listen: String,
+        /// Reverse only (ADR-0021): the local service this (service) node relays streams to.
+        #[serde(default)]
+        target: String,
         remote: String,
         #[serde(default)]
         server_name: String,
@@ -127,10 +140,12 @@ impl RuntimeConfig {
             Self::Serve {
                 listen,
                 target,
+                ingress,
+                allow_non_loopback_ingress,
                 local_id,
                 peer_id,
                 tunnel_id,
-                direction: _,
+                direction,
                 peer_fingerprint,
                 ca,
                 crl,
@@ -144,7 +159,26 @@ impl RuntimeConfig {
             } => {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
                 parse_socket(listen, "listen")?;
-                validate_target(parse_socket(target, "target")?)?;
+                match direction {
+                    ConnectionDirection::Direct => {
+                        if !ingress.is_empty() {
+                            bail!("ingress is only valid for reverse");
+                        }
+                        validate_target(parse_socket(target, "target")?)?;
+                    }
+                    ConnectionDirection::Reverse => {
+                        if !target.is_empty() {
+                            bail!("a reverse public node has no target; the service node owns it");
+                        }
+                        if *engine == EngineKind::Baft {
+                            bail!("the baft engine does not support reverse");
+                        }
+                        validate_forward_listen(
+                            parse_socket(ingress, "ingress")?,
+                            *allow_non_loopback_ingress,
+                        )?;
+                    }
+                }
                 let key_path = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 match engine {
                     EngineKind::TcpTls => {
@@ -177,12 +211,13 @@ impl RuntimeConfig {
             }
             Self::Forward {
                 listen,
+                target,
                 remote,
                 server_name,
                 local_id,
                 peer_id,
                 tunnel_id,
-                direction: _,
+                direction,
                 peer_fingerprint,
                 ca,
                 crl,
@@ -196,10 +231,28 @@ impl RuntimeConfig {
                 baft,
             } => {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
-                validate_forward_listen(
-                    parse_socket(listen, "listen")?,
-                    *allow_non_loopback_listen,
-                )?;
+                match direction {
+                    ConnectionDirection::Direct => {
+                        if !target.is_empty() {
+                            bail!("target is only valid for reverse");
+                        }
+                        validate_forward_listen(
+                            parse_socket(listen, "listen")?,
+                            *allow_non_loopback_listen,
+                        )?;
+                    }
+                    ConnectionDirection::Reverse => {
+                        if !listen.is_empty() {
+                            bail!(
+                                "a reverse service node has no listener; the peer owns the ingress"
+                            );
+                        }
+                        if *engine == EngineKind::Baft {
+                            bail!("the baft engine does not support reverse");
+                        }
+                        validate_target(parse_socket(target, "target")?)?;
+                    }
+                }
                 validate_target(parse_socket(remote, "remote")?)?;
                 let key_path = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 match engine {
@@ -449,6 +502,8 @@ impl RuntimeConfig {
             Self::Serve {
                 listen,
                 target,
+                ingress,
+                allow_non_loopback_ingress: _,
                 local_id,
                 peer_id,
                 tunnel_id,
@@ -467,7 +522,7 @@ impl RuntimeConfig {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 let noise = noise_settings(engine, &key, noise_peer_public);
                 tunnel::serve(ServerOptions {
-                    ingress: None,
+                    ingress: (!ingress.is_empty()).then_some(ingress),
                     listen,
                     target,
                     local_id,
@@ -486,6 +541,7 @@ impl RuntimeConfig {
             }
             Self::Forward {
                 listen,
+                target,
                 remote,
                 server_name,
                 local_id,
@@ -507,7 +563,7 @@ impl RuntimeConfig {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 let noise = noise_settings(engine, &key, noise_peer_public);
                 tunnel::forward(ForwardOptions {
-                    target: None,
+                    target: (!target.is_empty()).then_some(target),
                     listen,
                     remote,
                     server_name,
@@ -715,6 +771,68 @@ mod tests {
         let without_crl = valid.replace("\"crl\":\"ca.crl\",", "");
         let parsed: RuntimeConfig = serde_json::from_str(&without_crl).unwrap();
         assert!(parsed.validate().is_err());
+    }
+
+    #[test]
+    fn reverse_config_assigns_ingress_and_target_to_the_right_node() {
+        let dir = std::env::temp_dir().join(format!("baft-rev-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = dir.join("k.noise");
+        let _ = std::fs::remove_file(&key);
+        let public = crate::engine::write_noise_keypair(&key).unwrap();
+        let cfg = |mode: &str, fields: &str| {
+            let text = format!(
+                r#"{{"mode":"{mode}","engine":"noise-tcp","direction":"reverse",{fields},"local_id":"abroad","peer_id":"iran","tunnel_id":"demo","key":"{}","noise_peer_public":"{public}"}}"#,
+                key.display()
+            );
+            serde_json::from_str::<RuntimeConfig>(&text)
+                .unwrap()
+                .validate()
+        };
+        let remote = r#""remote":"203.0.113.7:9443""#;
+        // Public node: tunnel listener plus ingress, no target.
+        cfg(
+            "serve",
+            r#""listen":"0.0.0.0:9443","ingress":"127.0.0.1:8080""#,
+        )
+        .unwrap();
+        assert!(cfg("serve", r#""listen":"0.0.0.0:9443""#).is_err());
+        assert!(
+            cfg(
+                "serve",
+                r#""listen":"0.0.0.0:9443","ingress":"127.0.0.1:8080","target":"127.0.0.1:1""#
+            )
+            .is_err()
+        );
+        assert!(
+            cfg(
+                "serve",
+                r#""listen":"0.0.0.0:9443","ingress":"0.0.0.0:8080""#
+            )
+            .is_err()
+        );
+        // Service node: dials out and relays to the local service, no listener.
+        cfg("forward", &format!(r#""target":"127.0.0.1:8080",{remote}"#)).unwrap();
+        assert!(cfg("forward", remote).is_err());
+        assert!(
+            cfg(
+                "forward",
+                &format!(r#""listen":"127.0.0.1:8080","target":"127.0.0.1:8080",{remote}"#)
+            )
+            .is_err()
+        );
+        // Direct keeps rejecting the reverse-only fields.
+        let direct = format!(
+            r#"{{"mode":"serve","engine":"noise-tcp","direction":"direct","listen":"0.0.0.0:9443","target":"127.0.0.1:8080","ingress":"127.0.0.1:9","local_id":"abroad","peer_id":"iran","tunnel_id":"demo","key":"{}","noise_peer_public":"{public}"}}"#,
+            key.display()
+        );
+        assert!(
+            serde_json::from_str::<RuntimeConfig>(&direct)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

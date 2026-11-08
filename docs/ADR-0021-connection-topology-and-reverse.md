@@ -51,3 +51,30 @@ Acceptance gate before any Reverse claim: two real hosts; the private side initi
 - No capability is shown that the transport does not have. The wizard offers Direct only until the gate passes.
 - Existing configurations that carry `direction: reverse` keep loading; preflight blocks planning a new one from the panel.
 - This ADR does not change the wire protocol. A real Reverse mode is a protocol-affecting change and needs its own ADR amendment and review before implementation.
+
+## Amendment 1: Reverse mode design (R1/R2/R3)
+
+Status: approved by the owner for implementation in three deliveries. Reverse stays reported **unavailable** (capabilities, wizard, preflight) and is never Stable or production-ready until R2 is proven on a real two-host LAB.
+
+Roles keep their meaning ("serve" = tunnel listener, "forward" = tunnel dialer). Only what each role does after the session is up changes:
+
+| | Direct | Reverse |
+|---|---|---|
+| tunnel listener (`serve`) | accepts session, opens no streams, dials target per stream | accepts session, owns the user ingress listener, **opens** one stream per user connection |
+| tunnel dialer (`forward`) | owns ingress listener, opens streams | dials out, **accepts** streams, dials the fixed target per stream |
+| config, serve | `target` | `ingress` (loopback unless `allow_non_loopback_ingress`), no `target` |
+| config, forward | `listen` | `target`, no `listen` |
+
+Rules:
+- The wire protocol, hello, Noise prologue and stream-level authorization are unchanged; `direction` must match on both sides (a mismatch is refused). The yamux client/server roles follow the connection roles, not the stream roles.
+- The target is one configured address on the service node; the public node cannot choose a destination.
+- Mutual TLS or Noise, pinning, identity and CRL checks are identical in both directions.
+- A newly authenticated session replaces the previous one, so a restarted service node takes over the ingress; the dialer reconnects with the existing bounded backoff.
+- The baft engine does not support Reverse.
+
+Deliveries:
+- **R1** (merged in #76 plus config/setup plumbing): connection roles, outbound connection from the service-owning node, config schema, setup plan.
+- **R2**: real data and return path on two hosts (tcp-tls first): 64 KiB and 2 MiB integrity, private side outbound only.
+- **R3**: reconnect, wrong identity, wrong pin, revoked certificate, busy port, agent restart, cleanup; Noise judged separately.
+
+Evidence so far: in-process test only (256 KiB round trip, recovery after service-node restart, direction mismatch refused). That is local evidence, not LAB.

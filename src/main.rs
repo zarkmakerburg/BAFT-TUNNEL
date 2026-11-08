@@ -247,6 +247,8 @@ async fn main() -> Result<()> {
             let config = config::RuntimeConfig::Serve {
                 listen,
                 target,
+                ingress: String::new(),
+                allow_non_loopback_ingress: false,
                 local_id,
                 peer_id,
                 tunnel_id,
@@ -283,6 +285,7 @@ async fn main() -> Result<()> {
         } => {
             let config = config::RuntimeConfig::Forward {
                 listen,
+                target: String::new(),
                 remote,
                 server_name,
                 local_id,
