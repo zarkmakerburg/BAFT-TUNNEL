@@ -25,6 +25,9 @@ pub enum Stage {
     Init,
     /// Verify the peer's bundle and write the final configuration.
     Join,
+    /// Ask systemd (through the root control helper, ADR-0023) to start `baft-tunnel@NAME`, then
+    /// verify; stop it again if verification fails.
+    Start,
 }
 
 impl Stage {
@@ -32,6 +35,7 @@ impl Stage {
         match self {
             Self::Init => "init",
             Self::Join => "join",
+            Self::Start => "start",
         }
     }
 }
@@ -43,6 +47,7 @@ pub struct Gate {
     pub blocked: Vec<String>,
 }
 
+#[derive(Clone)]
 pub struct ApplyRequest {
     pub stage: Stage,
     pub plan: PlanRequest,
@@ -144,8 +149,112 @@ fn tracked(r: &ApplyRequest) -> Vec<Tracked> {
     ]
 }
 
+/// What systemd reports about one instance (read-only; no privilege needed).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnitState {
+    pub active: String,
+    pub sub: String,
+    pub restarts: u32,
+    pub result: String,
+}
+
+/// Control of `baft-tunnel@NAME`. The real implementation only drops a request file that the
+/// root-owned path unit turns into one fixed `systemctl` command (ADR-0023); tests use a fake.
+pub trait Units {
+    fn request(&self, name: &str, verb: &str) -> Result<(), String>;
+    fn state(&self, name: &str) -> UnitState;
+    fn settle(&self, d: std::time::Duration) {
+        std::thread::sleep(d);
+    }
+}
+
+pub const CONTROL_DIR: &str = "/run/baft-tunnel/control";
+
+pub struct SystemUnits {
+    pub control_dir: PathBuf,
+}
+
+impl Default for SystemUnits {
+    fn default() -> Self {
+        Self {
+            control_dir: PathBuf::from(CONTROL_DIR),
+        }
+    }
+}
+
+pub fn valid_instance(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 63
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+impl Units for SystemUnits {
+    fn request(&self, name: &str, verb: &str) -> Result<(), String> {
+        if !valid_instance(name) || !matches!(verb, "start" | "stop") {
+            return Err("invalid instance or verb".into());
+        }
+        if !self.control_dir.is_dir() {
+            return Err(format!(
+                "the agent control helper is not installed ({} is missing); run scripts/install-agent-control.sh --instance {name}",
+                self.control_dir.display()
+            ));
+        }
+        write_new(&self.control_dir.join(format!("{name}.{verb}")), 0o660, b"")
+            .map_err(|e| format!("cannot write the {verb} request: {e}"))
+    }
+
+    fn state(&self, name: &str) -> UnitState {
+        let out = std::process::Command::new("systemctl")
+            .args([
+                "show",
+                &format!("baft-tunnel@{name}.service"),
+                "-p",
+                "ActiveState",
+                "-p",
+                "SubState",
+                "-p",
+                "NRestarts",
+                "-p",
+                "Result",
+                "--no-pager",
+            ])
+            .output();
+        let mut st = UnitState {
+            active: "unknown".into(),
+            ..UnitState::default()
+        };
+        if let Ok(o) = out {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                match line.split_once('=') {
+                    Some(("ActiveState", v)) => st.active = v.into(),
+                    Some(("SubState", v)) => st.sub = v.into(),
+                    Some(("NRestarts", v)) => st.restarts = v.parse().unwrap_or(0),
+                    Some(("Result", v)) => st.result = v.into(),
+                    _ => {}
+                }
+            }
+        }
+        st
+    }
+}
+
 /// Run one stage. Returns the HTTP status and the receipt.
 pub fn run(r: &ApplyRequest, receipts: &Path, gate: Option<&Gate>) -> (u16, Value) {
+    run_with(r, receipts, gate, &SystemUnits::default())
+}
+
+pub fn run_with(
+    r: &ApplyRequest,
+    receipts: &Path,
+    gate: Option<&Gate>,
+    units: &dyn Units,
+) -> (u16, Value) {
     let started = now();
     let digest = request_digest(r);
     let stored = receipts.join(format!("{}.json", r.key));
@@ -172,6 +281,9 @@ pub fn run(r: &ApplyRequest, receipts: &Path, gate: Option<&Gate>) -> (u16, Valu
         "replayed": false,
         "secrets": "none recorded: key material, the agent token and bundle contents are never written to a receipt",
     });
+    if r.stage == Stage::Start {
+        return run_start(r, receipt, receipts, &stored, units);
+    }
     if let Some(g) = gate {
         receipt["gate"] = json!({
             "source": "preflight re-run by the agent for this request",
@@ -204,6 +316,7 @@ pub fn run(r: &ApplyRequest, receipts: &Path, gate: Option<&Gate>) -> (u16, Valu
             Err(e) => action_error = Some(format!("{e:#}")),
         },
         Stage::Join => action_error = join(r, &dir).err(),
+        Stage::Start => unreachable!("start is handled by run_start"),
     }
     let created: Vec<(&Tracked, PathBuf)> = files
         .iter()
@@ -262,16 +375,7 @@ pub fn run(r: &ApplyRequest, receipts: &Path, gate: Option<&Gate>) -> (u16, Valu
         receipt["next_commands"] = json!(next_commands(r));
     }
     receipt["finished_at"] = json!(now());
-    // The receipt is durable evidence; if it cannot be stored the caller must know.
-    if let Err(e) = std::fs::create_dir_all(receipts)
-        .and_then(|()| std::fs::set_permissions(receipts, std::fs::Permissions::from_mode(0o700)))
-        .and_then(|()| write_new(&stored, 0o640, receipt.to_string().as_bytes()))
-    {
-        receipt["receipt_stored"] = json!(false);
-        receipt["receipt_error"] = json!(e.to_string());
-    } else {
-        receipt["receipt_stored"] = json!(true);
-    }
+    persist(receipts, &stored, &mut receipt);
     (if failed { 500 } else { 200 }, receipt)
 }
 
@@ -298,6 +402,7 @@ fn verify(
 ) -> Vec<Value> {
     let mut v = Vec::new();
     match r.stage {
+        Stage::Start => {}
         Stage::Init => {
             let state = dir.join(setup::STATE_FILE);
             let state_json: Option<Value> = std::fs::read(&state)
@@ -409,7 +514,151 @@ fn next_commands(r: &ApplyRequest) -> Vec<String> {
         ],
         (Stage::Join, Some(name)) => vec![format!("systemctl enable --now baft-tunnel@{name}")],
         (Stage::Join, None) => vec![format!("baft-tunnel apply --config {d}/config.json --confirm")],
+        (Stage::Start, _) => vec![],
     }
+}
+
+/// The receipt is durable evidence; if it cannot be stored the caller must know.
+fn persist(receipts: &Path, stored: &Path, receipt: &mut Value) {
+    if let Err(e) = std::fs::create_dir_all(receipts)
+        .and_then(|()| std::fs::set_permissions(receipts, std::fs::Permissions::from_mode(0o700)))
+        .and_then(|()| write_new(stored, 0o640, receipt.to_string().as_bytes()))
+    {
+        receipt["receipt_stored"] = json!(false);
+        receipt["receipt_error"] = json!(e.to_string());
+    } else {
+        receipt["receipt_stored"] = json!(true);
+    }
+}
+
+fn tcp_open(addr: &str) -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    let Ok(mut sa) = addr.parse::<SocketAddr>() else {
+        return false;
+    };
+    if sa.ip().is_unspecified() {
+        sa.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
+    }
+    TcpStream::connect_timeout(&sa, std::time::Duration::from_secs(2)).is_ok()
+}
+
+fn run_start(
+    r: &ApplyRequest,
+    mut receipt: Value,
+    receipts: &Path,
+    stored: &Path,
+    units: &dyn Units,
+) -> (u16, Value) {
+    let refuse = |mut rc: Value, why: String, code: u16| {
+        rc["result"] = json!("refused");
+        rc["changes"] = json!([]);
+        rc["reason"] = json!(format!("{why}; nothing was changed"));
+        rc["finished_at"] = json!(now());
+        (code, rc)
+    };
+    let Some(name) = r.plan.instance.clone().filter(|n| valid_instance(n)) else {
+        return refuse(
+            receipt,
+            "start needs an instance name (letters, digits, '_' or '-')".into(),
+            409,
+        );
+    };
+    if r.plan.dir != Path::new("/etc/baft-tunnel") && !cfg!(test) {
+        return refuse(
+            receipt,
+            "start only manages instances under /etc/baft-tunnel".into(),
+            409,
+        );
+    }
+    let config_path = r.plan.dir.join(format!("{name}.json"));
+    // Parse only: validate() resolves a `key_credential` through the systemd credential directory,
+    // which exists only inside the unit. The unit validates itself and fails closed; the verify
+    // checks below catch a unit that does not come up.
+    let config = match crate::config::load(&config_path) {
+        Ok(c) => c,
+        Err(e) => return refuse(receipt, format!("configuration is not ready: {e:#}"), 409),
+    };
+    let direction = s(&r.plan.direction);
+    if !crate::capabilities::supports_direction(config.engine_name(), &direction) {
+        return refuse(
+            receipt,
+            format!(
+                "{direction} is not offered for {} in this build",
+                config.engine_name()
+            ),
+            409,
+        );
+    }
+    let before = units.state(&name);
+    if before.active == "active" || before.active == "activating" {
+        return refuse(
+            receipt,
+            format!("baft-tunnel@{name} is already {}", before.active),
+            409,
+        );
+    }
+    if let Err(e) = units.request(&name, "start") {
+        return refuse(receipt, e, 409);
+    }
+    // Wait for the unit to come up (the helper runs asynchronously).
+    let mut st = units.state(&name);
+    for _ in 0..40 {
+        if st.active == "active" && st.sub == "running" {
+            break;
+        }
+        units.settle(std::time::Duration::from_millis(500));
+        st = units.state(&name);
+    }
+    let mut v = vec![check(
+        "unit_active",
+        st.active == "active" && st.sub == "running",
+        format!("ActiveState={} SubState={}", st.active, st.sub),
+    )];
+    if v[0]["result"] == "pass" {
+        units.settle(std::time::Duration::from_secs(3));
+        let again = units.state(&name);
+        v.push(check(
+            "stable_3s",
+            again.active == "active" && again.restarts == 0 && again.result != "failed",
+            format!(
+                "after 3 s: ActiveState={} NRestarts={} Result={}",
+                again.active, again.restarts, again.result
+            ),
+        ));
+        v.push(check(
+            "listener_accepting",
+            tcp_open(config.listen_addr()),
+            format!("a TCP connection to {} was accepted", config.listen_addr()),
+        ));
+    }
+    let failed = v.iter().any(|c| c["result"] != "pass");
+    receipt["verification"] = json!(v);
+    receipt["changes"] = json!([{"kind": "service", "action": "started", "unit": format!("baft-tunnel@{name}.service")}]);
+    if failed {
+        let stop = units.request(&name, "stop");
+        units.settle(std::time::Duration::from_secs(2));
+        let after = units.state(&name);
+        receipt["result"] = json!("rolled_back");
+        receipt["rollback"] = json!({
+            "performed": stop.is_ok(),
+            "action": "stop requested",
+            "error": stop.err(),
+            "state_after": {"active": after.active, "sub": after.sub},
+        });
+    } else {
+        receipt["result"] = json!("applied");
+        receipt["rollback"] = json!({"performed": false, "how_to_undo": format!("systemctl stop baft-tunnel@{name}")});
+        receipt["not_done"] = json!([
+            "the unit is not enabled at boot (run: systemctl enable baft-tunnel@NAME)",
+            "no firewall rule was changed or inspected; open the tunnel port by hand where needed",
+            "the connection to the peer is not verified: the agent has no session indicator, and an accepted local connection proves nothing about the peer",
+            "the peer node was not verified from here; start and check it too",
+            "data integrity over the tunnel is not tested by Apply (LAB tests cover it)",
+        ]);
+    }
+    receipt["finished_at"] = json!(now());
+    persist(receipts, stored, &mut receipt);
+    (if failed { 500 } else { 200 }, receipt)
 }
 
 #[cfg(test)]
@@ -583,6 +832,189 @@ mod tests {
         assert_eq!(out["result"], "rolled_back");
         assert!(!b.join("config.json").exists());
         assert!(!b.join(PEER_BUNDLE_FILE).exists());
+    }
+
+    use std::sync::Mutex;
+
+    struct Fake {
+        st: Mutex<UnitState>,
+        comes_up: bool,
+        log: Mutex<Vec<String>>,
+    }
+
+    impl Fake {
+        fn new(comes_up: bool, active: &str) -> Self {
+            Self {
+                st: Mutex::new(UnitState {
+                    active: active.into(),
+                    sub: "x".into(),
+                    result: "success".into(),
+                    restarts: 0,
+                }),
+                comes_up,
+                log: Mutex::new(vec![]),
+            }
+        }
+    }
+
+    impl Units for Fake {
+        fn request(&self, name: &str, verb: &str) -> Result<(), String> {
+            self.log.lock().unwrap().push(format!("{verb} {name}"));
+            let mut st = self.st.lock().unwrap();
+            if verb == "start" && self.comes_up {
+                st.active = "active".into();
+                st.sub = "running".into();
+            }
+            if verb == "stop" {
+                st.active = "inactive".into();
+                st.sub = "dead".into();
+            }
+            Ok(())
+        }
+        fn state(&self, _: &str) -> UnitState {
+            self.st.lock().unwrap().clone()
+        }
+        fn settle(&self, _: std::time::Duration) {}
+    }
+
+    /// A paired, validated serve instance named `edge` whose tunnel port the test controls.
+    fn paired_instance(name: &str) -> (PathBuf, std::net::TcpListener) {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let (a, b) = (tmp(&format!("{name}-a")), tmp(&format!("{name}-b")));
+        let mk = |dir: &Path, role| {
+            let mut r = req(dir, role, Stage::Init, "key-start-init1");
+            r.plan.tunnel_port = port;
+            r.plan.instance = Some("edge".into());
+            r
+        };
+        let (ra, rb) = (mk(&a, Role::Serve), mk(&b, Role::Forward));
+        let (_, oa) = run(&ra, &a.join("r"), Some(&open_gate()));
+        let (_, ob) = run(&rb, &b.join("r"), Some(&open_gate()));
+        for (dir, other, ck) in [(&a, &b, &ob), (&b, &a, &oa)] {
+            let mut j = req(
+                dir,
+                if dir == &a {
+                    Role::Serve
+                } else {
+                    Role::Forward
+                },
+                Stage::Join,
+                "key-start-join1",
+            );
+            j.plan.tunnel_port = port;
+            j.plan.instance = Some("edge".into());
+            j.bundle = Some(std::fs::read_to_string(other.join("bundle.json")).unwrap());
+            j.checksum = Some(ck["pairing"]["checksum"].as_str().unwrap().to_string());
+            let (code, out) = run(&j, &dir.join("r"), None);
+            assert_eq!(code, 200, "{out}");
+        }
+        (a, l)
+    }
+
+    fn start_req(dir: &Path, key: &str) -> ApplyRequest {
+        let mut r = req(dir, Role::Serve, Stage::Start, key);
+        r.plan.instance = Some("edge".into());
+        r
+    }
+
+    #[test]
+    fn start_verifies_a_running_unit_and_lists_what_it_did_not_do() {
+        let (dir, _listener) = paired_instance("st-ok");
+        let units = Fake::new(true, "inactive");
+        let (code, out) = run_with(
+            &start_req(&dir, "key-start-0001"),
+            &dir.join("r"),
+            None,
+            &units,
+        );
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["result"], "applied");
+        let ids: Vec<_> = out["verification"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["id"].as_str().unwrap().to_string())
+            .collect();
+        for id in ["unit_active", "stable_3s", "listener_accepting"] {
+            assert!(ids.contains(&id.to_string()), "{ids:?}");
+        }
+        assert!(out["not_done"].to_string().contains("firewall"));
+        assert_eq!(*units.log.lock().unwrap(), vec!["start edge"]);
+    }
+
+    #[test]
+    fn start_that_does_not_come_up_is_stopped_again() {
+        let (dir, _listener) = paired_instance("st-bad");
+        let units = Fake::new(false, "inactive");
+        let (code, out) = run_with(
+            &start_req(&dir, "key-start-0002"),
+            &dir.join("r"),
+            None,
+            &units,
+        );
+        assert_eq!(code, 500, "{out}");
+        assert_eq!(out["result"], "rolled_back");
+        assert_eq!(*units.log.lock().unwrap(), vec!["start edge", "stop edge"]);
+        assert_eq!(out["rollback"]["state_after"]["active"], "inactive");
+    }
+
+    #[test]
+    fn start_refuses_a_running_unit_a_missing_config_and_a_missing_helper() {
+        let (dir, _listener) = paired_instance("st-ref");
+        let running = Fake::new(true, "active");
+        let (code, out) = run_with(
+            &start_req(&dir, "key-start-0003"),
+            &dir.join("r"),
+            None,
+            &running,
+        );
+        assert_eq!(code, 409);
+        assert!(
+            running.log.lock().unwrap().is_empty(),
+            "must not request anything"
+        );
+        assert!(out["reason"].as_str().unwrap().contains("already"));
+        let mut other = start_req(&dir, "key-start-0004");
+        other.plan.instance = Some("nope".into());
+        assert_eq!(
+            run_with(&other, &dir.join("r"), None, &Fake::new(true, "inactive")).0,
+            409
+        );
+        let no_helper = SystemUnits {
+            control_dir: dir.join("missing"),
+        };
+        let (code, out) = run_with(
+            &start_req(&dir, "key-start-0005"),
+            &dir.join("r"),
+            None,
+            &no_helper,
+        );
+        assert_eq!(code, 409);
+        assert!(
+            out["reason"]
+                .as_str()
+                .unwrap()
+                .contains("install-agent-control")
+        );
+    }
+
+    #[test]
+    fn real_units_write_only_start_or_stop_requests_for_valid_instances() {
+        let dir = tmp("ctl");
+        let u = SystemUnits {
+            control_dir: dir.clone(),
+        };
+        assert!(u.request("edge", "start").is_ok());
+        assert!(dir.join("edge.start").exists());
+        assert!(
+            u.request("edge", "start").is_err(),
+            "an unconsumed request is not overwritten"
+        );
+        for bad in ["", "../x", "a b", "a.b", "-x"] {
+            assert!(u.request(bad, "start").is_err(), "{bad}");
+        }
+        assert!(u.request("edge", "restart").is_err());
     }
 
     #[test]

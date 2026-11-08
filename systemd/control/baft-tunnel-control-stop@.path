@@ -1,0 +1,9 @@
+[Unit]
+Description=BAFT-TUNNEL agent request to stop instance %i
+
+[Path]
+PathExists=/run/baft-tunnel/control/%i.stop
+Unit=baft-tunnel-control-stop@%i.service
+
+[Install]
+WantedBy=multi-user.target

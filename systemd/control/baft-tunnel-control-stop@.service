@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the requested stop for baft-tunnel@%i (root helper, fixed command)
+
+[Service]
+Type=oneshot
+# Only this fixed command can run; the instance name comes from the request file name and the
+# only unit it can reach is baft-tunnel@%i.service (which needs /etc/baft-tunnel/%i.json to exist).
+ExecStart=/usr/bin/systemctl --no-block stop baft-tunnel@%i.service
+ExecStartPost=/usr/bin/rm -f /run/baft-tunnel/control/%i.stop
+ExecStopPost=/usr/bin/rm -f /run/baft-tunnel/control/%i.stop
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
