@@ -343,6 +343,31 @@ mod tests {
 }
 
 #[cfg(test)]
+mod shipped_manifest_tests {
+    use super::*;
+
+    #[test]
+    fn shipped_manifest_is_valid_and_matches_the_engine_pin() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest = Manifest::parse(
+            &fs::read_to_string(root.join("release/engine-manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let pin = fs::read_to_string(root.join("release/baft-engine.pin")).unwrap();
+        let sha = pin
+            .lines()
+            .find_map(|line| line.strip_prefix("BAFT_SHA="))
+            .unwrap();
+        let baft = manifest.engine("baft").unwrap();
+        assert_eq!(
+            baft.source_commit, sha,
+            "manifest and pin name different commits"
+        );
+        assert!(baft.license.source_url.contains(sha));
+    }
+}
+
+#[cfg(test)]
 mod supervise_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

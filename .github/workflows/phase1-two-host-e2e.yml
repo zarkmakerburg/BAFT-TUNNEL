@@ -116,9 +116,8 @@ jobs:
         run: |
           set -euo pipefail
           . release/baft-engine.pin
-          git clone --quiet "$BAFT_REPO" "$RUNNER_TEMP/baft-src"
-          git -C "$RUNNER_TEMP/baft-src" checkout --quiet "$BAFT_SHA"
-          (cd "$RUNNER_TEMP/baft-src" && CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/baft-engine" ./cmd/baft)
+          scripts/build-baft-engine.sh "$RUNNER_TEMP/baft-out" >/dev/null
+          cp "$RUNNER_TEMP/baft-out/baft" "$RUNNER_TEMP/baft-engine"
           echo "BAFT_ENGINE_BINARY=$RUNNER_TEMP/baft-engine" >> "$GITHUB_ENV"
       - name: Prepare ephemeral SSH credentials
         shell: bash

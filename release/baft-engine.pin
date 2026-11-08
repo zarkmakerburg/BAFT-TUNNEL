@@ -1,3 +1,4 @@
 # Pinned upstream BAFT engine (ADR-0019). Change only with a reviewed bump and a re-run of the conformance workflow.
 BAFT_REPO=https://github.com/zarkmakerburg/BAFT
 BAFT_SHA=2c8e14efdecabff392f061b2ea9538808597f2a2
+GO_VERSION=1.27.3

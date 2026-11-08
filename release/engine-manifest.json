@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "engines": [
+    {
+      "id": "baft",
+      "runtime_language": "go",
+      "version": "0.5.0",
+      "source_repository": "https://github.com/zarkmakerburg/BAFT",
+      "source_commit": "2c8e14efdecabff392f061b2ea9538808597f2a2",
+      "artifact": "engines/baft-linux-amd64",
+      "artifact_sha256": "2c040ed84e17827c855a392c0e6c61587ab7678c636ca957b9ce2653f2dfd141",
+      "platforms": ["linux-amd64"],
+      "config_adapter": "baft-v1",
+      "required_capabilities": ["mtls", "revocation-listener", "same-process-recovery"],
+      "readiness": { "kind": "tcp_listen", "timeout_seconds": 30 },
+      "resources": { "max_restarts": 5, "restart_window_seconds": 300, "max_memory_mib": 512 },
+      "license": {
+        "spdx": "AGPL-3.0-only",
+        "source_url": "https://github.com/zarkmakerburg/BAFT/tree/2c8e14efdecabff392f061b2ea9538808597f2a2"
+      }
+    }
+  ]
+}
