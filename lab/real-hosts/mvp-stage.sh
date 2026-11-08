@@ -76,11 +76,11 @@ echo "--- MVP guided setup: init, bundle exchange, wrong checksum refused, join 
 mcommon="--engine tcp-tls --direction direct --tunnel-id mvp --service-port $MSVC --tunnel-port $MTP --dir $EB"
 sum_a="$(ssh_host abroad "$UB setup init $mcommon --role serve --node-id abroad --peer-id iran --instance $SRV" | awk '/^Checksum/{print $NF}')"
 sum_i="$(ssh_host iran "$UB setup init $mcommon --role forward --node-id iran --peer-id abroad --peer-host '$LAB_ABROAD_HOST' --instance $CLI" | awk '/^Checksum/{print $NF}')"
-[[ "$sum_a" =~ ^[0-9a-f]{16,}$ && "$sum_i" =~ ^[0-9a-f]{16,}$ ]] || { echo "setup init printed no checksum" >&2; exit 1; }
+[[ "$sum_a" =~ ^[0-9a-f-]{32,}$ && "$sum_i" =~ ^[0-9a-f-]{32,}$ ]] || { echo "setup init printed no checksum" >&2; exit 1; }
 ssh_host abroad "cat $EB/bundle.json" > "$MP/bundle-abroad.json"
 ssh_host iran "cat $EB/bundle.json" > "$MP/bundle-iran.json"
 copy_to_host iran "$MP/bundle-abroad.json"; copy_to_host abroad "$MP/bundle-iran.json"
-ssh_host iran "! $UB setup join --dir $EB --bundle '$REMOTE_DIR/bundle-abroad.json' --checksum $(printf '0%.0s' $(seq ${#sum_a})) >/dev/null 2>&1 && ! test -e $EB/$CLI.json" ||
+ssh_host iran "! $UB setup join --dir $EB --bundle '$REMOTE_DIR/bundle-abroad.json' --checksum '${sum_a//[0-9a-f]/0}' >/dev/null 2>&1 && ! test -e $EB/$CLI.json" ||
   { echo "join accepted a wrong bundle checksum" >&2; exit 1; }
 ssh_host abroad "$UB setup join --dir $EB --bundle '$REMOTE_DIR/bundle-iran.json' --checksum '$sum_i' >/dev/null"
 ssh_host iran "$UB setup join --dir $EB --bundle '$REMOTE_DIR/bundle-abroad.json' --checksum '$sum_a' >/dev/null"
