@@ -828,8 +828,43 @@ if (( BAFT == 1 )); then
     sd_stop iran forward; sd_stop abroad serve
     echo "--- BAFT store: a config pinning another release must be refused by the launcher ---"
     ssh_host abroad "printf '%s' '$(sd_store_cfg serve abroad iran b-abroad.crt b-abroad.key "" "" "$(printf '0%.0s' $(seq 64))")' > '$SD_DIR/sd-wrongpin.json'; if RUNTIME_DIRECTORY='$SD_DIR/rt-wrongpin' '$SD_DIR/baft-tunnel' apply --config '$SD_DIR/sd-wrongpin.json' --confirm >'$SD_DIR/wrongpin.log' 2>&1; then exit 1; fi; grep -q 'not the release pinned' '$SD_DIR/wrongpin.log'"
+    echo "--- BAFT store rollback: release B over A, pins must follow current, tampered previous refused ---"
+    # Release B is the same pinned engine with a trailing marker (ELF ignores trailing bytes), so it has
+    # a different digest; its manifest differs from the release manifest only in artifact_sha256.
+    cp "$BAFT_BINARY_PATH" "$LOCAL_TMP/baft-engine-b"; printf 'baft-lab-rollback-marker-%s' "${GITHUB_RUN_ID:-$$}" >> "$LOCAL_TMP/baft-engine-b"
+    BAFT_SHA_B="$(sha256sum "$LOCAL_TMP/baft-engine-b" | awk '{print $1}')"
+    python3 - "$SD_MANIFEST" "$BAFT_SHA_B" > "$LOCAL_TMP/engine-manifest-b.json" <<'MANIFEST'
+import json, sys
+m = json.load(open(sys.argv[1]))
+[e for e in m["engines"] if e["id"] == "baft"][0]["artifact_sha256"] = sys.argv[2]
+json.dump(m, sys.stdout)
+MANIFEST
+    copy_to_host abroad "$LOCAL_TMP/baft-engine-b" "$LOCAL_TMP/engine-manifest-b.json"
+    ssh_host abroad "install -m 644 '$REMOTE_DIR/engine-manifest-b.json' '$SD_DIR/engine-manifest-b.json'; install -m 755 '$REMOTE_DIR/baft-engine-b' '$SD_DIR/baft-engine-b'; '$SD_DIR/baft-tunnel' engine install --store '$SD_DIR/store' --manifest '$SD_DIR/engine-manifest-b.json' --id baft --binary '$SD_DIR/baft-engine-b'"
+    store_pin_refused() { # sha : the launcher must refuse a config whose pin is not the store's current
+      ssh_host abroad "printf '%s' '$(sd_store_cfg serve abroad iran b-abroad.crt b-abroad.key "" "" "$1")' > '$SD_DIR/sd-pin.json'; if RUNTIME_DIRECTORY='$SD_DIR/rt-pin' '$SD_DIR/baft-tunnel' apply --config '$SD_DIR/sd-pin.json' --confirm >'$SD_DIR/pin.log' 2>&1; then exit 1; fi; grep -q 'not the release pinned' '$SD_DIR/pin.log'"
+    }
+    store_carries() { # sha : run the abroad listener from the store with this pin and carry data
+      sd_run abroad serve "$(sd_store_cfg serve abroad iran b-abroad.crt b-abroad.key "" "" "$1")"
+      sd_run iran forward "$(sd_cfg forward iran abroad b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
+      local ok=0
+      for _ in $(seq 1 12); do sleep 5; if probe_host iran 65536 >/dev/null 2>&1; then ok=1; break; fi; done
+      (( ok == 1 )) && probe_host iran 2097289 >/dev/null
+      local rc=$?
+      ssh_host abroad "pgrep -f '^$SD_DIR/store/baft/releases/$1/engine ' >/dev/null" || rc=1
+      sd_stop iran forward; sd_stop abroad serve
+      return $rc
+    }
+    store_pin_refused "$BAFT_SHA" || { echo "store current=B but a config pinned to A was not refused" >&2; exit 1; }
+    store_carries "$BAFT_SHA_B" || { echo "store release B did not carry data when pinned" >&2; exit 1; }
+    ssh_host abroad "'$SD_DIR/baft-tunnel' engine rollback --store '$SD_DIR/store' --id baft | grep -q 'current = $BAFT_SHA'" || { echo "rollback did not make A current" >&2; exit 1; }
+    store_pin_refused "$BAFT_SHA_B" || { echo "after rollback a config still pinned to B was not refused" >&2; exit 1; }
+    # previous is now B: tamper it on disk; a rollback to it must be refused and current must stay A.
+    ssh_host abroad "printf x >> '$SD_DIR/store/baft/releases/$BAFT_SHA_B/engine'; if '$SD_DIR/baft-tunnel' engine rollback --store '$SD_DIR/store' --id baft >'$SD_DIR/rb.log' 2>&1; then exit 1; fi; '$SD_DIR/baft-tunnel' engine verify --store '$SD_DIR/store' --id baft | grep -q '/$BAFT_SHA/engine'" || { echo "rollback to a tampered release was not refused" >&2; exit 1; }
+    store_carries "$BAFT_SHA" || { echo "store release A did not carry data after rollback" >&2; exit 1; }
+    echo "BAFT_STORE_ROLLBACK_RESULT engine_source=${BAFT_ENGINE_SOURCE:-unknown} release_a=$BAFT_SHA b_installed=1 a_pin_refused_while_b_current=1 b_carried_2mib=1 rollback_to_a=1 b_pin_refused_after_rollback=1 tampered_rollback_refused=1 a_carried_2mib_after_rollback=1"
     sd_cleanup; trap cleanup EXIT
-    echo "BAFT_SYSTEMD_RESULT hardened_direct_ok=1 mdwe=yes no_seccomp_kill=1 recovery_s=$SD_REC_S dialer_unit_restarts=$SD_NRESTARTS engine_kill_recovered=1 engine_kill_recovery_s=$SD_KILL_S store_launch_ok=1 store_pin_mismatch_refused=1"
+    echo "BAFT_SYSTEMD_RESULT hardened_direct_ok=1 mdwe=yes no_seccomp_kill=1 recovery_s=$SD_REC_S dialer_unit_restarts=$SD_NRESTARTS engine_kill_recovered=1 engine_kill_recovery_s=$SD_KILL_S store_launch_ok=1 store_pin_mismatch_refused=1 store_rollback_ok=1 engine_source=${BAFT_ENGINE_SOURCE:-unknown}"
   fi
   echo "BAFT_RESULT direct_ok=1 unauthorized_refused=1 restart_recovered=1 restart_recovery_s=$BAFT_RECOVERY_S dialer_restarted=$BAFT_DIALER_RESTARTED bad_hash_refused=1 reverse_ok=1 revoked_refused=1 pin_ok=1 wrong_pin_refused=1 revoked_listener_refused=1 rss_kb_serve=$BAFT_RSS_SERVE rss_kb_forward=$BAFT_RSS_FWD"
 fi
