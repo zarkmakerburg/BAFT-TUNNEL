@@ -18,6 +18,8 @@ pub mod handshake;
 pub mod key_custody;
 #[path = "../../src/noise.rs"]
 pub mod noise;
+#[path = "../../src/runtime_host.rs"]
+pub mod runtime_host;
 #[path = "../../src/setup.rs"]
 pub mod setup;
 #[path = "../../src/tls.rs"]

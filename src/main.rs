@@ -7,6 +7,8 @@ mod engine;
 mod handshake;
 pub mod key_custody;
 mod noise;
+#[allow(dead_code)] // manifest API is consumed by packaging and the registry (ADR-0020)
+mod runtime_host;
 mod setup;
 mod tls;
 mod tunnel;
