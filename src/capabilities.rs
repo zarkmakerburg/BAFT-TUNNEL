@@ -14,8 +14,8 @@ fn tcp_tls() -> Value {
     json!({
         "id": "tcp-tls",
         "status": "stable",
-        "directions": ["direct"],
-        "reverse": {"state": "unavailable", "reason": "reverse-is-a-label-only"},
+        "directions": ["direct", "reverse"],
+        "reverse": {"state": "preview", "reason": "real two-host LAB passed once (ADR-0021 Amendment 1); not stable, not production-ready"},
         "security": "TLS 1.3 mutual authentication, offline CA, mandatory CRL",
         "transport": {"carrier": "tcp", "encapsulation": "tls1.3-mtls+yamux", "udp": false},
         "roles": {"listener": true, "dialer": true},
@@ -32,7 +32,7 @@ fn tcp_tls() -> Value {
         "platform": {"os": ["linux"], "min_agent": "0.1.0"},
         "evidence": {
             "unit_tests": true,
-            "lab_two_host": {"direct": "pass", "reverse": "label-only"},
+            "lab_two_host": {"direct": "pass", "reverse": "pass"},
             "source": "docs/PHASE1_IMPLEMENTATION_STATUS.md"
         }
     })
@@ -71,9 +71,10 @@ fn noise_tcp() -> Value {
 /// dials it, listens on its own loopback for application connections and opens one stream per
 /// connection; the `serve` node dials the fixed target for each stream. The `direction` label is
 /// only compared between the peers in the hello; it does not change who dials, where traffic
-/// enters or where it leaves. A real Reverse (the node that holds the service dials out, the
-/// reachable node receives users and sends them back through that connection) is NOT implemented,
-/// so Reverse is reported as unavailable instead of being offered.
+/// enters or where it leaves. Reverse (ADR-0021 Amendment 1: the node that holds the service dials
+/// out, the reachable node receives users and sends them back through that connection) is
+/// implemented and passed a real two-host LAB for tcp-tls only. It is offered as a preview for
+/// tcp-tls; noise-tcp Reverse has no real-data-path evidence and stays unavailable.
 fn direction_model() -> Value {
     json!({
         "topology_contract_version": 1,
@@ -91,9 +92,15 @@ fn direction_model() -> Value {
             }
         },
         "reverse": {
-            "state": "unavailable",
-            "reason": "the direction label does not change connection initiation or traffic ingress; a real reverse mode (service-side node dials out) is not implemented",
-            "label_only_lab": "the earlier 'reverse' LAB runs prove the label is accepted and data flows exactly as in direct"
+            "state": "preview",
+            "engines": ["tcp-tls"],
+            "connection_initiator": "forward (the node that owns the service dials out)",
+            "connection_listener": "serve (the reachable node)",
+            "traffic_ingress": "serve (loopback user ingress)",
+            "traffic_egress": "forward (fixed local target)",
+            "public_reachability_needed": "serve (inbound tunnel port)",
+            "evidence": "two-host LAB run 42506805986 (tcp-tls, one run)",
+            "not_claimed": "stable, production-ready, noise-tcp reverse; earlier 'reverse' LAB results were label-acceptance only"
         },
         "nat": "the dialing side needs outbound reachability to the listener's tunnel port; the listener needs that port reachable inbound",
         "firewall": "inbound allow on the listener's tunnel port; not inspected by the agent (unknown)"
@@ -164,13 +171,13 @@ mod tests {
         let doc = catalog();
         assert_eq!(doc["runtime"]["keepalive_interval_s"], 15);
         assert_eq!(doc["runtime"]["reconnect"]["max_backoff_s"], 60);
-        assert_eq!(doc["direction_model"]["reverse"]["state"], "unavailable");
+        assert_eq!(doc["direction_model"]["reverse"]["state"], "preview");
         assert_eq!(
             doc["direction_model"]["implemented"]["direct"]["connection_initiator"],
             "forward"
         );
         assert!(supports_direction("tcp-tls", "direct"));
-        assert!(!supports_direction("tcp-tls", "reverse"));
+        assert!(supports_direction("tcp-tls", "reverse"));
         assert!(!supports_direction("noise-tcp", "reverse"));
     }
 
