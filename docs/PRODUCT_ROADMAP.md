@@ -1,6 +1,6 @@
 # BAFT-TUNNEL — Product Roadmap (phases, MVP, engines)
 
-Task-level board: [PROJECT_BOARD.md](PROJECT_BOARD.md).
+Thin Persian pointer (no status of its own): [PROJECT_BOARD.md](PROJECT_BOARD.md).
 
 Reconciled 2026-11-08 against main `82e8768`. This file is the single source of truth for phases, engines and next steps; evidence (run IDs, SHAs) lives in `PHASE1_IMPLEMENTATION_STATUS.md`; `PROJECT_BOARD.md` is the Persian task view and must follow this file. Status: **not production-ready**. Pre-release `v0.1.0-phase1-pre` is published and cosign-signed.
 
@@ -75,7 +75,8 @@ No engine is claimed undetectable.
 Not in MVP: central control plane, UDP/QUIC, camouflage sidecar, `baft` engine, fallback supervisor, multi-hour soak (P6).
 
 ## IN PROGRESS
-- **P3-001** `setup` CLI: plan written; slice S1 starts next.
+- **M0** Noise Reverse LAB: stage merged; the first run (42456443965) passed Direct again but failed Reverse because the earlier TLS Reverse stage left its serve process on the Iran host holding the port (script bug, fixed in the LAB script, not a Noise defect). Rerun pending.
+- **P3-001** `setup` CLI: plan written; slice S1 (`setup plan`) implemented, in review. S2 does not start before M0 closes.
 
 ## TO DO (priority order)
 1. **M0** Noise Reverse LAB stage and run.

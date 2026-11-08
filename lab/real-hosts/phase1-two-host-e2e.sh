@@ -499,6 +499,8 @@ if (( NOISE == 1 )); then
   stop_role abroad serve
   sleep 1
   echo "--- NOISE Reverse: abroad dials iran ---"
+  # The earlier TLS Reverse stage leaves its serve process on the Iran host; free the port first.
+  stop_role iran serve; stop_role abroad forward; sleep 1
   NDIR=reverse
   ROGUE2_NPUB="$(noise_pub abroad rogue2)"
   [[ "$ROGUE2_NPUB" =~ ^[0-9a-f]{64}$ ]] || { echo "noise-keygen output invalid" >&2; exit 1; }
