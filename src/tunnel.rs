@@ -11,7 +11,7 @@ use rand::{RngCore, rngs::OsRng};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{
-        Semaphore,
+        OwnedSemaphorePermit, Semaphore,
         mpsc::{self, Receiver},
         watch,
     },
@@ -39,6 +39,13 @@ pub(crate) const MAX_BACKOFF: Duration = Duration::from_secs(60);
 pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 const STREAM_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+/// Reverse ingress: how long a user connection may wait for the service node's session before it is
+/// closed. Bounded so users get a clean close instead of a silent hang while the service node is away.
+const INGRESS_QUEUE_MAX_WAIT: Duration = if cfg!(test) {
+    Duration::from_secs(1)
+} else {
+    Duration::from_secs(30)
+};
 
 async fn shutdown_signal() {
     #[cfg(unix)]
@@ -218,6 +225,48 @@ struct IngressSide {
     sender: mpsc::Sender<TcpStream>,
     receiver: tokio::sync::Mutex<Receiver<TcpStream>>,
     active: std::sync::Mutex<Option<watch::Sender<bool>>>,
+    /// Number of authenticated service-node sessions currently attached (a replaced session may
+    /// briefly overlap its successor).
+    present: watch::Sender<usize>,
+    /// Bounds user connections waiting for a session, like the queue bounds connections once attached.
+    waiters: Arc<Semaphore>,
+}
+
+/// Counts one attached session in `IngressSide::present` for as long as it lives.
+struct SessionPresence(Arc<IngressSide>);
+
+impl SessionPresence {
+    fn attach(side: Arc<IngressSide>) -> Self {
+        side.present.send_modify(|count| *count += 1);
+        Self(side)
+    }
+}
+
+impl Drop for SessionPresence {
+    fn drop(&mut self) {
+        self.0
+            .present
+            .send_modify(|count| *count = count.saturating_sub(1));
+    }
+}
+
+/// Holds a user connection until a session attaches, then queues it; closes it after
+/// `INGRESS_QUEUE_MAX_WAIT`.
+async fn queue_when_session_present(
+    side: Arc<IngressSide>,
+    conn: TcpStream,
+    _permit: OwnedSemaphorePermit,
+) {
+    let mut present = side.present.subscribe();
+    let attached = matches!(
+        timeout(INGRESS_QUEUE_MAX_WAIT, present.wait_for(|count| *count > 0)).await,
+        Ok(Ok(_))
+    );
+    if !attached {
+        eprintln!("local connection closed: no service session within {INGRESS_QUEUE_MAX_WAIT:?}");
+    } else if side.sender.try_send(conn).is_err() {
+        eprintln!("local connection rejected: bounded pending queue is full");
+    }
 }
 
 pub async fn serve(options: ServerOptions) -> Result<()> {
@@ -242,6 +291,8 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                 sender,
                 receiver: tokio::sync::Mutex::new(receiver),
                 active: std::sync::Mutex::new(None),
+                present: watch::channel(0).0,
+                waiters: Arc::new(Semaphore::new(options.max_streams)),
             }))
         }
         None => None,
@@ -296,8 +347,14 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                 let Some(side) = &ingress else { continue };
                 match local {
                     Ok((conn, _)) => {
-                        if side.sender.try_send(conn).is_err() {
-                            eprintln!("local connection rejected: bounded pending queue is full");
+                        if *side.present.borrow() > 0 {
+                            if side.sender.try_send(conn).is_err() {
+                                eprintln!("local connection rejected: bounded pending queue is full");
+                            }
+                        } else if let Ok(permit) = side.waiters.clone().try_acquire_owned() {
+                            tokio::spawn(queue_when_session_present(side.clone(), conn, permit));
+                        } else {
+                            eprintln!("local connection rejected: too many connections waiting for a service session");
                         }
                     }
                     Err(error) => {
@@ -368,6 +425,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                                     }
                                     let _ = end_tx.send(true);
                                 });
+                                let _presence = SessionPresence::attach(side.clone());
                                 let mut receiver = side.receiver.lock().await;
                                 let session = Session::new_server(secure, yamux_config(max));
                                 let outcome = run_forward_session(session, &mut receiver, &stream_slots, direction, &tunnel, end_rx).await;
@@ -1261,6 +1319,137 @@ mod tests {
         echo_task.abort();
         let _ = forward_task.await;
         let _ = server_task.await;
+        let _ = echo_task.await;
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Reverse ingress without a service session: a user connection is closed after the bounded wait,
+    /// and one that arrives shortly before the service node attaches is served. Local evidence only.
+    #[tokio::test]
+    async fn reverse_ingress_closes_waiting_visitors_and_serves_those_that_wait_for_a_session() {
+        let directory = std::env::temp_dir().join(format!(
+            "baft-reverse-wait-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let public_key = directory.join("public.noise");
+        let private_key = directory.join("private.noise");
+        let public_pub = crate::engine::write_noise_keypair(&public_key).unwrap();
+        let private_pub = crate::engine::write_noise_keypair(&private_key).unwrap();
+
+        let echo_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let echo_address = echo_listener.local_addr().unwrap();
+        let echo_task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = echo_listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buffer = [0_u8; 1024];
+                    while let Ok(count) = stream.read(&mut buffer).await {
+                        if count == 0 || stream.write_all(&buffer[..count]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        let reserve = || async {
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let a = l.local_addr().unwrap();
+            drop(l);
+            a
+        };
+        let tunnel_address = reserve().await;
+        let ingress_address = reserve().await;
+        let direction = ConnectionDirection::Reverse;
+        let public_task = tokio::spawn(serve(ServerOptions {
+            listen: tunnel_address.to_string(),
+            target: String::new(),
+            ingress: Some(ingress_address.to_string()),
+            local_id: "public".to_owned(),
+            peer_id: "private".to_owned(),
+            tunnel_id: "reverse-wait".to_owned(),
+            direction,
+            peer_fingerprint: String::new(),
+            ca: PathBuf::new(),
+            crl: PathBuf::new(),
+            cert: PathBuf::new(),
+            key: public_key.clone(),
+            noise: Some(NoiseSettings {
+                private_key: public_key,
+                peer_public: private_pub,
+            }),
+            max_streams: 8,
+        }));
+        for _ in 0..100 {
+            if TcpStream::connect(ingress_address).await.is_ok() {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+
+        // No service session: the visitor is closed once the bound passes, not held open.
+        let started = tokio::time::Instant::now();
+        let mut idle = TcpStream::connect(ingress_address).await.unwrap();
+        let mut byte = [0_u8; 1];
+        let closed = timeout(
+            INGRESS_QUEUE_MAX_WAIT + Duration::from_secs(5),
+            idle.read(&mut byte),
+        )
+        .await
+        .expect("visitor was still held open long after the bound");
+        assert!(
+            matches!(closed, Ok(0) | Err(_)),
+            "visitor received data without a session"
+        );
+        assert!(started.elapsed() >= INGRESS_QUEUE_MAX_WAIT - Duration::from_millis(100));
+
+        // A visitor that arrives first and a session that attaches within the bound: served.
+        let mut early = TcpStream::connect(ingress_address).await.unwrap();
+        let service_task = tokio::spawn(async move {
+            sleep(Duration::from_millis(300)).await;
+            forward(ForwardOptions {
+                listen: String::new(),
+                target: Some(echo_address.to_string()),
+                remote: tunnel_address.to_string(),
+                server_name: String::new(),
+                local_id: "private".to_owned(),
+                peer_id: "public".to_owned(),
+                tunnel_id: "reverse-wait".to_owned(),
+                direction,
+                peer_fingerprint: String::new(),
+                ca: PathBuf::new(),
+                crl: PathBuf::new(),
+                cert: PathBuf::new(),
+                key: private_key.clone(),
+                noise: Some(NoiseSettings {
+                    private_key,
+                    peer_public: public_pub,
+                }),
+                max_streams: 8,
+            })
+            .await
+        });
+        let payload: Vec<u8> = (0..4096).map(|i| (i % 251) as u8).collect();
+        timeout(Duration::from_secs(20), async {
+            early.write_all(&payload).await.unwrap();
+            let mut received = vec![0_u8; payload.len()];
+            early.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, payload);
+        })
+        .await
+        .expect("early visitor was not served after the session attached");
+
+        service_task.abort();
+        public_task.abort();
+        echo_task.abort();
+        let _ = service_task.await;
+        let _ = public_task.await;
         let _ = echo_task.await;
         std::fs::remove_dir_all(directory).unwrap();
     }
