@@ -786,7 +786,7 @@ if (( BAFT == 1 )); then
         ssh_host "$side" "systemctl stop baft-lab-serve baft-lab-forward 2>/dev/null; systemctl reset-failed baft-lab-serve baft-lab-forward 2>/dev/null; rm -rf '$SD_DIR'; userdel baftlab 2>/dev/null; true" || true
       done
     }
-    trap 'sd_cleanup; cleanup' EXIT
+    trap 'sd_status=$?; sd_cleanup; (exit "$sd_status"); cleanup' EXIT
     sd_prepare abroad; sd_prepare iran
     sd_run abroad serve "$(sd_cfg serve abroad iran b-abroad.crt b-abroad.key)"
     sd_run iran forward "$(sd_cfg forward iran abroad b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
@@ -810,11 +810,16 @@ if (( BAFT == 1 )); then
     SD_NRESTARTS="$(ssh_host iran "systemctl show baft-lab-forward -p NRestarts --value")"
     echo "--- BAFT systemd engine kill: SIGKILL of the Go engine, launcher must restart it ---"
     ssh_host abroad "pkill -KILL -f '^$SD_DIR/baft-engine ' || true"
-    sleep 12
-    probe_host iran 65536
+    SD_KILL_T0=$SECONDS; SD_KILL_REC=0
+    for _ in $(seq 1 30); do
+      sleep 5
+      if probe_host iran 65536 >/dev/null 2>&1; then SD_KILL_REC=1; break; fi
+    done
+    (( SD_KILL_REC == 1 )) || { echo "BAFT did not recover after the engine was killed under systemd" >&2; exit 1; }
+    SD_KILL_S=$((SECONDS - SD_KILL_T0))
     sd_stop iran forward; sd_stop abroad serve
     sd_cleanup; trap cleanup EXIT
-    echo "BAFT_SYSTEMD_RESULT hardened_direct_ok=1 mdwe=yes no_seccomp_kill=1 recovery_s=$SD_REC_S dialer_unit_restarts=$SD_NRESTARTS engine_kill_recovered=1"
+    echo "BAFT_SYSTEMD_RESULT hardened_direct_ok=1 mdwe=yes no_seccomp_kill=1 recovery_s=$SD_REC_S dialer_unit_restarts=$SD_NRESTARTS engine_kill_recovered=1 engine_kill_recovery_s=$SD_KILL_S"
   fi
   echo "BAFT_RESULT direct_ok=1 unauthorized_refused=1 restart_recovered=1 restart_recovery_s=$BAFT_RECOVERY_S dialer_restarted=$BAFT_DIALER_RESTARTED bad_hash_refused=1 reverse_ok=1 revoked_refused=1 pin_ok=1 wrong_pin_refused=1 revoked_listener_refused=1 rss_kb_serve=$BAFT_RSS_SERVE rss_kb_forward=$BAFT_RSS_FWD"
 fi
