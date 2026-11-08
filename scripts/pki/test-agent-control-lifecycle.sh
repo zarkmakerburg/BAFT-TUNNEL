@@ -18,7 +18,7 @@ for c in systemctl openssl python3 sudo install curl; do command -v "$c" >/dev/n
 v="$(systemctl --version | awk 'NR == 1 { print $2 }')"
 [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 247 )) || die "systemd 247+ required; found $v"
 [[ "$(ps -p 1 -o comm= | tr -d '[:space:]')" == systemd ]] || die "PID 1 is not systemd"
-for p in /usr/local/bin/baft-tunnel /etc/systemd/system/baft-tunnel@.service /etc/baft-tunnel /var/lib/baft-tunnel /run/baft-tunnel; do
+for p in /usr/local/bin/baft-tunnel /etc/systemd/system/baft-tunnel@.service /etc/baft-tunnel /var/lib/baft-tunnel /run/baft-tunnel/control; do
   [[ ! -e "$p" ]] || die "refusing to overwrite pre-existing path: $p"
 done
 getent group baft-tunnel >/dev/null 2>&1 || CREATED_GROUP=1
