@@ -46,7 +46,7 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 | Reverse (tcp-tls) | **Preview.** Real in Core and Config; two-host LAB PASS (run 42506805986: outbound-only service node, 64 KiB + 2 MiB integrity, reconnect, wrong identity/pin, revoked certificate). Breadth (R3) still open |
 | Reverse (Noise) | Implemented in the core, **unproven** (no two-host LAB); not offered |
 | BAFT engine | Hidden until its gates pass (ADR-0019/0020); Engine Store → Launcher execution cycle is not complete |
-| Apply → Verify → Receipt | Local `setup init` / `setup join` stages through the agent and panel, gated, verified, rolled back on failure, receipt without secrets (ADR-0022). No service start, no firewall change |
+| Apply → Verify → Receipt | Local `setup init` / `setup join` stages through the agent and panel, gated, verified, rolled back on failure, receipt without secrets (ADR-0022). A `start` stage (ADR-0023, root path-unit helper, opt-in) is implemented and unit-tested but **not yet run on a real host**; no firewall change |
 | Mutual TLS and peer identity | Implemented with negative tests |
 | Offline PKI and CRL revocation | Experimental; manual workflow |
 | Installer and systemd unit | Implemented; Ubuntu 22.04 / systemd 249 baseline passes CI and isolated LAB test |

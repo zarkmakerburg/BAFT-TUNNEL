@@ -790,7 +790,17 @@ async fn setup_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
     } else {
         None
     };
-    let (code, receipt) = crate::apply::run(&request, &state_dir.join("receipts"), gate.as_ref());
+    let receipts_dir = state_dir.join("receipts");
+    // Start waits for systemd; keep the async runtime free while it does.
+    let (code, receipt) = match tokio::task::spawn_blocking({
+        let request = request.clone();
+        move || crate::apply::run(&request, &receipts_dir, gate.as_ref())
+    })
+    .await
+    {
+        Ok(out) => out,
+        Err(e) => return (500, json!({"error": format!("apply task failed: {e}")})),
+    };
     let digest = receipt["request_sha256"]
         .as_str()
         .unwrap_or_default()
@@ -805,6 +815,7 @@ async fn setup_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             match request.stage {
                 crate::apply::Stage::Init => "init",
                 crate::apply::Stage::Join => "join",
+                crate::apply::Stage::Start => "start",
             },
         );
     }

@@ -1,0 +1,9 @@
+[Unit]
+Description=BAFT-TUNNEL agent request to start instance %i
+
+[Path]
+PathExists=/run/baft-tunnel/control/%i.start
+Unit=baft-tunnel-control-start@%i.service
+
+[Install]
+WantedBy=multi-user.target
