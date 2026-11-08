@@ -123,10 +123,11 @@ cleanup() {
 trap cleanup EXIT
 
 # Operator-requested recovery: remove ONLY leftovers of earlier runs of this script
-# (/tmp/baft-tunnel-e2e-* directories and the processes recorded in their pid files).
+# (/tmp/baft-tunnel-e2e-* directories, the processes recorded in their pid files, and orphans
+# whose command line is exactly this script's temp binary/helper paths).
 if [[ "${LAB_CLEANUP_STALE:-0}" == 1 ]]; then
   for side in iran abroad; do
-    ssh_host "$side" "for f in /tmp/baft-tunnel-e2e-*/*.pid; do [ -s \"\$f\" ] && kill \$(cat \"\$f\") 2>/dev/null; done; sleep 1; rm -rf /tmp/baft-tunnel-e2e-*; echo CLEANUP_STALE_DONE" || true
+    ssh_host "$side" "for f in /tmp/baft-tunnel-e2e-*/*.pid; do [ -s \"\$f\" ] && kill \$(cat \"\$f\") 2>/dev/null; done; pkill -f '^/tmp/baft-tunnel-e2e-[0-9]+/baft-tunnel ' 2>/dev/null; pkill -f 'python3 /tmp/baft-tunnel-e2e-[0-9]+/(echo|impair)\.py' 2>/dev/null; sleep 1; rm -rf /tmp/baft-tunnel-e2e-*; echo CLEANUP_STALE_DONE" || true
   done
   exit 0
 fi
