@@ -1,5 +1,8 @@
 # ─── PROJECT ROADMAP ───
 
+> **منبع واحد وضعیت:** از ۲۰۲۶-۱۱-۰۸ وضعیت فازها، ماتریس Engineها و مسیر تا MVP فقط در `docs/PRODUCT_ROADMAP.md` نگهداری می‌شود؛ این برد نمای فارسی تسک‌هاست و باید با آن هم‌خوان بماند. گام بعدی: P3-001 (`setup` CLI)، طبق `docs/PLAN-P3-001-setup-cli.md`.
+
+
 **Project:** BAFT-TUNNEL  
 **Repository:** [zarkmakerburg/BAFT-TUNNEL](https://github.com/zarkmakerburg/BAFT-TUNNEL) — Private  
 **HQ / Project Board:** [Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2)  
@@ -115,8 +118,7 @@
 
 ## ⏳ TO DO (کارهای بعدی که باید انجام شوند)
 
-- **[P1-002b] پیاده‌سازی تصمیم ADR-0017:** پس از تأیید مالک؛ A1 (توزیع CRL با Push اپراتور) و B1 (چرخش CA/Pin با دوره Overlap). اولویت: بالا
-- **[P1-004] Phase 1 Acceptance Closure:** تطبیق شواهد تمام Gateها با آخرین SHA و بستن موارد باز؛ مستقل‌بودن بازبینی Waived است. اولویت: بالا
+- **[M0] تست LAB Reverse برای noise-tcp** سپس **[P3-001] `setup` CLI** (برنامه: `docs/PLAN-P3-001-setup-cli.md`)؛ بعد P3-002 Agent/API، P4-001 پنل، R-001 تست Upgrade/Rollback، P1-005 Fuzz، A-001 پذیرش یکپارچه LAB. اولویت: بالا
 - **[P2-001] Dependency & Security Maintenance.** اولویت: متوسط
 - **[P2-002] Operator Documentation.** اولویت: متوسط
 - **[P2-003] Phase 2 Contracts.** اولویت: متوسط
