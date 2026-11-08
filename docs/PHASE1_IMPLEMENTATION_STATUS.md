@@ -318,3 +318,9 @@ Added `scripts/pki/push-crl.sh` (stages the CRL on each node over SSH and runs t
 - **P1-004 closure (evidence at main `e4453bc`):** hosted CI green (Ubuntu 24.04 and Ubuntu 22.04 / systemd 249); two-host Direct/Reverse/revocation PASS; 30 min soak with impairment PASS (run 42398701622); real 2% TCP packet loss PASS (42412456810); 3600 s soak PASS (42412781202); `noise-tcp` Direct PASS (42445109749); rollover PASS (42447019410); adversarial handshake tests (PR #13/#14); Ubuntu 22.04 credential path (P1-000).
 - **Documented exceptions, not claimed:** soak longer than one hour (workflow cap is 3600 s); `push-crl.sh` is mock-SSH tested only, not run against real hosts with installed `apply-crl.sh`; independent security review waived by the owner and not performed; Noise Reverse/packet-loss untested; no detectability claim. Production release is NOT claimed.
 
+## 2026-11-08 — M0: `noise-tcp` Reverse LAB PASS
+
+- Run 42457633244 on main (`2093ebc` plus the script fix in #41): `NOISE_RESULT direct_ok=1 direct_rogue_refused=1 reverse_ok=1 reverse_rogue_refused=1`, `PHASE1_TWO_HOST_E2E=PASS ... noise=1`. In both directions enrolled keys relayed 64 KiB and 2 MiB payloads and an unenrolled client key did not relay.
+- Incident: run 42456443965 failed in the Reverse stage because the earlier TLS Reverse stage leaves its serve process on the Iran host and the new stage then overwrote its pid file; run 42457380581 then failed the port check on the orphan. Fixed in the script (#41) and the orphan removed with `cleanup_stale`. No Noise defect was involved.
+- Not covered: Noise under packet loss or soak; no detectability claim.
+

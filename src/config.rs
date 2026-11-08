@@ -16,8 +16,9 @@ use crate::{
     tunnel::{ForwardOptions, ServerOptions},
 };
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
+#[value(rename_all = "kebab-case")]
 pub enum EngineKind {
     #[default]
     TcpTls,

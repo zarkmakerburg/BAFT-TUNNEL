@@ -54,7 +54,7 @@ Evidence kinds are kept apart: **code** (in main), **CI** (hosted runners, Ubunt
 | Engine | Direct: code / CI / LAB | Reverse: code / CI / LAB | Under loss or soak | MVP role | Wizard |
 |---|---|---|---|---|---|
 | `tcp-tls` (TLS 1.3 mTLS) | yes / yes / PASS | yes / yes / PASS | Direct only: 2% loss PASS, 3600 s PASS | required | shown |
-| `noise-tcp` | yes / yes / PASS (enrolled key relays, unenrolled refused) | yes / unit only / **not run** | not run | required (second engine) once Reverse passes LAB | hidden until Reverse LAB PASS, then shown as experimental |
+| `noise-tcp` | yes / yes / PASS (enrolled key relays, unenrolled refused) | yes / unit only / PASS (run 42457633244, enrolled relays, unenrolled refused) | not run | required (second engine) | shown as experimental |
 | `baft` (imported main engine) | no | no | no | later (v0.3): health check P2-002 first | hidden |
 | `ws-tls` | no | no | no | later | hidden |
 | `utls-sidecar` | no | no | no | later (ADR needed) | hidden |
@@ -64,7 +64,7 @@ Evidence kinds are kept apart: **code** (in main), **CI** (hosted runners, Ubunt
 No engine is claimed undetectable.
 
 ## Dependency-ordered path to MVP (v0.2.0)
-1. **M0 Noise Reverse LAB.** Needed so MVP has two engines with the same evidence level. Small, independent.
+1. **M0 Noise Reverse LAB: DONE 2026-11-08** (run 42457633244 on main). MVP now has two engines with Direct and Reverse LAB evidence.
 2. **P3-001 `setup` CLI** (config, key material, pairing). Everything user-facing (API, wizard) reuses its code, so it comes first. This is the top blocker; see [PLAN-P3-001-setup-cli.md](PLAN-P3-001-setup-cli.md).
 3. **P3-002 Agent and local API** (status, validated desired state, audit). Depends on the config model from P3-001.
 4. **P4-001 Panel connected to the API** (read-only status plus wizard). Depends on P3-002; reuses mockup PR #17.
@@ -75,28 +75,26 @@ No engine is claimed undetectable.
 Not in MVP: central control plane, UDP/QUIC, camouflage sidecar, `baft` engine, fallback supervisor, multi-hour soak (P6).
 
 ## IN PROGRESS
-- **M0** Noise Reverse LAB: stage merged; the first run (42456443965) passed Direct again but failed Reverse because the earlier TLS Reverse stage left its serve process on the Iran host holding the port (script bug, fixed in the LAB script, not a Noise defect). Rerun pending.
-- **P3-001** `setup` CLI: plan written; slice S1 (`setup plan`) implemented, in review. S2 does not start before M0 closes.
+- **P3-001** `setup` CLI: plan written; slice S1 (`setup plan`) implemented, in review. S2 is next.
 
 ## TO DO (priority order)
-1. **M0** Noise Reverse LAB stage and run.
-2. **P3-001** slices S1 to S4 (plan file).
-3. **P3-002**, **P4-001**, **R-001**, **P1-005** as in the path above.
-4. **A-001** integrated LAB acceptance, then tag v0.2.0.
-5. After MVP: P2-002 BAFT health check, fallback supervisor, ws-tls, sidecar, QUIC, P6 long soak, independent security review before any v1.0.
+1. **P3-001** slices S1 to S4 (plan file).
+2. **P3-002**, **P4-001**, **R-001**, **P1-005** as in the path above.
+3. **A-001** integrated LAB acceptance, then tag v0.2.0.
+4. After MVP: P2-002 BAFT health check, fallback supervisor, ws-tls, sidecar, QUIC, P6 long soak, independent security review before any v1.0.
 
 ## DONE
-Phase 0 (PR #1); Phase 1 runtime, PKI, installer, systemd; P1-000; P1-001 (soak 3600 s, 2% real loss, impairment); P1-002 (ADR-0017: dual pins, CA bundle with per-CA CRLs, freshness report, push helper, rollover LAB PASS); P1-003; P1-004 closed with documented exceptions (2026-11-08); review findings 1,2,3,4,7; PR #3; release pipeline and pre-release; P2-001 (ADR-0018); P2-003 (engine trait); P2-004 (`noise-tcp` behind the trait, Direct LAB PASS).
+Phase 0 (PR #1); Phase 1 runtime, PKI, installer, systemd; P1-000; P1-001 (soak 3600 s, 2% real loss, impairment); P1-002 (ADR-0017: dual pins, CA bundle with per-CA CRLs, freshness report, push helper, rollover LAB PASS); P1-003; P1-004 closed with documented exceptions (2026-11-08); review findings 1,2,3,4,7; PR #3; release pipeline and pre-release; P2-001 (ADR-0018); P2-003 (engine trait); P2-004 (`noise-tcp` behind the trait, Direct and Reverse LAB PASS); M0.
 
 ## Documented exceptions carried forward
-Soak beyond 1 h; `push-crl.sh` on real hosts; Noise Reverse and loss; independent security review (waived, not performed); fuzzing (P1-005).
+Soak beyond 1 h; `push-crl.sh` on real hosts; Noise under packet loss and soak; independent security review (waived, not performed); fuzzing (P1-005).
 
 ## Acceptance gates
 | Gate | Status |
 |---|---|
 | Phase 1 core (runtime, mTLS, PKI, installer, 22.04 path, E2E, soak, loss, rollover) | PASS with documented exceptions |
 | Fuzz targets in CI | OPEN (P1-005) |
-| Second engine with equal evidence | OPEN (M0) |
+| Second engine with equal evidence | PASS (M0, Direct and Reverse) |
 | Guided setup, API, panel | NOT STARTED (P3-001 next) |
 | Upgrade and rollback test | OPEN (R-001) |
 | MVP v0.2.0 | NOT DONE |
