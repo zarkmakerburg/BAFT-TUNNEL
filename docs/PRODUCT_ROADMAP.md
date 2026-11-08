@@ -52,12 +52,13 @@ Evidence classifications are deliberately separate: current source code, merged-
 |---|---|---|---|
 | `tcp-tls` | Supported; real two-host integrity/recovery evidence exists | Real data path; one dedicated LAB pass on run 42506805986 | Direct supported; Reverse **Preview** |
 | `noise-tcp` | Experimental; Direct two-host evidence exists | Unproven; earlier label-only result is not valid data-path evidence | Direct Experimental; Reverse unavailable |
-| `baft` | Separate-process adapter and launcher code exist; previous BAFT process LAB pass | BAFT's own behavior is separate and must not inherit Rust Reverse claims | Hidden from `/v1/engines` and Wizard until Store/release acceptance |
+| `baft` | Separate-process adapter and launcher; Store→Launcher path, store rollback and signed release asset passed real-host LAB (P0-3) | BAFT's own behavior is separate and must not inherit Rust Reverse claims | Hidden from `/v1/engines` and Wizard until Store/release acceptance |
 | `ws-tls`, `utls-sidecar`, `quic` / UDP | Not implemented/advertised | Not implemented/advertised | Hidden / future |
 
 **Evidence caveats**
 - TCP-TLS Reverse Preview: [LAB run 42506805986](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42506805986), commit `2d8cd5e`. This is a bounded two-host pass, not soak, packet-loss or production evidence.
-- BAFT engine process under hardened systemd 249: [LAB run 42504156305](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42504156305), commit `2d8cd5e`. This predates PR #85's Store→Launcher change and **does not verify the new Store execution path**.
+- BAFT engine process under hardened systemd 249: [LAB run 42504156305](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42504156305), commit `2d8cd5e`. This predates PR #85's Store→Launcher change. The Store path was then proven separately (next bullet).
+- BAFT Engine Store → Launcher (P0-3): [run 42510577167](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42510577167) on `2d2718b` (local-build engine; store launch, kill recovery, wrong pin refused) and [run 42522105698](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42522105698) on `06c273e` with the **signed `v0.1.0-rc.2` release asset** (cosign + SHA256SUMS verified, digest = `engine-manifest.json` pin `e4f04837…3647`): store install/verify, hardened systemd 249 launch, 2 MiB data, listener and engine-kill recovery, wrong pin refused, release B over A, pin follows `current`, rollback to A, tampered previous refused, A carries 2 MiB after rollback, cleanup OK. LAB gate only; BAFT stays hidden from `/v1/engines` and Wizard until a separate owner-approved exposure gate.
 - Direct real 2% TCP-loss, 3600-second soak, CA/pin rollover and earlier setup/agent/panel runs are in [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). Their exact historical SHAs and scope remain part of the evidence; do not silently relabel them as new tests on current HEAD.
 - PR #86 added local Apply init/join and panel receipt flow; its PR description reports local tests/browser QA and a temporary live-agent receipt, but no real-host LAB for that Apply flow.
 - PR #88 is open; its description reports fake-controller tests and staged installer checks, while explicitly stating no real-systemd host test was run.
@@ -97,7 +98,7 @@ The current MVP panel source is plain static HTML/CSS/JavaScript in `panel/`, se
 |---|---|---|
 | P0-1 | PR #88 systemd control helper | Security review; real Ubuntu 22.04/systemd 249 LAB for start/stop, scope restriction, invalid/unregistered instance refusal, failure rollback, idempotency/stale requests, no unrelated state change and cleanup |
 | P0-2 | Apply lifecycle and readiness truth | Keep init/join receipt semantics; distinguish service active, listener accepting, authenticated peer, authorized session and bidirectional data integrity; unknown stays Unknown |
-| P0-3 | BAFT Engine Store → Launcher | Real-host store install/verify/start/restart-recovery/wrong-pin refusal/rollback test using pinned release manifest; record whether artifact is signed release or local build |
+| P0-3 | BAFT Engine Store → Launcher | **LAB gate closed 2026-11-08** (runs 42510577167, 42522105698; signed rc.2 asset). Exposure in Wizard is a separate gate |
 | P0-4 | TCP-TLS Reverse R3 | Agent restart, repeat/reconnect, stale-session replacement, port conflict, longer soak, packet loss, failure interruption and cleanup; Reverse remains Preview until accepted |
 | P0-5 | Integrated signed-artifact MVP LAB | Clean two-host installation using signed release, supported setup path, accepted lifecycle, authenticated tunnel, 64 KiB + 2 MiB integrity, negative identity/pin/revocation cases, recovery, rollback/uninstall and cleanup |
 

@@ -58,6 +58,11 @@ on:
         required: false
         type: string
         default: '0'
+      reverse_r3:
+        description: With reverse=1, also run Reverse R3 (SIGKILL/replace cycles, 30 s blackhole, mid-transfer kill, loss_percent on the Reverse flow, cleanup) with this many soak seconds (0 = off, max 3600)
+        required: false
+        type: string
+        default: '0'
       cleanup_stale:
         description: Only remove leftover temp processes/dirs of earlier runs of this test (0 or 1)
         required: false
@@ -113,6 +118,7 @@ jobs:
       LAB_NOISE: ${{ inputs.noise }}
       LAB_BAFT: ${{ inputs.baft }}
       LAB_REVERSE: ${{ inputs.reverse }}
+      LAB_REVERSE_R3: ${{ inputs.reverse_r3 }}
       LAB_BAFT_SYSTEMD: ${{ inputs.baft_systemd }}
       LAB_ROLLOVER: ${{ inputs.rollover }}
       LAB_SETUP: ${{ inputs.setup }}
