@@ -146,3 +146,11 @@ Two hosts, no hand-written JSON. On each host, the commands are `setup init` and
 
 The bundle holds only public material (Noise public key or certificate pin, ids, ports, and for `tcp-tls` serving nodes the certificate name). It never contains a private key.
 
+
+## Local status API (read-only, P3-002 A1)
+```
+baft-tunnel agent-token --out /etc/baft-tunnel/agent.token
+baft-tunnel agent --config /etc/baft-tunnel/config.json --token-file /etc/baft-tunnel/agent.token
+curl -H "Authorization: Bearer $(cat /etc/baft-tunnel/agent.token)" http://127.0.0.1:18080/v1/status
+```
+Loopback only; the output is the redacted support report plus `listener_accepting`. The agent does not start or change a tunnel.
