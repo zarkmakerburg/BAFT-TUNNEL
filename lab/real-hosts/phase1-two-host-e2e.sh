@@ -27,6 +27,8 @@ SETUP="${LAB_SETUP:-0}"
 ROLLOVER="${LAB_ROLLOVER:-0}"
 [[ "$ROLLOVER" == 0 || "$ROLLOVER" == 1 ]] || { echo "LAB_ROLLOVER must be 0 or 1" >&2; exit 2; }
 REVERSE="${LAB_REVERSE:-0}"
+REVERSE_R3="${LAB_REVERSE_R3:-0}"
+[[ "$REVERSE_R3" =~ ^[0-9]+$ ]] && (( REVERSE_R3 <= 3600 )) || { echo "LAB_REVERSE_R3 must be 0-3600 (Reverse R3 soak seconds; 0 = off)" >&2; exit 2; }
 [[ "$REVERSE" == 0 || "$REVERSE" == 1 ]] || { echo "LAB_REVERSE must be 0 or 1" >&2; exit 2; }
 BAFT="${LAB_BAFT:-0}"
 BAFT_SYSTEMD="${LAB_BAFT_SYSTEMD:-0}"
@@ -123,7 +125,7 @@ cleanup() {
     done
   fi
   for side in iran abroad; do
-    if (( LOSS > 0 )); then ssh_host "$side" "nft delete table inet $LOSS_TABLE 2>/dev/null || true" || true; fi
+    if (( LOSS > 0 || REVERSE_R3 > 0 )); then ssh_host "$side" "nft delete table inet $LOSS_TABLE 2>/dev/null || true" || true; fi
     ssh_host "$side" "for role in serve forward echo echo2 impair agent; do f='$REMOTE_DIR/'\$role'.pid'; if [ -s \"\$f\" ]; then kill \$(cat \"\$f\") 2>/dev/null || true; fi; done; sleep 0.2; rm -rf '$REMOTE_DIR'" || status=1
   done
   rm -rf "$LOCAL_TMP"
@@ -449,6 +451,82 @@ if [[ "$REVERSE" == 1 ]]; then
   stop_role abroad forward; sleep 1
   rev_service abroad abroad iran "$LAB_IRAN_HOST" iran.lab "$IRAN_PIN" abroad.crt abroad.key
   probe_host iran 65536
+  if (( REVERSE_R3 > 0 )); then
+    echo "=== REVERSE R3: crash/replace cycles, blackhole, mid-transfer kill, loss, soak, cleanup ==="
+    rev_wait() { # seconds : wait until the Reverse tunnel carries 64 KiB again; prints the wait
+      local t0=$SECONDS
+      while (( SECONDS - t0 < $1 )); do
+        if probe_host iran 65536 >/dev/null 2>&1; then echo $((SECONDS - t0)); return 0; fi
+        sleep 2
+      done
+      return 1
+    }
+    kill9() { ssh_host "$1" "kill -KILL \$(cat '$REMOTE_DIR/$2.pid') 2>/dev/null; rm -f '$REMOTE_DIR/$2.pid'" || true; }
+    read -r r3_pfd0 r3_prss0 < <(proc_stats iran serve)
+    echo "--- R3 service node SIGKILL and restart, 5 cycles (public node must replace the stale session) ---"
+    R3_SVC_MAX=0
+    for i in 1 2 3 4 5; do
+      kill9 abroad forward; sleep 1
+      rev_service abroad abroad iran "$LAB_IRAN_HOST" iran.lab "$IRAN_PIN" abroad.crt abroad.key
+      t="$(rev_wait 60)" || { echo "Reverse did not recover after service-node SIGKILL cycle $i" >&2; exit 1; }
+      probe_host iran 2097289 >/dev/null
+      if (( t > R3_SVC_MAX )); then R3_SVC_MAX=$t; fi
+    done
+    echo "--- R3 public node SIGKILL and restart (service node must reconnect by itself) ---"
+    kill9 iran serve; sleep 1
+    rev_public iran iran abroad "$ABROAD_PIN" iran.crt iran.key
+    R3_PUB_S="$(rev_wait 90)" || { echo "Reverse did not recover after public-node SIGKILL" >&2; exit 1; }
+    probe_host iran 2097289 >/dev/null
+    read -r r3_pfd0 r3_prss0 < <(proc_stats iran serve)
+    echo "--- R3 network blackhole 30 s on the tunnel flow (no RST), then recovery ---"
+    ssh_host iran "! nft list table inet $LOSS_TABLE >/dev/null 2>&1" || { echo "stale $LOSS_TABLE table exists" >&2; exit 1; }
+    r3_fam=ip; [[ "$LAB_ABROAD_HOST" == *:* ]] && r3_fam=ip6
+    r3_rules() { # percent : drop that share of the Reverse tunnel flow between abroad and iran:E2E_PORT
+      ssh_host iran "nft add table inet $LOSS_TABLE && nft add chain inet $LOSS_TABLE in '{ type filter hook input priority 0; policy accept; }' && nft add chain inet $LOSS_TABLE out '{ type filter hook output priority 0; policy accept; }' && nft add rule inet $LOSS_TABLE in $r3_fam saddr $LAB_ABROAD_HOST tcp dport $E2E_PORT numgen random mod 100 '<' $1 counter drop && nft add rule inet $LOSS_TABLE out $r3_fam daddr $LAB_ABROAD_HOST tcp sport $E2E_PORT numgen random mod 100 '<' $1 counter drop"
+    }
+    r3_unrules() { ssh_host iran "nft delete table inet $LOSS_TABLE; ! nft list table inet $LOSS_TABLE >/dev/null 2>&1" || { echo "R3 nft table was not removed" >&2; exit 1; }; }
+    r3_rules 100
+    sleep 30
+    if probe_host iran 4096 >/dev/null 2>&1; then echo "data passed through a full blackhole" >&2; exit 1; fi
+    r3_unrules
+    R3_BH_S="$(rev_wait 120)" || { echo "Reverse did not recover after a 30 s blackhole" >&2; exit 1; }
+    probe_host iran 2097289 >/dev/null
+    echo "--- R3 interruption mid-transfer: service node killed during a 2 MiB transfer ---"
+    ssh_host iran "nohup python3 '$REMOTE_DIR/probe.py' 127.0.0.1 '$LOCAL_PORT' 2097289 > '$REMOTE_DIR/midprobe.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/midprobe.pid'"
+    sleep 0.3
+    kill9 abroad forward
+    sleep 3
+    rev_service abroad abroad iran "$LAB_IRAN_HOST" iran.lab "$IRAN_PIN" abroad.crt abroad.key
+    R3_MID_S="$(rev_wait 60)" || { echo "Reverse did not recover after a mid-transfer kill" >&2; exit 1; }
+    probe_host iran 2097289 >/dev/null
+    ssh_host iran "p=\$(cat '$REMOTE_DIR/midprobe.pid'); for _ in \$(seq 1 30); do kill -0 \$p 2>/dev/null || break; sleep 1; done; ! kill -0 \$p 2>/dev/null" || { echo "interrupted user connection was left hanging" >&2; exit 1; }
+    R3_MID_PROBE="$(ssh_host iran "grep -q E2E_PAYLOAD_OK '$REMOTE_DIR/midprobe.log' && echo completed || echo failed_closed")"
+    R3_LOSS_DROPPED=0
+    if (( LOSS > 0 )); then
+      echo "--- R3 real TCP packet loss ${LOSS}% on the Reverse tunnel flow ---"
+      r3_rules "$LOSS"
+      probe_host iran 65536; probe_host iran 2097289
+      R3_LOSS_DROPPED="$(ssh_host iran "nft list table inet $LOSS_TABLE" | awk '/packets/ {for(i=1;i<NF;i++) if($i=="packets") sum+=$(i+1)} END{print sum+0}')"
+      r3_unrules
+    fi
+    echo "--- R3 soak ${REVERSE_R3}s over Reverse ---"
+    read -r r3_sfd0 r3_srss0 < <(proc_stats abroad forward)
+    end=$((SECONDS + REVERSE_R3)); n=0
+    while (( SECONDS < end )); do
+      probe_host iran 65536 >/dev/null
+      n=$((n + 1))
+      if (( n % 6 == 0 )); then probe_host iran 2097289 >/dev/null; fi
+      sleep 10
+    done
+    read -r r3_pfd1 r3_prss1 < <(proc_stats iran serve)
+    read -r r3_sfd1 r3_srss1 < <(proc_stats abroad forward)
+    (( r3_pfd1 <= r3_pfd0 + 8 && r3_sfd1 <= r3_sfd0 + 8 )) || { echo "fd growth in Reverse R3 (public $r3_pfd0->$r3_pfd1, service $r3_sfd0->$r3_sfd1)" >&2; exit 1; }
+    (( r3_prss1 <= r3_prss0 * 2 + 20480 && r3_srss1 <= r3_srss0 * 2 + 20480 )) || { echo "memory growth in Reverse R3" >&2; exit 1; }
+    ssh_host iran "! nft list table inet $LOSS_TABLE >/dev/null 2>&1" || { echo "R3 left an nft table behind" >&2; exit 1; }
+    R3_STRAY="$(ssh_host abroad "pgrep -fc '^$REMOTE_DIR/baft-tunnel apply --config $REMOTE_DIR/rev-service.json' || true")"
+    [[ "$R3_STRAY" == 1 ]] || { echo "expected exactly one service-node process, found $R3_STRAY" >&2; exit 1; }
+    echo "REVERSE_R3_RESULT service_sigkill_cycles=5 service_recovery_max_s=$R3_SVC_MAX public_sigkill_recovery_s=$R3_PUB_S blackhole_30s_recovery_s=$R3_BH_S midtransfer_recovery_s=$R3_MID_S midtransfer_user_conn=$R3_MID_PROBE loss_percent=$LOSS loss_dropped_packets=$R3_LOSS_DROPPED soak_s=$REVERSE_R3 soak_rounds=$n public_fd=$r3_pfd0->$r3_pfd1 public_rss_kb=$r3_prss0->$r3_prss1 service_fd=$r3_sfd0->$r3_sfd1 service_rss_kb=$r3_srss0->$r3_srss1 stray_processes=0 nft_left=0"
+  fi
   echo "--- REVERSE revoked certificate: a revoked service-node certificate must be refused ---"
   openssl ca -batch -config "$LOCAL_TMP/openssl.cnf" -revoke "$LOCAL_TMP/revabroad.crt" >/dev/null 2>&1
   openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.crl" >/dev/null 2>&1
@@ -931,4 +1009,4 @@ if (( NOISE == 1 )); then
   echo "NOISE_RESULT direct_ok=1 direct_rogue_refused=1 (Reverse is judged separately, ADR-0021)"
 fi
 
-echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
+echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE reverse_r3=$REVERSE_R3 (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
