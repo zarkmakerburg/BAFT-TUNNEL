@@ -23,6 +23,11 @@ on:
         required: false
         type: string
         default: '0'
+      noise:
+        description: Also run the noise-tcp engine stage (0 or 1)
+        required: false
+        type: string
+        default: '0'
       ref:
         description: The Phase 1 branch to test (restricted to phase1/rust-tcp-transport)
         required: true
@@ -70,6 +75,7 @@ jobs:
       LAB_SOAK_SECONDS: ${{ inputs.soak_seconds }}
       LAB_IMPAIR: ${{ inputs.impair }}
       LAB_LOSS_PERCENT: ${{ inputs.loss_percent }}
+      LAB_NOISE: ${{ inputs.noise }}
       LAB_E2E_PORT: '18300'
       LAB_E2E_LOCAL_PORT: '18080'
     steps:
