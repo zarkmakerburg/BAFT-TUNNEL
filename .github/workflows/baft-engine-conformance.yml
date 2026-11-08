@@ -8,6 +8,8 @@ on:
       - src/testdata/baft/**
       - scripts/baft-validate-golden.sh
       - release/baft-engine.pin
+      - release/engine-manifest.json
+      - scripts/build-baft-engine.sh
       - .github/workflows/baft-engine-conformance.yml
   workflow_dispatch:
 permissions:
@@ -29,3 +31,23 @@ jobs:
           (cd "$RUNNER_TEMP/baft-src" && go build -o "$RUNNER_TEMP/baft" ./cmd/baft)
       - name: Validate rendered configs with BAFT
         run: bash scripts/baft-validate-golden.sh "$RUNNER_TEMP/baft"
+  reproducible-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build twice from fresh clones and compare with the manifest
+        run: |
+          set -euo pipefail
+          scripts/build-baft-engine.sh "$RUNNER_TEMP/out1" >/dev/null
+          scripts/build-baft-engine.sh "$RUNNER_TEMP/out2" >/dev/null
+          a="$(sha256sum "$RUNNER_TEMP/out1/baft" | cut -d' ' -f1)"
+          b="$(sha256sum "$RUNNER_TEMP/out2/baft" | cut -d' ' -f1)"
+          want="$(python3 -c 'import json;print(json.load(open("release/engine-manifest.json"))["engines"][0]["artifact_sha256"])')"
+          echo "build1=$a build2=$b manifest=$want"
+          [[ "$a" == "$b" ]] || { echo "build is not reproducible" >&2; exit 1; }
+          [[ "$a" == "$want" ]] || { echo "manifest hash differs from the built artifact" >&2; exit 1; }
+          test -s "$RUNNER_TEMP/out1/licenses/LICENSE" && test -s "$RUNNER_TEMP/out1/licenses/THIRD_PARTY_LICENSES.md"
+          echo BAFT_REPRODUCIBLE=PASS
