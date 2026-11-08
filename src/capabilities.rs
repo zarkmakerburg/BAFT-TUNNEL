@@ -64,12 +64,45 @@ fn noise_tcp() -> Value {
     })
 }
 
+/// What Direct and Reverse mean in this build (ADR-0011). The two peers must configure the same
+/// label; it is checked in the authorization hello. The data path is identical for both: the
+/// `serve` node listens on the tunnel port and forwards to its local service, the `forward` node
+/// dials that port and exposes the service on its own loopback. The label does not change who
+/// dials, so no "reverse connection initiator" is claimed.
+fn direction_model() -> Value {
+    json!({
+        "label_agreed_by_both_peers": true,
+        "serve": {"listens_on_tunnel_port": true, "dials_peer": false, "forwards_to": "local service"},
+        "forward": {"listens_on_tunnel_port": false, "dials_peer": true, "exposes": "service on local loopback"},
+        "direct": {"serve_role": "listener", "forward_role": "dialer"},
+        "reverse": {"serve_role": "listener", "forward_role": "dialer", "note": "same data path; the label is an authorization decision"},
+        "nat": "the dialing side needs outbound reachability to the listener's tunnel port; the listener needs that port reachable inbound",
+        "firewall": "inbound allow on the listener's tunnel port; not inspected by the agent (unknown)"
+    })
+}
+
+/// Limits and timers of the shared tunnel layer, read from the constants the runtime really uses.
+fn runtime_limits() -> Value {
+    use crate::tunnel as t;
+    json!({
+        "handshake_timeout_s": t::HANDSHAKE_TIMEOUT.as_secs(),
+        "connect_timeout_s": t::CONNECT_TIMEOUT.as_secs(),
+        "keepalive_interval_s": t::KEEPALIVE_INTERVAL.as_secs(),
+        "stream_idle_timeout_s": t::STREAM_IDLE_TIMEOUT.as_secs(),
+        "reconnect": {"automatic": true, "initial_backoff_s": t::INITIAL_BACKOFF.as_secs(), "max_backoff_s": t::MAX_BACKOFF.as_secs()},
+        "max_sessions": t::MAX_SESSIONS,
+        "default_max_streams": crate::config::default_max_streams()
+    })
+}
+
 /// The `/v1/engines` document. Legacy keys (`id`, `status`, `directions`, `security`) are kept.
 pub fn catalog() -> Value {
     json!({
         "contract_version": CONTRACT_VERSION,
         "agent_version": env!("CARGO_PKG_VERSION"),
         "platform": {"os": std::env::consts::OS, "arch": std::env::consts::ARCH},
+        "direction_model": direction_model(),
+        "runtime": runtime_limits(),
         "engines": [tcp_tls(), noise_tcp()]
     })
 }
@@ -96,6 +129,20 @@ mod tests {
                 assert!(e.get(key).is_some(), "missing {key}");
             }
         }
+    }
+
+    #[test]
+    fn runtime_limits_come_from_the_runtime_and_reverse_makes_no_initiator_claim() {
+        let doc = catalog();
+        assert_eq!(doc["runtime"]["keepalive_interval_s"], 15);
+        assert_eq!(doc["runtime"]["reconnect"]["max_backoff_s"], 60);
+        assert_eq!(doc["direction_model"]["reverse"]["forward_role"], "dialer");
+        assert!(
+            doc["direction_model"]["reverse"]["note"]
+                .as_str()
+                .unwrap()
+                .contains("authorization")
+        );
     }
 
     #[test]
