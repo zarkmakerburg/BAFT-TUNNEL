@@ -301,3 +301,9 @@ Status: the behaviour-neutral refactor (P2-003) is verified locally only (cargo 
 - 3600 s soak (no impairment): run 42412781202 on main, 266 rounds, `forward_fd=11->11`, `serve_fd=11->11`, RSS growth under 200 KB, `PHASE1_TWO_HOST_E2E=PASS`.
 - Logs checked: no host addresses printed (hosts are masked Environment secrets).
 - This engine path is the refactored one (P2-003), so it also serves as the real-host confirmation for P2-003. `noise-tcp` (P2-004) is NOT yet covered by a LAB run.
+
+## P2-004 real-host LAB: `noise-tcp` PASS (Direct), 2026-11-08
+
+- Run 42445109749 on main: `NOISE_RESULT enrolled_ok=1 rogue_refused=1`, `PHASE1_TWO_HOST_E2E=PASS ... noise=1`. Enrolled static keys relayed 64 KiB and 2 MiB payloads over `noise-tcp` (no CA); a client with an unenrolled key did not relay.
+- Not covered: Reverse direction over Noise, packet loss/soak over Noise, and any detectability claim (Noise is a high-entropy stream, NOT claimed undetectable).
+- Incident: the first Noise run (42441461484) hung because of a backgrounding bug in the new stage (ssh kept the inherited stdout) and was cancelled; it left a temporary process on a LAB host. Fixed in #32 and removed with the new `cleanup_stale` mode (#33, #34), which only touches `/tmp/baft-tunnel-e2e-*` leftovers. Hosts verified free by the next run's port check.
