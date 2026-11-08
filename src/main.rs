@@ -5,6 +5,8 @@ mod baft_engine;
 mod capabilities;
 mod config;
 mod engine;
+#[allow(dead_code)] // consumed by the launcher in a later slice (ADR-0020)
+mod engine_store;
 mod handshake;
 pub mod key_custody;
 mod noise;
@@ -108,6 +110,11 @@ enum Command {
         #[command(subcommand)]
         command: SetupCommand,
     },
+    /// Install, verify, upgrade and roll back pinned engine binaries (nothing is downloaded).
+    Engine {
+        #[command(subcommand)]
+        command: EngineCommand,
+    },
     /// Create a Noise static keypair: the private key is written to --out (mode 0600, never
     /// overwritten); the public key is printed for enrolment in the peer's config.
     NoiseKeygen {
@@ -210,6 +217,44 @@ enum SetupCommand {
         /// Checksum printed by `setup init` on the peer node.
         #[arg(long)]
         checksum: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum EngineCommand {
+    /// Check a binary against the manifest's pinned SHA-256 (touches nothing).
+    Check {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        binary: PathBuf,
+    },
+    /// Verify and install a binary; the previous current release is kept for rollback.
+    Install {
+        #[arg(long)]
+        store: PathBuf,
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        binary: PathBuf,
+    },
+    /// Re-verify the installed current release.
+    Verify {
+        #[arg(long)]
+        store: PathBuf,
+        #[arg(long)]
+        id: String,
+    },
+    /// Switch back to the previous release (verified first).
+    Rollback {
+        #[arg(long)]
+        store: PathBuf,
+        #[arg(long)]
+        id: String,
     },
 }
 
@@ -462,6 +507,36 @@ async fn main() -> Result<()> {
             config.validate()?;
             let token = agent::read_token(&token_file)?;
             agent::run(config, agent::parse_listen(&listen)?, token, state_dir).await
+        }
+        Command::Engine { command } => {
+            match command {
+                EngineCommand::Check {
+                    manifest,
+                    id,
+                    binary,
+                } => {
+                    let sha = engine_store::check(&manifest, &id, &binary)?;
+                    println!("engine {id}: binary matches pinned sha256 {sha}");
+                }
+                EngineCommand::Install {
+                    store,
+                    manifest,
+                    id,
+                    binary,
+                } => {
+                    let sha = engine_store::install(&store, &manifest, &id, &binary)?;
+                    println!("engine {id}: installed and current = {sha}");
+                }
+                EngineCommand::Verify { store, id } => {
+                    let bin = engine_store::verify_current(&store, &id)?;
+                    println!("engine {id}: current verified: {}", bin.display());
+                }
+                EngineCommand::Rollback { store, id } => {
+                    let sha = engine_store::rollback(&store, &id)?;
+                    println!("engine {id}: rolled back, current = {sha}");
+                }
+            }
+            Ok(())
         }
         Command::SupportBundle { config: path } => {
             let config = config::load(&path)?;
