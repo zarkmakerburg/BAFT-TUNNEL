@@ -335,3 +335,8 @@ Added `scripts/pki/push-crl.sh` (stages the CRL on each node over SSH and runs t
 - A3 LAB: run 42466445718 on `d05b727`: `AGENT_RESULT status_listener_accepting=1 desired_state_accepted=1 applied=0`, `SETUP_RESULT noise_install_s=34 engine_switch_to_tls_s=34 commands_per_host=3 probe_ok=1`, `PHASE1_TWO_HOST_E2E=PASS ... setup=1`. The tcp-tls pair was built from real `scripts/pki/baft-pki.sh` output (ephemeral CA on the runner). No host addresses in the log.
 - Incident: run 42465515538 passed the agent check but failed the 60 s switch limit (81 s) because PKI issuance and delivery were inside the timed window; PKI installation is a one-time step, so the stage now times only the switch (PR #50).
 - Caveats: hosts are the LAB hosts cleaned by the stage, not freshly provisioned VMs; the agent is read/validate/store only and never applies a config; the CA passphrase came from `BAFT_PKI_PASSFILE` (automation only).
+
+## P4-001 local panel and wizard (W1 to W3)
+- W1/W2 (PR #52): static panel (Persian RTL and English, strict CSP, no `innerHTML`) and wizard backend `POST /v1/setup/plan`; CI green, 74 unit tests; headless-browser run showed wrong-token refusal, status, wizard commands and the language switch.
+- W3 LAB: run 42469113232 on `1080dbd`: `AGENT_RESULT status_listener_accepting=1 desired_state_accepted=1 applied=0 panel_served=1 wizard_plan_ok=1`, `SETUP_RESULT noise_install_s=41 engine_switch_to_tls_s=39 commands_per_host=3 probe_ok=1`, `PHASE1_TWO_HOST_E2E=PASS ... setup=1`. No host addresses in the log.
+- Decision: no React/Vite for the MVP (see PLAN-P4-001-panel.md). Not covered: panel in a real browser against a real host (checked headless against a local agent only), accessibility audit, executing setup from the panel.
