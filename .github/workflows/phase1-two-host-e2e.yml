@@ -28,6 +28,11 @@ on:
         required: false
         type: string
         default: '0'
+      cleanup_stale:
+        description: Only remove leftover temp processes/dirs of earlier runs of this test (0 or 1)
+        required: false
+        type: string
+        default: '0'
       ref:
         description: The Phase 1 branch to test (restricted to phase1/rust-tcp-transport)
         required: true
@@ -76,6 +81,7 @@ jobs:
       LAB_IMPAIR: ${{ inputs.impair }}
       LAB_LOSS_PERCENT: ${{ inputs.loss_percent }}
       LAB_NOISE: ${{ inputs.noise }}
+      LAB_CLEANUP_STALE: ${{ inputs.cleanup_stale }}
       LAB_E2E_PORT: '18300'
       LAB_E2E_LOCAL_PORT: '18080'
     steps:
