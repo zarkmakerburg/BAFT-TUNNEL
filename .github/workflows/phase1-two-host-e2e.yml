@@ -63,6 +63,16 @@ on:
         required: false
         type: string
         default: '0'
+      mvp:
+        description: Run the P0-5 integrated MVP stage (clean install, setup, Apply start, refusals, uninstall) (0 or 1)
+        required: false
+        type: string
+        default: '0'
+      mvp_release:
+        description: With mvp=1, install the baft-tunnel binary from this signed release tag (cosign + SHA256SUMS verified); empty = this run's local build
+        required: false
+        type: string
+        default: ''
       cleanup_stale:
         description: Only remove leftover temp processes/dirs of earlier runs of this test (0 or 1)
         required: false
@@ -119,6 +129,7 @@ jobs:
       LAB_BAFT: ${{ inputs.baft }}
       LAB_REVERSE: ${{ inputs.reverse }}
       LAB_REVERSE_R3: ${{ inputs.reverse_r3 }}
+      LAB_MVP: ${{ inputs.mvp }}
       LAB_BAFT_SYSTEMD: ${{ inputs.baft_systemd }}
       LAB_ROLLOVER: ${{ inputs.rollover }}
       LAB_SETUP: ${{ inputs.setup }}
@@ -169,6 +180,34 @@ jobs:
           install -m 755 "$d/baft-engine-${TAG}-linux-amd64" "$RUNNER_TEMP/baft-engine"
           echo "BAFT_ENGINE_BINARY=$RUNNER_TEMP/baft-engine" >> "$GITHUB_ENV"
           echo "BAFT_ENGINE_SOURCE=signed-release:${TAG}" >> "$GITHUB_ENV"
+      - name: Use this run's local build for the MVP stage (no release tag given)
+        if: ${{ inputs.mvp == '1' && inputs.mvp_release == '' }}
+        run: |
+          echo "MVP_BINARY=$GITHUB_WORKSPACE/target/release/baft-tunnel" >> "$GITHUB_ENV"
+          echo "MVP_SOURCE=local-build:$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+        if: ${{ inputs.mvp == '1' && inputs.mvp_release != '' && inputs.baft_release == '' }}
+        with:
+          cosign-release: v2.5.3
+      - name: Fetch and verify the baft-tunnel binary from a signed release (MVP stage)
+        if: ${{ inputs.mvp == '1' && inputs.mvp_release != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.mvp_release }}
+          ID: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9A-Za-z.+-]+$ ]] || { echo "invalid release tag" >&2; exit 2; }
+          d="$RUNNER_TEMP/mvp-release"; mkdir -p "$d"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$d" \
+            --pattern SHA256SUMS --pattern SHA256SUMS.cosign.bundle --pattern "baft-tunnel-${TAG}-linux-x86_64"
+          cosign verify-blob "$d/SHA256SUMS" --bundle "$d/SHA256SUMS.cosign.bundle" \
+            --certificate-identity-regexp "^${ID}@" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          (cd "$d" && sha256sum -c --ignore-missing SHA256SUMS | grep -q "baft-tunnel-${TAG}-linux-x86_64: OK")
+          install -m 755 "$d/baft-tunnel-${TAG}-linux-x86_64" "$RUNNER_TEMP/baft-tunnel-mvp"
+          echo "MVP_BINARY=$RUNNER_TEMP/baft-tunnel-mvp" >> "$GITHUB_ENV"
+          echo "MVP_SOURCE=signed-release:${TAG}" >> "$GITHUB_ENV"
       - name: Prepare ephemeral SSH credentials
         shell: bash
         env:

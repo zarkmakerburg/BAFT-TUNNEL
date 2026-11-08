@@ -887,6 +887,11 @@ fn setup_plan(body: &[u8]) -> (u16, Value) {
                         "chown baft-tunnel:baft-tunnel {}",
                         shell_quote(&format!("{d}/{key}"))?
                     ),
+                    // setup writes NAME.json as root:root 0640; the unit reads it as baft-tunnel.
+                    format!(
+                        "chgrp baft-tunnel {}",
+                        shell_quote(&format!("{d}/{name}.json"))?
+                    ),
                     format!("systemctl enable --now baft-tunnel@{name}"),
                 ]
             }
@@ -1475,6 +1480,7 @@ mod tests {
         assert_eq!(code, 200, "{out}");
         assert!(out.contains("--instance 'edge'"));
         assert!(out.contains("chown baft-tunnel:baft-tunnel '/etc/baft-tunnel/node.noise'"));
+        assert!(out.contains("chgrp baft-tunnel '/etc/baft-tunnel/edge.json'"));
         assert!(out.contains("systemctl enable --now baft-tunnel@edge"));
         assert!(out.contains("/etc/baft-tunnel/edge.json"));
         let bad = body.replace("edge", "../edge");

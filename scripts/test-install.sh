@@ -116,6 +116,11 @@ cmp -s "$KEY1" "$CRED_DIR/node-key"
 
 write_fake 0.3.0
 "$INSTALL" --binary "$FAKE" --destdir "$STAGE" >/dev/null
+# The agent control helper is part of the installation: uninstall removes its units and tmpfiles entry.
+"$ROOT/scripts/install-agent-control.sh" --instance iran --destdir "$STAGE" >/dev/null
+mkdir -p "$STAGE/etc/systemd/system/multi-user.target.wants" "$STAGE/run/baft-tunnel/control"
+ln -sf ../baft-tunnel-control-start@.path "$STAGE/etc/systemd/system/multi-user.target.wants/baft-tunnel-control-start@iran.path"
+[[ -f "$STAGE/etc/systemd/system/baft-tunnel-control-start@.path" && -f "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf" ]]
 if "$UNINSTALL" --destdir "$STAGE" --purge-config >/dev/null 2>&1; then
   echo "uninstall accepted config purge without --yes" >&2
   exit 1
@@ -124,5 +129,8 @@ fi
 [[ ! -e "$STAGE/etc/baft-tunnel" && ! -e "$STAGE/var/lib/baft-tunnel" ]]
 [[ ! -e "$DROPIN" && ! -e "$(dirname "$DROPIN")" ]]
 [[ ! -e "$STAGE/usr/local/bin/baft-tunnel" && ! -e "$STAGE/etc/systemd/system/baft-tunnel@.service" ]]
+! compgen -G "$STAGE/etc/systemd/system/baft-tunnel-control-*" >/dev/null
+[[ ! -e "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf" && ! -e "$STAGE/run/baft-tunnel/control" ]]
+[[ ! -L "$STAGE/etc/systemd/system/multi-user.target.wants/baft-tunnel-control-start@iran.path" ]]
 
-echo "BAFT_INSTALL_TEST=PASS (staged install, systemd hardening, rollback, baseline credential provisioning/replace/rollback, fail-closed credential checks, safe uninstall, explicit config purge)"
+echo "BAFT_INSTALL_TEST=PASS (staged install, systemd hardening, rollback, baseline credential provisioning/replace/rollback, fail-closed credential checks, safe uninstall, explicit config purge, control helper removed)"
