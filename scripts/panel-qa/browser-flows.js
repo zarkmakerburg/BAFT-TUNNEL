@@ -47,7 +47,7 @@ const ok = (n, c, d) => { results.push([c ? 'PASS' : 'FAIL', n, d || '']); };
       await p.locator('.card button:not(.primary):not([disabled])').filter({hasText: lang==='fa'?'اجرای بررسی':'Run checks'}).or(p.locator('button.primary').filter({hasText: lang==='fa'?'اجرای بررسی':'Run checks'})).first().click();
       await p.waitForSelector('.pf'); 
       const unknowns = await p.locator('.pf .badge.unknown').count();
-      ok(`${tag} preflight shows unknown checks, never pass for them`, unknowns >= 2);
+      ok(`${tag} preflight shows unknown checks, never pass for them`, unknowns >= 2); // peer identity and firewall; peer reachability is probed for the dialing role
       const overall = await p.locator('.badge').filter({hasText: lang==='fa'?'مسدود':'Blocked'}).count();
       ok(`${tag} blocked (tcp-tls PKI missing) disables continue`, overall > 0 && await next().isDisabled());
       await p.screenshot({ path: `${SHOTS}/${tag}-wiz-preflight.png`, fullPage: true });

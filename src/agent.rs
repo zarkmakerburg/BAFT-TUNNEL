@@ -437,6 +437,28 @@ async fn preflight(body: &[u8]) -> (u16, Value) {
             return (200, preflight_report(checks));
         }
     }
+    {
+        let direction = serde_json::to_value(req.direction)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        if crate::capabilities::supports_direction(req.engine.as_str(), &direction) {
+            checks.push(check(
+                "direction_support",
+                "pass",
+                format!(
+                    "{} supports the {direction} direction in this build",
+                    req.engine.as_str()
+                ),
+            ));
+        } else {
+            checks.push(check(
+                "direction_support",
+                "blocked",
+                format!("the {direction} direction is not operational for {} in this build (the label does not change how the connection is made)", req.engine.as_str()),
+            ));
+        }
+    }
     let dir = &req.dir;
     if dir.is_dir() {
         checks.push(check(
@@ -611,6 +633,7 @@ async fn probe_peer(host: &str, port: u16) -> Value {
 fn remediation(id: &str) -> &'static str {
     match id {
         "planner" => "Fix the highlighted setting; the same rule applies on the command line.",
+        "direction_support" => "Choose the Direct direction; Reverse is not available yet.",
         "directory" => "Create the setup directory or choose another one.",
         "existing_pairing" => {
             "Choose another directory or instance; setup never overwrites a pairing."
@@ -1187,6 +1210,22 @@ mod tests {
                 .contains("Start the peer")
         );
         assert!(!dir.exists());
+    }
+
+    #[tokio::test]
+    async fn preflight_blocks_the_reverse_label_because_it_is_not_operational() {
+        let body = plan_body("/nonexistent-baft-dir").replace("\"direct\"", "\"reverse\"");
+        let (_, out) = call(None, "POST", "/v1/setup/preflight", Some(TOKEN), &body).await;
+        let v: Value = serde_json::from_str(&out[out.find('{').unwrap()..]).unwrap();
+        assert_eq!(v["overall"], "blocked", "{out}");
+        let c = v["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "direction_support")
+            .unwrap();
+        assert_eq!(c["result"], "blocked");
+        assert_eq!(c["code"], "pf.direction_support.blocked");
     }
 
     fn plan_body(dir: &str) -> String {
