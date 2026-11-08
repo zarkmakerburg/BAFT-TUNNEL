@@ -36,7 +36,7 @@
 - تست واقعی دو سرور ایران و خارج
 - تکمیل چرخه عملیاتی سرویس، تست پایداری و مدیریت CRL
 
-**وضعیت: در حال انجام — کد در Main و Pre-release منتشر شده؛ Gateهای باز: Soak/Impairment (P1-001)، توزیع CRL و Rollover (P1-002)، بستن پذیرش (P1-004).**
+**وضعیت: Phase 1 با استثناهای مستند بسته شد (P1-004، SHA `e4453bc`) — Pre-release منتشر شده؛ آماده Production نیست. استثناها: Soak چندساعته، اجرای واقعی `push-crl.sh` روی میزبان‌ها، بازبینی مستقل (Waived).**
 
 ## Phase 2 — Control Plane & Agent
 **هدف:** ایجاد مدیریت متمرکز Nodeها، تنظیمات و وضعیت مطلوب سیستم.
@@ -125,8 +125,8 @@
 ## ⚡ IN PROGRESS (تسک‌های فعلی و در حال انجام)
 
 - **[P1-001] Real-Host Soak & Network Impairment:** گزینه‌های `soak_seconds` و `impair` به Workflow دو-میزبان اضافه و در Main ادغام شد (PR #15). اجرای واقعی LAB با Soak ۱۸۰۰ ثانیه + Impairment **PASS** شد ([run 42398701622](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42398701622)، `8bcafc9`؛ ۱۲۸ دور، بدون رشد fd، RSS ثابت). توجه: Impairment فعلی در سطح Application است (تأخیر/Jitter و Restart پراکسی)، **نه Packet Loss واقعی TCP/NetEm** روی کارت شبکه؛ شبیه‌سازی Packet Loss واقعی هنوز انجام نشده.
-- **[P1-002] CRL Distribution & Trust Rollover:** ADR-0017 تأیید و بیشتر پیاده‌سازی شده (PR #22–#25 و `push-crl.sh`)؛ باقی‌مانده: اجرای کامل توالی Rollover روی LAB واقعی.
-- **[P1-004] Phase 1 Acceptance Tracking:** نگهداری وضعیت Gateها و شواهد.
+- **[P1-002] CRL Distribution & Trust Rollover:** پیاده‌سازی شد؛ توالی Rollover روی LAB واقعی PASS. اجرای واقعی `push-crl.sh` روی میزبان‌های LAB انجام نشده.
+- **[P1-004] Phase 1 Acceptance:** بسته با استثناهای مستند (Soak چندساعته، `push-crl.sh` واقعی، بازبینی مستقل Waived).
 - **[P3-PREVIEW] Web Panel Mockup:** PR #17 (پیش‌نمایش UX؛ بدون Backend).
 - **[OPS-001] LAB Readiness:** هر دو میزبان Ubuntu 22.04 / systemd 249؛ مجوز دائمی مالک برای آزمون‌های ایزوله و پاک‌سازی‌شده.
 
@@ -376,9 +376,10 @@
 | Soak ۳۰ دقیقه‌ای (P1-001) | PASS | run 42398701622؛ Soak طولانی‌تر (ساعت‌ها) هنوز انجام نشده |
 | Controlled impairment (P1-001) | **انجام شد** | Packet Loss واقعی ۲٪ با nftables PASS (run 42412456810) و Soak ۳۶۰۰ ثانیه PASS (run 42412781202) |
 | Remote CRL distribution (P1-002) | پیاده‌سازی شد (تست Mock) | `push-crl.sh` + تست؛ اجرای واقعی LAB هنوز انجام نشده |
-| CA / Pin rollover (P1-002) | جزئی | Dual-CA، Dual-pin و Bundle CRL پیاده‌سازی و تست واحد شده؛ توالی کامل روی LAB واقعی اجرا نشده |
+| CA / Pin rollover (P1-002) | **انجام شد** | توالی کامل ADR-0017 B1 روی LAB واقعی PASS (run 42447019410): Overlap، گواهی CA جدید، حذف CA قدیمی و رد کلاینت قدیمی |
 | Independent review | Waived | معافیت مالک؛ انجام نشده |
-| Phase 1 acceptance (P1-004) | باز | تا بسته‌شدن Gateهای بالا |
+| Noise+TCP (P2-004) | PASS (Direct) | run 42445109749؛ Reverse و Loss روی Noise تست نشده |
+| Phase 1 acceptance (P1-004) | **بسته با استثنا** | شواهد با SHA `e4453bc`؛ استثناهای مستند در Status |
 | PR #3 | Merged | با تأیید مالک |
 | Pre-release | منتشر شده | `v0.1.0-phase1-pre` |
 | Production Release | انجام نشده | آماده Production نیست |
