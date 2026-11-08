@@ -210,7 +210,11 @@ pub struct Bundle {
     pub peer_id: String,
     pub service_port: u16,
     pub tunnel_port: u16,
+    /// Noise public key, or the SHA-256 pin of the node certificate for tcp-tls.
     pub public: String,
+    /// tcp-tls serve nodes: the name the forwarding peer must verify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_name: Option<String>,
 }
 
 impl Bundle {
@@ -264,32 +268,30 @@ fn write_new(path: &Path, mode: u32, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug)]
 pub struct InitResult {
     pub bundle_path: PathBuf,
     pub checksum: String,
 }
 
-/// Generate this node's key and write the public pairing bundle. Refuses to overwrite anything.
+/// Prepare this node and write the public pairing bundle. Refuses to overwrite anything.
+/// noise-tcp: generates the node key. tcp-tls: validates PKI material that already sits in
+/// the setup directory (`node.key`, `node.crt`, `ca.crt`, `ca.crl` from `baft-pki.sh`).
 pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> {
-    if req.engine != EngineKind::NoiseTcp {
-        bail!("guided setup currently supports noise-tcp only (tcp-tls arrives in slice S3)");
+    let mut checked = req.clone();
+    let tls = req.engine == EngineKind::TcpTls;
+    if tls && req.role == Role::Forward && checked.server_name.is_none() {
+        checked.server_name = Some("pending".into()); // learned from the peer bundle at join
     }
-    plan(req)?; // full request validation, no side effects
+    plan(&checked)?; // full request validation, no side effects
     let dir = &req.dir;
-    for name in [KEY_FILE, CONFIG_FILE, STATE_FILE] {
+    for name in [CONFIG_FILE, STATE_FILE] {
         if dir.join(name).exists() {
             bail!(
                 "{} already exists; setup never overwrites",
                 dir.join(name).display()
             );
         }
-    }
-    if !dir.exists() {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o750)
-            .create(dir)
-            .with_context(|| format!("create {}", dir.display()))?;
     }
     let bundle_path = bundle_out.map_or_else(|| dir.join("bundle.json"), Path::to_path_buf);
     if bundle_path.exists() {
@@ -298,11 +300,32 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
             bundle_path.display()
         );
     }
-    let public = crate::engine::write_noise_keypair(&dir.join(KEY_FILE))?;
+    let (public, server_name) = if tls {
+        tls_material(dir, &req.node_id)?
+    } else {
+        if dir.join(KEY_FILE).exists() {
+            bail!(
+                "{} already exists; setup never overwrites",
+                dir.join(KEY_FILE).display()
+            );
+        }
+        if !dir.exists() {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o750)
+                .create(dir)
+                .with_context(|| format!("create {}", dir.display()))?;
+        }
+        (
+            crate::engine::write_noise_keypair(&dir.join(KEY_FILE))?,
+            None,
+        )
+    };
+    let engine = engine_name(req.engine);
     let bundle = Bundle {
         version: 1,
         tunnel_id: req.tunnel_id.clone(),
-        engine: "noise-tcp".into(),
+        engine: engine.into(),
         direction: req.direction.as_str().into(),
         role: req.role,
         node_id: req.node_id.clone(),
@@ -310,9 +333,14 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
         service_port: req.service_port,
         tunnel_port: req.tunnel_port,
         public: public.clone(),
+        server_name: if req.role == Role::Serve {
+            server_name
+        } else {
+            None
+        },
     };
     let state = State {
-        engine: "noise-tcp".into(),
+        engine: engine.into(),
         direction: req.direction.as_str().into(),
         role: req.role,
         node_id: req.node_id.clone(),
@@ -333,6 +361,59 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
         checksum: bundle.checksum(),
         bundle_path,
     })
+}
+
+fn engine_name(engine: EngineKind) -> &'static str {
+    match engine {
+        EngineKind::TcpTls => "tcp-tls",
+        EngineKind::NoiseTcp => "noise-tcp",
+    }
+}
+
+/// Seconds of CRL validity setup requires; shorter fails closed before the runtime would warn.
+const MIN_CRL_SECONDS: i64 = 24 * 3600;
+
+/// Check existing offline-PKI output and return this node's certificate pin and server name.
+fn tls_material(dir: &Path, node_id: &str) -> Result<(String, Option<String>)> {
+    use std::os::unix::fs::PermissionsExt;
+    if !dir.is_dir() {
+        bail!(
+            "{} must exist and contain the baft-pki.sh output",
+            dir.display()
+        );
+    }
+    for name in ["node.key", "node.crt", "ca.crt", "ca.crl"] {
+        let path = dir.join(name);
+        let meta = std::fs::symlink_metadata(&path).with_context(|| {
+            format!(
+                "{} is missing (produce it with scripts/pki/baft-pki.sh)",
+                path.display()
+            )
+        })?;
+        if !meta.is_file() {
+            bail!("{} must be a regular file", path.display());
+        }
+    }
+    let mode = std::fs::metadata(dir.join("node.key"))?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode & 0o077 != 0 {
+        bail!("node.key must not be readable by group or others (use mode 0600)");
+    }
+    let (ca, crl, cert, key) = (
+        dir.join("ca.crt"),
+        dir.join("ca.crl"),
+        dir.join("node.crt"),
+        dir.join("node.key"),
+    );
+    crate::tls::server_config(&ca, &crl, &cert, &key)
+        .context("node certificate, key, CA and CRL do not form a valid set")?;
+    let remaining = crate::tls::crl_seconds_remaining(&crl)?;
+    if remaining < MIN_CRL_SECONDS {
+        bail!("CRL has under 24 hours left (or is expired); issue a fresh CRL first");
+    }
+    crate::tls::node_certificate_summary(&cert, node_id)
 }
 
 /// Verify the peer's bundle against this node's saved state and write the final config.
@@ -391,8 +472,20 @@ pub fn join(dir: &Path, bundle_path: &Path, checksum: &str) -> Result<PathBuf> {
     if bundle.public == state.own_public {
         bail!("bundle carries this node's own public key");
     }
+    let engine = if state.engine == "tcp-tls" {
+        EngineKind::TcpTls
+    } else {
+        EngineKind::NoiseTcp
+    };
+    let server_name = if engine == EngineKind::TcpTls && state.role == Role::Forward {
+        Some(bundle.server_name.clone().context(
+            "the serving node's bundle has no server name (its certificate needs a DNS or IPv4 SAN)",
+        )?)
+    } else {
+        None
+    };
     let req = PlanRequest {
-        engine: EngineKind::NoiseTcp,
+        engine,
         role: state.role,
         direction: if state.direction == "reverse" {
             ConnectionDirection::Reverse
@@ -405,11 +498,16 @@ pub fn join(dir: &Path, bundle_path: &Path, checksum: &str) -> Result<PathBuf> {
         service_port: state.service_port,
         tunnel_port: state.tunnel_port,
         peer_host: state.peer_host,
-        server_name: None,
+        server_name,
         dir: dir.to_path_buf(),
     };
     let mut config = plan(&req)?.config;
-    config["noise_peer_public"] = json!(bundle.public);
+    let key = if engine == EngineKind::TcpTls {
+        "peer_fingerprint"
+    } else {
+        "noise_peer_public"
+    };
+    config[key] = json!(bundle.public);
     let runtime: crate::config::RuntimeConfig =
         serde_json::from_value(config.clone()).context("final configuration is invalid")?;
     runtime
@@ -652,7 +750,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_never_overwrites_and_tls_is_not_yet_supported() {
+    fn setup_never_overwrites_and_tls_without_pki_material_is_refused() {
         let root = temp("overwrite");
         let (sd, _fd, _sb, fb, _sc, fc) = paired(&root);
         let serve = side(&root, Role::Serve, "abroad", "iran", "serve");
@@ -685,6 +783,152 @@ mod tests {
         ));
         assert!(!same_checksum("", &bundle.checksum()));
         assert!(!same_checksum(&sc[..sc.len() - 1], &bundle.checksum()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- S3: tcp-tls from baft-pki.sh output ------------------------------------------------
+
+    fn install_pki(
+        root: &Path,
+        dir_name: &str,
+        node: &str,
+        ca: &crate::tls::tests::TestCa,
+    ) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = root.join(dir_name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (cert, key) = crate::tls::tests::leaf(
+            &dir,
+            &format!("{node}-gen"),
+            &format!("urn:baft-tunnel:node:{node}"),
+            &ca.issuer,
+        );
+        std::fs::rename(cert, dir.join("node.crt")).unwrap();
+        std::fs::rename(key, dir.join("node.key")).unwrap();
+        std::fs::set_permissions(dir.join("node.key"), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        std::fs::copy(&ca.ca_pem, dir.join("ca.crt")).unwrap();
+        std::fs::copy(&ca.crl_pem, dir.join("ca.crl")).unwrap();
+        dir
+    }
+
+    fn tls_side(root: &Path, role: Role, node: &str, peer: &str, dir: PathBuf) -> PlanRequest {
+        let mut req = side(root, role, node, peer, "unused");
+        req.engine = EngineKind::TcpTls;
+        req.server_name = None;
+        req.dir = dir;
+        req
+    }
+
+    #[test]
+    fn tls_nodes_pair_from_existing_pki_output() {
+        let root = temp("tls-pair");
+        let ca = crate::tls::tests::make_ca(&root, "ca");
+        let sd = install_pki(&root, "serve", "abroad", &ca);
+        let fd = install_pki(&root, "forward", "iran", &ca);
+        let a = init(
+            &tls_side(&root, Role::Serve, "abroad", "iran", sd.clone()),
+            None,
+        )
+        .unwrap();
+        let b = init(
+            &tls_side(&root, Role::Forward, "iran", "abroad", fd.clone()),
+            None,
+        )
+        .unwrap();
+        let serve_bundle: Bundle =
+            serde_json::from_slice(&std::fs::read(&a.bundle_path).unwrap()).unwrap();
+        let forward_bundle: Bundle =
+            serde_json::from_slice(&std::fs::read(&b.bundle_path).unwrap()).unwrap();
+        assert_eq!(serve_bundle.server_name.as_deref(), Some("localhost"));
+        assert_eq!(forward_bundle.server_name, None);
+        join(&sd, &b.bundle_path, &b.checksum).unwrap();
+        join(&fd, &a.bundle_path, &a.checksum).unwrap();
+        let load = |d: &Path| -> Value {
+            serde_json::from_slice(&std::fs::read(d.join(CONFIG_FILE)).unwrap()).unwrap()
+        };
+        assert_eq!(load(&sd)["peer_fingerprint"], forward_bundle.public);
+        assert_eq!(load(&fd)["peer_fingerprint"], serve_bundle.public);
+        assert_eq!(load(&fd)["server_name"], "localhost");
+        assert!(load(&sd).get("server_name").is_none());
+        // The private key is never copied into the bundle or state.
+        let key = std::fs::read_to_string(sd.join("node.key")).unwrap();
+        let body: String = key.lines().filter(|l| !l.starts_with("-----")).collect();
+        assert!(
+            !std::fs::read_to_string(&a.bundle_path)
+                .unwrap()
+                .contains(&body)
+        );
+        assert!(
+            !std::fs::read_to_string(sd.join(STATE_FILE))
+                .unwrap()
+                .contains(&body)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tls_init_refuses_incomplete_or_unsafe_material() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp("tls-bad");
+        let ca = crate::tls::tests::make_ca(&root, "ca");
+        let try_init = |dir: &Path, node: &str| {
+            init(
+                &tls_side(&root, Role::Serve, node, "iran", dir.to_path_buf()),
+                None,
+            )
+        };
+        // Missing CRL.
+        let d = install_pki(&root, "nocrl", "abroad", &ca);
+        std::fs::remove_file(d.join("ca.crl")).unwrap();
+        assert!(try_init(&d, "abroad").is_err());
+        // Key readable by others.
+        let d = install_pki(&root, "openkey", "abroad", &ca);
+        std::fs::set_permissions(d.join("node.key"), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        let err = try_init(&d, "abroad").unwrap_err().to_string();
+        assert!(err.contains("0600"), "{err}");
+        // Certificate belongs to a different node identity.
+        let d = install_pki(&root, "wrongid", "mallory", &ca);
+        assert!(try_init(&d, "abroad").is_err());
+        // Missing directory.
+        assert!(try_init(&root.join("absent"), "abroad").is_err());
+        // CRL with under 24 hours left (an expired CRL is further below the same threshold).
+        let d = install_pki(&root, "expired", "abroad", &ca);
+        let expired = d.join("expired.crl");
+        let status = std::process::Command::new("openssl")
+            .args(["ca", "-gencrl", "-crlhours", "1", "-batch", "-config"])
+            .arg(root.join("ca").join("openssl.cnf"))
+            .arg("-out")
+            .arg(&expired)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::rename(&expired, d.join("ca.crl")).unwrap();
+        assert!(try_init(&d, "abroad").is_err());
+        // Nothing was written by any refused attempt.
+        for name in ["nocrl", "openkey", "wrongid", "expired"] {
+            assert!(!root.join(name).join(STATE_FILE).exists());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tls_pairing_refuses_engine_mismatch_with_a_noise_peer() {
+        let root = temp("tls-mix");
+        let ca = crate::tls::tests::make_ca(&root, "ca");
+        let sd = install_pki(&root, "serve", "abroad", &ca);
+        init(
+            &tls_side(&root, Role::Serve, "abroad", "iran", sd.clone()),
+            None,
+        )
+        .unwrap();
+        let noise = side(&root, Role::Forward, "iran", "abroad", "noise");
+        let n = init(&noise, None).unwrap();
+        let err = join(&sd, &n.bundle_path, &n.checksum)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("engine"), "{err}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

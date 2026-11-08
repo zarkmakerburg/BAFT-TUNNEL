@@ -101,6 +101,43 @@ pub fn server_config(ca: &Path, crl: &Path, cert: &Path, key: &Path) -> Result<T
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
+/// Setup helper: after checking the node identity URI SAN against `node_id`, return the
+/// certificate's SHA-256 pin (hex) and its first DNS or IPv4 server name, if any.
+pub fn node_certificate_summary(cert: &Path, node_id: &str) -> Result<(String, Option<String>)> {
+    use sha2::{Digest, Sha256};
+    use x509_parser::extensions::GeneralName;
+    let certs = certificates(cert)?;
+    crate::handshake::verify_peer_identity(Some(&certs), node_id)?;
+    let leaf = certs
+        .first()
+        .context("certificate file contains no certificates")?;
+    let pin = hex::encode(Sha256::digest(leaf.as_ref()));
+    let (_, parsed) = x509_parser::parse_x509_certificate(leaf.as_ref())
+        .map_err(|_| anyhow::anyhow!("node certificate is not valid X.509 DER"))?;
+    let mut name = None;
+    if let Some(san) = parsed
+        .subject_alternative_name()
+        .context("parse subject alternative name")?
+    {
+        for entry in &san.value.general_names {
+            match entry {
+                GeneralName::DNSName(dns) => {
+                    name = Some((*dns).to_owned());
+                    break;
+                }
+                GeneralName::IPAddress(bytes) if bytes.len() == 4 && name.is_none() => {
+                    name = Some(format!(
+                        "{}.{}.{}.{}",
+                        bytes[0], bytes[1], bytes[2], bytes[3]
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok((pin, name))
+}
+
 pub fn server_name(value: &str) -> Result<ServerName<'static>> {
     ServerName::try_from(value.to_owned()).context("invalid TLS server name")
 }
@@ -110,7 +147,7 @@ pub fn connector(config: Arc<ClientConfig>) -> TlsConnector {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::handshake::{client_handshake, server_handshake, verify_peer_fingerprint};
     use rcgen::{
@@ -713,13 +750,13 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
-    struct TestCa {
-        ca_pem: std::path::PathBuf,
-        crl_pem: std::path::PathBuf,
-        issuer: Issuer<'static, KeyPair>,
+    pub(crate) struct TestCa {
+        pub(crate) ca_pem: std::path::PathBuf,
+        pub(crate) crl_pem: std::path::PathBuf,
+        pub(crate) issuer: Issuer<'static, KeyPair>,
     }
 
-    fn make_ca(dir: &Path, name: &str) -> TestCa {
+    pub(crate) fn make_ca(dir: &Path, name: &str) -> TestCa {
         let dir = dir.join(name);
         fs::create_dir_all(dir.join("newcerts")).unwrap();
         let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -769,7 +806,7 @@ mod tests {
         }
     }
 
-    fn leaf(
+    pub(crate) fn leaf(
         dir: &Path,
         name: &str,
         uri: &str,
