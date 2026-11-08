@@ -699,14 +699,9 @@ fn get_audit(ctx: &Ctx) -> (u16, Value) {
     (200, json!({"entries": entries.split_off(start)}))
 }
 
-/// Engine catalogue (what this build ships and how mature each engine is). Mirrors the roadmap.
+/// Engine capability contract (see `capabilities`): real, versioned, unknown stays unknown.
 fn engines() -> Value {
-    json!({"engines": [
-        {"id": "tcp-tls", "status": "stable", "directions": ["direct", "reverse"],
-         "security": "TLS 1.3 mutual authentication, offline CA, mandatory CRL"},
-        {"id": "noise-tcp", "status": "experimental", "directions": ["direct", "reverse"],
-         "security": "Noise static keys pinned per peer, no CA"}
-    ]})
+    crate::capabilities::catalog()
 }
 
 fn get_desired(ctx: &Ctx) -> (u16, Value) {

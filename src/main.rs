@@ -2,6 +2,7 @@ mod agent;
 mod authorization;
 #[allow(dead_code)] // the renderer API is used by tests and later phases (ADR-0019)
 mod baft_engine;
+mod capabilities;
 mod config;
 mod engine;
 mod handshake;

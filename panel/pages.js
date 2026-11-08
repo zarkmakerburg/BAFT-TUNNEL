@@ -258,7 +258,9 @@
       var ok = engines.filter(function (e) { return e.directions.indexOf(w.direction) >= 0; });
       return h('div', null, h('h2', { text: t('meth.q') }), h('div', { class: 'choices', role: 'radiogroup', 'aria-label': t('meth.q') }, ok.map(function (e) {
         var rec = e.status === 'stable';
-        return choice('engine', e.id, w.engine === e.id, [BAFT.ltr(e.id), pill(rec ? 'ok' : 'warn', rec ? t('meth.rec') + ' · ' + t('meth.stable') : t('meth.experimental'))], t('meth.' + e.id),
+        var lab = (((e.evidence || {}).lab_two_host) || {})[w.direction];
+        var labPill = lab === 'pass' ? pill('ok', t('meth.lab.pass')) : pill('unknown', t('meth.lab.unknown'));
+        return choice('engine', e.id, w.engine === e.id, [BAFT.ltr(e.id), pill(rec ? 'ok' : 'warn', rec ? t('meth.rec') + ' · ' + t('meth.stable') : t('meth.experimental')), labPill], t('meth.' + e.id),
           function (v) { w.engine = v; invalidate(); draw(); });
       })));
     }
