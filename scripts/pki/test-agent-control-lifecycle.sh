@@ -229,33 +229,38 @@ AGENT_PID=$!
 for n in $(seq 1 40); do curl -fs http://127.0.0.1:18090/v1/health >/dev/null 2>&1 && break; sleep 0.25; done
 curl -fs http://127.0.0.1:18090/v1/health >/dev/null || { cat "$TMP/agent.log" >&2; die "agent did not start"; }
 apply() { # NAME ROLE KEY
-  curl -s -X POST http://127.0.0.1:18090/v1/setup/apply -H "Authorization: Bearer $TOKEN" -d "{\"stage\":\"start\",\"confirm\":true,\"idempotency_key\":\"$3\",\"plan\":{\"engine\":\"tcp-tls\",\"role\":\"$2\",\"direction\":\"direct\",\"node_id\":\"agentctl\",\"peer_id\":\"peer-test\",\"tunnel_id\":\"agentctl\",\"service_port\":18099,\"tunnel_port\":18443,\"peer_host\":$4,\"server_name\":$5,\"instance\":\"$1\"}}"
+  curl -s --max-time 60 -X POST http://127.0.0.1:18090/v1/setup/apply -H "Authorization: Bearer $TOKEN" -d "{\"stage\":\"start\",\"confirm\":true,\"idempotency_key\":\"$3\",\"plan\":{\"engine\":\"tcp-tls\",\"role\":\"$2\",\"direction\":\"direct\",\"node_id\":\"agentctl\",\"peer_id\":\"peer-test\",\"tunnel_id\":\"agentctl\",\"service_port\":18099,\"tunnel_port\":18443,\"peer_host\":$4,\"server_name\":$5,\"instance\":\"$1\"}}"
 }
 field() { python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(sys.argv[1], ""))' "$1"; }
 # serve listens on 127.0.0.1:18443 and has no peer to reach: verify passes without a path probe.
 out="$(apply "$SERVE" serve ctl-serve-0001 null null)"
+step "3 serve applied"
 [[ "$(echo "$out" | field result)" == applied ]] || { echo "$out" >&2; die "Apply start (serve) was not applied"; }
 active "$SERVE" || die "Apply start left $SERVE inactive"
+step "3 malformed names via API"
 # A malformed or unregistered instance name is refused by the API and creates nothing.
 for bad in '../etc' 'bad name' '-x'; do
   [[ "$(apply "$bad" serve ctl-bad-$RANDOM null null | field result)" == refused ]] || die "malformed instance '$bad' was not refused"
 done
 ! sudo ls "$CTL" | grep -qE '^(\.\.|bad|-x)' || die "a malformed API request left a file"
+step "3 replay"
 # A repeat with the same key replays the receipt without acting.
 [[ "$(apply "$SERVE" serve ctl-serve-0001 null null | field replayed)" == True ]] || die "idempotent replay failed"
 # The same request on a running unit is refused and changes nothing.
 [[ "$(apply "$SERVE" serve ctl-serve-0002 null null | field result)" == refused ]] || die "running unit was not refused"
 sudo -u baft-tunnel touch "/run/baft-tunnel/control/$SERVE.stop"; wait_state "$SERVE" inactive || die "could not stop $SERVE"
+step "3 failing start rollback"
 # A unit that cannot start (missing certificate): verification fails, Apply stops it and reports rolled_back.
 out="$(apply "$FWD" forward ctl-fwd-0001 '"127.0.0.1"' '"tunnel.example.test"')"
 [[ "$(echo "$out" | field result)" == rolled_back ]] || { echo "$out" >&2; die "failing start was not rolled back"; }
 wait_state "$FWD" inactive || die "rollback left $FWD running"
 echo "$out" | grep -q "baft-tunnel" && ! echo "$out" | grep -q "BEGIN" || die "receipt content check failed"
+step "3 receipts and side effects"
 nrec="$(sudo find /var/lib/baft-tunnel/agent/receipts -name '*.json' | wc -l)"
 [[ "$nrec" -ge 2 ]] || die "expected receipts, found $nrec"
 ! sudo grep -rq -- "$TOKEN" /var/lib/baft-tunnel/agent/receipts || die "a receipt contains the token"
 # Nothing else changed: firewall hash, listeners and unrelated units match the baseline.
-sudo kill "$AGENT_PID" 2>/dev/null || true; wait "$AGENT_PID" 2>/dev/null || true; AGENT_PID=""; sleep 1
+sudo kill "$AGENT_PID" 2>/dev/null || true; sleep 2; AGENT_PID=""; step "3 agent stopped"
 snapshot >"$TMP/side-after.txt"
 diff "$TMP/side-before.txt" "$TMP/side-after.txt" >&2 || die "firewall, listeners or unrelated units changed"
 
