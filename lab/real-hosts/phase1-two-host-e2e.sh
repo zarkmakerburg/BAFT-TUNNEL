@@ -457,7 +457,23 @@ PY"
   [[ "$agent_status" == *'"listener_accepting":true'* ]] || { echo "agent does not see the live listener" >&2; exit 1; }
   agent_put="$(agent_call PUT /v1/desired)"
   [[ "$agent_put" == *'"accepted":true'* && "$agent_put" == *'"applied":false'* ]] || { echo "agent refused a valid desired state" >&2; exit 1; }
-  echo "AGENT_RESULT status_listener_accepting=1 desired_state_accepted=1 applied=0"
+  # P4-001 W3: the panel is served by the agent on the real host and the wizard backend returns
+  # the same setup commands that this stage just ran.
+  panel_out="$(ssh_host abroad "python3 - '$ad' <<'PY'
+import sys, json, urllib.request
+d = sys.argv[1]
+page = urllib.request.urlopen('http://127.0.0.1:18081/', timeout=5)
+csp = page.headers.get('Content-Security-Policy', '')
+html = page.read().decode()
+tok = open(d + '/agent.token').read().strip()
+body = json.dumps({'engine': 'tcp-tls', 'role': 'serve', 'direction': 'direct', 'node_id': 'abroad', 'peer_id': 'iran', 'tunnel_id': 'lab-setup', 'service_port': 18091, 'tunnel_port': 18310, 'dir': d}).encode()
+r = urllib.request.Request('http://127.0.0.1:18081/v1/setup/plan', data=body, method='POST', headers={'Authorization': 'Bearer ' + tok})
+plan = json.loads(urllib.request.urlopen(r, timeout=5).read().decode())
+ok = '<title>BAFT-TUNNEL</title>' in html and \"script-src 'self'\" in csp and plan['applied'] is False and plan['commands'][0].startswith('baft-tunnel setup init --engine tcp-tls --role serve') and '--service-port 18091' in plan['commands'][0]
+print('PANEL_OK' if ok else 'PANEL_BAD')
+PY")"
+  [[ "$panel_out" == *PANEL_OK* ]] || { echo "panel or wizard check failed" >&2; exit 1; }
+  echo "AGENT_RESULT status_listener_accepting=1 desired_state_accepted=1 applied=0 panel_served=1 wizard_plan_ok=1"
   stop_role abroad agent
   stop_role iran forward; stop_role abroad serve
   ssh_host abroad "p=\$(cat '$REMOTE_DIR/echo2.pid' 2>/dev/null); [ -n \"\$p\" ] && kill \$p 2>/dev/null; true"
