@@ -279,10 +279,32 @@
         w.pfError ? h('p', { class: 'error', role: 'alert', text: w.pfError }) : null,
         pf ? h('div', null, h('p', null, t('pf.overall') + ': ', pill({ pass: 'ok', warning: 'warn', blocked: 'bad', unknown: 'unknown' }[pf.overall], t('res.' + pf.overall))), list, h('p', { class: 'sub', text: t('pf.unknownnote') })) : h('p', { class: 'sub', text: t('pf.stale') }));
     }
+    function effects(p) {
+      var pf = w.pf, cfg = p.config || {}, eng = engines.filter(function (e) { return e.id === w.engine; })[0] || {};
+      var serve = cfg.mode === 'serve';
+      var unknown = pf ? pf.checks.filter(function (c) { return c.result === 'unknown'; }).map(function (c) { return t('pfc.' + c.id) === 'pfc.' + c.id ? c.id : t('pfc.' + c.id); }) : [];
+      var lab = ((eng.evidence || {}).lab_two_host || {})[w.direction];
+      return h('div', null,
+        h('h3', { text: t('pv.topology') }),
+        kv([[t('sum.dir'), dirLabel(w.direction)], [t('pv.thisrole'), roleLabel(serve ? 'serve' : 'forward')],
+          [t('pv.otherrole'), roleLabel(serve ? 'forward' : 'serve')], [t('sum.engine'), BAFT.ltr(w.engine)],
+          [t('pv.listener'), serve ? BAFT.ltr(cfg.listen || '—') + ' (' + t('pv.thisserver') + ')' : t('pv.otherserver')],
+          [t('pv.dialer'), serve ? t('pv.otherserver') : BAFT.ltr(cfg.remote || '—') + ' (' + t('pv.thisserver') + ' → ' + t('pv.otherserver') + ')'],
+          [t('pv.service'), BAFT.ltr(serve ? (cfg.target || '—') : (cfg.listen || '—'))],
+          [t('pv.labstate'), lab === 'pass' ? pill('ok', t('meth.lab.pass')) : pill('unknown', t('meth.lab.unknown'))]]),
+        h('h3', { text: t('pv.thisserver') }), h('p', { text: t('pv.thisfx') }),
+        h('h3', { text: t('pv.otherserver') }), h('p', { text: t('pv.otherfx') }),
+        h('h3', { text: t('pv.fw') }), h('p', { text: t('pv.fwbody') }),
+        h('h3', { text: t('pv.secrets') }), h('p', { text: t('pv.secretsbody') }),
+        h('h3', { text: t('pv.rollback') }), h('p', { text: t('pv.rollbackbody') }),
+        h('h3', { text: t('pv.unknowns') }),
+        unknown.length ? h('ul', null, unknown.map(function (u) { return h('li', { text: u }); })) : h('p', { class: 'muted', text: pf ? t('pv.nounknown') : t('pv.nopf') }));
+    }
     function stepPreview() {
       var p = w.plan;
       return h('div', null, h('h2', { text: t('pv.title') }), h('div', { class: 'banner info', text: t('pv.none') }),
         w.busy ? h('p', { text: t('pv.load') }) : null, w.planError ? h('p', { class: 'error', role: 'alert', text: w.planError }) : null,
+        p ? effects(p) : null,
         p ? h('div', null, h('h3', { text: t('pv.files') }), h('pre', { text: p.files.map(function (x) { return x.path + ' [' + x.mode + '] ' + x.note; }).join('\n') }),
           h('h3', { text: t('pv.pending') }), h('pre', { text: p.pending.join('\n') }), h('h3', { text: t('pv.cfg') }), h('pre', { text: JSON.stringify(p.config, null, 2) })) : null);
     }
