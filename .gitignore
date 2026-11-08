@@ -25,3 +25,6 @@
 **/serial
 **/crlnumber
 /offline-ca/
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
