@@ -191,7 +191,15 @@ start_after="$(sudo systemctl show -p ExecMainStartTimestampMonotonic --value "$
 UPGRADE_RESULT=""
 if [[ -n "$OLD_BIN" ]]; then
   # R-001: real upgrade from an older release and rollback, config and credential kept in place.
-  listening() { python3 -c "import socket,sys; socket.create_connection(('127.0.0.1',18080),2).close()" 2>/dev/null; }
+  listening() {
+    local attempt
+    for attempt in $(seq 1 40); do
+      if python3 -c "import socket; socket.create_connection(('127.0.0.1',18080),1).close()" 2>/dev/null; then return 0; fi
+      sleep 0.25
+    done
+    dump_service
+    return 1
+  }
   version_of() { sudo /usr/local/bin/baft-tunnel --version 2>/dev/null || echo unknown; }
   OLD_RUNTIME="$TMP/baft-tunnel-old"
   install -m 0755 "$OLD_BIN" "$OLD_RUNTIME"
