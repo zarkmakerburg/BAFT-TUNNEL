@@ -118,3 +118,18 @@ During a CA rollover the trust bundle holds the old and the new CA, each with it
 ## Activating a CRL bundle during CA rollover (ADR-0017 B1)
 
 `apply-crl.sh` accepts a bundle of 1–4 CA certificates as `CA_CERT` and a bundle with one CRL per CA as the CRL files. The candidate must contain a CRL for every configured CA, each signed by that CA, each with a CRL number greater than the installed CRL of the same issuer, and none expired; a CRL from an unconfigured CA, a duplicate issuer, or a CA bundle with two identical subjects is rejected. A CA that has no installed CRL yet (the new CA) is allowed. Removing the old CA is a separate, explicit step: pass the CA bundle without it and a candidate without its CRL.
+
+## Pushing a CRL to nodes (ADR-0017 A1)
+
+`bash scripts/pki/push-crl.sh --crl ./ca.crl --host root@NODE1 --host root@NODE2:2222 --remote-ca /etc/baft-tunnel/ca.crt --remote-crl /etc/baft-tunnel/ca.crl --instance NAME [--sudo] [--known-hosts FILE] [--key FILE]` copies the offline-signed CRL (or CRL bundle) to a private staging directory on each node and runs that node's `apply-crl.sh apply`, so signature, CRL number, expiry and rollback are all decided on the node. Nodes are handled one at a time and the run stops at the first failure; the failed node is rolled back by `apply-crl.sh`, nodes already activated stay activated. SSH uses `BatchMode` and `StrictHostKeyChecking=yes`. The helper refuses a CRL with under 72 hours left (`crl-status.sh`). `--dry-run` prints the plan and contacts nothing. Nodes never fetch CRLs and the CA key never leaves the offline CA. Test: `bash scripts/pki/test-push-crl.sh` (mock SSH/SCP).
+
+## CA / pin rollover sequence (ADR-0017 B1)
+
+1. Offline: create the new CA with a different name (`init-ca`), issue its CRL.
+2. Per node, one at a time: push the CA bundle (old + new) and the bundle CRL (old CRL + new CRL) with `push-crl.sh`; verify the tunnel still works.
+3. Offline: issue new node certificates from the new CA; install them; set `peer_fingerprint` to `OLD_PIN,NEW_PIN` on the peer (maximum two pins).
+4. Verify handshakes with the new certificates in both directions.
+5. After your stated deadline: set a single new pin, then remove the old CA and its CRL (separate explicit step). Each step can be reverted by restoring the previous files and pins.
+6. If the old CA key may be compromised, do NOT use the overlap: replace everything at once (flag day) and check pins out of band.
+
+Status: the CA bundle, per-CA CRLs, dual pins, bundle activation and the push helper are implemented and unit/mock tested; the full sequence has not yet been run on the real LAB hosts.

@@ -307,3 +307,7 @@ Status: the behaviour-neutral refactor (P2-003) is verified locally only (cargo 
 - Run 42445109749 on main: `NOISE_RESULT enrolled_ok=1 rogue_refused=1`, `PHASE1_TWO_HOST_E2E=PASS ... noise=1`. Enrolled static keys relayed 64 KiB and 2 MiB payloads over `noise-tcp` (no CA); a client with an unenrolled key did not relay.
 - Not covered: Reverse direction over Noise, packet loss/soak over Noise, and any detectability claim (Noise is a high-entropy stream, NOT claimed undetectable).
 - Incident: the first Noise run (42441461484) hung because of a backgrounding bug in the new stage (ssh kept the inherited stdout) and was cancelled; it left a temporary process on a LAB host. Fixed in #32 and removed with the new `cleanup_stale` mode (#33, #34), which only touches `/tmp/baft-tunnel-e2e-*` leftovers. Hosts verified free by the next run's port check.
+
+## 2026-11-08 — P1-002 operator push helper (ADR-0017 A1)
+
+Added `scripts/pki/push-crl.sh` (stages the CRL on each node over SSH and runs the node's `apply-crl.sh apply`; one node at a time, stops at the first failure, strict SSH options, refuses CRLs under 72 h, `--dry-run`) and `scripts/pki/test-push-crl.sh` (mock SSH/SCP, wired into the Phase 0 workflow). Operator guide gained the push and rollover-sequence sections. Implemented so far for ADR-0017: dual pins (#22), multi-CA bundle with per-CA CRLs (#23, #25), freshness report (#24), push helper (this change). Still open: a full rollover-sequence run on the real LAB hosts, and the independent security review (waived by the owner, not performed).
