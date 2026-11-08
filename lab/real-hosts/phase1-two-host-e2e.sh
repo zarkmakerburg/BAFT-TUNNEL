@@ -473,11 +473,15 @@ tok = open(d + '/agent.token').read().strip()
 body = json.dumps({'engine': 'tcp-tls', 'role': 'serve', 'direction': 'direct', 'node_id': 'abroad', 'peer_id': 'iran', 'tunnel_id': 'lab-setup', 'service_port': 18091, 'tunnel_port': 18310, 'dir': d}).encode()
 r = urllib.request.Request('http://127.0.0.1:18081/v1/setup/plan', data=body, method='POST', headers={'Authorization': 'Bearer ' + tok})
 plan = json.loads(urllib.request.urlopen(r, timeout=5).read().decode())
-ok = '<title>BAFT-TUNNEL</title>' in html and \"script-src 'self'\" in csp and plan['applied'] is False and plan['commands'][0].startswith('baft-tunnel setup init --engine tcp-tls --role serve') and '--service-port 18091' in plan['commands'][0]
+rp = urllib.request.Request('http://127.0.0.1:18081/v1/setup/preflight', data=body, method='POST', headers={'Authorization': 'Bearer ' + tok})
+pf = json.loads(urllib.request.urlopen(rp, timeout=5).read().decode())
+res = {c['id']: c['result'] for c in pf['checks']}
+pf_ok = pf['applied'] is False and pf['apply_available'] is False and pf['overall'] in ('unknown', 'blocked') and res.get('planner') == 'pass' and res.get('peer_reachability') == 'unknown' and res.get('firewall') == 'unknown'
+ok = pf_ok and '<title>BAFT-TUNNEL</title>' in html and \"script-src 'self'\" in csp and plan['applied'] is False and plan['commands'][0].startswith('baft-tunnel setup init --engine tcp-tls --role serve') and '--service-port 18091' in plan['commands'][0]
 print('PANEL_OK' if ok else 'PANEL_BAD')
 PY")"
   [[ "$panel_out" == *PANEL_OK* ]] || { echo "panel or wizard check failed" >&2; exit 1; }
-  echo "AGENT_RESULT status_listener_accepting=1 desired_state_accepted=1 applied=0 panel_served=1 wizard_plan_ok=1"
+  echo "AGENT_RESULT status_listener_accepting=1 desired_state_accepted=1 applied=0 panel_served=1 wizard_plan_ok=1 preflight_ok=1"
   stop_role abroad agent
   stop_role iran forward; stop_role abroad serve
   ssh_host abroad "p=\$(cat '$REMOTE_DIR/echo2.pid' 2>/dev/null); [ -n \"\$p\" ] && kill \$p 2>/dev/null; true"
