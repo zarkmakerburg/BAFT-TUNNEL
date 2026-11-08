@@ -156,3 +156,5 @@ curl -H "Authorization: Bearer $(cat /etc/baft-tunnel/agent.token)" http://127.0
 Loopback only; the output is the redacted support report plus `listener_accepting`. The agent does not start or change a tunnel.
 
 Desired state (A2): add `--state-dir /var/lib/baft-tunnel/agent` (must exist). `PUT /v1/desired` with a JSON config validates it and stores `desired.json`; every attempt is logged in `audit.log` (hash and result only). The agent never applies it: review it, then run `baft-tunnel apply --config ... --confirm`.
+
+Automation only: `BAFT_PKI_PASSFILE=/path/to/file` makes `baft-pki.sh` read the CA passphrase from a file instead of prompting (used by the LAB stage with an ephemeral CA). Operators should leave it unset.
