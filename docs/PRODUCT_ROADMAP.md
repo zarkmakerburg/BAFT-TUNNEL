@@ -2,7 +2,7 @@
 
 Task-level board: [PROJECT_BOARD.md](PROJECT_BOARD.md).
 
-Updated 2026-11-07. Source of truth for phases and tasks; evidence lives in `PHASE1_IMPLEMENTATION_STATUS.md`. Status: **not production-ready**. Pre-release `v0.1.0-phase1-pre` is published and cosign-signed.
+Reconciled 2026-11-08 against main `82e8768`. This file is the single source of truth for phases, engines and next steps; evidence (run IDs, SHAs) lives in `PHASE1_IMPLEMENTATION_STATUS.md`; `PROJECT_BOARD.md` is the Persian task view and must follow this file. Status: **not production-ready**. Pre-release `v0.1.0-phase1-pre` is published and cosign-signed.
 
 ## Inputs behind this revision
 - Research (2026-11-07): no tunnel protocol is undetectable; Reality and WireGuard are blocked in Iran. Strategy is **several swappable engines plus fast rotation**, not one "invisible" protocol.
@@ -33,39 +33,72 @@ Not in MVP: central multi-user control plane, UDP/QUIC, camouflage sidecar.
 
 Engine rollout order: (1) TCP+TLS mTLS, (2) Noise+TCP, (3) BAFT main engine (after health check), (4) WebSocket/TLS front, (5) uTLS sidecar, (6) QUIC/UDP. Rotation: operator-defined ordered engine list per tunnel; automatic switch on health failure.
 
+## Actual state at 2026-11-08 (evidence, not intent)
+Evidence kinds are kept apart: **code** (in main), **CI** (hosted runners, Ubuntu 24.04 and 22.04/systemd 249), **LAB** (two real hosts, isolated, cleaned up).
+
+| Area | Code | CI | LAB | Notes |
+|---|---|---|---|---|
+| Rust TCP runtime, mTLS 1.3, CRL, pins | yes | yes | yes | Direct and Reverse |
+| Offline PKI, installer, systemd, `LoadCredential=` on 22.04 | yes | yes | yes | P1-000 |
+| Soak and impairment (TLS, Direct) | yes | n/a | PASS 30 min with app-level impairment; PASS 3600 s; PASS 2% real TCP loss | longer than 1 h and Reverse soak not run |
+| CRL distribution, CA/pin rollover | yes (`push-crl.sh`, bundle CRLs, two pins) | mock tests | rollover sequence PASS | `push-crl.sh` not yet run on real hosts |
+| Adversarial handshake tests | yes | yes | n/a | P1-003 |
+| Fuzz targets | **no** | no | n/a | P1-005 open; no `fuzz/` directory |
+| Engine trait, `engine:` config | yes (ADR-0018) | yes | covered by TLS runs | no fallbacks or supervisor |
+| Agent, local API, `setup` CLI, enrollment | **no** | no | no | Phase 3 not started |
+| Web panel | mockup only (draft PR #17, fake data) | no | no | no backend |
+| Signed release, upgrade, rollback | release pipeline and `rollback.sh` yes | partial | no | no automated upgrade/rollback test |
+| Independent security review | waived by owner, not performed | | | |
+
+## Engine matrix
+| Engine | Direct: code / CI / LAB | Reverse: code / CI / LAB | Under loss or soak | MVP role | Wizard |
+|---|---|---|---|---|---|
+| `tcp-tls` (TLS 1.3 mTLS) | yes / yes / PASS | yes / yes / PASS | Direct only: 2% loss PASS, 3600 s PASS | required | shown |
+| `noise-tcp` | yes / yes / PASS (enrolled key relays, unenrolled refused) | yes / unit only / **not run** | not run | required (second engine) once Reverse passes LAB | hidden until Reverse LAB PASS, then shown as experimental |
+| `baft` (imported main engine) | no | no | no | later (v0.3): health check P2-002 first | hidden |
+| `ws-tls` | no | no | no | later | hidden |
+| `utls-sidecar` | no | no | no | later (ADR needed) | hidden |
+| `quic` / UDP | no | no | no | later | hidden |
+| Fallback list and auto-rotation supervisor (ADR-0018 item 2) | no | no | no | later (v0.3); MVP switches engine manually | hidden |
+
+No engine is claimed undetectable.
+
+## Dependency-ordered path to MVP (v0.2.0)
+1. **M0 Noise Reverse LAB.** Needed so MVP has two engines with the same evidence level. Small, independent.
+2. **P3-001 `setup` CLI** (config, key material, pairing). Everything user-facing (API, wizard) reuses its code, so it comes first. This is the top blocker; see [PLAN-P3-001-setup-cli.md](PLAN-P3-001-setup-cli.md).
+3. **P3-002 Agent and local API** (status, validated desired state, audit). Depends on the config model from P3-001.
+4. **P4-001 Panel connected to the API** (read-only status plus wizard). Depends on P3-002; reuses mockup PR #17.
+5. **R-001 Upgrade and rollback test, signed v0.2.0.** Pipeline and `rollback.sh` exist; the missing part is an automated test and a documented procedure. Can run in parallel with 3 and 4.
+6. **P1-005 Fuzz targets with CI smoke run.** Independent; run in parallel.
+7. **A-001 Integrated LAB acceptance:** clean Ubuntu 22.04 hosts, signed release installed, tunnel set up only through the guided path, probe passes, engine switch measured.
+
+Not in MVP: central control plane, UDP/QUIC, camouflage sidecar, `baft` engine, fallback supervisor, multi-hour soak (P6).
+
 ## IN PROGRESS
-- **P1-001** DONE 2026-11-07: LAB soak 900 s + impairment PASS (run 42401889166, SHA 8bcafc9). Longer soak and kernel-level loss deferred to P6-001.
-- **P1-004** Phase 1 acceptance tracking.
+- **P3-001** `setup` CLI: plan written; slice S1 starts next.
 
 ## TO DO (priority order)
-1. **P1-002** CRL distribution and CA/pin rollover. ADR-0017 accepted (A1+B1); implement.
-2. **P1-005** Fuzz targets (frame, hello, config) and CI smoke run (review finding 8).
-3. **P1-004** Acceptance closure with latest SHA; Issue #2 body update.
-4. **P2-001** ADR-0018 engine framework (trait, registry, Go sidecar boundary, rotation) (accepted).
-5. **P2-002** Import health-check of BAFT / C-BAFT engine code (licence, secrets, quality) — report only.
-6. **P2-003** Engine trait refactor of existing TCP+TLS path, behaviour unchanged.
-7. **P2-004** Promote Noise+TCP to an engine behind the trait.
-8. **P2-005** Phase 2 API/Agent/desired-state contracts.
-9. **P3-001** `setup` guided CLI. **P3-002** Agent and local API. **P4-001** Panel from mockup (PR #17).
-10. **P5-xxx** Sidecar, WebSocket/TLS front, QUIC/UDP.
-11. **P6-001** Fuzz/soak in CI, upgrade/restore tests, docs, v1.0.
-
-## Review finding 8 (release, fuzz, soak planning)
-Release pipeline done (`release.yml`, cosign keyless). Fuzz: P1-005. Soak: P1-001 now, repeated at P6.
+1. **M0** Noise Reverse LAB stage and run.
+2. **P3-001** slices S1 to S4 (plan file).
+3. **P3-002**, **P4-001**, **R-001**, **P1-005** as in the path above.
+4. **A-001** integrated LAB acceptance, then tag v0.2.0.
+5. After MVP: P2-002 BAFT health check, fallback supervisor, ws-tls, sidecar, QUIC, P6 long soak, independent security review before any v1.0.
 
 ## DONE
-Phase 0 (PR #1); Phase 1 runtime, PKI, installer, systemd, LAB Direct/Reverse/revocation PASS; P1-000 (Ubuntu 22.04 `LoadCredential=`); P1-003 adversarial handshake tests; review findings 1,2,3,4,7 (PR #13, #14); PR #3 merged; release pipeline and pre-release v0.1.0-phase1-pre.
+Phase 0 (PR #1); Phase 1 runtime, PKI, installer, systemd; P1-000; P1-001 (soak 3600 s, 2% real loss, impairment); P1-002 (ADR-0017: dual pins, CA bundle with per-CA CRLs, freshness report, push helper, rollover LAB PASS); P1-003; P1-004 closed with documented exceptions (2026-11-08); review findings 1,2,3,4,7; PR #3; release pipeline and pre-release; P2-001 (ADR-0018); P2-003 (engine trait); P2-004 (`noise-tcp` behind the trait, Direct LAB PASS).
+
+## Documented exceptions carried forward
+Soak beyond 1 h; `push-crl.sh` on real hosts; Noise Reverse and loss; independent security review (waived, not performed); fuzzing (P1-005).
 
 ## Acceptance gates
 | Gate | Status |
 |---|---|
-| Rust TCP runtime, mTLS, PKI, installer | PASS |
-| Ubuntu 22.04 credential path (hosted CI + LAB) | PASS |
-| Two-host E2E Direct/Reverse/revocation | PASS |
-| Soak and impairment on real hosts | PASS (15 min, app-level impairment; longer soak at P6) |
-| Remote CRL distribution, CA/pin rollover | OPEN (P1-002, ADR-0017) |
+| Phase 1 core (runtime, mTLS, PKI, installer, 22.04 path, E2E, soak, loss, rollover) | PASS with documented exceptions |
 | Fuzz targets in CI | OPEN (P1-005) |
-| Phase 1 acceptance | OPEN |
+| Second engine with equal evidence | OPEN (M0) |
+| Guided setup, API, panel | NOT STARTED (P3-001 next) |
+| Upgrade and rollback test | OPEN (R-001) |
+| MVP v0.2.0 | NOT DONE |
 | Production release | NOT DONE |
 
 ## Fixed rules
