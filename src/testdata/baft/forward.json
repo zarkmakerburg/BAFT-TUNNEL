@@ -20,7 +20,7 @@
   },
   "peer": {
     "address": "198.51.100.10:8443",
-    "allowed_identity": "urn:baft-tunnel:node:abroad-1",
+    "allowed_identity": "urn:baft:node:abroad-1",
     "server_name": "abroad-1.baft-tunnel.invalid"
   },
   "recovery": {

@@ -27,7 +27,10 @@ use crate::{
 
 /// BAFT refuses this port for transport, routes and metrics.
 const SSH_PORT: u16 = 22;
-const IDENTITY_PREFIX: &str = "urn:baft-tunnel:node:";
+/// BAFT requires exactly one URI SAN of this form in node certificates and rejects any other
+/// prefix at runtime (`internal/node/node.go:1325`), so certificates for the baft engine
+/// carry `urn:baft:node:<id>`, not the `urn:baft-tunnel:node:<id>` used by the Rust engines.
+const IDENTITY_PREFIX: &str = "urn:baft:node:";
 
 /// Which side of the tunnel this node is (maps to BAFT carrier role).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,10 +259,10 @@ pub struct Bundle {
     pub config_file: PathBuf,
 }
 
-/// Loopback metrics port for a tunnel: stable per tunnel id, in 20000..30000.
+/// Loopback metrics port for one node of a tunnel: stable per (tunnel id, node id), in 20000..30000.
 /// A clash with another listener makes BAFT fail to start, which is visible; it is never silent.
-fn metrics_port(tunnel_id: &str) -> u16 {
-    let digest = Sha256::digest(tunnel_id.as_bytes());
+fn metrics_port(tunnel_id: &str, local_id: &str) -> u16 {
+    let digest = Sha256::digest(format!("{tunnel_id}/{local_id}").as_bytes());
     20000 + (u16::from_be_bytes([digest[0], digest[1]]) % 10000)
 }
 
@@ -369,7 +372,7 @@ pub fn prepare_bundle(cfg: &RuntimeConfig, runtime_dir: &Path, now_unix: i64) ->
             .as_ref()
             .map(|_| runtime_dir.join("revocation.json")),
         unix_socket: runtime_dir.join("admin.sock"),
-        metrics_listen: SocketAddr::from(([127, 0, 0, 1], metrics_port(tunnel_id))),
+        metrics_listen: SocketAddr::from(([127, 0, 0, 1], metrics_port(tunnel_id, local_id))),
     };
     let input = BaftRenderInput {
         local_id: local_id.clone(),

@@ -28,6 +28,11 @@ on:
         required: false
         type: string
         default: '0'
+      baft:
+        description: Also run the BAFT engine stage with the pinned Go engine (0 or 1)
+        required: false
+        type: string
+        default: '0'
       rollover:
         description: Also run the CA/pin rollover sequence stage (0 or 1)
         required: false
@@ -91,6 +96,7 @@ jobs:
       LAB_IMPAIR: ${{ inputs.impair }}
       LAB_LOSS_PERCENT: ${{ inputs.loss_percent }}
       LAB_NOISE: ${{ inputs.noise }}
+      LAB_BAFT: ${{ inputs.baft }}
       LAB_ROLLOVER: ${{ inputs.rollover }}
       LAB_SETUP: ${{ inputs.setup }}
       LAB_CLEANUP_STALE: ${{ inputs.cleanup_stale }}
@@ -105,6 +111,15 @@ jobs:
         run: rustup toolchain install 1.88.0 --profile minimal
       - name: Build Linux release binary
         run: cargo +1.88.0 build --locked --release
+      - name: Build the pinned BAFT engine (only for the BAFT stage)
+        if: ${{ inputs.baft == '1' }}
+        run: |
+          set -euo pipefail
+          . release/baft-engine.pin
+          git clone --quiet "$BAFT_REPO" "$RUNNER_TEMP/baft-src"
+          git -C "$RUNNER_TEMP/baft-src" checkout --quiet "$BAFT_SHA"
+          (cd "$RUNNER_TEMP/baft-src" && CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/baft-engine" ./cmd/baft)
+          echo "BAFT_ENGINE_BINARY=$RUNNER_TEMP/baft-engine" >> "$GITHUB_ENV"
       - name: Prepare ephemeral SSH credentials
         shell: bash
         env:

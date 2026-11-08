@@ -26,6 +26,10 @@ SETUP="${LAB_SETUP:-0}"
 [[ "$SETUP" == 0 || "$SETUP" == 1 ]] || { echo "LAB_SETUP must be 0 or 1" >&2; exit 2; }
 ROLLOVER="${LAB_ROLLOVER:-0}"
 [[ "$ROLLOVER" == 0 || "$ROLLOVER" == 1 ]] || { echo "LAB_ROLLOVER must be 0 or 1" >&2; exit 2; }
+BAFT="${LAB_BAFT:-0}"
+[[ "$BAFT" == 0 || "$BAFT" == 1 ]] || { echo "LAB_BAFT must be 0 or 1" >&2; exit 2; }
+BAFT_BINARY_PATH="${BAFT_ENGINE_BINARY:-}"
+if [[ "$BAFT" == 1 ]]; then [[ -x "$BAFT_BINARY_PATH" ]] || { echo "LAB_BAFT=1 needs BAFT_ENGINE_BINARY (pinned build)" >&2; exit 2; }; fi
 [[ "$NOISE" == 0 || "$NOISE" == 1 ]] || { echo "LAB_NOISE must be 0 or 1" >&2; exit 2; }
 [[ "$SOAK_SECONDS" =~ ^[0-9]+$ ]] && (( SOAK_SECONDS <= 3600 )) || { echo "LAB_SOAK_SECONDS must be 0-3600" >&2; exit 2; }
 [[ "$IMPAIR" == 0 || "$IMPAIR" == 1 ]] || { echo "LAB_IMPAIR must be 0 or 1" >&2; exit 2; }
@@ -554,6 +558,94 @@ CNF
   for side in iran abroad; do copy_to_host "$side" "$LOCAL_TMP/ca.crt" "$LOCAL_TMP/ca.crl"; done
 fi
 
+if (( BAFT == 1 )); then
+  echo "=== BAFT ENGINE: pinned Go engine host (Direct, unauthorized identity, restart, Reverse, bad hash, revocation) ==="
+  BAFT_SHA="$(sha256sum "$BAFT_BINARY_PATH" | awk '{print $1}')"
+  # BAFT requires exactly one URI SAN, urn:baft:node:<id>. Same CA, engine-specific identity profile.
+  for node in iran abroad control baftrev; do
+    openssl req -new -newkey rsa:2048 -nodes -keyout "$LOCAL_TMP/b-$node.key" \
+      -out "$LOCAL_TMP/b-$node.csr" -subj "/CN=b-$node.lab" >/dev/null 2>&1
+    printf '[ b_%s_ext ]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=DNS:%s.lab,URI:urn:baft:node:%s\n' "$node" "$node" "$node" >> "$LOCAL_TMP/openssl.cnf"
+    openssl ca -batch -notext -config "$LOCAL_TMP/openssl.cnf" -extensions "b_${node}_ext" \
+      -in "$LOCAL_TMP/b-$node.csr" -out "$LOCAL_TMP/b-$node.crt" -days 2 >/dev/null 2>&1
+  done
+  for side in iran abroad; do
+    copy_to_host "$side" "$BAFT_BINARY_PATH" "$LOCAL_TMP"/b-*.crt "$LOCAL_TMP"/b-*.key
+    ssh_host "$side" "mv '$REMOTE_DIR/$(basename "$BAFT_BINARY_PATH")' '$REMOTE_DIR/baft-engine' 2>/dev/null || true; chmod 700 '$REMOTE_DIR/baft-engine'; chmod 600 '$REMOTE_DIR/'*.key"
+  done
+  baft_cfg() { # role local_id peer_id cert key [peer_host peer_dns] [sha]
+    local role="$1" local_id="$2" peer_id="$3" cert="$4" key="$5" peer_host="${6:-}" peer_dns="${7:-}" sha="${8:-$BAFT_SHA}" common
+    common="\"local_id\":\"$local_id\",\"peer_id\":\"$peer_id\",\"tunnel_id\":\"lab-e2e\",\"direction\":\"direct\",\"engine\":\"baft\",\"ca\":\"$REMOTE_DIR/ca.crt\",\"crl\":\"$REMOTE_DIR/ca.crl\",\"cert\":\"$REMOTE_DIR/$cert\",\"key\":\"$REMOTE_DIR/$key\",\"max_streams\":8,\"baft\":{\"binary\":\"$REMOTE_DIR/baft-engine\",\"sha256\":\"$sha\"}"
+    if [[ "$role" == serve ]]; then
+      printf '{"mode":"serve","listen":"0.0.0.0:%s","target":"127.0.0.1:%s",%s}' "$E2E_PORT" "$ECHO_PORT" "$common"
+    else
+      printf '{"mode":"forward","listen":"127.0.0.1:%s","remote":"%s:%s","server_name":"%s",%s}' "$LOCAL_PORT" "$peer_host" "$E2E_PORT" "$peer_dns" "$common"
+    fi
+  }
+  baft_start() { # side role cfgjson
+    local side="$1" role="$2" cfg="$3"
+    ssh_host "$side" "rm -rf '$REMOTE_DIR/rt-$role' && mkdir -m 700 '$REMOTE_DIR/rt-$role' && printf '%s' '$cfg' > '$REMOTE_DIR/baft-$role.json' && RUNTIME_DIRECTORY='$REMOTE_DIR/rt-$role' nohup '$REMOTE_DIR/baft-tunnel' apply --config '$REMOTE_DIR/baft-$role.json' --confirm > '$REMOTE_DIR/$role.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/$role.pid'"
+  }
+  baft_rss() { # side role : launcher + child RSS in kB
+    ssh_host "$1" "p=\$(cat '$REMOTE_DIR/$2.pid'); t=0; for q in \$p \$(pgrep -P \$p); do t=\$((t + \$(awk '/VmRSS/{print \$2}' /proc/\$q/status))); done; echo \$t"
+  }
+  expect_refused() { # side description
+    sleep 3
+    if probe_host "$1" 65536 >/dev/null 2>&1; then echo "BAFT accepted: $2" >&2; exit 1; fi
+  }
+  echo "--- BAFT Direct: Iran dials abroad ---"
+  baft_start abroad serve "$(baft_cfg serve abroad iran b-abroad.crt b-abroad.key)"
+  baft_start iran forward "$(baft_cfg forward iran abroad b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
+  probe_host iran 65536
+  probe_host iran 2097289
+  BAFT_RSS_SERVE="$(baft_rss abroad serve)"; BAFT_RSS_FWD="$(baft_rss iran forward)"
+  echo "--- BAFT unauthorized identity: valid certificate that is not the allowed peer ---"
+  stop_role iran forward; sleep 1
+  baft_start iran forward "$(baft_cfg forward control abroad b-control.crt b-control.key "$LAB_ABROAD_HOST" abroad.lab)"
+  expect_refused iran "a certificate whose identity is not the allowed peer"
+  stop_role iran forward; sleep 1
+  echo "--- BAFT restart: listener killed and started again, dialer must recover on its own ---"
+  baft_start iran forward "$(baft_cfg forward iran abroad b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
+  probe_host iran 65536
+  stop_role abroad serve; sleep 2
+  baft_start abroad serve "$(baft_cfg serve abroad iran b-abroad.crt b-abroad.key)"
+  # BAFT keeps trying to recover the old session for recovery.retention_seconds (30 s); the listener
+  # restarted without it, so the dialer process then exits. Under systemd the unit restarts it
+  # (Restart=on-failure); this script plays that part and requires a fresh session to carry data.
+  BAFT_T0=$SECONDS; BAFT_RECOVERED=0; BAFT_DIALER_RESTARTED=0
+  for _ in $(seq 1 24); do
+    if probe_host iran 65536 >/dev/null 2>&1; then BAFT_RECOVERED=1; break; fi
+    if ! ssh_host iran "kill -0 \$(cat '$REMOTE_DIR/forward.pid') 2>/dev/null"; then
+      BAFT_DIALER_RESTARTED=1
+      baft_start iran forward "$(baft_cfg forward iran abroad b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
+    fi
+    sleep 5
+  done
+  (( BAFT_RECOVERED == 1 )) || { echo "BAFT tunnel did not carry data again after the listener restarted" >&2; exit 1; }
+  BAFT_RECOVERY_S=$((SECONDS - BAFT_T0))
+  stop_role iran forward; stop_role abroad serve; sleep 1
+  echo "--- BAFT bad binary hash must refuse to start ---"
+  baft_start abroad serve "$(baft_cfg serve abroad iran b-abroad.crt b-abroad.key "" "" "$(printf '0%.0s' $(seq 64))")"
+  sleep 2
+  ssh_host abroad "grep -q 'does not match the pinned value' '$REMOTE_DIR/serve.log'" || { echo "pinned hash was not enforced" >&2; exit 1; }
+  stop_role abroad serve
+  echo "--- BAFT Reverse: abroad dials Iran ---"
+  baft_start iran serve "$(baft_cfg serve iran abroad b-iran.crt b-iran.key)"
+  baft_start abroad forward "$(baft_cfg forward abroad iran b-abroad.crt b-abroad.key "$LAB_IRAN_HOST" iran.lab)"
+  ssh_host abroad "python3 '$REMOTE_DIR/probe.py' 127.0.0.1 '$LOCAL_PORT' 65536"
+  ssh_host abroad "python3 '$REMOTE_DIR/probe.py' 127.0.0.1 '$LOCAL_PORT' 2097289"
+  stop_role abroad forward; stop_role iran serve; sleep 1
+  echo "--- BAFT revocation: revoked client certificate must be refused (CRL converted to BAFT revocation list) ---"
+  openssl ca -batch -config "$LOCAL_TMP/openssl.cnf" -revoke "$LOCAL_TMP/b-baftrev.crt" >/dev/null 2>&1
+  openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.crl" >/dev/null 2>&1
+  for side in iran abroad; do copy_to_host "$side" "$LOCAL_TMP/ca.crl"; done
+  baft_start abroad serve "$(baft_cfg serve abroad baftrev b-abroad.crt b-abroad.key)"
+  baft_start iran forward "$(baft_cfg forward baftrev abroad b-baftrev.crt b-baftrev.key "$LAB_ABROAD_HOST" abroad.lab)"
+  expect_refused iran "a revoked client certificate"
+  stop_role iran forward; stop_role abroad serve
+  echo "BAFT_RESULT direct_ok=1 unauthorized_refused=1 restart_recovered=1 restart_recovery_s=$BAFT_RECOVERY_S dialer_restarted=$BAFT_DIALER_RESTARTED bad_hash_refused=1 reverse_ok=1 revoked_refused=1 rss_kb_serve=$BAFT_RSS_SERVE rss_kb_forward=$BAFT_RSS_FWD"
+fi
+
 echo "=== CERTIFICATE REVOCATION: server rejects revoked client certificate ==="
 openssl ca -batch -config "$LOCAL_TMP/openssl.cnf" -revoke "$LOCAL_TMP/iran.crt" >/dev/null 2>&1
 openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.crl" >/dev/null 2>&1
@@ -638,4 +730,4 @@ if (( NOISE == 1 )); then
   NDIR=direct
 fi
 
-echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP (Direct, Reverse, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
+echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT (Direct, Reverse, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
