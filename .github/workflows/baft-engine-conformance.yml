@@ -1,0 +1,31 @@
+name: baft-engine-conformance
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - src/baft_engine.rs
+      - src/testdata/baft/**
+      - scripts/baft-validate-golden.sh
+      - release/baft-engine.pin
+      - .github/workflows/baft-engine-conformance.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  golden:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the pinned BAFT binary
+        run: |
+          set -euo pipefail
+          . release/baft-engine.pin
+          git clone --quiet "$BAFT_REPO" "$RUNNER_TEMP/baft-src"
+          git -C "$RUNNER_TEMP/baft-src" checkout --quiet "$BAFT_SHA"
+          (cd "$RUNNER_TEMP/baft-src" && go build -o "$RUNNER_TEMP/baft" ./cmd/baft)
+      - name: Validate rendered configs with BAFT
+        run: bash scripts/baft-validate-golden.sh "$RUNNER_TEMP/baft"

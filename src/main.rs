@@ -1,5 +1,7 @@
 mod agent;
 mod authorization;
+#[allow(dead_code)] // wired into engine selection in a later phase (ADR-0019)
+mod baft_engine;
 mod config;
 mod engine;
 mod handshake;
