@@ -4,6 +4,7 @@ mod engine;
 mod handshake;
 pub mod key_custody;
 mod noise;
+mod setup;
 mod tls;
 mod tunnel;
 
@@ -96,6 +97,11 @@ enum Command {
         #[arg(long)]
         confirm: bool,
     },
+    /// Guided setup (slice S1: plan only; writes nothing and opens no sockets).
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommand,
+    },
     /// Create a Noise static keypair: the private key is written to --out (mode 0600, never
     /// overwritten); the public key is printed for enrolment in the peer's config.
     NoiseKeygen {
@@ -106,6 +112,39 @@ enum Command {
     SupportBundle {
         #[arg(long)]
         config: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SetupCommand {
+    /// Show the configuration and files setup would create. Changes nothing.
+    Plan {
+        #[arg(long, value_enum)]
+        engine: config::EngineKind,
+        #[arg(long, value_enum)]
+        role: setup::Role,
+        #[arg(long, value_enum)]
+        direction: ConnectionDirection,
+        #[arg(long)]
+        node_id: String,
+        #[arg(long)]
+        peer_id: String,
+        #[arg(long)]
+        tunnel_id: String,
+        /// The one port you choose: the service exposed through the tunnel.
+        #[arg(long)]
+        service_port: u16,
+        #[arg(long, default_value_t = setup::DEFAULT_TUNNEL_PORT)]
+        tunnel_port: u16,
+        #[arg(long)]
+        peer_host: Option<String>,
+        #[arg(long)]
+        server_name: Option<String>,
+        #[arg(long, default_value = "/etc/baft-tunnel")]
+        dir: PathBuf,
+        /// Print only the configuration template as JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -226,6 +265,52 @@ async fn main() -> Result<()> {
                 "Applying validated tunnel configuration; no firewall or system settings will be changed."
             );
             config.apply().await
+        }
+        Command::Setup {
+            command:
+                SetupCommand::Plan {
+                    engine,
+                    role,
+                    direction,
+                    node_id,
+                    peer_id,
+                    tunnel_id,
+                    service_port,
+                    tunnel_port,
+                    peer_host,
+                    server_name,
+                    dir,
+                    json,
+                },
+        } => {
+            let plan = setup::plan(&setup::PlanRequest {
+                engine,
+                role,
+                direction,
+                node_id,
+                peer_id,
+                tunnel_id,
+                service_port,
+                tunnel_port,
+                peer_host,
+                server_name,
+                dir,
+            })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&plan.config)?);
+            } else {
+                println!("Setup plan (nothing is written or started):");
+                println!("{}", serde_json::to_string_pretty(&plan.config)?);
+                println!("Files that setup will create or expect:");
+                for file in &plan.files {
+                    println!("  {} [{}] {}", file.path.display(), file.mode, file.note);
+                }
+                println!("Still needed before the tunnel can start:");
+                for item in &plan.pending {
+                    println!("  - {item}");
+                }
+            }
+            Ok(())
         }
         Command::NoiseKeygen { out } => {
             let public = engine::write_noise_keypair(&out)?;

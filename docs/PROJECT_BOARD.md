@@ -8,9 +8,8 @@
 
 ## گام بعدی (به ترتیب؛ جزئیات و معیار پذیرش در رودمپ)
 
-1. **M0:** تست LAB واقعی Reverse برای `noise-tcp`. تا پاس‌شدن، Noise در Wizard پنهان می‌ماند.
-2. **P3-001:** `setup` CLI؛ برنامه و معیارهای عددی در [`PLAN-P3-001-setup-cli.md`](PLAN-P3-001-setup-cli.md).
-3. بعد از آن: Agent و API محلی، پنل واقعی، تست Upgrade/Rollback، Fuzz، پذیرش یکپارچه LAB، سپس v0.2.0.
+1. **P3-001:** `setup` CLI؛ برنامه و معیارهای عددی در [`PLAN-P3-001-setup-cli.md`](PLAN-P3-001-setup-cli.md).
+2. بعد از آن: Agent و API محلی، پنل واقعی، تست Upgrade/Rollback، Fuzz، پذیرش یکپارچه LAB، سپس v0.2.0.
 
 ## فازها (خلاصه؛ وضعیت دقیق فقط در رودمپ)
 
