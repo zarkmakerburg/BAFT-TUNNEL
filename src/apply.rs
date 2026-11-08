@@ -542,26 +542,6 @@ fn tcp_open(addr: &str) -> bool {
     TcpStream::connect_timeout(&sa, std::time::Duration::from_secs(2)).is_ok()
 }
 
-/// Hold one connection to the user-facing listener for `hold`. If the tunnel has no session the
-/// forwarder closes it; staying open shows a stream was accepted, not that data is intact.
-fn held_open(addr: &str, hold: std::time::Duration) -> bool {
-    use std::io::Read;
-    use std::net::{SocketAddr, TcpStream};
-    let Ok(mut sa) = addr.parse::<SocketAddr>() else {
-        return false;
-    };
-    if sa.ip().is_unspecified() {
-        sa.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
-    }
-    let Ok(mut c) = TcpStream::connect_timeout(&sa, std::time::Duration::from_secs(2)) else {
-        return false;
-    };
-    let _ = c.set_read_timeout(Some(hold));
-    let mut b = [0u8; 1];
-    // Timeout (no data, still open) is the pass case; Ok(0) means the peer closed.
-    !matches!(c.read(&mut b), Ok(0))
-}
-
 fn run_start(
     r: &ApplyRequest,
     mut receipt: Value,
@@ -650,15 +630,6 @@ fn run_start(
             tcp_open(config.listen_addr()),
             format!("a TCP connection to {} was accepted", config.listen_addr()),
         ));
-        if r.plan.role == crate::setup::Role::Forward
-            && r.plan.direction == crate::authorization::ConnectionDirection::Direct
-        {
-            v.push(check(
-                "path_probe",
-                held_open(config.listen_addr(), std::time::Duration::from_secs(2)),
-                "a connection to the ingress stayed open for 2 s (a stream was accepted by the peer's session); this is not a data-integrity test",
-            ));
-        }
     }
     let failed = v.iter().any(|c| c["result"] != "pass");
     receipt["verification"] = json!(v);
@@ -680,6 +651,7 @@ fn run_start(
         receipt["not_done"] = json!([
             "the unit is not enabled at boot (run: systemctl enable baft-tunnel@NAME)",
             "no firewall rule was changed or inspected; open the tunnel port by hand where needed",
+            "the connection to the peer is not verified: the agent has no session indicator, and an accepted local connection proves nothing about the peer",
             "the peer node was not verified from here; start and check it too",
             "data integrity over the tunnel is not tested by Apply (LAB tests cover it)",
         ]);

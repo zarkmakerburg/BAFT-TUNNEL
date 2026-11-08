@@ -115,7 +115,8 @@ c = {"mode": mode, "local_id": "agentctl", "peer_id": "peer-test", "tunnel_id": 
 if mode == "serve":
     c.update({"listen": "127.0.0.1:18443", "target": "127.0.0.1:18099"})
 else:
-    c.update({"listen": "127.0.0.1:18081", "remote": "127.0.0.1:1", "server_name": "tunnel.example.test"})
+    # A unit that cannot start: its certificate file does not exist, so the process exits at once.
+    c.update({"listen": "127.0.0.1:18081", "remote": "127.0.0.1:1", "server_name": "tunnel.example.test", "cert": pki + "/missing.crt"})
 open(out, "w").write(json.dumps(c, indent=2) + "\n")
 PY
 sudo install -o root -g baft-tunnel -m 0640 "$TMP/$1.json" "/etc/baft-tunnel/$1.json"
@@ -190,7 +191,7 @@ active "$SERVE" || die "Apply start left $SERVE inactive"
 # The same request on a running unit is refused and changes nothing.
 [[ "$(apply "$SERVE" serve ctl-serve-0002 null null | field result)" == refused ]] || die "running unit was not refused"
 sudo -u baft-tunnel touch "/run/baft-tunnel/control/$SERVE.stop"; wait_state "$SERVE" inactive || die "could not stop $SERVE"
-# forward with an unreachable peer: the path probe fails, Apply stops the unit and reports rolled_back.
+# A unit that cannot start (missing certificate): verification fails, Apply stops it and reports rolled_back.
 out="$(apply "$FWD" forward ctl-fwd-0001 '"127.0.0.1"' '"tunnel.example.test"')"
 [[ "$(echo "$out" | field result)" == rolled_back ]] || { echo "$out" >&2; die "failing start was not rolled back"; }
 wait_state "$FWD" inactive || die "rollback left $FWD running"

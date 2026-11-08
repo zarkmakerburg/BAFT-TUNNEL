@@ -22,19 +22,18 @@ let the agent start any unit. sudo is blocked by `NoNewPrivileges`.
    `NAME` must have a path unit enabled for it and `/etc/baft-tunnel/NAME.json` present.
 3. Apply gets a `start` stage: gates on a valid configuration, direction support and the unit not
    already running; writes the request; waits up to 20 s; verifies `unit_active`, `stable_3s`
-   (no restart, no failure), `listener_accepting` and, for Direct forward nodes, `path_probe` (a
-   connection to the ingress stays open 2 s). If verification fails it requests `stop` and records
-   `rolled_back`. Reading unit state needs no privilege (`systemctl show`).
+   (no restart, no failure) and `listener_accepting`. If verification fails it requests `stop` and
+   records `rolled_back`. A connection-held probe was tried and removed: the first real-systemd CI
+   run showed a forward node holds a local connection open even with no peer, so it proved nothing. Reading unit state needs no privilege (`systemctl show`).
 4. Instance names for this path are limited to `A-Za-z0-9_-`.
 
 ## Not done (stated in every receipt)
 
-- Not enabled at boot, no firewall change or inspection, peer not verified from here, data
-  integrity is not tested by Apply (the LAB tests cover it). `path_probe` shows a stream was
-  accepted, not that bytes arrive intact.
+- Not enabled at boot, no firewall change or inspection, the connection to the peer is not
+  verified (the agent has no session indicator), data integrity is not tested by Apply (the LAB
+  tests cover it). Real peer verification needs a session indicator in the runtime: next step.
 
 ## Evidence
 
 Unit tests with a fake unit controller (success, failed start with stop, refusals, request
-files), staging run of the install script. **Not yet run on a real systemd host**: path-unit
-triggering, tmpfiles permissions and the 20 s start window need the LAB.
+files), staging run of the install script. Real systemd 249 (hosted Ubuntu 22.04) CI run: `scripts/pki/test-agent-control-lifecycle.sh`.
