@@ -29,7 +29,7 @@
   "routes": [
     {
       "allowed_peers": [
-        "urn:baft-tunnel:node:iran-1"
+        "urn:baft:node:iran-1"
       ],
       "direction": "inbound",
       "id": "svc-main",
@@ -40,7 +40,7 @@
   "schema_version": 1,
   "server": {
     "allowed_peer_identities": [
-      "urn:baft-tunnel:node:iran-1"
+      "urn:baft:node:iran-1"
     ],
     "listen": "198.51.100.10:8443",
     "server_name": "abroad-1.baft-tunnel.invalid"

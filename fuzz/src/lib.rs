@@ -6,6 +6,8 @@
 pub mod agent;
 #[path = "../../src/authorization.rs"]
 pub mod authorization;
+#[path = "../../src/baft_engine.rs"]
+pub mod baft_engine;
 #[path = "../../src/config.rs"]
 pub mod config;
 #[path = "../../src/engine.rs"]

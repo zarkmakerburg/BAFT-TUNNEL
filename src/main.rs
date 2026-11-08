@@ -1,6 +1,6 @@
 mod agent;
 mod authorization;
-#[allow(dead_code)] // wired into engine selection in a later phase (ADR-0019)
+#[allow(dead_code)] // the renderer API is used by tests and later phases (ADR-0019)
 mod baft_engine;
 mod config;
 mod engine;
@@ -251,6 +251,7 @@ async fn main() -> Result<()> {
                 engine: config::EngineKind::TcpTls,
                 noise_peer_public: None,
                 max_streams,
+                baft: None,
             };
             config.validate()?;
             config.apply().await
@@ -289,6 +290,7 @@ async fn main() -> Result<()> {
                 noise_peer_public: None,
                 max_streams,
                 allow_non_loopback_listen,
+                baft: None,
             };
             config.validate()?;
             config.apply().await

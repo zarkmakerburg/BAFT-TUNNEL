@@ -23,6 +23,21 @@ pub enum EngineKind {
     #[default]
     TcpTls,
     NoiseTcp,
+    /// BAFT main engine: a separate, pinned Go process configured by `baft_engine` (ADR-0019).
+    Baft,
+}
+
+/// Where the pinned BAFT engine binary lives and the SHA-256 it must have (ADR-0019).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BaftSettings {
+    #[serde(default = "default_baft_binary")]
+    pub binary: PathBuf,
+    pub sha256: String,
+}
+
+fn default_baft_binary() -> PathBuf {
+    PathBuf::from("/usr/local/lib/baft-tunnel/baft")
 }
 
 impl EngineKind {
@@ -30,6 +45,7 @@ impl EngineKind {
         match self {
             Self::TcpTls => "tcp-tls",
             Self::NoiseTcp => "noise-tcp",
+            Self::Baft => "baft",
         }
     }
 }
@@ -67,6 +83,8 @@ pub enum RuntimeConfig {
         noise_peer_public: Option<String>,
         #[serde(default = "default_max_streams")]
         max_streams: usize,
+        #[serde(default)]
+        baft: Option<BaftSettings>,
     },
     Forward {
         listen: String,
@@ -98,6 +116,8 @@ pub enum RuntimeConfig {
         /// that address can use the tunnel without authentication, so it must be explicit.
         #[serde(default)]
         allow_non_loopback_listen: bool,
+        #[serde(default)]
+        baft: Option<BaftSettings>,
     },
 }
 
@@ -120,6 +140,7 @@ impl RuntimeConfig {
                 engine,
                 noise_peer_public,
                 max_streams,
+                baft,
             } => {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
                 parse_socket(listen, "listen")?;
@@ -141,6 +162,16 @@ impl RuntimeConfig {
                             noise_peer_public.as_deref(),
                         )?;
                     }
+                    EngineKind::Baft => {
+                        validate_baft(
+                            &[ca, crl, cert],
+                            peer_fingerprint,
+                            noise_peer_public.as_deref(),
+                            baft.as_ref(),
+                        )?;
+                        tls::server_config(ca, crl, cert, &key_path)
+                            .context("server TLS material is invalid")?;
+                    }
                 }
             }
             Self::Forward {
@@ -161,6 +192,7 @@ impl RuntimeConfig {
                 noise_peer_public,
                 max_streams,
                 allow_non_loopback_listen,
+                baft,
             } => {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
                 validate_forward_listen(
@@ -189,10 +221,21 @@ impl RuntimeConfig {
                             noise_peer_public.as_deref(),
                         )?;
                     }
+                    EngineKind::Baft => {
+                        validate_baft(
+                            &[ca, crl, cert],
+                            peer_fingerprint,
+                            noise_peer_public.as_deref(),
+                            baft.as_ref(),
+                        )?;
+                        tls::server_name(server_name)?;
+                        tls::client_config(ca, crl, cert, &key_path)
+                            .context("client TLS material is invalid")?;
+                    }
                 }
             }
         }
-        if self.engine() == EngineKind::TcpTls {
+        if self.engine() != EngineKind::NoiseTcp {
             self.warn_if_crl_expiring();
         }
         Ok(())
@@ -378,6 +421,9 @@ impl RuntimeConfig {
     }
 
     pub async fn apply(self) -> Result<()> {
+        if self.engine() == EngineKind::Baft {
+            return crate::baft_engine::run(self).await;
+        }
         match self {
             Self::Serve {
                 listen,
@@ -395,6 +441,7 @@ impl RuntimeConfig {
                 engine,
                 noise_peer_public,
                 max_streams,
+                baft: _,
             } => {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 let noise = noise_settings(engine, &key, noise_peer_public);
@@ -433,6 +480,7 @@ impl RuntimeConfig {
                 noise_peer_public,
                 max_streams,
                 allow_non_loopback_listen: _,
+                baft: _,
             } => {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 let noise = noise_settings(engine, &key, noise_peer_public);
@@ -472,7 +520,7 @@ fn noise_settings(
     }
 }
 
-fn private_key_path(key: Option<&Path>, credential_id: Option<&str>) -> Result<PathBuf> {
+pub(crate) fn private_key_path(key: Option<&Path>, credential_id: Option<&str>) -> Result<PathBuf> {
     match (key, credential_id) {
         (Some(path), None) => Ok(path.to_path_buf()),
         (None, Some(identifier)) => crate::key_custody::systemd_credential_path(identifier),
@@ -481,11 +529,37 @@ fn private_key_path(key: Option<&Path>, credential_id: Option<&str>) -> Result<P
     }
 }
 
+fn validate_baft(
+    paths: &[&PathBuf],
+    peer_fingerprint: &str,
+    noise_peer_public: Option<&str>,
+    baft: Option<&BaftSettings>,
+) -> Result<()> {
+    require_tls_paths(paths)?;
+    reject_noise_fields(noise_peer_public)?;
+    if !peer_fingerprint.is_empty() {
+        bail!(
+            "peer_fingerprint is not used by the baft engine (trust is the CA plus the peer identity)"
+        );
+    }
+    let settings = baft.context("engine baft requires a baft {binary, sha256} section")?;
+    if !settings.binary.is_absolute() {
+        bail!("baft.binary must be an absolute path");
+    }
+    if settings.sha256.len() != 64 || !settings.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("baft.sha256 must be a 64-digit hexadecimal SHA-256");
+    }
+    Ok(())
+}
+
 fn security_description(engine: EngineKind) -> &'static str {
     match engine {
         EngineKind::TcpTls => "TLS 1.3 + mutual certificate auth + SHA-256 peer pin",
         EngineKind::NoiseTcp => {
             "Noise IK (X25519/ChaChaPoly/BLAKE2s) + pinned peer static key, no certificates"
+        }
+        EngineKind::Baft => {
+            "BAFT/1 over HTTP/2 + TLS 1.3 mutual auth + URI identity allowlist (no certificate pin), separate Go process"
         }
     }
 }

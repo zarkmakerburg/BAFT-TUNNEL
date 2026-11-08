@@ -341,6 +341,10 @@ Do not change: `StreamEngine`, `tcp-tls` and `noise-tcp` behaviour, authorizatio
 | R8 | Binary size/dependencies (SQLite, utls) for unused features | audit in Phase B |
 | R9 | P4-001 touching `agent.rs`/`panel/` concurrently | sequence F after it |
 | R11 | BAFT enforces revocation on **listeners only** (`validateRevocation`, `internal/config/revocation.go:36`) and its revocation `identities` accept only the `urn:baft:node:` prefix. A dialer does not check revocation of the listener cert, and the converter uses serials. Mitigation: pins and short-lived listener certs; verify in LAB. | [SRC] |
+| R12 | Engine `baft` has no certificate pin: trust is the CA plus the exact peer URI identity (BAFT has no allow-pin). `peer_fingerprint` is rejected for this engine so the weaker model is explicit. | [SRC] |
+| R13 | `MemoryDenyWriteExecute=true` and `@system-service` in the shared unit are untested with the Go runtime. Not verified until a LAB start. | [NV] |
+| R14 | Local rehearsal with the real engine (loopback, one host): after the listener process restarts, the BAFT dialer retries session recovery for `recovery.retention_seconds` (30 s) and then **exits** ("recovery retention expired"); it does not open a fresh session by itself. Recovery therefore depends on the unit's `Restart=on-failure` (3 s) and costs about 30 s plus restart. | [BUILD] simulation, not LAB |
+| R15 | BAFT hard-requires exactly one URI SAN `urn:baft:node:<id>` (`internal/node/node.go:1325`), so engine `baft` needs certificates with that SAN, not `urn:baft-tunnel:node:<id>`; the renderer uses it, and the same CA can issue both profiles. Section 12 "same PKI" holds for the CA, not the identity string. | [SRC][BUILD] |
 | R10 | Real packet loss, multi-hour soak, ADR-0017 distribution still open for the product | existing gates |
 
 ## 22. Exact next actions
