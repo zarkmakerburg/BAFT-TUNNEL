@@ -348,6 +348,12 @@ Added `scripts/pki/push-crl.sh` (stages the CRL on each node over SSH and runs t
 ## P4-002 panel alignment with HQ UI spec
 - Local: fmt, clippy, 100 unit tests (incl. `preflight_*`, per-asset no-`innerHTML` check). Browser (headless, local agent): 76 + 10 checks PASS across desktop/mobile and fa/en (`scripts/panel-qa/`). CI on PR #62 head: all four jobs PASS. Real-host LAB for the new pages NOT RUN. Traceability and backend gaps: [PANEL_HQ_TRACEABILITY.md](PANEL_HQ_TRACEABILITY.md).
 
+## P5-005 Reverse correction (ADR-0021), 2026-11-08
+
+- Code trace shows Direct and Reverse behave identically: the `serve` node always listens and the `forward` node always dials; the direction is only compared in the hello. The earlier "reverse" LAB results (including `NOISE_RESULT reverse_ok=1`) prove label acceptance, not a reverse data path.
+- Capabilities, wizard and preflight now report Reverse as unavailable. Real Reverse needs a protocol-affecting mode and an ADR amendment; the acceptance gate is in ADR-0021.
+- Evidence: local unit tests (112 pass), clippy, fmt, headless browser 76 PASS 0 FAIL. No LAB claim for this change.
+
 ## P4-002 real-host LAB: panel and read-only preflight PASS, 2026-11-08
 
 - Run 42490325790 on main `28df6f4`, setup=1: `AGENT_RESULT status_listener_accepting=1 desired_state_accepted=1 applied=0 panel_served=1 wizard_plan_ok=1 preflight_ok=1`; `SETUP_RESULT noise_install_s=33 engine_switch_to_tls_s=33 commands_per_host=3 probe_ok=1`; `PHASE1_TWO_HOST_E2E=PASS` (Direct, Reverse, 2 MiB integrity, recovery, revocation).
