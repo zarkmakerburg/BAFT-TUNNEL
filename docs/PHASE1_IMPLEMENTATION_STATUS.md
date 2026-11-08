@@ -324,3 +324,8 @@ Added `scripts/pki/push-crl.sh` (stages the CRL on each node over SSH and runs t
 - Incident: run 42456443965 failed in the Reverse stage because the earlier TLS Reverse stage leaves its serve process on the Iran host and the new stage then overwrote its pid file; run 42457380581 then failed the port check on the orphan. Fixed in the script (#41) and the orphan removed with `cleanup_stale`. No Noise defect was involved.
 - Not covered: Noise under packet loss or soak; no detectability claim.
 
+
+## P3-001 `setup` CLI (S1 to S4)
+- S1 `setup plan` (PR #42), S2 `noise-tcp` init/join (PR #43), S3 `tcp-tls` from `baft-pki.sh` output (PR #44): CI green.
+- S4 LAB: run 42461145830 on `54bebff`, `SETUP_RESULT noise_install_s=38 engine_switch_to_tls_s=42 commands_per_host=3 probe_ok=1`, `PHASE1_TWO_HOST_E2E=PASS ... setup=1`. Both hosts configured only through `setup` (init, join, apply); 64 KiB and 2 MiB probes passed for both engines. Targets met (at most 5 min, at most 3 commands, switch at most 60 s). No host addresses in the log.
+- Caveats: the hosts were the LAB hosts cleaned by the stage, not freshly provisioned VMs; tcp-tls PKI files were the ephemeral LAB certs standing in for `baft-pki.sh` output. Bundle copy and checksum comparison are manual steps outside the 3 commands.
