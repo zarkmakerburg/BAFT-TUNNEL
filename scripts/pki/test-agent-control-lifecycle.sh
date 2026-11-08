@@ -8,6 +8,9 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
 BIN="${1:-$ROOT/target/release/baft-tunnel}"
 SERVE=agentctl-serve
 FWD=agentctl-fwd
+POS_S=agentctl-pos-srv
+POS_C=agentctl-pos-cli
+ECHO_PID=""
 PKI_DIR=/etc/baft-tunnel/pki/agentctl
 CRED_DIR=/etc/baft-tunnel/credentials
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/baft-agent-control.XXXXXX")"
@@ -27,7 +30,8 @@ cleanup() {
   local status=$?
   trap - EXIT
   if [[ -n "$AGENT_PID" ]]; then sudo kill "$AGENT_PID" >/dev/null 2>&1 || true; fi
-  for i in "$SERVE" "$FWD"; do
+  [[ -n "$ECHO_PID" ]] && kill "$ECHO_PID" >/dev/null 2>&1 || true
+  for i in "$SERVE" "$FWD" "$POS_S" "$POS_C"; do
     sudo "$ROOT/scripts/install-agent-control.sh" --remove --instance "$i" >/dev/null 2>&1 || true
     sudo systemctl stop "baft-tunnel@$i.service" >/dev/null 2>&1 || true
   done
@@ -133,7 +137,7 @@ snapshot() {
   { sudo nft list ruleset 2>/dev/null | sed -E 's/packets [0-9]+ bytes [0-9]+//' || true
     sudo iptables-save 2>/dev/null | grep -v '^#' | sed -E 's/\[[0-9]+:[0-9]+\]//' || true; } >"$TMP/fw-$1.txt"
   sha256sum <"$TMP/fw-$1.txt" | cut -d' ' -f1
-  ss -ltnH | awk '{print $4}' | grep -vE ':(18090|18443|18444|18081|18099)$' | sort
+  ss -ltnH | awk '{print $4}' | grep -vE ':(18090|18443|18444|18445|18081|18082|18099)$' | sort
   # Units outside BAFT-TUNNEL. polkit.service is started on demand by the denied direct systemctl
   # attempt in this test and the control slices belong to this helper's own services.
   systemctl list-units --all --plain --no-legend --state=active,failed 2>/dev/null | awk '{print $1}' \
@@ -263,6 +267,100 @@ out="$(apply "$FWD" forward ctl-fwd-0001 '"127.0.0.1"' '"tunnel.example.test"')"
 [[ "$(echo "$out" | field result)" == rolled_back ]] || { echo "$out" >&2; die "failing start was not rolled back"; }
 wait_state "$FWD" inactive || die "rollback left $FWD running"
 echo "$out" | grep -q "baft-tunnel" && ! echo "$out" | grep -q "BEGIN" || die "receipt content check failed"
+step "4 real authorized session and data path on one host"
+# Two nodes with their own certificates and keys: a serve node and a forward node that pin each other.
+issue_node() { # ID DNSNAME -> $NODE/ID.key|.crt
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$NODE/$1.key"; chmod 600 "$NODE/$1.key"
+  openssl req -new -key "$NODE/$1.key" -out "$NODE/$1.csr" -subj "/CN=$1"
+  cat >"$TMP/$1-ext.cnf" <<EOF_N
+[node_ext]
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature
+extendedKeyUsage=serverAuth,clientAuth
+subjectAltName=URI:urn:baft-tunnel:node:$1,DNS:$2
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid,issuer
+EOF_N
+  openssl ca -batch -notext -config "$CA/openssl.cnf" -extfile "$TMP/$1-ext.cnf" -extensions node_ext -days 30 \
+    -in "$NODE/$1.csr" -out "$NODE/$1.crt" >/dev/null 2>&1
+  chmod 644 "$NODE/$1.crt"
+}
+issue_node possrv tunnel.example.test
+issue_node poscli client.example.test
+fp() { openssl x509 -in "$1" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f'; }
+sudo install -o root -g root -m 0644 "$NODE/possrv.crt" "$PKI_DIR/possrv.crt"
+sudo install -o root -g root -m 0644 "$NODE/poscli.crt" "$PKI_DIR/poscli.crt"
+sudo "$ROOT/scripts/install.sh" --instance "$POS_S" --node-key "$NODE/possrv.key" >"$TMP/cred-pos-s.log"
+sudo "$ROOT/scripts/install.sh" --instance "$POS_C" --node-key "$NODE/poscli.key" >"$TMP/cred-pos-c.log"
+python3 - "$PKI_DIR" "$TMP" "$(fp "$NODE/poscli.crt")" "$(fp "$NODE/possrv.crt")" <<'PY'
+import json, sys
+pki, tmp, cli_fp, srv_fp = sys.argv[1:5]
+common = {"tunnel_id": "agentctl-pos", "direction": "direct", "ca": pki + "/ca.crt", "key_credential": "node-key",
+          "max_streams": 8, "crl": pki + "/ca.crl"}
+srv = dict(common, mode="serve", local_id="possrv", peer_id="poscli", peer_fingerprint=cli_fp,
+           cert=pki + "/possrv.crt", listen="127.0.0.1:18445", target="127.0.0.1:18099")
+cli = dict(common, mode="forward", local_id="poscli", peer_id="possrv", peer_fingerprint=srv_fp,
+           cert=pki + "/poscli.crt", listen="127.0.0.1:18082", remote="127.0.0.1:18445",
+           server_name="tunnel.example.test")
+json.dump(srv, open(tmp + "/pos-srv.json", "w"), indent=2)
+json.dump(cli, open(tmp + "/pos-cli.json", "w"), indent=2)
+PY
+sudo install -o root -g baft-tunnel -m 0640 "$TMP/pos-srv.json" "/etc/baft-tunnel/$POS_S.json"
+sudo install -o root -g baft-tunnel -m 0640 "$TMP/pos-cli.json" "/etc/baft-tunnel/$POS_C.json"
+sudo systemctl daemon-reload
+sudo "$ROOT/scripts/install-agent-control.sh" --instance "$POS_S" >/dev/null
+sudo "$ROOT/scripts/install-agent-control.sh" --instance "$POS_C" >/dev/null
+# A fixed echo target stands in for the service behind the serve node.
+python3 - <<'PY' &
+import socketserver
+class H(socketserver.BaseRequestHandler):
+    def handle(self):
+        while True:
+            d = self.request.recv(65536)
+            if not d: return
+            self.request.sendall(d)
+class S(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+S(("127.0.0.1", 18099), H).serve_forever()
+PY
+ECHO_PID=$!
+sleep 1
+# Serve first: no peer yet, so the session must stay unknown.
+out="$(apply "$POS_S" serve ctl-pos-s-0001 null null)"
+[[ "$(echo "$out" | field result)" == applied ]] || { echo "$out" >&2; die "serve node was not applied"; }
+[[ "$(echo "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["stages"]["authorized_session"], d["ready"])')" == "unknown unknown" ]] || die "session claimed before any peer exists"
+# Forward second: the session is authorized, and Apply reports it as observed, still not ready.
+out="$(apply "$POS_C" forward ctl-pos-c-0001 '"127.0.0.1"' '"tunnel.example.test"')"
+[[ "$(echo "$out" | field result)" == applied ]] || { echo "$out" >&2; sudo journalctl -u "baft-tunnel@$POS_C.service" -n 40 --no-pager >&2; die "forward node was not applied"; }
+[[ "$(echo "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["stages"]["authorized_session"], d["stages"]["data_path_integrity"], d["ready"])')" == "observed unknown unknown" ]] || { echo "$out" >&2; die "authorized session was not observed"; }
+# The serve side reports the same session, bound to its own main PID.
+spid="$(sudo systemctl show -p MainPID --value "baft-tunnel@$POS_S.service")"
+[[ "$(sudo python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["state"], d["pid"])' "/run/baft-tunnel/$POS_S/session.json")" == "authorized $spid" ]] || die "serve session file does not match its main PID"
+# Data path: 64 KiB and 2 MiB of random bytes round-trip through the tunnel unchanged.
+for size in 65536 2097152; do
+  head -c "$size" /dev/urandom >"$TMP/pos-in.bin"
+  python3 - "$TMP/pos-in.bin" "$TMP/pos-out.bin" <<'PY'
+import socket, sys, threading
+data = open(sys.argv[1], "rb").read()
+s = socket.create_connection(("127.0.0.1", 18082), timeout=20)
+t = threading.Thread(target=lambda: (s.sendall(data), s.shutdown(socket.SHUT_WR)))
+t.start()
+out = bytearray()
+while len(out) < len(data):
+    chunk = s.recv(65536)
+    if not chunk: break
+    out += chunk
+t.join()
+open(sys.argv[2], "wb").write(out)
+PY
+  cmp "$TMP/pos-in.bin" "$TMP/pos-out.bin" || die "$size bytes changed on the way through the tunnel"
+done
+# Stop the forward node: the session indicator on the serve node must clear.
+sudo -u baft-tunnel touch "/run/baft-tunnel/control/$POS_C.stop"; wait_state "$POS_C" inactive || die "could not stop $POS_C"
+for n in $(seq 1 40); do sudo test -e "/run/baft-tunnel/$POS_S/session.json" || break; sleep 0.5; done
+! sudo test -e "/run/baft-tunnel/$POS_S/session.json" || die "serve session indicator stayed after the peer left"
+sudo -u baft-tunnel touch "/run/baft-tunnel/control/$POS_S.stop"; wait_state "$POS_S" inactive || die "could not stop $POS_S"
+kill "$ECHO_PID" 2>/dev/null || true; ECHO_PID=""
 step "3 receipts and side effects"
 nrec="$(sudo find /var/lib/baft-tunnel/agent/receipts -name '*.json' | wc -l)"
 [[ "$nrec" -ge 2 ]] || die "expected receipts, found $nrec"
@@ -272,4 +370,4 @@ sudo kill "$AGENT_PID" 2>/dev/null || true; sleep 2; AGENT_PID=""; step "3 agent
 snapshot after >"$TMP/side-after.txt"
 diff "$TMP/side-before.txt" "$TMP/side-after.txt" >&2 || { diff "$TMP/fw-before.txt" "$TMP/fw-after.txt" >&2 || true; die "firewall, listeners or unrelated units changed"; }
 
-echo "AGENT_CONTROL_LIFECYCLE=PASS (systemd $v: path units active, control dir root:baft-tunnel 0770, request starts and stops only baft-tunnel@NAME, no direct rights for the agent user, Apply start verified and replayed, running unit refused, failing start rolled back, malformed/unregistered/duplicate/stale/symlink requests harmless, no firewall/listener/unit side effects)"
+echo "AGENT_CONTROL_LIFECYCLE=PASS (systemd $v: path units active, control dir root:baft-tunnel 0770, request starts and stops only baft-tunnel@NAME, no direct rights for the agent user, Apply start verified and replayed, running unit refused, failing start rolled back, real authorized session observed between two nodes with 64 KiB and 2 MiB intact, malformed/unregistered/duplicate/stale/symlink requests harmless, no firewall/listener/unit side effects)"
