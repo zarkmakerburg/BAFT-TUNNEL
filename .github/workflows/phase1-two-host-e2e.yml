@@ -33,6 +33,11 @@ on:
         required: false
         type: string
         default: '0'
+      baft_systemd:
+        description: With baft=1, also run the BAFT stage under hardened transient systemd units (0 or 1)
+        required: false
+        type: string
+        default: '0'
       rollover:
         description: Also run the CA/pin rollover sequence stage (0 or 1)
         required: false
@@ -97,6 +102,7 @@ jobs:
       LAB_LOSS_PERCENT: ${{ inputs.loss_percent }}
       LAB_NOISE: ${{ inputs.noise }}
       LAB_BAFT: ${{ inputs.baft }}
+      LAB_BAFT_SYSTEMD: ${{ inputs.baft_systemd }}
       LAB_ROLLOVER: ${{ inputs.rollover }}
       LAB_SETUP: ${{ inputs.setup }}
       LAB_CLEANUP_STALE: ${{ inputs.cleanup_stale }}
