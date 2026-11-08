@@ -50,6 +50,17 @@ if [[ "$STAGING" == "0" ]]; then
     systemctl disable --now "${units[@]}"
   fi
 fi
+# Agent control helper (scripts/install-agent-control.sh): per-instance path units, templates,
+# tmpfiles entry and the runtime request directory belong to this installation too.
+if [[ "$STAGING" == "0" ]]; then
+  mapfile -t ctl < <(systemctl list-units --all --plain --no-legend 'baft-tunnel-control-*' | awk '{print $1}' | sort -u)
+  if (("${#ctl[@]}" > 0)); then systemctl disable --now "${ctl[@]}" 2>/dev/null || systemctl stop "${ctl[@]}" 2>/dev/null || true; fi
+fi
+rm -f "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel-control-*.path \
+  "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-start@.path "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-start@.service \
+  "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-stop@.path "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-stop@.service \
+  "$ROOT_PREFIX/etc/tmpfiles.d/baft-tunnel-control.conf"
+rm -rf "$ROOT_PREFIX/run/baft-tunnel/control"
 rm -f "$ROOT_PREFIX/usr/local/bin/baft-tunnel" "$ROOT_PREFIX/etc/systemd/system/baft-tunnel@.service"
 if [[ "$PURGE" == "1" ]]; then
   # Remove only drop-ins written by install.sh; leave any operator-owned files.

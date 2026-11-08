@@ -28,6 +28,10 @@ ROLLOVER="${LAB_ROLLOVER:-0}"
 [[ "$ROLLOVER" == 0 || "$ROLLOVER" == 1 ]] || { echo "LAB_ROLLOVER must be 0 or 1" >&2; exit 2; }
 REVERSE="${LAB_REVERSE:-0}"
 REVERSE_R3="${LAB_REVERSE_R3:-0}"
+MVP="${LAB_MVP:-0}"
+[[ "$MVP" == 0 || "$MVP" == 1 ]] || { echo "LAB_MVP must be 0 or 1" >&2; exit 2; }
+MVP_BINARY_PATH="${MVP_BINARY:-}"; MVP_SOURCE="${MVP_SOURCE:-unknown}"
+if [[ "$MVP" == 1 ]]; then [[ -x "$MVP_BINARY_PATH" ]] || { echo "LAB_MVP=1 needs MVP_BINARY" >&2; exit 2; }; fi
 [[ "$REVERSE_R3" =~ ^[0-9]+$ ]] && (( REVERSE_R3 <= 3600 )) || { echo "LAB_REVERSE_R3 must be 0-3600 (Reverse R3 soak seconds; 0 = off)" >&2; exit 2; }
 [[ "$REVERSE" == 0 || "$REVERSE" == 1 ]] || { echo "LAB_REVERSE must be 0 or 1" >&2; exit 2; }
 BAFT="${LAB_BAFT:-0}"
@@ -1011,4 +1015,9 @@ if (( NOISE == 1 )); then
   echo "NOISE_RESULT direct_ok=1 direct_rogue_refused=1 (Reverse is judged separately, ADR-0021)"
 fi
 
-echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE reverse_r3=$REVERSE_R3 (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
+if (( MVP == 1 )); then
+  # shellcheck source=lab/real-hosts/mvp-stage.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/mvp-stage.sh"
+fi
+
+echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE reverse_r3=$REVERSE_R3 mvp=$MVP (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
