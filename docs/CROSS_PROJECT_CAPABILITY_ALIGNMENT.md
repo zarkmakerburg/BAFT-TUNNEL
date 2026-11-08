@@ -196,7 +196,7 @@ Do not expose buttons for “Deploy best”, Direct/Reverse selection, firewall 
 | Capability | Current state | Target / decision |
 |---|---|---|
 | TCP-TLS Direct | Supported with real-host evidence | Preserve; continue regression coverage |
-| TCP-TLS Reverse | Preview; one dedicated two-host LAB pass | Close R3 breadth before any Stable promotion |
+| TCP-TLS Reverse | Preview; dedicated two-host LAB pass plus R3 breadth REAL-LAB pass (P0-4, run 42525790470) | Owner review before any Stable promotion |
 | Noise-TCP Direct | Experimental, Direct LAB pass | Keep Experimental; test impairments before promotion |
 | Noise-TCP Reverse | Unavailable / unproven | Keep hidden until its own real data-path gate |
 | BAFT engine | Separate process, config adapter and supervised launcher; Store path, rollback and signed asset REAL-LAB passed (P0-3) | Keep Wizard-hidden until an owner-approved exposure gate |
@@ -239,7 +239,7 @@ Do not expose buttons for “Deploy best”, Direct/Reverse selection, firewall 
 - Record whether this path was run from a signed release asset or a locally built binary; these are not interchangeable evidence.
 - Keep BAFT out of the capability catalog/Wizard until an explicit owner-approved release gate says otherwise.
 
-**P0-4 — TCP-TLS Reverse R3**
+**P0-4 — TCP-TLS Reverse R3** — *LAB gate closed 2026-11-08: run 42525790470 on `5a72a25`; UI stays Preview pending review; Noise Reverse not tested and stays unavailable.*
 - Extend beyond the existing single pass: agent restart, repeated reconnect/replace, stale-session handling, port conflict, interruption at different lifecycle stages, longer soak, packet loss and cleanup.
 - Keep current UI state Preview until this evidence is reviewed.
 - Test Noise Reverse separately; do not inherit TCP-TLS results.
