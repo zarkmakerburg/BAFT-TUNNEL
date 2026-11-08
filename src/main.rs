@@ -1,3 +1,4 @@
+mod agent;
 mod authorization;
 mod config;
 mod engine;
@@ -112,6 +113,20 @@ enum Command {
     SupportBundle {
         #[arg(long)]
         config: PathBuf,
+    },
+    /// Create a random API token file for the local agent (mode 0600, never overwritten).
+    AgentToken {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Run the read-only local status API (loopback only, bearer token). Does not start a tunnel.
+    Agent {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        token_file: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:18080")]
+        listen: String,
     },
 }
 
@@ -408,6 +423,21 @@ async fn main() -> Result<()> {
             let public = engine::write_noise_keypair(&out)?;
             println!("{public}");
             Ok(())
+        }
+        Command::AgentToken { out } => {
+            agent::write_token(&out)?;
+            println!("Token written: {}", out.display());
+            Ok(())
+        }
+        Command::Agent {
+            config: path,
+            token_file,
+            listen,
+        } => {
+            let config = config::load(&path)?;
+            config.validate()?;
+            let token = agent::read_token(&token_file)?;
+            agent::run(config, agent::parse_listen(&listen)?, token).await
         }
         Command::SupportBundle { config: path } => {
             let config = config::load(&path)?;

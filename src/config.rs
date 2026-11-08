@@ -258,6 +258,12 @@ impl RuntimeConfig {
         }
     }
 
+    pub fn listen_addr(&self) -> &str {
+        match self {
+            Self::Serve { listen, .. } | Self::Forward { listen, .. } => listen,
+        }
+    }
+
     pub fn support_report(&self) -> serde_json::Value {
         let (
             mode,
