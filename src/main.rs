@@ -1,4 +1,5 @@
 mod agent;
+mod apply;
 mod authorization;
 #[allow(dead_code)] // the renderer API is used by tests and later phases (ADR-0019)
 mod baft_engine;
@@ -130,7 +131,7 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Run the local API (loopback only, bearer token): status, and validated desired state storage. Never starts a tunnel or applies a config.
+    /// Run the local API (loopback only, bearer token): status, and validated desired state storage. Never starts a tunnel; its only writes are the state directory and the confirmed local setup stages of `POST /v1/setup/apply`.
     Agent {
         #[arg(long)]
         config: PathBuf,

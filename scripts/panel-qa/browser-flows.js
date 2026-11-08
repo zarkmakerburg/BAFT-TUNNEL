@@ -62,7 +62,11 @@ const ok = (n, c, d) => { results.push([c ? 'PASS' : 'FAIL', n, d || '']); };
       await p.screenshot({ path: `${SHOTS}/${tag}-wiz-preview.png`, fullPage: true });
       await next().click(); await p.waitForTimeout(200);
       const txt = await p.locator('.content').innerText();
-      ok(`${tag} apply step has no Apply button`, !/^(Apply|اعمال)$/m.test(txt) && await p.locator('button', {hasText: /^(Apply|اعمال)$/}).count()===0);
+      const goBtn = p.locator('button.primary', {hasText: lang==='fa'?'اعمال و بررسی':'Apply and verify'});
+      ok(`${tag} apply button exists but is disabled until confirmed`, (await goBtn.count())===1 && await goBtn.isDisabled());
+      if (!(await p.locator('input[type=checkbox]').count())) { console.log('DIAG', tag, (await p.locator('.content').innerText()).slice(0,600)); }
+      await p.locator('input[type=checkbox]').check({timeout: 3000});
+      ok(`${tag} apply button enabled after explicit confirm (not clicked in QA)`, await goBtn.isEnabled());
       await p.screenshot({ path: `${SHOTS}/${tag}-wiz-apply.png`, fullPage: true });
       ok(`${tag} no console errors`, errs.length === 0, errs.join(' | '));
       await ctx.close();

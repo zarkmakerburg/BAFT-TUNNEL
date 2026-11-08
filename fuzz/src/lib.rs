@@ -4,6 +4,8 @@
 
 #[path = "../../src/agent.rs"]
 pub mod agent;
+#[path = "../../src/apply.rs"]
+pub mod apply;
 #[path = "../../src/authorization.rs"]
 pub mod authorization;
 #[path = "../../src/baft_engine.rs"]

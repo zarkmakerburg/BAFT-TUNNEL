@@ -33,18 +33,20 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 **Active development — Phase 1, pre-release, not production-ready**
 
 - **Direct** is the supported mode. It passed the two-host LAB (Iran and abroad hosts, Ubuntu 22.04 / systemd 249) with 64 KiB and 2 MiB integrity checks, listener-restart recovery and certificate-revocation checks.
-- **Reverse** for `tcp-tls` is **implemented in the Rust core and configuration** (the service node dials out; the public node accepts and ingresses). It passed a dedicated two-host LAB run (see below). It is a **preview**: it is **not Stable**, the panel, wizard and capability API still report it as unavailable, and `noise-tcp` Reverse has not been tested.
+- **Reverse** for `tcp-tls` is **implemented in the Rust core and configuration** (the service node dials out; the public node accepts and ingresses). It passed a dedicated two-host LAB run (see below). It is a **preview**: it is **not Stable**, the panel, wizard and capability API offer it with a Preview label, and `noise-tcp` Reverse is implemented but unproven and not offered.
 - The **BAFT engine** (pinned Go binary, separate process) passed a two-host LAB run under hardened systemd 249 units. It is still hidden from the wizard; the Engine Store is not yet read by the Launcher.
-- Still open: multi-hour soak, real packet-loss test, remote CRL distribution and CA/pin rollover, online enrollment, the Apply, Verify and Receipt lifecycle. An independent security review was waived by the owner and has **not** been performed.
+- Still open: multi-hour soak, real packet-loss test, remote CRL distribution and CA/pin rollover, online enrollment, service start and end-to-end verification through Apply (Apply, Verify, Receipt covers only the local `setup init`/`join` stages, ADR-0022). An independent security review was waived by the owner and has **not** been performed.
 </blockquote>
 
 | Area | Current state |
 |---|---|
 | Architecture and threat model | Defined |
 | Rust TCP transport (`tcp-tls`) | Implemented; review and acceptance ongoing |
-| Direct | Real two-host LAB evidence |
-| Reverse (`tcp-tls`) | Implemented; real two-host LAB PASS; preview, not Stable; not yet exposed in panel or wizard |
-| Reverse (`noise-tcp`) | Not tested |
+| Direct | Real two-host LAB evidence, stable engines (tcp-tls; Noise experimental) |
+| Reverse (tcp-tls) | **Preview.** Real in Core and Config; two-host LAB PASS (run 42506805986: outbound-only service node, 64 KiB + 2 MiB integrity, reconnect, wrong identity/pin, revoked certificate). Breadth (R3) still open |
+| Reverse (Noise) | Implemented in the core, **unproven** (no two-host LAB); not offered |
+| BAFT engine | Hidden until its gates pass (ADR-0019/0020); Engine Store → Launcher execution cycle is not complete |
+| Apply → Verify → Receipt | Local `setup init` / `setup join` stages through the agent and panel, gated, verified, rolled back on failure, receipt without secrets (ADR-0022). No service start, no firewall change |
 | Mutual TLS and peer identity | Implemented with negative tests |
 | Offline PKI and CRL revocation | Experimental; manual workflow |
 | Installer and systemd unit | Implemented; Ubuntu 22.04 / systemd 249 baseline passes CI and isolated LAB test |
