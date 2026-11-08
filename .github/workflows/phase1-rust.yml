@@ -64,7 +64,12 @@ jobs:
         run: cargo +1.88.0 build --locked --release
       - name: Record host systemd version
         run: systemctl --version | head -n 1
-      - name: Validate baseline LoadCredential= service lifecycle
+      - name: Build the previous pre-release for the upgrade drill (R-001)
+        run: |
+          git fetch --depth=1 origin tag v0.1.0-phase1-pre
+          git worktree add "$RUNNER_TEMP/old-release" v0.1.0-phase1-pre
+          (cd "$RUNNER_TEMP/old-release" && cargo +1.88.0 build --locked --release)
+      - name: Validate baseline LoadCredential= service lifecycle, upgrade and rollback
         run: |
           bash -n scripts/pki/test-systemd-baseline-lifecycle.sh
-          bash scripts/pki/test-systemd-baseline-lifecycle.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"
+          bash scripts/pki/test-systemd-baseline-lifecycle.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel" "$RUNNER_TEMP/old-release/target/release/baft-tunnel"

@@ -5,6 +5,8 @@ umask 077
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
 BIN="${1:-$ROOT/target/release/baft-tunnel}"
+# Optional: an older release binary. When given, the test also upgrades from it, then rolls back (R-001).
+OLD_BIN="${2:-}"
 SERVICE_NAME="credential-baseline-ci"
 SERVICE_UNIT="baft-tunnel@${SERVICE_NAME}.service"
 DROPIN_DIR="/etc/systemd/system/${SERVICE_UNIT}.d"
@@ -19,6 +21,7 @@ BACKUP_DIR=""
 
 die() { echo "systemd service lifecycle: $*" >&2; exit 1; }
 [[ -x "$BIN" ]] || die "missing executable: $BIN"
+[[ -z "$OLD_BIN" || -x "$OLD_BIN" ]] || die "missing executable: $OLD_BIN"
 for command in systemctl openssl python3 sudo install; do
   command -v "$command" >/dev/null 2>&1 || die "missing command: $command"
 done
@@ -185,6 +188,61 @@ wait_active || die "service did not recover after explicit systemctl restart"
 start_after="$(sudo systemctl show -p ExecMainStartTimestampMonotonic --value "$SERVICE_UNIT")"
 [[ -n "$start_after" && "$start_after" != "$start_before" ]] || die "service start timestamp did not advance after restart"
 
+UPGRADE_RESULT=""
+if [[ -n "$OLD_BIN" ]]; then
+  # R-001: real upgrade from an older release and rollback, config and credential kept in place.
+  listening() {
+    local attempt
+    for attempt in $(seq 1 40); do
+      if python3 -c "import socket; socket.create_connection(('127.0.0.1',18080),1).close()" 2>/dev/null; then return 0; fi
+      sleep 0.25
+    done
+    dump_service
+    return 1
+  }
+  version_of() { sudo /usr/local/bin/baft-tunnel --version 2>/dev/null || echo unknown; }
+  OLD_RUNTIME="$TMP/baft-tunnel-old"
+  install -m 0755 "$OLD_BIN" "$OLD_RUNTIME"
+  sudo systemctl stop "$SERVICE_UNIT"
+  sudo "$ROOT/scripts/install.sh" --binary "$OLD_RUNTIME" >"$TMP/old-install.log"
+  sudo systemctl daemon-reload
+  sudo systemctl start "$SERVICE_UNIT" || { dump_service; die "old release failed to start with the current config"; }
+  wait_active || die "old release did not become active"
+  listening || die "old release is not listening"
+  old_version="$(version_of)"
+  cfg_before="$(sudo sha256sum "$CONFIG_FILE" | awk '{print $1}')"
+  cred_before="$(sudo sha256sum "$CREDENTIAL_DIR/node-key" | awk '{print $1}')"
+  t_up=$SECONDS
+  sudo "$ROOT/scripts/install.sh" --binary "$RUNTIME_BIN" >"$TMP/upgrade.log"
+  UPGRADE_BACKUP="$(sed -n 's/^Backup: //p' "$TMP/upgrade.log" | tail -n 1)"
+  [[ -n "$UPGRADE_BACKUP" && -d "$UPGRADE_BACKUP" ]] || die "upgrade did not report a backup"
+  sudo systemctl daemon-reload
+  sudo systemctl restart "$SERVICE_UNIT"
+  wait_active || die "service did not come up after the upgrade"
+  listening || die "upgraded service is not listening"
+  up_s=$((SECONDS - t_up))
+  new_version="$(version_of)"
+  [[ "$(sudo sha256sum /usr/local/bin/baft-tunnel | awk '{print $1}')" == "$(sha256sum "$RUNTIME_BIN" | awk '{print $1}')" ]] || die "upgrade did not install the new binary"
+  [[ "$(sudo sha256sum "$CONFIG_FILE" | awk '{print $1}')" == "$cfg_before" ]] || die "upgrade changed the config"
+  [[ "$(sudo sha256sum "$CREDENTIAL_DIR/node-key" | awk '{print $1}')" == "$cred_before" ]] || die "upgrade changed the credential"
+  t_rb=$SECONDS
+  sudo "$ROOT/scripts/rollback.sh" "$UPGRADE_BACKUP" >/dev/null
+  sudo systemctl restart "$SERVICE_UNIT"
+  wait_active || die "service did not come up after the rollback"
+  listening || die "rolled-back service is not listening"
+  rb_s=$((SECONDS - t_rb))
+  [[ "$(sudo sha256sum /usr/local/bin/baft-tunnel | awk '{print $1}')" == "$(sha256sum "$OLD_RUNTIME" | awk '{print $1}')" ]] || die "rollback did not restore the old binary"
+  [[ "$(sudo sha256sum "$CONFIG_FILE" | awk '{print $1}')" == "$cfg_before" ]] || die "rollback changed the config"
+  sudo rm -rf "$UPGRADE_BACKUP"
+  # Put the new binary back for the remaining checks.
+  sudo systemctl stop "$SERVICE_UNIT"
+  sudo "$ROOT/scripts/install.sh" --binary "$RUNTIME_BIN" >/dev/null
+  sudo systemctl daemon-reload
+  sudo systemctl start "$SERVICE_UNIT"
+  wait_active || die "service did not come up with the new binary after the drill"
+  UPGRADE_RESULT=" upgrade_s=$up_s rollback_s=$rb_s from='$old_version' to='$new_version'"
+fi
+
 sudo systemctl stop "$SERVICE_UNIT"
 ! sudo systemctl is-active --quiet "$SERVICE_UNIT" || die "service remained active after stop"
 # Fail-closed: a missing source credential must stop the service from starting.
@@ -208,4 +266,5 @@ INSTALL_DONE=0
 [[ ! -e /usr/local/bin/baft-tunnel ]] || die "uninstall left the binary installed"
 [[ ! -e /etc/systemd/system/baft-tunnel@.service ]] || die "uninstall left the systemd unit installed"
 [[ ! -e /etc/baft-tunnel && ! -e /var/lib/baft-tunnel ]] || die "uninstall left config/state behind"
+echo "UPGRADE_ROLLBACK_RESULT${UPGRADE_RESULT:- skipped}"
 echo "BAFT_SYSTEMD_BASELINE_LIFECYCLE=PASS (systemd $systemd_version, real install, baseline LoadCredential=, root-only perms, start/restart/stop, fail-closed missing credential, safe uninstall, explicit purge)"
