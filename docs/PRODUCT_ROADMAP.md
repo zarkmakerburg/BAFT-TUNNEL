@@ -96,8 +96,8 @@ The current MVP panel source is plain static HTML/CSS/JavaScript in `panel/`, se
 
 | ID | Work | Required result / exit evidence |
 |---|---|---|
-| P0-1 | PR #88 systemd control helper | Security review; real Ubuntu 22.04/systemd 249 LAB for start/stop, scope restriction, invalid/unregistered instance refusal, failure rollback, idempotency/stale requests, no unrelated state change and cleanup |
-| P0-2 | Apply lifecycle and readiness truth | Keep init/join receipt semantics; distinguish service active, listener accepting, authenticated peer, authorized session and bidirectional data integrity; unknown stays Unknown |
+| P0-1 | PR #88 systemd control helper | **Real-systemd 249 gate closed 2026-11-08** (hosted runner, run 42523536944, SHA 22e94f1; two-host LAB proof rides on P0-5). Original criteria: Security review; real Ubuntu 22.04/systemd 249 LAB for start/stop, scope restriction, invalid/unregistered instance refusal, failure rollback, idempotency/stale requests, no unrelated state change and cleanup |
+| P0-2 | Apply lifecycle and readiness truth | **Partly done** (run 42524638625, SHA 231ba9d): session indicator and staged receipt; authorized session observed on one host; data path and `ready` stay Unknown until P0-5 measures them. Original criteria: Keep init/join receipt semantics; distinguish service active, listener accepting, authenticated peer, authorized session and bidirectional data integrity; unknown stays Unknown |
 | P0-3 | BAFT Engine Store → Launcher | **LAB gate closed 2026-11-08** (runs 42510577167, 42522105698; signed rc.2 asset). Exposure in Wizard is a separate gate |
 | P0-4 | TCP-TLS Reverse R3 | Agent restart, repeat/reconnect, stale-session replacement, port conflict, longer soak, packet loss, failure interruption and cleanup; Reverse remains Preview until accepted |
 | P0-5 | Integrated signed-artifact MVP LAB | Clean two-host installation using signed release, supported setup path, accepted lifecycle, authenticated tunnel, 64 KiB + 2 MiB integrity, negative identity/pin/revocation cases, recovery, rollback/uninstall and cleanup |

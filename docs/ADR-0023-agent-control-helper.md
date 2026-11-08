@@ -29,11 +29,24 @@ let the agent start any unit. sudo is blocked by `NoNewPrivileges`.
 
 ## Not done (stated in every receipt)
 
-- Not enabled at boot, no firewall change or inspection, the connection to the peer is not
-  verified (the agent has no session indicator), data integrity is not tested by Apply (the LAB
-  tests cover it). Real peer verification needs a session indicator in the runtime: next step.
+- Not enabled at boot, no firewall change or inspection. The running unit writes a session
+  indicator (`$RUNTIME_DIRECTORY/session.json`, no secrets, bound to its main PID) while an
+  authenticated and authorized session exists; Apply `start` records it as `observed`, otherwise
+  `unknown`. `data_path_integrity` and `ready` stay `unknown` in every Apply receipt: only a test
+  that moves bytes through the tunnel (P0-5) can observe them.
 
 ## Evidence
 
 Unit tests with a fake unit controller (success, failed start with stop, refusals, request
 files), staging run of the install script. Real systemd 249 (hosted Ubuntu 22.04) CI run: `scripts/pki/test-agent-control-lifecycle.sh`.
+
+### Real-systemd evidence (hosted ubuntu-22.04, systemd 249, `ubuntu-2204-baseline`)
+
+- P0-1 gap tests: malformed/unregistered names change no unit, malformed names refused by the API,
+  duplicate start does not restart, symlinked request removed without touching its target,
+  consumed stop not replayed, firewall rules/listeners/unrelated services unchanged.
+  Run 42523536944, code SHA 22e94f1, merged as 14fd71f (#90).
+- P0-2: two nodes with their own certificates on one host: serve alone stays `unknown`; with the
+  forward node the session is `observed`; 64 KiB and 2 MiB round-trip unchanged; the indicator
+  clears when the peer stops. Run 42524638625, code SHA 231ba9d, merged as e031475 (#93).
+- Limit: one host, loopback, hosted runner. The two-host LAB proof is part of P0-5.
