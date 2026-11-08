@@ -182,7 +182,10 @@ for n in $(seq 1 20); do [[ ! -e "$CTL/$SERVE.start" ]] && break; sleep 0.25; do
 # Symlink: a link to a root-owned file must not let the helper touch the target.
 echo sentinel | sudo tee "$TMP/sentinel" >/dev/null
 sudo chmod 600 "$TMP/sentinel"
-sudo -u baft-tunnel ln -s "$TMP/sentinel" "$CTL/$SERVE.start" || die "agent user cannot create the test symlink"
+# Let the second duplicate request finish being consumed before placing the link.
+for n in $(seq 1 40); do [[ ! -e "$CTL/$SERVE.start" ]] && break; sleep 0.25; done
+sleep 2
+sudo -u baft-tunnel ln -sfn "$TMP/sentinel" "$CTL/$SERVE.start" || die "agent user cannot create the test symlink"
 for n in $(seq 1 20); do [[ ! -e "$CTL/$SERVE.start" && ! -L "$CTL/$SERVE.start" ]] && break; sleep 0.25; done
 [[ ! -L "$CTL/$SERVE.start" ]] || die "symlink request was not removed"
 [[ "$(sudo cat "$TMP/sentinel")" == sentinel ]] || die "symlink request touched its target"
