@@ -315,6 +315,25 @@ impl RuntimeConfig {
         engine.as_str()
     }
 
+    /// `(crl, cert)` paths when the engine is TLS (they are empty for noise-tcp).
+    pub fn tls_files(&self) -> Option<(&Path, &Path)> {
+        match self {
+            Self::Serve {
+                engine: EngineKind::TcpTls,
+                crl,
+                cert,
+                ..
+            }
+            | Self::Forward {
+                engine: EngineKind::TcpTls,
+                crl,
+                cert,
+                ..
+            } => Some((crl, cert)),
+            _ => None,
+        }
+    }
+
     pub fn listen_addr(&self) -> &str {
         match self {
             Self::Serve { listen, .. } | Self::Forward { listen, .. } => listen,

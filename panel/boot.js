@@ -1,0 +1,1 @@
+BAFT.init();
