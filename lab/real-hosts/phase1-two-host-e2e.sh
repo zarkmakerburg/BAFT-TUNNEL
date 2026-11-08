@@ -29,6 +29,8 @@ ROLLOVER="${LAB_ROLLOVER:-0}"
 REVERSE="${LAB_REVERSE:-0}"
 [[ "$REVERSE" == 0 || "$REVERSE" == 1 ]] || { echo "LAB_REVERSE must be 0 or 1" >&2; exit 2; }
 BAFT="${LAB_BAFT:-0}"
+BAFT_SYSTEMD="${LAB_BAFT_SYSTEMD:-0}"
+[[ "$BAFT_SYSTEMD" == 0 || "$BAFT_SYSTEMD" == 1 ]] || { echo "LAB_BAFT_SYSTEMD must be 0 or 1" >&2; exit 2; }
 [[ "$BAFT" == 0 || "$BAFT" == 1 ]] || { echo "LAB_BAFT must be 0 or 1" >&2; exit 2; }
 BAFT_BINARY_PATH="${BAFT_ENGINE_BINARY:-}"
 if [[ "$BAFT" == 1 ]]; then [[ -x "$BAFT_BINARY_PATH" ]] || { echo "LAB_BAFT=1 needs BAFT_ENGINE_BINARY (pinned build)" >&2; exit 2; }; fi
@@ -746,16 +748,74 @@ if (( BAFT == 1 )); then
   echo "--- BAFT revoked listener: the dialer must refuse a revoked listener certificate ---"
   # Control first: the same listener certificate works while it is not revoked (old CRL has only baftrev).
   baft_start abroad serve "$(baft_cfg serve revsrv iran b-revsrv.crt b-revsrv.key)"
-  baft_start iran forward "$(baft_cfg forward iran revsrv b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
+  baft_start iran forward "$(baft_cfg forward iran revsrv b-iran.crt b-iran.key "$LAB_ABROAD_HOST" revsrv.lab)"
   probe_host iran 65536
   stop_role iran forward; stop_role abroad serve; sleep 1
   openssl ca -batch -config "$LOCAL_TMP/openssl.cnf" -revoke "$LOCAL_TMP/b-revsrv.crt" >/dev/null 2>&1
   openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.crl" >/dev/null 2>&1
   for side in iran abroad; do copy_to_host "$side" "$LOCAL_TMP/ca.crl"; done
   baft_start abroad serve "$(baft_cfg serve revsrv iran b-revsrv.crt b-revsrv.key)"
-  baft_start iran forward "$(baft_cfg forward iran revsrv b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
+  baft_start iran forward "$(baft_cfg forward iran revsrv b-iran.crt b-iran.key "$LAB_ABROAD_HOST" revsrv.lab)"
   expect_refused iran "a revoked listener certificate"
   stop_role iran forward; stop_role abroad serve
+  if (( BAFT_SYSTEMD == 1 )); then
+    echo "--- BAFT under hardened systemd units (shipped unit hardening, Ubuntu 22.04 / systemd 249 baseline) ---"
+    # Transient units carry exactly the hardening keys of systemd/baft-tunnel@.service, so a change to
+    # the shipped unit changes this test. A throwaway user and /opt directory are removed afterwards.
+    SD_UNIT="$(dirname "${BASH_SOURCE[0]}")/../../systemd/baft-tunnel@.service"
+    [[ -r "$SD_UNIT" ]] || { echo "shipped unit not found: $SD_UNIT" >&2; exit 2; }
+    SD_PROPS="$(awk '/^\[Service\]/{s=1;next} /^\[/{s=0} s && /^(NoNewPrivileges|PrivateTmp|PrivateDevices|ProtectSystem|ProtectHome|ProtectKernelTunables|ProtectKernelModules|ProtectControlGroups|ProtectClock|ProtectHostname|ProtectProc|ProcSubset|RestrictAddressFamilies|RestrictSUIDSGID|RestrictNamespaces|RestrictRealtime|LockPersonality|MemoryDenyWriteExecute|SystemCallFilter|SystemCallArchitectures|CapabilityBoundingSet|AmbientCapabilities|UMask|LimitNOFILE|TasksMax|MemoryMax)=/{printf "-p %s ", "\"" $0 "\""}' "$SD_UNIT")"
+    [[ "$SD_PROPS" == *MemoryDenyWriteExecute=true* && "$SD_PROPS" == *SystemCallFilter=* ]] || { echo "hardening keys not found in the shipped unit" >&2; exit 2; }
+    SD_DIR=/opt/baft-lab-e2e
+    sd_prepare() { # side
+      ssh_host "$1" "set -e; systemctl --version | head -1; . /etc/os-release; echo \$PRETTY_NAME;
+        id baftlab >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin baftlab;
+        rm -rf '$SD_DIR'; mkdir -m 755 '$SD_DIR';
+        cp '$REMOTE_DIR/baft-tunnel' '$REMOTE_DIR/baft-engine' '$REMOTE_DIR/ca.crt' '$REMOTE_DIR/ca.crl' '$REMOTE_DIR'/b-*.crt '$SD_DIR'/;
+        cp '$REMOTE_DIR'/b-*.key '$SD_DIR'/; chmod 755 '$SD_DIR/baft-tunnel' '$SD_DIR/baft-engine'; chmod 644 '$SD_DIR/ca.crt' '$SD_DIR/ca.crl' '$SD_DIR'/b-*.crt;
+        chown baftlab:baftlab '$SD_DIR'/b-*.key; chmod 600 '$SD_DIR'/b-*.key"
+    }
+    sd_cfg() { ( REMOTE_DIR="$SD_DIR"; baft_cfg "$@" ); }
+    sd_run() { # side role cfgjson
+      local side="$1" role="$2" cfg="$3"
+      ssh_host "$side" "printf '%s' '$cfg' > '$SD_DIR/sd-$role.json'; systemctl reset-failed baft-lab-$role 2>/dev/null; systemd-run --quiet --unit=baft-lab-$role --collect -p User=baftlab -p Group=baftlab -p WorkingDirectory=$SD_DIR -p RuntimeDirectory=baft-lab/$role -p RuntimeDirectoryMode=0700 -p Restart=on-failure -p RestartSec=3s -p TimeoutStopSec=20s -p KillSignal=SIGTERM $SD_PROPS '$SD_DIR/baft-tunnel' apply --config '$SD_DIR/sd-$role.json' --confirm"
+    }
+    sd_stop() { ssh_host "$1" "systemctl stop baft-lab-$2 2>/dev/null; systemctl reset-failed baft-lab-$2 2>/dev/null; true" || true; }
+    sd_cleanup() {
+      for side in iran abroad; do
+        ssh_host "$side" "systemctl stop baft-lab-serve baft-lab-forward 2>/dev/null; systemctl reset-failed baft-lab-serve baft-lab-forward 2>/dev/null; rm -rf '$SD_DIR'; userdel baftlab 2>/dev/null; true" || true
+      done
+    }
+    trap 'sd_cleanup; cleanup' EXIT
+    sd_prepare abroad; sd_prepare iran
+    sd_run abroad serve "$(sd_cfg serve abroad iran b-abroad.crt b-abroad.key)"
+    sd_run iran forward "$(sd_cfg forward iran abroad b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
+    sleep 8
+    probe_host iran 65536; probe_host iran 2097289
+    SD_PROP_CHECK="$(ssh_host abroad "systemctl show baft-lab-serve -p ActiveState -p MemoryDenyWriteExecute -p NoNewPrivileges -p NRestarts | tr '\n' ' '")"
+    echo "systemd properties (abroad serve): $SD_PROP_CHECK"
+    [[ "$SD_PROP_CHECK" == *"ActiveState=active"* && "$SD_PROP_CHECK" == *"MemoryDenyWriteExecute=yes"* ]] || { echo "hardened unit not active with MemoryDenyWriteExecute" >&2; exit 1; }
+    if ssh_host abroad "journalctl -u baft-lab-serve --no-pager 2>/dev/null | grep -Eqi 'bad system call|SIGSYS|status=31'"; then echo "seccomp kill seen in serve unit" >&2; exit 1; fi
+    echo "--- BAFT systemd recovery: listener unit restarted, dialer unit must come back by itself ---"
+    ssh_host iran "systemctl show baft-lab-forward -p NRestarts" >/dev/null
+    SD_T0=$SECONDS; SD_REC=0
+    sd_stop abroad serve; sleep 2
+    sd_run abroad serve "$(sd_cfg serve abroad iran b-abroad.crt b-abroad.key)"
+    for _ in $(seq 1 30); do
+      if probe_host iran 65536 >/dev/null 2>&1; then SD_REC=1; break; fi
+      sleep 5
+    done
+    (( SD_REC == 1 )) || { echo "BAFT did not recover under systemd" >&2; exit 1; }
+    SD_REC_S=$((SECONDS - SD_T0))
+    SD_NRESTARTS="$(ssh_host iran "systemctl show baft-lab-forward -p NRestarts --value")"
+    echo "--- BAFT systemd engine kill: SIGKILL of the Go engine, launcher must restart it ---"
+    ssh_host abroad "pkill -KILL -f '^$SD_DIR/baft-engine ' || true"
+    sleep 12
+    probe_host iran 65536
+    sd_stop iran forward; sd_stop abroad serve
+    sd_cleanup; trap cleanup EXIT
+    echo "BAFT_SYSTEMD_RESULT hardened_direct_ok=1 mdwe=yes no_seccomp_kill=1 recovery_s=$SD_REC_S dialer_unit_restarts=$SD_NRESTARTS engine_kill_recovered=1"
+  fi
   echo "BAFT_RESULT direct_ok=1 unauthorized_refused=1 restart_recovered=1 restart_recovery_s=$BAFT_RECOVERY_S dialer_restarted=$BAFT_DIALER_RESTARTED bad_hash_refused=1 reverse_ok=1 revoked_refused=1 pin_ok=1 wrong_pin_refused=1 revoked_listener_refused=1 rss_kb_serve=$BAFT_RSS_SERVE rss_kb_forward=$BAFT_RSS_FWD"
 fi
 
