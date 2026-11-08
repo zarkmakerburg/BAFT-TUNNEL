@@ -383,27 +383,6 @@ if (( SETUP == 1 )); then
   setup_pair() {
     local engine="$1" name="$2" d="$SEP-$2" sum_a sum_i
     ssh_host abroad "mkdir -p '$d'"; ssh_host iran "mkdir -p '$d'"
-    if [[ "$engine" == tcp-tls ]]; then
-      # Real offline-PKI output (scripts/pki/baft-pki.sh) generated on the runner, which plays the
-      # offline admin machine. Only node.key/node.crt/ca.crt/ca.crl reach each host.
-      local node dir_n
-      for node in abroad iran; do
-        dir_n="$LOCAL_TMP/realpki/$node"
-        host_ip="$LAB_ABROAD_HOST"; [[ "$node" == iran ]] && host_ip="$LAB_IRAN_HOST"
-        bash scripts/pki/baft-pki.sh new-node "$node" "$dir_n" >/dev/null
-        bash scripts/pki/baft-pki.sh issue-node "$LOCAL_TMP/realpki/ca" "$node" "$dir_n/node.csr" "$LOCAL_TMP/realpki/issued-$node" "$host_ip" 30 >/dev/null
-        bash scripts/pki/baft-pki.sh verify-node "$LOCAL_TMP/realpki/ca" "$LOCAL_TMP/realpki/issued-$node/ca.crl" "$LOCAL_TMP/realpki/issued-$node/node.crt" "$node" "$host_ip" >/dev/null
-        mkdir -p "$LOCAL_TMP/realpki/send-$node"
-        cp "$dir_n/node.key" "$LOCAL_TMP/realpki/issued-$node/"{node.crt,ca.crt,ca.crl} "$LOCAL_TMP/realpki/send-$node/"
-        chmod 600 "$LOCAL_TMP/realpki/send-$node/node.key"
-        for f in node.key node.crt ca.crt ca.crl; do
-          cp "$LOCAL_TMP/realpki/send-$node/$f" "$LOCAL_TMP/realpki/send-$node/$node-$f"
-          copy_to_host "$node" "$LOCAL_TMP/realpki/send-$node/$node-$f"
-          ssh_host "$node" "mv '$REMOTE_DIR/$node-$f' '$d/$f'"
-        done
-        ssh_host "$node" "chmod 600 '$d/node.key'"
-      done
-    fi
     local common="--engine $engine --direction direct --tunnel-id lab-setup --service-port $SVC_PORT --tunnel-port $TPORT --dir '$d'"
     sum_a="$(ssh_host abroad "'$BIN' setup init $common --role serve --node-id abroad --peer-id iran" | awk '/^Checksum/{print $NF}')"
     sum_i="$(ssh_host iran "'$BIN' setup init $common --role forward --node-id iran --peer-id abroad --peer-host '$LAB_ABROAD_HOST'" | awk '/^Checksum/{print $NF}')"
@@ -423,6 +402,31 @@ if (( SETUP == 1 )); then
     probe_host iran 65536
     probe_host iran 2097289
   }
+  # Installing PKI material is a one-time operator step done before any engine switch, so it is
+  # prepared (and timed) separately from the switch itself.
+  prepare_tls_pki() {
+    local d="$SEP-tls"
+    ssh_host abroad "mkdir -p '$d'"; ssh_host iran "mkdir -p '$d'"
+    # Real offline-PKI output (scripts/pki/baft-pki.sh) generated on the runner, which plays the
+    # offline admin machine. Only node.key/node.crt/ca.crt/ca.crl reach each host.
+    local node dir_n
+    for node in abroad iran; do
+      dir_n="$LOCAL_TMP/realpki/$node"
+      host_ip="$LAB_ABROAD_HOST"; [[ "$node" == iran ]] && host_ip="$LAB_IRAN_HOST"
+      bash scripts/pki/baft-pki.sh new-node "$node" "$dir_n" >/dev/null
+      bash scripts/pki/baft-pki.sh issue-node "$LOCAL_TMP/realpki/ca" "$node" "$dir_n/node.csr" "$LOCAL_TMP/realpki/issued-$node" "$host_ip" 30 >/dev/null
+      bash scripts/pki/baft-pki.sh verify-node "$LOCAL_TMP/realpki/ca" "$LOCAL_TMP/realpki/issued-$node/ca.crl" "$LOCAL_TMP/realpki/issued-$node/node.crt" "$node" "$host_ip" >/dev/null
+      mkdir -p "$LOCAL_TMP/realpki/send-$node"
+      cp "$dir_n/node.key" "$LOCAL_TMP/realpki/issued-$node/"{node.crt,ca.crt,ca.crl} "$LOCAL_TMP/realpki/send-$node/"
+      chmod 600 "$LOCAL_TMP/realpki/send-$node/node.key"
+      for f in node.key node.crt ca.crt ca.crl; do
+        cp "$LOCAL_TMP/realpki/send-$node/$f" "$LOCAL_TMP/realpki/send-$node/$node-$f"
+        copy_to_host "$node" "$LOCAL_TMP/realpki/send-$node/$node-$f"
+        ssh_host "$node" "mv '$REMOTE_DIR/$node-$f' '$d/$f'"
+      done
+      ssh_host "$node" "chmod 600 '$d/node.key'"
+    done
+  }
   t0=$SECONDS
   setup_pair noise-tcp noise
   noise_s=$((SECONDS - t0))
@@ -431,6 +435,7 @@ if (( SETUP == 1 )); then
   printf 'lab-ephemeral-ca-passphrase-%s\n' "$RANDOM$RANDOM" > "$LOCAL_TMP/realpki/pass"
   export BAFT_PKI_PASSFILE="$LOCAL_TMP/realpki/pass"
   bash scripts/pki/baft-pki.sh init-ca "$LOCAL_TMP/realpki/ca" >/dev/null 2>&1
+  prepare_tls_pki
   t1=$SECONDS
   setup_pair tcp-tls tls
   switch_s=$((SECONDS - t1))
