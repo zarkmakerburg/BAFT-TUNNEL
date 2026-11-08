@@ -135,7 +135,7 @@ trap cleanup EXIT
 # whose command line is exactly this script's temp binary/helper paths).
 if [[ "${LAB_CLEANUP_STALE:-0}" == 1 ]]; then
   for side in iran abroad; do
-    ssh_host "$side" "for f in /tmp/baft-tunnel-e2e-*/*.pid; do [ -s \"\$f\" ] && kill \$(cat \"\$f\") 2>/dev/null; done; pkill -f '^/tmp/baft-tunnel-e2e-[0-9]+/baft-tunnel ' 2>/dev/null; pkill -f 'python3 /tmp/baft-tunnel-e2e-[0-9]+/(echo|impair)\.py' 2>/dev/null; sleep 1; rm -rf /tmp/baft-tunnel-e2e-*; echo CLEANUP_STALE_DONE" || true
+    ssh_host "$side" "for f in /tmp/baft-tunnel-e2e-*/*.pid; do [ -s \"\$f\" ] && kill \$(cat \"\$f\") 2>/dev/null; done; pkill -f '^/tmp/baft-tunnel-e2e-[0-9]+/baft-tunnel ' 2>/dev/null; pkill -f '^/tmp/baft-tunnel-e2e-[0-9]+/baft-engine ' 2>/dev/null; pkill -f 'python3 /tmp/baft-tunnel-e2e-[0-9]+/(echo|impair)\.py' 2>/dev/null; sleep 1; rm -rf /tmp/baft-tunnel-e2e-*; echo CLEANUP_STALE_DONE" || true
   done
   exit 0
 fi
@@ -588,7 +588,10 @@ if (( BAFT == 1 )); then
   }
   baft_start() { # side role cfgjson
     local side="$1" role="$2" cfg="$3"
-    ssh_host "$side" "rm -rf '$REMOTE_DIR/rt-$role' && mkdir -m 700 '$REMOTE_DIR/rt-$role' && printf '%s' '$cfg' > '$REMOTE_DIR/baft-$role.json' && RUNTIME_DIRECTORY='$REMOTE_DIR/rt-$role' nohup '$REMOTE_DIR/baft-tunnel' apply --config '$REMOTE_DIR/baft-$role.json' --confirm > '$REMOTE_DIR/$role.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/$role.pid'"
+    # Only the engine command is backgrounded: an `a && b && c &` chain would keep ssh's stdout
+    # open through its subshell and make this call block until the tunnel stops (found in the
+    # first real run, which hung here).
+    ssh_host "$side" "rm -rf '$REMOTE_DIR/rt-$role' && mkdir -m 700 '$REMOTE_DIR/rt-$role' && printf '%s' '$cfg' > '$REMOTE_DIR/baft-$role.json'; RUNTIME_DIRECTORY='$REMOTE_DIR/rt-$role' nohup '$REMOTE_DIR/baft-tunnel' apply --config '$REMOTE_DIR/baft-$role.json' --confirm > '$REMOTE_DIR/$role.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/$role.pid'"
   }
   baft_rss() { # side role : launcher + child RSS in kB
     ssh_host "$1" "p=\$(cat '$REMOTE_DIR/$2.pid'); t=0; for q in \$p \$(pgrep -P \$p); do t=\$((t + \$(awk '/VmRSS/{print \$2}' /proc/\$q/status))); done; echo \$t"
