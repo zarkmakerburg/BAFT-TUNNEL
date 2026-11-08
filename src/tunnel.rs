@@ -20,22 +20,23 @@ use tokio::{
 };
 use tokio_yamux::{Config as YamuxConfig, Session};
 
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_SESSIONS: usize = 8;
+pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const MAX_SESSIONS: usize = 8;
 /// Connections that have not finished authentication. Counted separately from
 /// established sessions so unauthenticated sockets cannot evict a valid peer.
 const MAX_PENDING_HANDSHAKES: usize = 32;
 const MAX_PENDING_PER_IP: usize = 2;
 /// A forwarded TCP stream with no data in a direction for this long is closed,
 /// so stalled peers cannot hold stream slots forever.
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(900);
+pub(crate) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(900);
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(200);
 // Keep aggregate receive buffering bounded while allowing a 2 MiB payload
 // to pass without depending on repeated window-update cycles over high-RTT links.
 const MAX_STREAM_WINDOW_SIZE: u32 = 4 * 1024 * 1024;
-const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
-const MAX_BACKOFF: Duration = Duration::from_secs(60);
+pub(crate) const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+pub(crate) const MAX_BACKOFF: Duration = Duration::from_secs(60);
+pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 const STREAM_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -95,7 +96,7 @@ fn yamux_config(max: usize) -> YamuxConfig {
     YamuxConfig {
         accept_backlog: max,
         enable_keepalive: true,
-        keepalive_interval: Duration::from_secs(15),
+        keepalive_interval: KEEPALIVE_INTERVAL,
         connection_write_timeout: Duration::from_secs(10),
         max_stream_count: max,
         max_stream_window_size: MAX_STREAM_WINDOW_SIZE,

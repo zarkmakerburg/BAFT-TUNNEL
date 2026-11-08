@@ -52,7 +52,7 @@ impl EngineKind {
 
 const CRL_WARNING_SECONDS: i64 = 24 * 3600;
 
-fn default_max_streams() -> usize {
+pub(crate) fn default_max_streams() -> usize {
     8
 }
 
