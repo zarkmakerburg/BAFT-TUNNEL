@@ -71,6 +71,9 @@ fn check_port(value: u16, what: &str) -> Result<()> {
 }
 
 pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
+    if req.engine == EngineKind::Baft {
+        bail!("engine baft is not available in setup yet (ADR-0019 phase F)");
+    }
     validate_identity(&req.node_id)?;
     validate_identity(&req.peer_id)?;
     validate_identity(&req.tunnel_id)?;
@@ -106,7 +109,7 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
     let path = |name: &str| req.dir.join(name);
     let text = |name: &str| path(name).to_string_lossy().into_owned();
     let mut config = json!({
-        "engine": match req.engine { EngineKind::TcpTls => "tcp-tls", EngineKind::NoiseTcp => "noise-tcp" },
+        "engine": engine_name(req.engine),
         "direction": req.direction.as_str(),
         "local_id": req.node_id,
         "peer_id": req.peer_id,
@@ -148,6 +151,7 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
     }];
     let mut pending = Vec::new();
     match req.engine {
+        EngineKind::Baft => unreachable!("plan() rejects engine baft before this point"),
         EngineKind::NoiseTcp => {
             map.insert("key".into(), json!(text("node.noise")));
             map.insert("noise_peer_public".into(), json!(PEER_KEY_PLACEHOLDER));
@@ -367,6 +371,7 @@ fn engine_name(engine: EngineKind) -> &'static str {
     match engine {
         EngineKind::TcpTls => "tcp-tls",
         EngineKind::NoiseTcp => "noise-tcp",
+        EngineKind::Baft => "baft",
     }
 }
 

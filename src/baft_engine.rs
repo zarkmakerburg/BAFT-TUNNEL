@@ -6,14 +6,24 @@
 //! Not wired into the engine selection yet (`EngineKind::Baft` arrives in a later phase).
 
 use std::{
+    fs,
+    io::Write,
     net::{IpAddr, SocketAddr},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use tokio::process::Command;
 
-use crate::handshake::validate_identity;
+use crate::{
+    config::{BaftSettings, RuntimeConfig, private_key_path},
+    handshake::validate_identity,
+};
 
 /// BAFT refuses this port for transport, routes and metrics.
 const SSH_PORT: u16 = 22;
@@ -238,6 +248,247 @@ pub fn render(input: &BaftRenderInput) -> Result<Value> {
         (None, _) => {}
     }
     Ok(config)
+}
+
+/// Everything `prepare_bundle` produced, all inside the per-tunnel runtime directory.
+#[derive(Debug)]
+pub struct Bundle {
+    pub config_file: PathBuf,
+}
+
+/// Loopback metrics port for a tunnel: stable per tunnel id, in 20000..30000.
+/// A clash with another listener makes BAFT fail to start, which is visible; it is never silent.
+fn metrics_port(tunnel_id: &str) -> u16 {
+    let digest = Sha256::digest(tunnel_id.as_bytes());
+    20000 + (u16::from_be_bytes([digest[0], digest[1]]) % 10000)
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("create {}", path.display()))?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Build the render input from validated tunnel settings and copy the TLS material into
+/// `runtime_dir` (must be an existing, empty, private directory on tmpfs). The key is read
+/// from the configured file or systemd credential and written 0600; BAFT refuses keys
+/// readable by group or other, which a systemd credential file may be.
+pub fn prepare_bundle(cfg: &RuntimeConfig, runtime_dir: &Path, now_unix: i64) -> Result<Bundle> {
+    let meta = fs::metadata(runtime_dir).context("runtime directory")?;
+    if !meta.is_dir() || meta.permissions().mode() & 0o077 != 0 {
+        bail!("runtime directory must be a directory with no group or other access");
+    }
+    if fs::read_dir(runtime_dir)?.next().is_some() {
+        bail!("runtime directory must be empty; refusing to reuse a previous bundle");
+    }
+    let (local_id, peer_id, tunnel_id, max_streams, ca, crl, cert, key, key_credential, side) =
+        match cfg {
+            RuntimeConfig::Serve {
+                listen,
+                target,
+                local_id,
+                peer_id,
+                tunnel_id,
+                max_streams,
+                ca,
+                crl,
+                cert,
+                key,
+                key_credential,
+                ..
+            } => (
+                local_id,
+                peer_id,
+                tunnel_id,
+                *max_streams,
+                ca,
+                crl,
+                cert,
+                key,
+                key_credential,
+                Side::Serve {
+                    listen: listen.parse().context("listen")?,
+                    target: target.parse().context("target")?,
+                    server_name: format!("{local_id}.baft-tunnel.invalid"),
+                },
+            ),
+            RuntimeConfig::Forward {
+                listen,
+                remote,
+                server_name,
+                local_id,
+                peer_id,
+                tunnel_id,
+                max_streams,
+                ca,
+                crl,
+                cert,
+                key,
+                key_credential,
+                allow_non_loopback_listen,
+                ..
+            } => (
+                local_id,
+                peer_id,
+                tunnel_id,
+                *max_streams,
+                ca,
+                crl,
+                cert,
+                key,
+                key_credential,
+                Side::Forward {
+                    listen: listen.parse().context("listen")?,
+                    remote: remote.parse().context("remote")?,
+                    server_name: server_name.clone(),
+                    allow_non_loopback_listen: *allow_non_loopback_listen,
+                },
+            ),
+        };
+    let is_listener = matches!(side, Side::Serve { .. });
+    let key_source = private_key_path(key.as_deref(), key_credential.as_deref())?;
+
+    // Render the revocation list first: an expired or unreadable CRL stops the start.
+    let revocation = if is_listener {
+        Some(revocation_from_crl(crl, now_unix)?)
+    } else {
+        None
+    };
+
+    let paths = BaftPaths {
+        ca: runtime_dir.join("ca.pem"),
+        cert: runtime_dir.join("node.pem"),
+        key: runtime_dir.join("node.key"),
+        revocation: revocation
+            .as_ref()
+            .map(|_| runtime_dir.join("revocation.json")),
+        unix_socket: runtime_dir.join("admin.sock"),
+        metrics_listen: SocketAddr::from(([127, 0, 0, 1], metrics_port(tunnel_id))),
+    };
+    let input = BaftRenderInput {
+        local_id: local_id.clone(),
+        peer_id: peer_id.clone(),
+        tunnel_id: tunnel_id.clone(),
+        side,
+        max_streams,
+        paths: paths.clone(),
+    };
+    let config = render(&input)?;
+
+    write_private(&paths.ca, &fs::read(ca).context("read ca")?)?;
+    write_private(&paths.cert, &fs::read(cert).context("read cert")?)?;
+    write_private(&paths.key, &fs::read(&key_source).context("read key")?)?;
+    if let (Some(path), Some(list)) = (&paths.revocation, &revocation) {
+        write_private(path, serde_json::to_string(list)?.as_bytes())?;
+    }
+    let config_file = runtime_dir.join("baft.json");
+    write_private(
+        &config_file,
+        serde_json::to_string_pretty(&config)?.as_bytes(),
+    )?;
+    Ok(Bundle { config_file })
+}
+
+/// Refuse a BAFT binary whose SHA-256 differs from the pinned value, or that others can write.
+pub fn verify_binary(settings: &BaftSettings) -> Result<()> {
+    let meta = fs::metadata(&settings.binary)
+        .with_context(|| format!("stat {}", settings.binary.display()))?;
+    if !meta.is_file() || meta.permissions().mode() & 0o022 != 0 {
+        bail!("baft binary must be a regular file not writable by group or other");
+    }
+    let digest = hex::encode(Sha256::digest(
+        fs::read(&settings.binary).context("read baft binary")?,
+    ));
+    if !digest.eq_ignore_ascii_case(&settings.sha256) {
+        bail!("baft binary SHA-256 does not match the pinned value; refusing to start it");
+    }
+    Ok(())
+}
+
+/// Run `baft config validate`, then `baft run`, until `shutdown` resolves or the child exits.
+/// The child gets an empty environment and no stdin. On shutdown it receives SIGTERM and,
+/// after `grace`, SIGKILL. A child exit is always an error: the tunnel is down, never healthy.
+pub async fn supervise(
+    binary: &Path,
+    config_file: &Path,
+    shutdown: impl std::future::Future<Output = ()>,
+    grace: Duration,
+) -> Result<()> {
+    let validated = Command::new(binary)
+        .args(["config", "validate", "--file"])
+        .arg(config_file)
+        .env_clear()
+        .stdin(Stdio::null())
+        .status()
+        .await
+        .context("run baft config validate")?;
+    if !validated.success() {
+        bail!("baft rejected the rendered configuration: {validated}");
+    }
+    let mut child = Command::new(binary)
+        .args(["run", "--file"])
+        .arg(config_file)
+        .env_clear()
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .context("start baft")?;
+    tokio::pin!(shutdown);
+    tokio::select! {
+        status = child.wait() => bail!("baft exited unexpectedly: {}", status?),
+        () = &mut shutdown => {
+            if let Some(pid) = child.id() {
+                // SIGTERM lets BAFT drain; SIGKILL follows after `grace`.
+                // SAFETY: plain kill(2) on the pid of a child this function owns.
+                unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+            }
+            if tokio::time::timeout(grace, child.wait()).await.is_err() {
+                child.kill().await.ok();
+            }
+            Ok(())
+        }
+    }
+}
+
+/// `apply` entry for engine `baft`: verify the pinned binary, build the bundle, supervise.
+pub async fn run(cfg: RuntimeConfig) -> Result<()> {
+    let settings = match &cfg {
+        RuntimeConfig::Serve { baft, .. } | RuntimeConfig::Forward { baft, .. } => baft
+            .clone()
+            .context("engine baft requires a baft section")?,
+    };
+    verify_binary(&settings)?;
+    let runtime_dir = std::env::var("RUNTIME_DIRECTORY")
+        .ok()
+        .and_then(|value| value.split(':').next().map(PathBuf::from))
+        .context("RUNTIME_DIRECTORY is not set; start this engine from the systemd unit")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_secs() as i64;
+    let bundle = prepare_bundle(&cfg, &runtime_dir, now)?;
+    eprintln!("Starting the pinned BAFT engine; payload stays inside that process.");
+    supervise(
+        &settings.binary,
+        &bundle.config_file,
+        async {
+            let mut term =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("install SIGTERM handler");
+            tokio::select! {
+                _ = term.recv() => {},
+                _ = tokio::signal::ctrl_c() => {},
+            }
+        },
+        Duration::from_secs(10),
+    )
+    .await
 }
 
 /// BAFT accepts at most this many revocation entries (`maxRevocationEntries` upstream).
@@ -518,5 +769,208 @@ mod tests {
         std::fs::write(dir.join("junk.crl"), "not a crl").unwrap();
         assert!(revocation_from_crl(&dir.join("junk.crl"), unix_now()).is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn private_dir(name: &str) -> PathBuf {
+        let dir = temp_dir(name);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
+    fn serve_config(src: &Path, crl: &Path) -> RuntimeConfig {
+        serde_json::from_value(json!({
+            "mode": "serve", "listen": "198.51.100.10:8443", "target": "127.0.0.1:2080",
+            "local_id": "abroad-1", "peer_id": "iran-1", "tunnel_id": "svc-main",
+            "direction": "direct", "engine": "baft",
+            "ca": write_file(src, "ca.crt", b"CA"), "crl": crl,
+            "cert": write_file(src, "node.crt", b"CERT"),
+            "key": write_file(src, "node.key", b"KEY-BYTES"),
+            "baft": {"binary": "/bin/true", "sha256": "0".repeat(64)}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn bundle_has_private_files_and_a_listener_revocation_list() {
+        let src = temp_dir("bundle-src");
+        let crl = make_crl(&src, 2099, &[0x0a1b]);
+        let cfg = serve_config(&src, &crl);
+        let out = private_dir("bundle-out");
+        let bundle = prepare_bundle(&cfg, &out, unix_now()).unwrap();
+        for name in [
+            "ca.pem",
+            "node.pem",
+            "node.key",
+            "revocation.json",
+            "baft.json",
+        ] {
+            let mode = std::fs::metadata(out.join(name))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{name}");
+        }
+        assert_eq!(std::fs::read(out.join("node.key")).unwrap(), b"KEY-BYTES");
+        let rendered: Value =
+            serde_json::from_slice(&std::fs::read(&bundle.config_file).unwrap()).unwrap();
+        assert_eq!(rendered["node"]["role"], json!("listener"));
+        assert_eq!(
+            rendered["revocation"]["file"],
+            json!(out.join("revocation.json"))
+        );
+        let revoked: Value =
+            serde_json::from_slice(&std::fs::read(out.join("revocation.json")).unwrap()).unwrap();
+        assert_eq!(revoked, json!({"serials": ["0A:1B"]}));
+        // A used directory is refused, never reused.
+        assert!(prepare_bundle(&cfg, &out, unix_now()).is_err());
+        std::fs::remove_dir_all(src).unwrap();
+        std::fs::remove_dir_all(out).unwrap();
+    }
+
+    #[test]
+    fn expired_crl_stops_the_bundle_before_any_file_is_written() {
+        let src = temp_dir("bundle-exp-src");
+        let crl = make_crl(&src, 2099, &[1]);
+        let cfg = serve_config(&src, &crl);
+        let out = private_dir("bundle-exp-out");
+        assert!(prepare_bundle(&cfg, &out, 4_102_444_800).is_err());
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+        std::fs::remove_dir_all(src).unwrap();
+        std::fs::remove_dir_all(out).unwrap();
+    }
+
+    #[test]
+    fn group_accessible_runtime_directory_is_refused() {
+        let src = temp_dir("bundle-perm-src");
+        let crl = make_crl(&src, 2099, &[]);
+        let cfg = serve_config(&src, &crl);
+        let out = temp_dir("bundle-perm-out");
+        std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o750)).unwrap();
+        assert!(prepare_bundle(&cfg, &out, unix_now()).is_err());
+        std::fs::remove_dir_all(src).unwrap();
+        std::fs::remove_dir_all(out).unwrap();
+    }
+
+    fn script(dir: &Path, body: &str, mode: u32) -> PathBuf {
+        let path = write_file(dir, "baft", format!("#!/bin/sh\n{body}\n").as_bytes());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        path
+    }
+
+    #[test]
+    fn binary_hash_and_mode_are_enforced() {
+        let dir = temp_dir("binary");
+        let path = script(&dir, "exit 0", 0o755);
+        let good = hex::encode(Sha256::digest(std::fs::read(&path).unwrap()));
+        let settings = BaftSettings {
+            binary: path.clone(),
+            sha256: good.clone(),
+        };
+        verify_binary(&settings).unwrap();
+        let wrong = BaftSettings {
+            binary: path.clone(),
+            sha256: "0".repeat(64),
+        };
+        assert!(verify_binary(&wrong).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(verify_binary(&settings).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn supervise_stops_the_child_on_shutdown() {
+        let dir = temp_dir("sup-ok");
+        let bin = script(
+            &dir,
+            "if [ \"$1\" = config ]; then exit 0; fi\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done",
+            0o755,
+        );
+        let cfg = write_file(&dir, "baft.json", b"{}");
+        let started = std::time::Instant::now();
+        supervise(
+            &bin,
+            &cfg,
+            tokio::time::sleep(Duration::from_millis(300)),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(4));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn supervise_reports_rejected_config_and_unexpected_exit() {
+        let dir = temp_dir("sup-bad");
+        let cfg = write_file(&dir, "baft.json", b"{}");
+        let reject = script(&dir, "exit 3", 0o755);
+        assert!(
+            supervise(
+                &reject,
+                &cfg,
+                std::future::pending(),
+                Duration::from_secs(1)
+            )
+            .await
+            .is_err()
+        );
+        let dies = script(
+            &dir,
+            "if [ \"$1\" = config ]; then exit 0; fi\nexit 7",
+            0o755,
+        );
+        let error = supervise(&dies, &cfg, std::future::pending(), Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("exited unexpectedly"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn engine_baft_config_rejects_pins_missing_section_and_bad_hash() {
+        let base = |extra: Value| -> RuntimeConfig {
+            let mut value = json!({
+                "mode": "serve", "listen": "198.51.100.10:8443", "target": "127.0.0.1:2080",
+                "local_id": "abroad-1", "peer_id": "iran-1", "tunnel_id": "svc-main",
+                "direction": "direct", "engine": "baft",
+                "ca": "/x/ca.crt", "crl": "/x/ca.crl", "cert": "/x/node.crt", "key": "/x/node.key"
+            });
+            for (name, v) in extra.as_object().unwrap() {
+                value[name] = v.clone();
+            }
+            serde_json::from_value(value).unwrap()
+        };
+        let good_baft =
+            json!({"binary": "/usr/local/lib/baft-tunnel/baft", "sha256": "a".repeat(64)});
+        // missing baft section
+        assert!(base(json!({})).validate().is_err());
+        // pin is not used by this engine
+        assert!(
+            base(json!({"baft": good_baft, "peer_fingerprint": "b".repeat(64)}))
+                .validate()
+                .is_err()
+        );
+        // bad hash and relative binary
+        assert!(base(json!({"baft": {"sha256": "zz"}})).validate().is_err());
+        assert!(
+            base(json!({"baft": {"binary": "baft", "sha256": "a".repeat(64)}}))
+                .validate()
+                .is_err()
+        );
+        // unknown field inside baft is refused
+        assert!(
+            serde_json::from_value::<RuntimeConfig>(json!({
+                "mode": "serve", "listen": "198.51.100.10:8443", "target": "127.0.0.1:2080",
+                "local_id": "a", "peer_id": "b", "tunnel_id": "t", "direction": "direct",
+                "engine": "baft", "baft": {"sha256": "a".repeat(64), "extra": 1}
+            }))
+            .is_err()
+        );
     }
 }

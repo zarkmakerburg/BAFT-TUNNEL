@@ -20,6 +20,9 @@ ExecStart=/usr/local/bin/baft-tunnel apply --config /etc/baft-tunnel/%i.json --c
 Restart=on-failure
 RestartSec=3s
 TimeoutStopSec=20s
+# Per-tunnel private tmpfs directory; the baft engine bundle (config, key copy) is written here.
+RuntimeDirectory=baft-tunnel/%i
+RuntimeDirectoryMode=0700
 KillSignal=SIGTERM
 UMask=0077
 LimitNOFILE=4096
