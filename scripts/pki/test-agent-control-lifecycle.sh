@@ -125,6 +125,14 @@ mkcfg "$SERVE" serve
 mkcfg "$FWD" forward
 sudo systemctl daemon-reload
 
+# Baseline of everything this test must leave alone: firewall rules, listeners, other units.
+snapshot() {
+  { sudo nft list ruleset 2>/dev/null || true; sudo iptables-save 2>/dev/null | grep -v '^#' || true; } | sha256sum | cut -d' ' -f1
+  ss -ltnH | awk '{print $4}' | grep -vE ':(18090|18443|18444|18081|18099)$' | sort
+  systemctl list-units --all --plain --no-legend --state=active,failed 2>/dev/null | awk '{print $1}' | grep -vE '^baft-tunnel' | sort
+}
+snapshot >"$TMP/side-before.txt"
+
 active() { sudo systemctl is-active --quiet "baft-tunnel@$1.service"; }
 wait_state() { # NAME active|inactive
   local n
@@ -154,6 +162,37 @@ sudo -u baft-tunnel touch "/run/baft-tunnel/control/notinstalled.start"
 sleep 3
 ! sudo systemctl is-active --quiet "baft-tunnel@notinstalled.service" || die "a request without a path unit started a unit"
 sudo rm -f /run/baft-tunnel/control/notinstalled.start
+# 2b. Malformed, unregistered, duplicate, stale and symlinked requests (P0-1 acceptance).
+CTL=/run/baft-tunnel/control
+units_before="$(systemctl list-units --all --plain --no-legend 'baft-tunnel*' | awk '{print $1}' | sort)"
+for bad in 'bad name' '-lead' 'a.b' 'UP..PER' "$(printf 'x%.0s' $(seq 1 70))" 'notinstalled' 'agentctl-other'; do
+  sudo -u baft-tunnel touch "$CTL/$bad.start" "$CTL/$bad.stop" 2>/dev/null || true
+done
+sleep 3
+units_after="$(systemctl list-units --all --plain --no-legend 'baft-tunnel*' | awk '{print $1}' | sort)"
+[[ "$units_before" == "$units_after" ]] || { diff <(echo "$units_before") <(echo "$units_after") >&2; die "a malformed or unregistered request changed units"; }
+active "$SERVE" || die "malformed requests stopped $SERVE"
+sudo find "$CTL" -maxdepth 1 -type f -delete
+# Duplicate request on a running unit: consumed, unit untouched (same main PID, no restart).
+pid_before="$(sudo systemctl show -p MainPID --value "baft-tunnel@$SERVE.service")"
+sudo -u baft-tunnel touch "$CTL/$SERVE.start"; sleep 1; sudo -u baft-tunnel touch "$CTL/$SERVE.start"
+for n in $(seq 1 20); do [[ ! -e "$CTL/$SERVE.start" ]] && break; sleep 0.25; done
+[[ ! -e "$CTL/$SERVE.start" ]] || die "duplicate request was not consumed"
+[[ "$(sudo systemctl show -p MainPID --value "baft-tunnel@$SERVE.service")" == "$pid_before" ]] || die "duplicate start restarted the unit"
+# Symlink: a link to a root-owned file must not let the helper touch the target.
+echo sentinel | sudo tee "$TMP/sentinel" >/dev/null
+sudo chmod 600 "$TMP/sentinel"
+sudo -u baft-tunnel ln -s "$TMP/sentinel" "$CTL/$SERVE.start" || die "agent user cannot create the test symlink"
+for n in $(seq 1 20); do [[ ! -e "$CTL/$SERVE.start" && ! -L "$CTL/$SERVE.start" ]] && break; sleep 0.25; done
+[[ ! -L "$CTL/$SERVE.start" ]] || die "symlink request was not removed"
+[[ "$(sudo cat "$TMP/sentinel")" == sentinel ]] || die "symlink request touched its target"
+active "$SERVE" || die "symlink request disturbed $SERVE"
+# Stale request: a file left from before the unit stopped is consumed once and not replayed later.
+sudo -u baft-tunnel touch "$CTL/$SERVE.stop"; wait_state "$SERVE" inactive || die "stop failed"
+sleep 2
+inactive_after="$(sudo systemctl is-active "baft-tunnel@$SERVE.service" || true)"
+[[ "$inactive_after" != active ]] || die "a consumed stop request was replayed into a start"
+sudo -u baft-tunnel touch "$CTL/$SERVE.start"; wait_state "$SERVE" active || die "restart request failed"
 # The agent user has no direct systemctl rights (no polkit rule, no sudo).
 ! sudo -u baft-tunnel systemctl --no-ask-password stop "baft-tunnel@$SERVE.service" >/dev/null 2>&1 || die "agent user can stop units directly"
 active "$SERVE" || die "unit stopped by the denied direct stop"
@@ -186,6 +225,11 @@ field() { python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(sys.a
 out="$(apply "$SERVE" serve ctl-serve-0001 null null)"
 [[ "$(echo "$out" | field result)" == applied ]] || { echo "$out" >&2; die "Apply start (serve) was not applied"; }
 active "$SERVE" || die "Apply start left $SERVE inactive"
+# A malformed or unregistered instance name is refused by the API and creates nothing.
+for bad in '../etc' 'bad name' '-x'; do
+  [[ "$(apply "$bad" serve ctl-bad-$RANDOM null null | field result)" == refused ]] || die "malformed instance '$bad' was not refused"
+done
+! sudo ls "$CTL" | grep -qE '^(\.\.|bad|-x)' || die "a malformed API request left a file"
 # A repeat with the same key replays the receipt without acting.
 [[ "$(apply "$SERVE" serve ctl-serve-0001 null null | field replayed)" == True ]] || die "idempotent replay failed"
 # The same request on a running unit is refused and changes nothing.
@@ -196,6 +240,12 @@ out="$(apply "$FWD" forward ctl-fwd-0001 '"127.0.0.1"' '"tunnel.example.test"')"
 [[ "$(echo "$out" | field result)" == rolled_back ]] || { echo "$out" >&2; die "failing start was not rolled back"; }
 wait_state "$FWD" inactive || die "rollback left $FWD running"
 echo "$out" | grep -q "baft-tunnel" && ! echo "$out" | grep -q "BEGIN" || die "receipt content check failed"
-for f in /var/lib/baft-tunnel/agent/receipts/*.json; do ! sudo grep -q "$TOKEN" "$f" || die "receipt contains the token"; done
+nrec="$(sudo find /var/lib/baft-tunnel/agent/receipts -name '*.json' | wc -l)"
+[[ "$nrec" -ge 2 ]] || die "expected receipts, found $nrec"
+! sudo grep -rq -- "$TOKEN" /var/lib/baft-tunnel/agent/receipts || die "a receipt contains the token"
+# Nothing else changed: firewall hash, listeners and unrelated units match the baseline.
+sudo kill "$AGENT_PID" 2>/dev/null || true; wait "$AGENT_PID" 2>/dev/null || true; AGENT_PID=""; sleep 1
+snapshot >"$TMP/side-after.txt"
+diff "$TMP/side-before.txt" "$TMP/side-after.txt" >&2 || die "firewall, listeners or unrelated units changed"
 
-echo "AGENT_CONTROL_LIFECYCLE=PASS (systemd $v: path units active, control dir root:baft-tunnel 0770, request starts and stops only baft-tunnel@NAME, no direct rights for the agent user, Apply start verified and replayed, running unit refused, failing start rolled back)"
+echo "AGENT_CONTROL_LIFECYCLE=PASS (systemd $v: path units active, control dir root:baft-tunnel 0770, request starts and stops only baft-tunnel@NAME, no direct rights for the agent user, Apply start verified and replayed, running unit refused, failing start rolled back, malformed/unregistered/duplicate/stale/symlink requests harmless, no firewall/listener/unit side effects)"
