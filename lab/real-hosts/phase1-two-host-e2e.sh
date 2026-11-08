@@ -481,8 +481,10 @@ if [[ "$REVERSE" == 1 ]]; then
     echo "--- R3 network blackhole 30 s on the tunnel flow (no RST), then recovery ---"
     ssh_host iran "! nft list table inet $LOSS_TABLE >/dev/null 2>&1" || { echo "stale $LOSS_TABLE table exists" >&2; exit 1; }
     r3_fam=ip; [[ "$LAB_ABROAD_HOST" == *:* ]] && r3_fam=ip6
-    r3_rules() { # percent : drop that share of the Reverse tunnel flow between abroad and iran:E2E_PORT
-      ssh_host iran "nft add table inet $LOSS_TABLE && nft add chain inet $LOSS_TABLE in '{ type filter hook input priority 0; policy accept; }' && nft add chain inet $LOSS_TABLE out '{ type filter hook output priority 0; policy accept; }' && nft add rule inet $LOSS_TABLE in $r3_fam saddr $LAB_ABROAD_HOST tcp dport $E2E_PORT numgen random mod 100 '<' $1 counter drop && nft add rule inet $LOSS_TABLE out $r3_fam daddr $LAB_ABROAD_HOST tcp sport $E2E_PORT numgen random mod 100 '<' $1 counter drop"
+    r3_rules() { # percent : drop that share (1-100) of the Reverse tunnel flow between abroad and iran:E2E_PORT
+      local share="numgen random mod 100 '<' $1"
+      (( $1 >= 100 )) && share=""
+      ssh_host iran "nft add table inet $LOSS_TABLE && nft add chain inet $LOSS_TABLE in '{ type filter hook input priority 0; policy accept; }' && nft add chain inet $LOSS_TABLE out '{ type filter hook output priority 0; policy accept; }' && nft add rule inet $LOSS_TABLE in $r3_fam saddr $LAB_ABROAD_HOST tcp dport $E2E_PORT $share counter drop && nft add rule inet $LOSS_TABLE out $r3_fam daddr $LAB_ABROAD_HOST tcp sport $E2E_PORT $share counter drop"
     }
     r3_unrules() { ssh_host iran "nft delete table inet $LOSS_TABLE; ! nft list table inet $LOSS_TABLE >/dev/null 2>&1" || { echo "R3 nft table was not removed" >&2; exit 1; }; }
     r3_rules 100
