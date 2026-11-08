@@ -38,7 +38,8 @@ mvp_cleanup() {
     if [[ " ${MVP_USER_BEFORE[*]} " != *" $side "* ]]; then ssh_host "$side" "userdel baft-tunnel 2>/dev/null; groupdel baft-tunnel 2>/dev/null; true" || true; fi
   done
 }
-trap 'mvp_status=$?; mvp_cleanup; (exit "$mvp_status"); cleanup' EXIT
+# set +e: under errexit the (exit N) that restores the status would end the trap before cleanup runs.
+trap 'mvp_status=$?; set +e; mvp_cleanup; (exit "$mvp_status"); cleanup' EXIT
 
 echo "--- MVP install (${MVP_SOURCE}, sha256 ${MVP_SHA}) ---"
 tar -czf "$LOCAL_TMP/mvp-pkg.tgz" scripts/install.sh scripts/uninstall.sh scripts/install-agent-control.sh systemd
