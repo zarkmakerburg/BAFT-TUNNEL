@@ -57,6 +57,7 @@ const ok = (n, c, d) => { results.push([c ? 'PASS' : 'FAIL', n, d || '']); };
       await next().click(); await p.locator('button.primary', {hasText: lang==='fa'?'اجرای بررسی':'Run checks'}).click(); await p.waitForSelector('.pf');
       ok(`${tag} noise preflight not blocked`, !(await next().isDisabled()));
       await next().click(); await p.waitForSelector('pre'); await p.waitForTimeout(300);
+      ok(`${tag} preview has no stringified objects`, !(await p.locator('.card').first().innerText()).includes('[object'));
       ok(`${tag} preview says nothing applied`, (await p.locator('.banner.info').count()) > 0);
       await p.screenshot({ path: `${SHOTS}/${tag}-wiz-preview.png`, fullPage: true });
       await next().click(); await p.waitForTimeout(200);
