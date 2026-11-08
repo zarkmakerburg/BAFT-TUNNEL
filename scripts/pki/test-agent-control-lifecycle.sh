@@ -129,11 +129,17 @@ sudo systemctl daemon-reload
 
 # Baseline of everything this test must leave alone: firewall rules, listeners, other units.
 snapshot() {
-  { sudo nft list ruleset 2>/dev/null || true; sudo iptables-save 2>/dev/null | grep -v '^#' || true; } | sha256sum | cut -d' ' -f1
+  # Rule content only: packet/byte counters change on a busy runner and are not configuration.
+  { sudo nft list ruleset 2>/dev/null | sed -E 's/packets [0-9]+ bytes [0-9]+//' || true
+    sudo iptables-save 2>/dev/null | grep -v '^#' | sed -E 's/\[[0-9]+:[0-9]+\]//' || true; } >"$TMP/fw-$1.txt"
+  sha256sum <"$TMP/fw-$1.txt" | cut -d' ' -f1
   ss -ltnH | awk '{print $4}' | grep -vE ':(18090|18443|18444|18081|18099)$' | sort
-  systemctl list-units --all --plain --no-legend --state=active,failed 2>/dev/null | awk '{print $1}' | grep -vE '^baft-tunnel' | sort
+  # Units outside BAFT-TUNNEL. polkit.service is started on demand by the denied direct systemctl
+  # attempt in this test and the control slices belong to this helper's own services.
+  systemctl list-units --all --plain --no-legend --state=active,failed 2>/dev/null | awk '{print $1}' \
+    | grep -vE '^(baft-tunnel|system-baft|polkit\.service)' | sort
 }
-snapshot >"$TMP/side-before.txt"
+snapshot before >"$TMP/side-before.txt"
 
 active() { sudo systemctl is-active --quiet "baft-tunnel@$1.service"; }
 wait_state() { # NAME active|inactive
@@ -261,7 +267,7 @@ nrec="$(sudo find /var/lib/baft-tunnel/agent/receipts -name '*.json' | wc -l)"
 ! sudo grep -rq -- "$TOKEN" /var/lib/baft-tunnel/agent/receipts || die "a receipt contains the token"
 # Nothing else changed: firewall hash, listeners and unrelated units match the baseline.
 sudo kill "$AGENT_PID" 2>/dev/null || true; sleep 2; AGENT_PID=""; step "3 agent stopped"
-snapshot >"$TMP/side-after.txt"
-diff "$TMP/side-before.txt" "$TMP/side-after.txt" >&2 || die "firewall, listeners or unrelated units changed"
+snapshot after >"$TMP/side-after.txt"
+diff "$TMP/side-before.txt" "$TMP/side-after.txt" >&2 || { diff "$TMP/fw-before.txt" "$TMP/fw-after.txt" >&2 || true; die "firewall, listeners or unrelated units changed"; }
 
 echo "AGENT_CONTROL_LIFECYCLE=PASS (systemd $v: path units active, control dir root:baft-tunnel 0770, request starts and stops only baft-tunnel@NAME, no direct rights for the agent user, Apply start verified and replayed, running unit refused, failing start rolled back, malformed/unregistered/duplicate/stale/symlink requests harmless, no firewall/listener/unit side effects)"
