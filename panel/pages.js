@@ -190,8 +190,8 @@
       if (opts.ltr !== false) { input.setAttribute('dir', 'ltr'); }
       return h('label', { class: 'field' }, h('span', { text: label }), input, w.errors[key] ? h('div', { class: 'fielderr', id: 'e-' + key, text: w.errors[key] }) : null);
     }
-    function choice(name, value, checked, titleKids, desc, onpick, extra) {
-      var input = h('input', { type: 'radio', name: name, value: value, checked: checked ? true : null, onchange: function () { onpick(value); } });
+    function choice(name, value, checked, titleKids, desc, onpick, extra, disabled) {
+      var input = h('input', { type: 'radio', name: name, value: value, checked: checked ? true : null, disabled: disabled ? true : null, onchange: function () { onpick(value); } });
       return h('label', { class: 'choice' }, input, extra || null, h('div', { class: 't' }, titleKids), h('div', { class: 'sub', text: desc }));
     }
     function validate(step) {
@@ -239,7 +239,9 @@
       return h('div', null, h('h2', { text: t('dir.q') }),
         h('div', { class: 'choices', role: 'radiogroup', 'aria-label': t('dir.q') },
           ['direct', 'reverse'].map(function (k) {
-            return choice('direction', k, w.direction === k, t('dir.' + k + '.t'), t('dir.' + k + '.d'), function (v) { w.direction = v; w.errors = {}; invalidate(); draw(); }, topology(k));
+            var avail = engines.some(function (e) { return e.directions.indexOf(k) >= 0; });
+            return choice('direction', k, w.direction === k, avail ? t('dir.' + k + '.t') : [t('dir.' + k + '.t'), pill('unknown', t('dir.na.pill'))], avail ? t('dir.' + k + '.d') : t('dir.na.d'),
+              function (v) { w.direction = v; w.errors = {}; invalidate(); draw(); }, topology(k), !avail);
           })),
         h('p', { class: 'sub', text: t('dir.same') }), w.errors.direction ? h('p', { class: 'fielderr', role: 'alert', text: w.errors.direction }) : null);
     }
