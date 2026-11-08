@@ -8,6 +8,8 @@ pub mod agent;
 pub mod authorization;
 #[path = "../../src/baft_engine.rs"]
 pub mod baft_engine;
+#[path = "../../src/capabilities.rs"]
+pub mod capabilities;
 #[path = "../../src/config.rs"]
 pub mod config;
 #[path = "../../src/engine.rs"]
