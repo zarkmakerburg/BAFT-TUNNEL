@@ -1,6 +1,6 @@
 # P4-001: local panel and wizard — execution plan
 
-Status: in progress. Part of [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). Builds on the agent API of [PLAN-P3-002-agent-api.md](PLAN-P3-002-agent-api.md).
+Status: done (W3 LAB PASS, run 42469113232 on `1080dbd`). Part of [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). Builds on the agent API of [PLAN-P3-002-agent-api.md](PLAN-P3-002-agent-api.md).
 
 ## Decision: dependency-free static panel, not React/Vite (for the MVP)
 The roadmap named React/TS/Vite. The MVP panel is a status view plus a four-field wizard, so a Node build chain would add a large dependency tree (supply-chain audit, lockfile, CI toolchain) for no capability the MVP needs. The panel is three static files (`panel/`) compiled into the binary and served by the agent: no build step, no CDN, works offline, strict CSP (`script-src 'self'`, no inline script, no `innerHTML`). Persian (RTL) and English are built in. A framework can replace it later behind the same API; the mockup design (PR #17) stays the visual reference.
