@@ -311,3 +311,10 @@ Status: the behaviour-neutral refactor (P2-003) is verified locally only (cargo 
 ## 2026-11-08 — P1-002 operator push helper (ADR-0017 A1)
 
 Added `scripts/pki/push-crl.sh` (stages the CRL on each node over SSH and runs the node's `apply-crl.sh apply`; one node at a time, stops at the first failure, strict SSH options, refuses CRLs under 72 h, `--dry-run`) and `scripts/pki/test-push-crl.sh` (mock SSH/SCP, wired into the Phase 0 workflow). Operator guide gained the push and rollover-sequence sections. Implemented so far for ADR-0017: dual pins (#22), multi-CA bundle with per-CA CRLs (#23, #25), freshness report (#24), push helper (this change). Still open: a full rollover-sequence run on the real LAB hosts, and the independent security review (waived by the owner, not performed).
+
+## 2026-11-08 — P1-002 rollover LAB PASS and P1-004 acceptance closure
+
+- Rollover sequence on the real LAB hosts (run 42447019410 on main, `ROLLOVER_RESULT overlap_ok=1 new_certs_ok=1 old_ca_removed_refused=1`, `PHASE1_TWO_HOST_E2E=PASS`): (1) CA bundle with per-CA CRLs and two pins per side, old certificates still accepted; (2) certificates from the new CA accepted; (3) old CA and old pins removed, an old-CA client refused. Ephemeral CAs, temporary `/tmp` processes only.
+- **P1-004 closure (evidence at main `e4453bc`):** hosted CI green (Ubuntu 24.04 and Ubuntu 22.04 / systemd 249); two-host Direct/Reverse/revocation PASS; 30 min soak with impairment PASS (run 42398701622); real 2% TCP packet loss PASS (42412456810); 3600 s soak PASS (42412781202); `noise-tcp` Direct PASS (42445109749); rollover PASS (42447019410); adversarial handshake tests (PR #13/#14); Ubuntu 22.04 credential path (P1-000).
+- **Documented exceptions, not claimed:** soak longer than one hour (workflow cap is 3600 s); `push-crl.sh` is mock-SSH tested only, not run against real hosts with installed `apply-crl.sh`; independent security review waived by the owner and not performed; Noise Reverse/packet-loss untested; no detectability claim. Production release is NOT claimed.
+
