@@ -33,6 +33,7 @@ const AUDIT_FILE: &str = "audit.log";
 const MAX_CONNECTIONS: usize = 16;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+const PEER_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Create a random API token (hex, 0600, never overwrites). Returns nothing secret.
 pub fn write_token(path: &Path) -> Result<()> {
@@ -538,11 +539,17 @@ async fn preflight(body: &[u8]) -> (u16, Value) {
             checks.push(check("service_unit", "warning", "the baft-tunnel@ systemd unit is not installed on this host; run scripts/install.sh".into()));
         }
     }
-    for (id, why) in [
-        (
+    match (req.role, req.peer_host.as_deref()) {
+        (crate::setup::Role::Forward, Some(host)) => {
+            checks.push(probe_peer(host, req.tunnel_port).await);
+        }
+        _ => checks.push(check(
             "peer_reachability",
-            "the agent does not contact the peer; not verified",
-        ),
+            "unknown",
+            "this side listens, so it cannot test the peer from here; not verified".into(),
+        )),
+    }
+    for (id, why) in [
         (
             "peer_identity",
             "the peer's identity can only be verified during pairing; not verified",
@@ -557,7 +564,107 @@ async fn preflight(body: &[u8]) -> (u16, Value) {
     (200, preflight_report(checks))
 }
 
+/// One outbound TCP connect to the peer's tunnel port (no data is sent). It proves only that
+/// something answers; it says nothing about who answers.
+async fn probe_peer(host: &str, port: u16) -> Value {
+    let Ok(ip) = host.parse::<std::net::IpAddr>() else {
+        return check(
+            "peer_reachability",
+            "unknown",
+            "the peer address is not an IP address; not probed".into(),
+        );
+    };
+    match timeout(
+        PEER_PROBE_TIMEOUT,
+        TcpStream::connect(SocketAddr::new(ip, port)),
+    )
+    .await
+    {
+        Ok(Ok(_)) => check(
+            "peer_reachability",
+            "pass",
+            format!(
+                "a TCP connection to the peer on port {port} was accepted (who answered is not verified)"
+            ),
+        ),
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => check(
+            "peer_reachability",
+            "warning",
+            format!("the peer host answered but nothing listens on port {port} yet"),
+        ),
+        Ok(Err(e)) => check(
+            "peer_reachability",
+            "blocked",
+            format!("cannot reach the peer on port {port}: {e}"),
+        ),
+        Err(_) => check(
+            "peer_reachability",
+            "blocked",
+            format!(
+                "no answer from the peer on port {port} within {} s",
+                PEER_PROBE_TIMEOUT.as_secs()
+            ),
+        ),
+    }
+}
+
+fn remediation(id: &str) -> &'static str {
+    match id {
+        "planner" => "Fix the highlighted setting; the same rule applies on the command line.",
+        "directory" => "Create the setup directory or choose another one.",
+        "existing_pairing" => {
+            "Choose another directory or instance; setup never overwrites a pairing."
+        }
+        "pki_files" => "Provide the certificate, key, CA and CRL files in the setup directory.",
+        "node_key" => "Choose another directory; setup never overwrites a node key.",
+        "service_port" => "Start the local service, or pick a free port.",
+        "tunnel_port" => "Check whether a tunnel already runs on this port, or pick another port.",
+        "service_unit" => "Run scripts/install.sh to install the systemd unit.",
+        "peer_reachability" => {
+            "Start the peer first, check its address and port, and allow the port in its firewall."
+        }
+        "peer_identity" => {
+            "Identity is verified when pairing; compare the fingerprints on both servers."
+        }
+        "firewall" => "Check the firewall on both servers by hand; the agent cannot inspect it.",
+        _ => "",
+    }
+}
+
+fn check_meta(id: &str, result: &str) -> (&'static str, &'static str) {
+    let scope = if matches!(id, "peer_reachability" | "peer_identity" | "firewall") {
+        "peer"
+    } else {
+        "local"
+    };
+    let source = match (id, result) {
+        (_, "unknown") => "not-observed",
+        ("peer_reachability", _) => "network-probe",
+        _ => "local-observation",
+    };
+    (scope, source)
+}
+
 fn preflight_report(checks: Vec<Value>) -> Value {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let checks: Vec<Value> = checks
+        .into_iter()
+        .map(|mut c| {
+            let id = c["id"].as_str().unwrap_or("").to_string();
+            let result = c["result"].as_str().unwrap_or("").to_string();
+            let (scope, source) = check_meta(&id, &result);
+            c["code"] = json!(format!("pf.{id}.{result}"));
+            c["scope"] = json!(scope);
+            c["source"] = json!(source);
+            c["checked_at"] = json!(now);
+            if result != "pass" {
+                c["remediation"] = json!(remediation(&id));
+            }
+            c
+        })
+        .collect();
     let has = |r: &str| checks.iter().any(|c| c["result"] == r);
     let overall = if has("blocked") {
         "blocked"
@@ -1035,6 +1142,51 @@ mod tests {
             "{out}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn peer_probe_distinguishes_listening_refused_and_carries_evidence_fields() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let open = listener.local_addr().unwrap().port();
+        let closed = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let dir = std::env::temp_dir().join(format!("baft-pf-peer-{}", std::process::id()));
+        let run = |port: u16| {
+            let body = json!({
+                "engine": "noise-tcp", "role": "forward", "direction": "direct", "node_id": "node-a",
+                "peer_id": "node-b", "tunnel_id": "tunnel-1", "service_port": 8080,
+                "tunnel_port": port, "peer_host": "127.0.0.1", "dir": dir.to_string_lossy()
+            })
+            .to_string();
+            async move {
+                let (_, out) = call(None, "POST", "/v1/setup/preflight", Some(TOKEN), &body).await;
+                let v: Value = serde_json::from_str(&out[out.find('{').unwrap()..]).unwrap();
+                v["checks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|c| c["id"] == "peer_reachability")
+                    .cloned()
+                    .unwrap()
+            }
+        };
+        let up = run(open).await;
+        assert_eq!(up["result"], "pass", "{up}");
+        assert_eq!(up["scope"], "peer");
+        assert_eq!(up["source"], "network-probe");
+        assert_eq!(up["code"], "pf.peer_reachability.pass");
+        assert!(up["checked_at"].as_u64().unwrap() > 0);
+        let down = run(closed).await;
+        assert_eq!(down["result"], "warning", "{down}");
+        assert!(
+            down["remediation"]
+                .as_str()
+                .unwrap()
+                .contains("Start the peer")
+        );
+        assert!(!dir.exists());
     }
 
     fn plan_body(dir: &str) -> String {
