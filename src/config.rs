@@ -34,6 +34,10 @@ pub struct BaftSettings {
     #[serde(default = "default_baft_binary")]
     pub binary: PathBuf,
     pub sha256: String,
+    /// Engine store (see `baft-tunnel engine install`). When set, `binary` is ignored: the
+    /// launcher runs the store's verified `current` release, which must have this `sha256`.
+    #[serde(default)]
+    pub store: Option<PathBuf>,
 }
 
 fn default_baft_binary() -> PathBuf {
@@ -633,6 +637,9 @@ fn validate_baft(
     let settings = baft.context("engine baft requires a baft {binary, sha256} section")?;
     if !settings.binary.is_absolute() {
         bail!("baft.binary must be an absolute path");
+    }
+    if settings.store.as_ref().is_some_and(|s| !s.is_absolute()) {
+        bail!("baft.store must be an absolute path");
     }
     if settings.sha256.len() != 64 || !settings.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         bail!("baft.sha256 must be a 64-digit hexadecimal SHA-256");

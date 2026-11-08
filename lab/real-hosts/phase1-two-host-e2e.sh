@@ -670,7 +670,9 @@ if (( BAFT == 1 )); then
   baft_cfg() { # role local_id peer_id cert key [peer_host peer_dns] [sha] [listener_cert_pin]
     local role="$1" local_id="$2" peer_id="$3" cert="$4" key="$5" peer_host="${6:-}" peer_dns="${7:-}" sha="${8:-$BAFT_SHA}" pin="${9:-}" common pinfield=""
     [[ -z "$pin" ]] || pinfield="\"peer_fingerprint\":\"$pin\","
-    common="\"local_id\":\"$local_id\",\"peer_id\":\"$peer_id\",\"tunnel_id\":\"lab-e2e\",\"direction\":\"direct\",\"engine\":\"baft\",\"ca\":\"$REMOTE_DIR/ca.crt\",\"crl\":\"$REMOTE_DIR/ca.crl\",\"cert\":\"$REMOTE_DIR/$cert\",\"key\":\"$REMOTE_DIR/$key\",\"max_streams\":8,\"baft\":{\"binary\":\"$REMOTE_DIR/baft-engine\",\"sha256\":\"$sha\"}"
+    local bextra=""
+    [[ -z "${BAFT_STORE:-}" ]] || bextra=",\"store\":\"$BAFT_STORE\""
+    common="\"local_id\":\"$local_id\",\"peer_id\":\"$peer_id\",\"tunnel_id\":\"lab-e2e\",\"direction\":\"direct\",\"engine\":\"baft\",\"ca\":\"$REMOTE_DIR/ca.crt\",\"crl\":\"$REMOTE_DIR/ca.crl\",\"cert\":\"$REMOTE_DIR/$cert\",\"key\":\"$REMOTE_DIR/$key\",\"max_streams\":8,\"baft\":{\"binary\":\"$REMOTE_DIR/baft-engine\",\"sha256\":\"$sha\"$bextra}"
     if [[ "$role" == serve ]]; then
       printf '{"mode":"serve","listen":"0.0.0.0:%s","target":"127.0.0.1:%s",%s}' "$E2E_PORT" "$ECHO_PORT" "$common"
     else
@@ -788,7 +790,13 @@ if (( BAFT == 1 )); then
     }
     trap 'sd_status=$?; sd_cleanup; (exit "$sd_status"); cleanup' EXIT
     sd_prepare abroad; sd_prepare iran
-    sd_run abroad serve "$(sd_cfg serve abroad iran b-abroad.crt b-abroad.key)"
+    # Engine store -> launcher: the abroad listener runs the store's verified `current` release.
+    SD_MANIFEST="$(dirname "${BASH_SOURCE[0]}")/../../release/engine-manifest.json"
+    grep -q "$BAFT_SHA" "$SD_MANIFEST" || { echo "engine under test ($BAFT_SHA) is not the release/engine-manifest.json artifact" >&2; exit 2; }
+    copy_to_host abroad "$SD_MANIFEST"
+    ssh_host abroad "cp '$REMOTE_DIR/engine-manifest.json' '$SD_DIR/engine-manifest.json'; '$SD_DIR/baft-tunnel' engine install --store '$SD_DIR/store' --manifest '$SD_DIR/engine-manifest.json' --id baft --binary '$SD_DIR/baft-engine' && '$SD_DIR/baft-tunnel' engine verify --store '$SD_DIR/store' --id baft"
+    sd_store_cfg() { ( REMOTE_DIR="$SD_DIR"; BAFT_STORE="$SD_DIR/store"; baft_cfg "$@" ); }
+    sd_run abroad serve "$(sd_store_cfg serve abroad iran b-abroad.crt b-abroad.key)"
     sd_run iran forward "$(sd_cfg forward iran abroad b-iran.crt b-iran.key "$LAB_ABROAD_HOST" abroad.lab)"
     sleep 8
     probe_host iran 65536; probe_host iran 2097289
@@ -800,7 +808,7 @@ if (( BAFT == 1 )); then
     ssh_host iran "systemctl show baft-lab-forward -p NRestarts" >/dev/null
     SD_T0=$SECONDS; SD_REC=0
     sd_stop abroad serve; sleep 2
-    sd_run abroad serve "$(sd_cfg serve abroad iran b-abroad.crt b-abroad.key)"
+    sd_run abroad serve "$(sd_store_cfg serve abroad iran b-abroad.crt b-abroad.key)"
     for _ in $(seq 1 30); do
       if probe_host iran 65536 >/dev/null 2>&1; then SD_REC=1; break; fi
       sleep 5
@@ -809,7 +817,7 @@ if (( BAFT == 1 )); then
     SD_REC_S=$((SECONDS - SD_T0))
     SD_NRESTARTS="$(ssh_host iran "systemctl show baft-lab-forward -p NRestarts --value")"
     echo "--- BAFT systemd engine kill: SIGKILL of the Go engine, launcher must restart it ---"
-    ssh_host abroad "pkill -KILL -f '^$SD_DIR/baft-engine ' || true"
+    ssh_host abroad "pkill -KILL -f '^$SD_DIR/store/baft/releases/.*/engine ' || true"
     SD_KILL_T0=$SECONDS; SD_KILL_REC=0
     for _ in $(seq 1 30); do
       sleep 5
@@ -818,8 +826,10 @@ if (( BAFT == 1 )); then
     (( SD_KILL_REC == 1 )) || { echo "BAFT did not recover after the engine was killed under systemd" >&2; exit 1; }
     SD_KILL_S=$((SECONDS - SD_KILL_T0))
     sd_stop iran forward; sd_stop abroad serve
+    echo "--- BAFT store: a config pinning another release must be refused by the launcher ---"
+    ssh_host abroad "printf '%s' '$(sd_store_cfg serve abroad iran b-abroad.crt b-abroad.key "" "" "$(printf '0%.0s' $(seq 64))")' > '$SD_DIR/sd-wrongpin.json'; if RUNTIME_DIRECTORY='$SD_DIR/rt-wrongpin' '$SD_DIR/baft-tunnel' apply --config '$SD_DIR/sd-wrongpin.json' --confirm >'$SD_DIR/wrongpin.log' 2>&1; then exit 1; fi; grep -q 'not the release pinned' '$SD_DIR/wrongpin.log'"
     sd_cleanup; trap cleanup EXIT
-    echo "BAFT_SYSTEMD_RESULT hardened_direct_ok=1 mdwe=yes no_seccomp_kill=1 recovery_s=$SD_REC_S dialer_unit_restarts=$SD_NRESTARTS engine_kill_recovered=1 engine_kill_recovery_s=$SD_KILL_S"
+    echo "BAFT_SYSTEMD_RESULT hardened_direct_ok=1 mdwe=yes no_seccomp_kill=1 recovery_s=$SD_REC_S dialer_unit_restarts=$SD_NRESTARTS engine_kill_recovered=1 engine_kill_recovery_s=$SD_KILL_S store_launch_ok=1 store_pin_mismatch_refused=1"
   fi
   echo "BAFT_RESULT direct_ok=1 unauthorized_refused=1 restart_recovered=1 restart_recovery_s=$BAFT_RECOVERY_S dialer_restarted=$BAFT_DIALER_RESTARTED bad_hash_refused=1 reverse_ok=1 revoked_refused=1 pin_ok=1 wrong_pin_refused=1 revoked_listener_refused=1 rss_kb_serve=$BAFT_RSS_SERVE rss_kb_forward=$BAFT_RSS_FWD"
 fi
