@@ -29,7 +29,7 @@ the most exposed component); an attacker who can influence a release; holder of 
 | SA-06 | Low | Release workflow expands a dispatcher-controlled tag directly in shell | Fixed (#114) |
 | SA-07 | Low | Apply/preflight accept any absolute `dir`; preflight probes any IP:port | Accepted (token = admin) |
 | SA-08 | Low | `audit.log` grows without rotation; `GET /v1/audit` reads the whole file | Fixed (4 MiB rotation to `audit.log.1`; endpoint reads a 256 KiB tail) |
-| SA-09 | Low | Agent and tunnel share one uid; the tunnel can still signal (kill) the agent | Fixed in code (U2): agent runs as `baft-tunnel-agent`; real-systemd CI evidence; LAB check pending |
+| SA-09 | Low | Agent and tunnel share one uid; the tunnel can still signal (kill) the agent | Fixed in code (U2): agent runs as `baft-tunnel-agent`; real-systemd CI evidence; LAB 42692143748 (main `ff868a7`): agent runs as `baft-tunnel-agent` on both hosts, also after a reboot |
 | SA-10 | Info | Instance-name rules differ (`.` allowed by install/setup, refused by the control helper) | Fixed (one rule: letters, digits, `_`, `-`) |
 
 ### SA-01 (Medium): agent as root

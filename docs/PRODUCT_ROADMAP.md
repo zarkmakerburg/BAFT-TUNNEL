@@ -83,14 +83,14 @@ Evidence classifications are deliberately separate: current source code, merged-
 
 ### Not implemented or not yet accepted
 _Status marks added 2026-11-09 at `main` `0a7576b`; details in [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md) §3._
-- Apply `start` (PR #88 helper) is merged and LAB-proven on two hosts (P0-5), but it is not enabled at boot and Apply never claims `ready`; receipt `ready` stays Unknown by design. Apply has no `stop`/`restart` stage. **Open: U3.**
+- Apply `start` (PR #88 helper) is merged and LAB-proven on two hosts (P0-5), and since U3 (PR #137) Start enables it at boot, Stop disables it, Restart starts a new process; one real reboot of both LAB hosts brought agent and tunnel back by themselves (LAB 42692143748 (main `ff868a7`)). Apply never claims `ready`; receipt `ready` stays Unknown by design.
 - ~~No end-to-end authenticated peer/session/data-path readiness result in the current status API~~ **Done** (ADR-0024, PR #109): diagnostics tiers, `tunnel` state and `last_verified_unix`; local listener acceptance is still not tunnel health.
 - No central online enrollment/control plane or enrolled multi-node inventory.
 - The Servers page is not a Hashem-style Fleet; it has local/configured-peer information only.
 - ~~No live throughput counters exposed in the API~~ **Done** (PR #109 `/v1/traffic`, panel PR #120); history is in memory for one hour only.
 - No read-only firewall inspection and no firewall mutation.
 - ~~Audit actor/target completeness~~ **Done** (audit v2, PR #109). Machine-readable/localizable Preflight evidence codes remain **partial** (B1).
-- The agent is not a systemd service, setup needs manual root ownership steps, the signed release ships binaries only, and the PKI tool cannot renew a 7-day CRL. **Open: U1, U2, U6** (findings F1–F6 in the plan).
+- Since U2 (PR #137, LAB 42692143748) the agent is a systemd service under its own user and setup sets owners itself. The signed release still ships binaries only (**open: U6**); CRL renewal is U1 (findings F1–F6 in the plan).
 - No customer/subscription/reseller/billing system in core.
 - No production release. Independent security assessment of the P0+P1 surface done 2026-11-09 (`docs/SECURITY_ASSESSMENT.md`): 3 Medium and 3 Low fixed (#112, #114, main `f3c8b54`), 4 Low/Info open or accepted; no Critical/High found. This is not the pre-stable review of the full product.
 
@@ -108,9 +108,9 @@ The P0 gates proved the runtime; they did not make the product usable by a non-e
 |---|---|---|---|---|
 | now, parallel | Q1–Q4 | Exact-SHA CI on push to `main` + weekly audit/fuzz; docs truth pass (README, ARCHITECTURE, quickstarts, traceability, HQ body); Preflight `directory_writable` so the panel never offers an Apply that cannot work; BAFT visible but not selectable until configurable | — | — |
 | 1 | U1 | `baft-pki.sh renew-crl`, 30-day default CRL validity, CRL and certificate renewal runbook, one real `push-crl.sh` run (today `tcp-tls` tunnels stop reconnecting 7 days after setup) | short | — |
-| 2 | U2 | Hardened agent systemd unit with its own user (SA-09), one-step `install.sh --instance`, setup sets owners/modes itself (no manual `chown`/`chgrp`) | via U7 | — |
-| 3 | U3 | Apply `stop`/`restart`, enable at boot through the helper (ADR-0023 amendment) | via U7 | reboot approval (O1) |
-| 4 | U5a | Panel Start/Stop/Restart, diagnostics with a next action per tier, Wizard ends in Start | via U7 | phone check (O3) |
+| 2 | U2 | **Done** (PR #137, LAB 42692143748 (main `ff868a7`)): hardened agent systemd unit with its own user (SA-09), one-step `install.sh --register`, setup sets owners/modes itself | done | — |
+| 3 | U3 | **Done** (PR #137, LAB 42692143748 (main `ff868a7`) incl. one real reboot of both hosts): Apply `stop`/`restart`, enable at boot through the helper | done | O1 done |
+| 4 | U5a | **Done except O3** (PR #137, #141): Panel Start/Stop/Restart, diagnostics with a next action per tier, Wizard ends in Start | done | phone check (O3) |
 | 5 | U6 | Signed release bundle (binary + scripts + units + docs), then prerelease `rc.5` | — | release gate (O8) |
 | 6 | U7 | MVP acceptance v2 on LAB with the signed `rc.5` bundle (install → setup → lifecycle through the agent → diagnostics → integrity → backup/restore → update from previous prerelease → uninstall) | yes | — |
 | 7 | U8 | Quickstart en/fa and troubleshooting rewritten for the accepted path | — | — |
