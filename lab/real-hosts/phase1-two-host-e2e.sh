@@ -160,7 +160,23 @@ trap cleanup EXIT
 # Operator-requested recovery: remove ONLY leftovers of earlier runs of this script
 # (/tmp/baft-tunnel-e2e-* directories, the processes recorded in their pid files, and orphans
 # whose command line is exactly this script's temp binary/helper paths).
-if [[ "${LAB_CLEANUP_STALE:-0}" == 1 ]]; then
+if [[ "${LAB_CLEANUP_STALE:-0}" == 1 || "${LAB_CLEANUP_STALE:-0}" == 2 ]]; then
+  if [[ "${LAB_CLEANUP_STALE}" == 2 ]]; then
+    # Mode 2 additionally removes an installed BAFT-TUNNEL left by an interrupted Reverse
+    # acceptance run (instances revpub/revsvc, /etc/baft-tunnel, state, backups), using this
+    # checkout's own scripts. The baft-tunnel service user is kept.
+    tar -czf "$LOCAL_TMP/stale-pkg.tgz" scripts/uninstall.sh scripts/install-agent-control.sh systemd
+    for side in iran abroad; do
+      ssh_host "$side" "mkdir -p '$REMOTE_DIR/pkg'" || true
+      copy_to_host "$side" "$LOCAL_TMP/stale-pkg.tgz" || true
+      ssh_host "$side" "tar -xzf '$REMOTE_DIR/stale-pkg.tgz' -C '$REMOTE_DIR/pkg';
+        for i in revpub revsvc; do touch /run/baft-tunnel/control/\$i.stop 2>/dev/null; systemctl stop baft-tunnel@\$i.service 2>/dev/null; bash '$REMOTE_DIR/pkg/scripts/install-agent-control.sh' --remove --instance \$i >/dev/null 2>&1; done;
+        for f in /var/lib/baft-tunnel/agent/*.pid /tmp/baft-tunnel-e2e-*/agent.pid; do [ -s \"\$f\" ] && kill \$(cat \"\$f\") 2>/dev/null; done;
+        bash '$REMOTE_DIR/pkg/scripts/uninstall.sh' --stop --purge-config --yes >/dev/null 2>&1;
+        rm -rf /var/backups/baft-tunnel-backup.* 2>/dev/null; systemctl reset-failed 'baft-tunnel*' 2>/dev/null; systemctl daemon-reload;
+        echo STALE_INSTALL_REMOVED" || true
+    done
+  fi
   for side in iran abroad; do
     ssh_host "$side" "for f in /tmp/baft-tunnel-e2e-*/*.pid; do [ -s \"\$f\" ] && kill \$(cat \"\$f\") 2>/dev/null; done; pkill -f '^/tmp/baft-tunnel-e2e-[0-9]+/baft-tunnel ' 2>/dev/null; pkill -f '^/tmp/baft-tunnel-e2e-[0-9]+/baft-engine ' 2>/dev/null; pkill -f 'python3 /tmp/baft-tunnel-e2e-[0-9]+/(echo|impair)\.py' 2>/dev/null; sleep 1; rm -rf /tmp/baft-tunnel-e2e-*; echo CLEANUP_STALE_DONE" || true
   done

@@ -84,7 +84,7 @@ on:
         type: string
         default: '0'
       cleanup_stale:
-        description: Only remove leftover temp processes/dirs of earlier runs of this test (0 or 1)
+        description: Only remove leftovers of earlier runs of this test (0 = no, 1 = temp processes/dirs, 2 = also an installed BAFT-TUNNEL from an interrupted Reverse acceptance run)
         required: false
         type: string
         default: '0'
