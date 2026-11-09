@@ -43,6 +43,13 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
           persist-credentials: false
+          fetch-depth: 0
+      - name: Refuse commits that are not on main (signature must bind to reviewed code)
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD FETCH_HEAD \
+            || { echo "::error::$(git rev-parse HEAD) is not contained in main; release only reviewed commits"; exit 1; }
       - name: Resolve version and channel
         id: v
         env:
@@ -65,6 +72,7 @@ jobs:
           else
             tag="v${ver}-rc.${GITHUB_RUN_NUMBER}"; pre=true
           fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::invalid release tag"; exit 1; }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
       - name: Install pinned Rust toolchain
@@ -72,19 +80,23 @@ jobs:
       - name: Build release binary
         run: cargo +1.88.0 build --locked --release
       - name: Stage artifacts
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
         run: |
           set -euo pipefail
           mkdir dist
-          cp target/release/baft-tunnel "dist/baft-tunnel-${{ steps.v.outputs.tag }}-linux-x86_64"
+          cp target/release/baft-tunnel "dist/baft-tunnel-${TAG}-linux-x86_64"
           # Refuse to publish a binary that needs a newer glibc than Ubuntu 22.04 ships.
           need="$(objdump -T target/release/baft-tunnel | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)"
           [ "$(printf '%s\n2.35\n' "$need" | sort -V | tail -1)" = "2.35" ] \
             || { echo "::error::baft-tunnel needs GLIBC_$need; supported floor is 2.35 (Ubuntu 22.04)"; exit 1; }
           echo "baft-tunnel glibc floor: GLIBC_$need"
       - name: Build, verify and stage the pinned BAFT engine (Engine #3)
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${{ steps.v.outputs.tag }}"
+          tag="$TAG"
           scripts/build-baft-engine.sh "$RUNNER_TEMP/baft-out" >/dev/null
           want="$(python3 -c 'import json;m=json.load(open("release/engine-manifest.json"));print([e for e in m["engines"] if e["id"]=="baft"][0]["artifact_sha256"])')"
           have="$(sha256sum "$RUNNER_TEMP/baft-out/baft" | cut -d' ' -f1)"
@@ -94,11 +106,13 @@ jobs:
             -czf "dist/baft-engine-${tag}-licenses.tar.gz" -C "$RUNNER_TEMP/baft-out" licenses
           cp release/engine-manifest.json "dist/engine-manifest-${tag}.json"
       - name: Generate SBOM (CycloneDX)
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
         run: |
           set -euo pipefail
           cargo +1.88.0 install cargo-cyclonedx --version 0.5.7 --locked
           cargo +1.88.0 cyclonedx --format json --override-filename sbom
-          mv sbom.json "dist/baft-tunnel-${{ steps.v.outputs.tag }}.sbom.cdx.json"
+          mv sbom.json "dist/baft-tunnel-${TAG}.sbom.cdx.json"
       - name: Checksums
         working-directory: dist
         run: sha256sum -- * > SHA256SUMS
@@ -114,7 +128,7 @@ jobs:
           ID: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml
         run: |
           cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
-            --certificate-identity-regexp "^${ID}@" \
+            --certificate-identity-regexp "^${ID}@refs/(heads/main|tags/v[0-9][0-9A-Za-z.+-]*)$" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           sha256sum -c SHA256SUMS
       - name: Publish GitHub Release

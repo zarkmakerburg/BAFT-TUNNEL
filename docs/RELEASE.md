@@ -18,10 +18,14 @@ The workflow builds the Linux binary (Rust 1.88.0, `--locked`), writes
 
 ```
 cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
-  --certificate-identity-regexp '^https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@' \
+  --certificate-identity-regexp '^https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/(heads/main|tags/v[0-9][0-9A-Za-z.+-]*)$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 sha256sum -c --ignore-missing SHA256SUMS
 ```
+
+The identity is pinned to the release workflow on `main` or a `v*` tag: a signature made by the
+workflow on any other branch does not verify. The workflow also refuses to build a commit that
+is not contained in `main` (SA-03 in `docs/SECURITY_ASSESSMENT.md`).
 
 ## Notes
 
