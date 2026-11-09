@@ -40,7 +40,7 @@
 
 | Item | Now | Evidence / next |
 |---|---|---|
-| Apply `start` not enabled at boot; receipt `ready` unknown | Open (boot); `ready` unknown by design | U3 |
+| Apply `start` not enabled at boot; receipt `ready` unknown | **Done (boot)**: Start enables at boot, Stop disables, real reboot of both LAB hosts brought agent and tunnel back by themselves; `ready` unknown by design | PR #137, #140–#142; LAB 42692143748 (main `ff868a7`) |
 | No end-to-end peer/session/data-path result in the status API | **Done** | ADR-0024, PR #109, CI 42545957126, LAB 42545941726 |
 | No central enrollment / enrolled inventory | Open, post-MVP | L1 |
 | Servers page is not a Fleet | Open, post-MVP | L2 |
@@ -103,7 +103,7 @@ SA-01..SA-06, SA-08 and SA-10 are fixed. SA-07 is accepted (the token holder is 
 | G1 enrolled inventory | Open, L1/L2 |
 | G2 end-to-end verification | **Closed** (#109, #120) |
 | G3 peer-side preflight | Partly covered by diagnostics after start; peer port ownership open (post-MVP) |
-| G4 Apply start/rollback | Start **closed** (P0-1/P0-5); stop/restart open (U3) |
+| G4 Apply start/rollback | **Closed**: start (P0-1/P0-5), stop/restart and boot persistence (U3, PR #137, LAB 42692143748 (main `ff868a7`)) |
 | G5 audit actor/target | **Closed** (#109) |
 | G6 traffic counters | **Closed** (#109, #120) |
 | G7 firewall inspection | Open, B3 |
@@ -266,3 +266,10 @@ Parallel tracks that do not share files or LAB time: (U1, Q1–Q4) alongside U2.
 ## 9. Kept out of scope
 
 No new engines or protocols, no Fleet or billing, no React migration, no `noise-tcp` promotion, no firewall mutation, no change to production hosts. Nothing in this plan authorizes a tag, release or deploy; those stay separate gates.
+
+## Progress 2026-11-09: U2, U3, U5a
+
+- Merged: PR #137 (`8d4b1f4`, agent service, lifecycle, panel), #140 (LAB stage), #141 (Wizard last step), #142 (LAB package contents).
+- LAB run 42692143748 on `main` `ff868a7`, both hosts Ubuntu 22.04 / systemd 249: clean hosts; one-step `install.sh --binary --register`; setup as root with no manual `chown`; agent service started by itself as `baft-tunnel-agent` on loopback; Start (enabled at boot), Restart (new process), Stop (disabled, no data), Start again through `POST /v1/tunnel/lifecycle`; 64 KiB + 2 MiB integrity; diagnostics `next_action` none while running and start while stopped; **one real reboot of both hosts** (owner-approved, O1): back over SSH in about 44 s, tunnel and agent active and enabled with no command from the test, 64 KiB + 2 MiB integrity after the reboot; full uninstall, users removed, no host drift.
+- Earlier runs 42684792291 and 42687963213 stopped on LAB script defects (fixed in #141, #142); both cleaned up.
+- U2 and U3 done; U5a done except the O3 phone check. Still open: U6 (`rc.5`) and the rest of the queue; receipt `ready` stays Unknown by design. Not production-ready.
