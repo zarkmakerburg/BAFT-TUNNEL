@@ -44,6 +44,13 @@ fi
 CRL_PUSH="${LAB_CRL_PUSH:-0}"
 [[ "$CRL_PUSH" == 0 || "$CRL_PUSH" == 1 ]] || { echo "LAB_CRL_PUSH must be 0 or 1" >&2; exit 2; }
 (( CRL_PUSH == 0 || OPS_SOAK > 0 )) || { echo "LAB_CRL_PUSH runs inside the Direct operations stage (LAB_OPS>0)" >&2; exit 2; }
+AGENT_SVC="${LAB_AGENT_SVC:-0}"; AGENT_REBOOT="${LAB_REBOOT:-0}"
+[[ "$AGENT_SVC" == 0 || "$AGENT_SVC" == 1 ]] && [[ "$AGENT_REBOOT" == 0 || "$AGENT_REBOOT" == 1 ]] || { echo "LAB_AGENT_SVC and LAB_REBOOT must be 0 or 1" >&2; exit 2; }
+(( AGENT_REBOOT == 0 || AGENT_SVC == 1 )) || { echo "LAB_REBOOT runs inside the agent service stage (LAB_AGENT_SVC=1)" >&2; exit 2; }
+if (( AGENT_SVC == 1 )); then
+  [[ -x "$MVP_BINARY_PATH" ]] || { echo "LAB_AGENT_SVC needs MVP_BINARY" >&2; exit 2; }
+  [[ "$MVP" == 0 && "$REVERSE_ACCEPT" == 0 && "$OPS_SOAK" == 0 ]] || { echo "LAB_AGENT_SVC is a separate run from LAB_MVP, LAB_REVERSE_ACCEPT and LAB_OPS" >&2; exit 2; }
+fi
 [[ "$REVERSE_R3" =~ ^[0-9]+$ ]] && (( REVERSE_R3 <= 3600 )) || { echo "LAB_REVERSE_R3 must be 0-3600 (Reverse R3 soak seconds; 0 = off)" >&2; exit 2; }
 [[ "$REVERSE" == 0 || "$REVERSE" == 1 ]] || { echo "LAB_REVERSE must be 0 or 1" >&2; exit 2; }
 BAFT="${LAB_BAFT:-0}"
@@ -1100,4 +1107,9 @@ if (( OPS_SOAK > 0 )); then
   . "$(dirname "${BASH_SOURCE[0]}")/ops-stage.sh"
 fi
 
-echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE reverse_r3=$REVERSE_R3 mvp=$MVP (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
+if (( AGENT_SVC == 1 )); then
+  # shellcheck source=lab/real-hosts/agent-service-stage.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/agent-service-stage.sh"
+fi
+
+echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE reverse_r3=$REVERSE_R3 mvp=$MVP agent_svc=$AGENT_SVC reboot=$AGENT_REBOOT (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
