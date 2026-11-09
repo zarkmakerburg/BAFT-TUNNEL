@@ -38,7 +38,7 @@ ra_cleanup() {
       systemctl reset-failed 'baft-tunnel*' 2>/dev/null; systemctl daemon-reload; true" || true
   done
   for side in iran abroad; do
-    if [[ " ${RA_USER_BEFORE[*]} " != *" $side "* ]]; then ssh_host "$side" "userdel baft-tunnel 2>/dev/null; groupdel baft-tunnel 2>/dev/null; true" || true; fi
+    if [[ " ${RA_USER_BEFORE[*]} " != *" $side "* ]]; then ssh_host "$side" "userdel baft-tunnel-agent 2>/dev/null; groupdel baft-tunnel-agent 2>/dev/null; userdel baft-tunnel 2>/dev/null; groupdel baft-tunnel 2>/dev/null; true" || true; fi
   done
 }
 # set +e: under errexit the (exit N) that restores the status would end the trap before cleanup runs.
@@ -90,7 +90,7 @@ ssh_host abroad "$UB setup join --dir $EB --bundle '$REMOTE_DIR/bundle-iran.json
 ssh_host iran "$UB setup join --dir $EB --bundle '$REMOTE_DIR/bundle-abroad.json' --checksum '$sum_a' >/dev/null"
 for pair in "iran $PUB" "abroad $SVC"; do
   read -r pside pinst <<<"$pair"
-  ssh_host "$pside" "chown baft-tunnel:baft-tunnel $EB/node.key && chgrp baft-tunnel $EB/$pinst.json && bash '$PKG/scripts/install-agent-control.sh' --instance $pinst >/dev/null"
+  ssh_host "$pside" "chown baft-tunnel:baft-tunnel $EB/node.key && chgrp baft-tunnel $EB/$pinst.json && bash '$PKG/scripts/install-agent-control.sh' --instance $pinst --listen 127.0.0.1:18099 >/dev/null"
 done
 # The generated configs must carry the Reverse topology: ingress+listen on the public node, target+remote on the service node.
 ssh_host iran "python3 -c 'import json;c=json.load(open(\"$EB/$PUB.json\"));assert c[\"direction\"]==\"reverse\" and c[\"engine\"]==\"tcp-tls\" and c[\"mode\"]==\"serve\" and c[\"ingress\"]==\"127.0.0.1:$MSVC\" and c[\"listen\"].endswith(\":$MTP\") and \"target\" not in c, c'" ||

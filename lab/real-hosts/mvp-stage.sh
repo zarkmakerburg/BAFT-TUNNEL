@@ -35,7 +35,7 @@ mvp_cleanup() {
       systemctl reset-failed 'baft-tunnel*' 2>/dev/null; systemctl daemon-reload; true" || true
   done
   for side in iran abroad; do
-    if [[ " ${MVP_USER_BEFORE[*]} " != *" $side "* ]]; then ssh_host "$side" "userdel baft-tunnel 2>/dev/null; groupdel baft-tunnel 2>/dev/null; true" || true; fi
+    if [[ " ${MVP_USER_BEFORE[*]} " != *" $side "* ]]; then ssh_host "$side" "userdel baft-tunnel-agent 2>/dev/null; groupdel baft-tunnel-agent 2>/dev/null; userdel baft-tunnel 2>/dev/null; groupdel baft-tunnel 2>/dev/null; true" || true; fi
   done
 }
 # set +e: under errexit the (exit N) that restores the status would end the trap before cleanup runs.
@@ -87,7 +87,7 @@ ssh_host iran "$UB setup join --dir $EB --bundle '$REMOTE_DIR/bundle-abroad.json
 # Documented ownership for an installed instance (OPERATOR_GUIDE "Guided setup as an installed service").
 for pair in "abroad $SRV" "iran $CLI"; do
   read -r pside pinst <<<"$pair"
-  ssh_host "$pside" "chown baft-tunnel:baft-tunnel $EB/node.key && chgrp baft-tunnel $EB/$pinst.json && bash '$REMOTE_DIR/pkg/scripts/install-agent-control.sh' --instance $pinst >/dev/null"
+  ssh_host "$pside" "chown baft-tunnel:baft-tunnel $EB/node.key && chgrp baft-tunnel $EB/$pinst.json && bash '$REMOTE_DIR/pkg/scripts/install-agent-control.sh' --instance $pinst --listen 127.0.0.1:18099 >/dev/null"
 done
 MVP_SNI="$(ssh_host iran "python3 -c 'import json;print(json.load(open(\"$EB/$CLI.json\"))[\"server_name\"])'")"
 
