@@ -31,6 +31,12 @@ const MAX_REQUEST_BYTES: usize = 8 * 1024;
 const MAX_BODY_BYTES: usize = 64 * 1024;
 const DESIRED_FILE: &str = "desired.json";
 const AUDIT_FILE: &str = "audit.log";
+/// Previous generation after rotation (SA-08). Only one is kept.
+const AUDIT_ROTATED: &str = "audit.log.1";
+/// `audit.log` is rotated before an append that would find it at or above this size.
+const AUDIT_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// `GET /v1/audit` reads at most this many bytes from the end of each file.
+const AUDIT_TAIL_BYTES: u64 = 256 * 1024;
 const DIAGNOSTICS_FILE: &str = "diagnostics.json";
 /// Agent-side traffic samples kept in memory (one hour at the default interval).
 const TRAFFIC_LEN: usize = 720;
@@ -1075,13 +1081,43 @@ fn get_audit(ctx: &Ctx) -> (u16, Value) {
     let Some(dir) = &ctx.state_dir else {
         return (404, json!({"error": "desired state is disabled"}));
     };
-    let text = std::fs::read_to_string(dir.join(AUDIT_FILE)).unwrap_or_default();
-    let mut entries: Vec<Value> = text
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
+    // Newest-last, at most 100. Reads only the tail of each file (SA-08), so the cost is bounded.
+    let mut entries: Vec<Value> = Vec::new();
+    for name in [AUDIT_ROTATED, AUDIT_FILE] {
+        entries.extend(
+            audit_tail(&dir.join(name))
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok()),
+        );
+    }
     let start = entries.len().saturating_sub(100);
     (200, json!({"entries": entries.split_off(start)}))
+}
+
+/// The last `AUDIT_TAIL_BYTES` of an audit file, cut to whole lines. Missing file: empty.
+fn audit_tail(path: &Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let from = len.saturating_sub(AUDIT_TAIL_BYTES);
+    if f.seek(SeekFrom::Start(from)).is_err() {
+        return String::new();
+    }
+    let mut buf = Vec::new();
+    if f.take(AUDIT_TAIL_BYTES).read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    if from > 0 {
+        // The first line may be cut in half: drop it.
+        text.split_once('\n')
+            .map(|(_, r)| r.to_string())
+            .unwrap_or_default()
+    } else {
+        text
+    }
 }
 
 /// Engine capability contract (see `capabilities`): real, versioned, unknown stays unknown.
@@ -1192,11 +1228,16 @@ fn audit(dir: &Path, ctx: &Ctx, e: AuditEvent<'_>) -> Result<()> {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
+    let path = dir.join(AUDIT_FILE);
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() >= AUDIT_MAX_BYTES) {
+        // Bounded growth: keep one previous generation (SA-08). Rename is atomic.
+        std::fs::rename(&path, dir.join(AUDIT_ROTATED))?;
+    }
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .open(dir.join(AUDIT_FILE))?;
+        .open(&path)?;
     let line = json!({
         "audit_version": 2,
         "ts": ts,
@@ -2213,6 +2254,46 @@ mod tests {
         assert!(en.contains(
             "'meth.rev.note': 'Reverse is a Preview, not Stable; readiness is not verified.'"
         ));
+    }
+
+    #[tokio::test]
+    async fn audit_log_rotates_and_the_endpoint_reads_only_a_bounded_tail() {
+        let dir = state_dir("auditrot");
+        let ctx = Ctx::new(sample(), TOKEN.into(), Some(dir.clone()));
+        let ev = |detail: &'static str| AuditEvent {
+            action: "put_desired",
+            result: "accepted",
+            resource: "desired_state".into(),
+            node: None,
+            instance: None,
+            sha256: "abc",
+            detail,
+            receipt_id: None,
+        };
+        // Pre-fill past the cap with valid lines, then one more append must rotate.
+        let big = "{\"audit_version\":2,\"detail\":\"old\"}\n";
+        let n = (AUDIT_MAX_BYTES as usize / big.len()) + 1;
+        std::fs::write(dir.join(AUDIT_FILE), big.repeat(n)).unwrap();
+        audit(&dir, &ctx, ev("new")).unwrap();
+        assert!(dir.join(AUDIT_ROTATED).exists(), "rotated generation kept");
+        let live = std::fs::metadata(dir.join(AUDIT_FILE)).unwrap();
+        assert!(live.len() < 4096, "live file restarted small");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(live.permissions().mode() & 0o777, 0o600);
+        // The endpoint returns the newest 100 (old tail + the new line), never the whole file.
+        let (code, body) = get_json(&ctx, "/v1/audit").await;
+        assert_eq!(code, 200);
+        let entries = body["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 100);
+        assert_eq!(entries.last().unwrap()["detail"], "new");
+        // A cut first line in the tail is dropped, not misparsed.
+        let tail = audit_tail(&dir.join(AUDIT_ROTATED));
+        assert!(tail.len() as u64 <= AUDIT_TAIL_BYTES);
+        assert!(
+            tail.lines()
+                .all(|l| serde_json::from_str::<Value>(l).is_ok())
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn serve_config() -> RuntimeConfig {
