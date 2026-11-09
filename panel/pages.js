@@ -455,9 +455,33 @@
       var gated = w.pf && w.pf.overall === 'blocked';
       var go = h('button', { type: 'button', class: 'primary', text: t('ap.go'), disabled: (!w.applyConfirm || w.busy || gated || (w.applyReceipt && w.applyReceipt.result === 'applied')) ? 'disabled' : null, onclick: runApply });
       var chk = h('label', null, h('input', { type: 'checkbox', checked: w.applyConfirm ? 'checked' : null, onchange: function (e) { w.applyConfirm = e.target.checked; draw(); } }), ' ', t('ap.confirm'));
-      return h('div', null, h('div', { class: 'banner' }, h('h2', { text: t('ap.title') }), h('p', { text: t('ap.body') })),
-        chk, go, w.applyErr ? h('p', { class: 'error', role: 'alert', text: w.applyErr }) : null, w.applyReceipt ? receiptView(w.applyReceipt) : null,
-        h('p', { text: t('ap.run') }), h('pre', { text: cmds }), copy, h('p', { class: 'sub', text: t('ap.after') }));
+      // Last step (U5a): 1. the printed setup commands, run as root; 2. Start once the config exists
+      // (the agent is bound to the instance); 3. diagnostics with one next action.
+      var tn = (w.status || (ctx.data.status || {})).tunnel || null;
+      var recheck = h('button', { type: 'button', disabled: w.busy ? true : null, text: t('fin.recheck'), onclick: function () {
+        w.busy = true; draw();
+        BAFT.api('GET', '/v1/status').then(function (r) { if (r.status === 200) { w.status = r.body; } }, function () {}).then(function () { w.busy = false; draw(); });
+      } });
+      var diagOut = h('div', { 'aria-live': 'polite' });
+      if (w.diag) { diagOut.appendChild(diagTable(w.diag)); }
+      var diagBtn = h('button', { type: 'button', text: t('diag.run'), onclick: function () {
+        diagBtn.disabled = true; diagOut.textContent = t('diag.running');
+        BAFT.api('POST', '/v1/diagnostics').then(function (r) {
+          diagBtn.disabled = false; diagOut.textContent = '';
+          if (r.status === 200) { w.diag = r.body; diagOut.appendChild(diagTable(r.body)); } else { diagOut.textContent = t('diag.failed'); }
+        }, function () { diagBtn.disabled = false; diagOut.textContent = t('diag.failed'); });
+      } });
+      var bound = tn && tn.tiers && tn.tiers.unit && !(tn.tiers.unit.result === 'unknown' && tn.tiers.unit.reason);
+      return h('div', null, h('h2', { text: t('fin.title') }), h('p', { class: 'sub', text: t('fin.intro') }),
+        h('ol', { class: 'stack fin' },
+          h('li', null, h('h3', { text: t('fin.s1') }), h('p', { text: t('ap.run.root') }), h('pre', { dir: 'ltr', text: cmds || '—' }), copy,
+            h('p', { class: 'sub', text: t('fin.s1.peer') }),
+            h('details', null, h('summary', { text: t('fin.agentapply') }), h('div', { class: 'banner' }, h('p', { text: t('ap.body') })),
+              chk, go, w.applyErr ? h('p', { class: 'error', role: 'alert', text: w.applyErr }) : null, w.applyReceipt ? receiptView(w.applyReceipt) : null)),
+          h('li', null, h('h3', { text: t('fin.s2') }),
+            bound ? lifecycle(tn) : h('div', null, h('p', { class: 'sub', text: t('fin.s2.wait') }), h('pre', { dir: 'ltr', text: 'sudo scripts/install.sh --register ' + (w.inst.trim() || 'NAME') })),
+            recheck),
+          h('li', null, h('h3', { text: t('fin.s3') }), h('p', { class: 'sub', text: t('diag.note') }), diagBtn, diagOut)));
     }
     function summary() {
       var det = h('details', null, h('summary', { text: t('sum.title') }), kv([

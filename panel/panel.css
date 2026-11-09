@@ -182,3 +182,7 @@ pre{direction:ltr;text-align:left;overflow-x:auto;white-space:pre-wrap;word-brea
 }
 button+p,button+div,button+ul{margin-block-start:var(--s3)}
 .next-action{border-inline-start:3px solid var(--accent);padding:var(--s2) var(--s3);background:var(--surface-2,transparent);border-radius:4px}
+
+/* Wizard last step: headings carry their own numbers */
+ol.fin { list-style: none; padding: 0; margin: 0; }
+ol.fin > li > h3 { margin-top: 0; }
