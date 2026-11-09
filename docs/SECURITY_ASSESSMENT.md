@@ -28,9 +28,9 @@ the most exposed component); an attacker who can influence a release; holder of 
 | SA-05 | Low | Slow clients could hold all 16 agent connection slots for 45 s each | Fixed (#112) |
 | SA-06 | Low | Release workflow expands a dispatcher-controlled tag directly in shell | Fixed (#114) |
 | SA-07 | Low | Apply/preflight accept any absolute `dir`; preflight probes any IP:port | Accepted (token = admin) |
-| SA-08 | Low | `audit.log` grows without rotation; `GET /v1/audit` reads the whole file | Open |
-| SA-09 | Low | Agent and tunnel share one uid; the tunnel can still signal (kill) the agent | Open |
-| SA-10 | Info | Instance-name rules differ (`.` allowed by install/setup, refused by the control helper) | Open (fails closed) |
+| SA-08 | Low | `audit.log` grows without rotation; `GET /v1/audit` reads the whole file | Fixed (4 MiB rotation to `audit.log.1`; endpoint reads a 256 KiB tail) |
+| SA-09 | Low | Agent and tunnel share one uid; the tunnel can still signal (kill) the agent | Accepted for Preview (needs a LAB-validated split; see below) |
+| SA-10 | Info | Instance-name rules differ (`.` allowed by install/setup, refused by the control helper) | Fixed (one rule: letters, digits, `_`, `-`) |
 
 ### SA-01 (Medium): agent as root
 
@@ -96,21 +96,21 @@ exist, and preflight with `peer_host` makes one TCP connect to any IP:port. All 
 whose holder administers the host; with SA-01 fixed the agent cannot write outside what
 `baft-tunnel` may write. Accepted; revisit if remote (non-loopback) management is added.
 
-### SA-08 (Low, open): audit log growth
+### SA-08 (Low, fixed): audit log growth
 
 `audit.log` is append-only without rotation and `GET /v1/audit` reads the whole file to return the
-last 100 lines. Token holders only. Recommendation: size cap with rotation, or read from the end.
+last 100 lines. Token holders only. Fix: `audit.log` is renamed to `audit.log.1` (one generation, mode 0600 kept) before an append finds it at 4 MiB or more, and `GET /v1/audit` reads only the last 256 KiB of each file and returns the newest 100 entries.
 
-### SA-09 (Low, open): shared uid between agent and tunnel
+### SA-09 (Low, accepted for Preview): shared uid between agent and tunnel
 
 Same uid means a compromised tunnel process can still send signals to the agent (denial of service)
 and, where Yama `ptrace_scope` is 0, ptrace it (Ubuntu default is 1, which blocks it). Recommendation:
-a separate `baft-tunnel-agent` user in group `baft-tunnel` and a shipped hardened agent unit.
+a separate `baft-tunnel-agent` user in group `baft-tunnel` and a shipped hardened agent unit. Not done in this pass: the split changes state-directory ownership, the control directory group and the token path, so it must be validated on the LAB hosts before shipping. Impact today is denial of service of the agent only (it restarts under systemd; Ubuntu `ptrace_scope` 1 blocks ptrace). Tracked for the first production-hardening phase.
 
-### SA-10 (Info): instance-name rules
+### SA-10 (Info, fixed): instance-name rules
 
 `install.sh` and `setup` accept `.` in instance names; the control helper and agent `--instance`
-refuse it. Effect: Apply `start` refuses dotted names (fails closed). Recommendation: one rule.
+refuse it. Effect: Apply `start` refuses dotted names (fails closed). Fix: one rule everywhere new instances are created (`valid_instance`, `setup`, `install.sh`): 1-63 letters, digits, `_` or `-`, starting alphanumeric. `update.sh`, `rollback.sh` and `restore.sh` keep tolerating a dotted name already installed.
 
 ## Verified without findings
 
@@ -146,4 +146,4 @@ refuse it. Effect: Apply `start` refuses dotted names (fails closed). Recommenda
   v0.1.0-phase1-pre, rc.2, rc.3 and rc.4 all name `release.yml@refs/heads/main` and match the
   pinned identity.
 - Exact main `f3c8b54`: `phase1-rust` workflow_dispatch run 42550456502.
-- No LAB run, no tag, release or deploy. Open items: SA-07 (accepted), SA-08, SA-09, SA-10.
+- No LAB run, no tag, release or deploy. Open items: SA-07 (accepted), SA-09 (accepted for Preview, deferred).

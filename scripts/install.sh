@@ -69,8 +69,9 @@ if [[ -n "$BINARY" ]]; then
 fi
 if [[ -n "$INSTANCE" ]]; then
   # Restrict to names that need no systemd escaping and cannot traverse paths.
-  [[ "$INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$ && "$INSTANCE" != *..* ]] ||
-    die "invalid instance name (allowed: letters, digits, _ . -; max 63; no '..')"
+  # Same rule as the agent control helper and `valid_instance` (SA-10): no '.'.
+  [[ "$INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$ ]] ||
+    die "invalid instance name (allowed: letters, digits, _ -; max 63; start alphanumeric)"
   [[ -n "$NODE_KEY" ]] || die "--instance requires --node-key PATH"
   case "$CREDENTIAL_MODE" in baseline|encrypted) ;; *) die "--credential-mode must be baseline or encrypted" ;; esac
   # Validate the key source without ever printing its contents.
