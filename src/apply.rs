@@ -649,11 +649,10 @@ fn run_start(
                 again.active, again.restarts, again.result
             ),
         ));
-        v.push(check(
-            "listener_accepting",
-            tcp_open(config.listen_addr()),
-            format!("a TCP connection to {} was accepted", config.listen_addr()),
-        ));
+        // A Reverse service node dials out and has no listener (ADR-0021): there is nothing to connect to.
+        if let Some(c) = listener_check(config.listen_addr()) {
+            v.push(c);
+        }
     }
     let failed = v.iter().any(|c| c["result"] != "pass");
     // Authorized peer session: observed only if the unit itself reports one. Waiting for a peer is
@@ -719,6 +718,18 @@ fn run_start(
     receipt["finished_at"] = json!(now());
     persist(receipts, stored, &mut receipt);
     (if failed { 500 } else { 200 }, receipt)
+}
+
+/// Listener check for a started unit; `None` when the node has no listener (Reverse service node).
+fn listener_check(listen: &str) -> Option<serde_json::Value> {
+    if listen.is_empty() {
+        return None;
+    }
+    Some(check(
+        "listener_accepting",
+        tcp_open(listen),
+        format!("a TCP connection to {listen} was accepted"),
+    ))
 }
 
 #[cfg(test)]
@@ -982,6 +993,15 @@ mod tests {
         let mut r = req(dir, Role::Serve, Stage::Start, key);
         r.plan.instance = Some("edge".into());
         r
+    }
+
+    #[test]
+    fn a_node_without_a_listener_has_no_listener_check() {
+        // Reverse service node (ADR-0021): it dials out, so Apply start must not demand a listener.
+        assert!(listener_check("").is_none());
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        assert_eq!(listener_check(&addr).unwrap()["result"], "pass");
     }
 
     #[test]
