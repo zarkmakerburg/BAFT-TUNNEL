@@ -12,13 +12,13 @@ EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGD=/var/lib/baft-tunnel/age
 SRV=mvpsrv; CLI=mvpcli
 MVP_SHA="$(sha256sum "$MVP_BINARY_PATH" | awk '{print $1}')"
 
-side_snapshot() { # side : firewall rule hash, listeners outside the test ports, units outside baft-tunnel*
-  ssh_host "$1" "{ nft list ruleset 2>/dev/null | sed -E 's/packets [0-9]+ bytes [0-9]+//'; iptables-save 2>/dev/null | grep -v '^#' | sed -E 's/\[[0-9]+:[0-9]+\]//'; } | sha256sum | cut -d' ' -f1;
-    ss -ltnH | awk '{print \$4}' | grep -vE ':($MSVC|$MTP|$MAG|$MALT|$E2E_PORT|$LOCAL_PORT|$ECHO_PORT)\$' | sort -u;
-    systemctl list-unit-files --no-legend 'baft-tunnel*' 2>/dev/null | wc -l"
+side_snapshot() { # side : normalized firewall rules, listeners outside the test ports, baft-tunnel* unit-file count
+  ssh_host "$1" "echo '# firewall'; { nft list ruleset 2>/dev/null | sed -E 's/packets [0-9]+ bytes [0-9]+//'; iptables-save 2>/dev/null | grep -v '^#' | sed -E 's/\\[[0-9]+:[0-9]+\\]//'; };
+    echo '# listeners'; ss -ltnH | awk '{print \$4}' | grep -vE ':($MSVC|$MTP|$MAG|$MALT|$E2E_PORT|$LOCAL_PORT|$ECHO_PORT)\$' | sort -u;
+    echo '# units'; systemctl list-unit-files --no-legend 'baft-tunnel*' 2>/dev/null | wc -l"
 }
 echo "--- MVP clean-host check ---"
-MVP_USER_BEFORE=()
+MVP_USER_BEFORE=(); MVP_FW_DRIFT=()
 for side in iran abroad; do
   ssh_host "$side" "! test -e $UB && ! test -e $EB && ! test -e /var/lib/baft-tunnel && [ \"\$(systemctl list-unit-files --no-legend 'baft-tunnel*' | wc -l)\" = 0 ]" ||
     { echo "$side is not clean: an earlier BAFT-TUNNEL install is present (binary, $EB, state or units)" >&2; exit 1; }
@@ -206,6 +206,17 @@ for side in iran abroad; do
   ssh_host "$side" "! test -e $UB && ! test -e $EB && ! test -e /var/lib/baft-tunnel && ! test -e /run/baft-tunnel/control && ! systemctl list-units --all --plain --no-legend 'baft-tunnel*' | grep -q ." ||
     { echo "uninstall left BAFT-TUNNEL resources on $side" >&2; exit 1; }
   side_snapshot "$side" > "$LOCAL_TMP/mvp-after-$side.txt"
-  diff "$LOCAL_TMP/mvp-before-$side.txt" "$LOCAL_TMP/mvp-after-$side.txt" >&2 || { echo "firewall, listeners or unit files changed on $side" >&2; exit 1; }
+  if ! diff "$LOCAL_TMP/mvp-before-$side.txt" "$LOCAL_TMP/mvp-after-$side.txt" > "$LOCAL_TMP/mvp-diff-$side.txt"; then
+    # Printed with addresses masked and capped: the run log is public and the host's firewall is not ours to publish.
+    echo "--- host state changed on $side during the MVP stage ($(grep -c '^[<>]' "$LOCAL_TMP/mvp-diff-$side.txt") lines; addresses masked) ---"
+    grep '^[<>]' "$LOCAL_TMP/mvp-diff-$side.txt" | sed -E 's/[0-9]{1,3}(\.[0-9]{1,3}){3}(\/[0-9]+)?/<ip>/g; s/[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,7}(\/[0-9]+)?/<ip6>/g' | head -n 30
+    # Listener or unit-file changes, or a firewall change naming this stage's ports or BAFT-TUNNEL, fail the stage.
+    # Other firewall drift (host-managed rules the stage never touches) is reported, not hidden.
+    if grep -E '^[<>]' "$LOCAL_TMP/mvp-diff-$side.txt" | grep -qiE "baft|(:| |dport |sport )($MSVC|$MTP|$MAG|$MALT)\b" ||
+       ! diff <(sed -n '/^# listeners/,$p' "$LOCAL_TMP/mvp-before-$side.txt") <(sed -n '/^# listeners/,$p' "$LOCAL_TMP/mvp-after-$side.txt") >/dev/null; then
+      echo "listeners, unit files or BAFT-related firewall rules changed on $side" >&2; exit 1
+    fi
+    MVP_FW_DRIFT+=("$side")
+  fi
 done
-echo "MVP_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} clean_hosts=1 installed=1 wrong_checksum_refused=1 setup_join=1 control_helper=1 apply_start_serve=applied apply_start_forward=applied receipt_session=${MVP_SESSION} receipt_ready=${MVP_READY} integrity_64k_2m=1 replay=1 running_refused=1 receipts_secret_free=1 forward_sigkill_recovery_s=${MVP_KILL_S} serve_restart_recovery_s=${MVP_SRV_S} occupied_port_rolled_back=1 wrong_pin_refused=1 wrong_identity_refused=1 revoked_refused=1 uninstalled=1 no_side_effects=1"
+echo "MVP_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} clean_hosts=1 installed=1 wrong_checksum_refused=1 setup_join=1 control_helper=1 apply_start_serve=applied apply_start_forward=applied receipt_session=${MVP_SESSION} receipt_ready=${MVP_READY} integrity_64k_2m=1 replay=1 running_refused=1 receipts_secret_free=1 forward_sigkill_recovery_s=${MVP_KILL_S} serve_restart_recovery_s=${MVP_SRV_S} occupied_port_rolled_back=1 wrong_pin_refused=1 wrong_identity_refused=1 revoked_refused=1 uninstalled=1 listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=${MVP_FW_DRIFT[*]:-none}"
