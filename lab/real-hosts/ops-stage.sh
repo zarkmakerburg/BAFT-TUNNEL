@@ -43,7 +43,7 @@ op_cleanup() {
 trap 'op_status=$?; set +e; op_cleanup; (exit "$op_status"); cleanup' EXIT
 
 echo "--- install (${MVP_SOURCE}, sha256 ${MVP_SHA}) ---"
-tar -czf "$LOCAL_TMP/op-pkg.tgz" scripts/install.sh scripts/uninstall.sh scripts/install-agent-control.sh scripts/backup.sh scripts/restore.sh scripts/update.sh scripts/rollback.sh systemd
+tar -czf "$LOCAL_TMP/op-pkg.tgz" scripts/install.sh scripts/uninstall.sh scripts/install-agent-control.sh scripts/backup.sh scripts/restore.sh scripts/update.sh scripts/rollback.sh scripts/pki/apply-crl.sh systemd
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-ra"
 # Update candidates: same code with a different digest (trailing NUL), and a binary that passes --version but exits at start.
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-op-new"; printf '\0' >> "$LOCAL_TMP/baft-tunnel-op-new"; chmod 755 "$LOCAL_TMP/baft-tunnel-op-new"
@@ -284,6 +284,60 @@ unit_active abroad $SRV || { echo "service unit is not active after the automati
 OP_ROLLBACK_S="$(op_wait 90)" || { echo "Direct tunnel did not carry data after the automatic rollback" >&2; exit 1; }
 probe_host iran 2097289
 
+OP_CRL_LINE="crl_push=0"
+if (( CRL_PUSH == 1 )); then
+  echo "--- CRL renewal: renew-crl on the offline CA (runner), push-crl.sh over SSH to both nodes, tunnel recovers ---"
+  crl_num() { ssh_host "$1" "openssl crl -in $EB/ca.crl -noout -crlnumber | cut -d= -f2"; }
+  crl_sha() { ssh_host "$1" "sha256sum $EB/ca.crl | cut -d' ' -f1"; }
+  OP_CRL_N0_I="$(crl_num iran)"; OP_CRL_N0_A="$(crl_num abroad)"
+  bash scripts/pki/baft-pki.sh renew-crl "$RP/ca" "$RP/renewed" 30 >/dev/null
+  bash scripts/pki/crl-status.sh "$RP/renewed/ca.crl" 72
+  OP_CRL_N1="$(openssl crl -in "$RP/renewed/ca.crl" -noout -crlnumber | cut -d= -f2)"
+  OP_CRL_SHA="$(sha256sum "$RP/renewed/ca.crl" | cut -d' ' -f1)"
+  (( OP_CRL_N1 > OP_CRL_N0_I && OP_CRL_N1 > OP_CRL_N0_A )) || { echo "renewed CRL number $OP_CRL_N1 is not above the installed ones" >&2; exit 1; }
+  # Negative control: a 2-day CRL is refused by push-crl.sh before any connection is made.
+  bash scripts/pki/baft-pki.sh renew-crl "$RP/ca" "$RP/short" 2 >/dev/null
+  if bash scripts/pki/push-crl.sh --crl "$RP/short/ca.crl" --host "$IRAN_USER@$LAB_IRAN_HOST:$IRAN_SSH_PORT" --remote-ca $EB/ca.crt --remote-crl $EB/ca.crl \
+      --instance $CLI --remote-apply "$PKG/scripts/pki/apply-crl.sh" --known-hosts "$SSH_KNOWN_HOSTS_FILE" --key "$SSH_KEY_FILE" >/dev/null 2>&1; then
+    echo "push-crl.sh accepted a CRL with under 72 hours left" >&2; exit 1
+  fi
+  [[ "$(crl_num iran)" == "$OP_CRL_N0_I" ]] || { echo "the refused short CRL changed the iran CRL" >&2; exit 1; }
+  op_push() { # side instance user host port [crl]
+    local sudo=(); [[ "$3" == root ]] || sudo=(--sudo)
+    bash scripts/pki/push-crl.sh "${sudo[@]}" --crl "${6:-$RP/renewed/ca.crl}" --host "$3@$4:$5" --remote-ca $EB/ca.crt --remote-crl $EB/ca.crl \
+      --instance "$2" --remote-apply "$PKG/scripts/pki/apply-crl.sh" --known-hosts "$SSH_KNOWN_HOSTS_FILE" --key "$SSH_KEY_FILE"
+  }
+  t0=$SECONDS
+  op_push iran $CLI "$IRAN_USER" "$LAB_IRAN_HOST" "$IRAN_SSH_PORT" | tail -n 1
+  op_push abroad $SRV "$ABROAD_USER" "$LAB_ABROAD_HOST" "$ABROAD_SSH_PORT" | tail -n 1
+  OP_CRL_PUSH_S=$((SECONDS - t0))
+  for side in iran abroad; do
+    inst=$CLI; [[ "$side" == abroad ]] && inst=$SRV
+    [[ "$(crl_sha "$side")" == "$OP_CRL_SHA" && "$(crl_num "$side")" == "$OP_CRL_N1" ]] || { echo "renewed CRL is not installed on $side" >&2; exit 1; }
+    unit_active "$side" "$inst" || { echo "unit $inst on $side is not active after the CRL push" >&2; exit 1; }
+  done
+  OP_CRL_RECOVER_S="$(op_wait 90)" || { echo "Direct tunnel did not carry data after the CRL push" >&2; exit 1; }
+  probe_host iran 2097289
+  # Replaying the same CRL must be refused (CRL number not greater) and leave the tunnel up.
+  if op_push iran $CLI "$IRAN_USER" "$LAB_IRAN_HOST" "$IRAN_SSH_PORT" >/dev/null 2>&1; then echo "push-crl.sh re-applied an equal CRL number" >&2; exit 1; fi
+  [[ "$(crl_sha iran)" == "$OP_CRL_SHA" ]] && unit_active iran $CLI || { echo "refused replay changed the iran CRL or stopped its unit" >&2; exit 1; }
+  probe_host iran 65536
+  for side in iran abroad; do
+    p1_api "$side" GET /v1/security >"$LOCAL_TMP/op-sec-$side.json"
+    p1_api "$side" GET /v1/status >"$LOCAL_TMP/op-crlstatus-$side.json"
+    python3 - "$LOCAL_TMP/op-sec-$side.json" "$LOCAL_TMP/op-crlstatus-$side.json" "$side" <<'PY' || { echo "agent on $side does not report the renewed CRL as ok" >&2; exit 1; }
+import json, sys
+sec, st, side = json.load(open(sys.argv[1])), json.load(open(sys.argv[2])), sys.argv[3]
+rem = sec.get("crl_seconds_remaining")
+assert sec.get("crl_state") == "ok" and rem is not None and rem > 29 * 86400, sec
+assert not [w for w in st.get("warnings", []) if w.get("id") == "crl"], st.get("warnings")
+print("crl-agent side=%s crl_state=%s days_left=%d" % (side, sec["crl_state"], rem // 86400))
+PY
+  done
+  OP_CRL_LINE="crl_push=1 crl_number=${OP_CRL_N0_I}->${OP_CRL_N1} crl_days=30 crl_push_s=${OP_CRL_PUSH_S} crl_recovery_s=${OP_CRL_RECOVER_S} crl_short_refused=1 crl_replay_refused=1 agent_crl_state=ok"
+  echo "CRL_PUSH_RESULT $OP_CRL_LINE"
+fi
+
 echo "--- revocation: iran (forward) certificate revoked, new CRL on the serve node, serve restarted ---"
 bash scripts/pki/baft-pki.sh revoke-node "$RP/ca" "$RP/issued-iran/node.crt" "$RP/revoked" >/dev/null
 copy_to_host abroad "$RP/revoked/ca.crl"
@@ -319,4 +373,4 @@ for side in iran abroad; do
     OP_FW_DRIFT+=("$side")
   fi
 done
-echo "OPS_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} update_sha256=${OP_NEW_SHA} setup_direction_direct=1 apply_start_serve=applied apply_start_forward=applied non_root=1 receipt_session=${OP_SESSION} receipt_ready=${OP_READY} integrity_64k_2m=1 evidence_diag_status_traffic=1 replay=1 running_refused=1 ${OP_SOAK_LINE} serve_sigkill_s=${OP_SRV_KILL_S} forward_sigkill_s=${OP_CLI_KILL_S} serve_apply_restart_s=${OP_SRV_APPLY_S} forward_apply_restart_s=${OP_CLI_APPLY_S} backup_restore=1 restore_owners_modes_identical=1 restore_recovery_s=${OP_RESTORE_S} update_ok=1 update_recovery_s=${OP_UPDATE_S} bad_update_rolled_back=1 rollback_recovery_s=${OP_ROLLBACK_S} revoked_refused=1 uninstalled=1 listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=${OP_FW_DRIFT[*]:-none} cross_version_update=0"
+echo "OPS_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} update_sha256=${OP_NEW_SHA} setup_direction_direct=1 apply_start_serve=applied apply_start_forward=applied non_root=1 receipt_session=${OP_SESSION} receipt_ready=${OP_READY} integrity_64k_2m=1 evidence_diag_status_traffic=1 replay=1 running_refused=1 ${OP_SOAK_LINE} serve_sigkill_s=${OP_SRV_KILL_S} forward_sigkill_s=${OP_CLI_KILL_S} serve_apply_restart_s=${OP_SRV_APPLY_S} forward_apply_restart_s=${OP_CLI_APPLY_S} backup_restore=1 restore_owners_modes_identical=1 restore_recovery_s=${OP_RESTORE_S} update_ok=1 update_recovery_s=${OP_UPDATE_S} bad_update_rolled_back=1 rollback_recovery_s=${OP_ROLLBACK_S} ${OP_CRL_LINE} revoked_refused=1 uninstalled=1 listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=${OP_FW_DRIFT[*]:-none} cross_version_update=0"
