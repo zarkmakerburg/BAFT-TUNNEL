@@ -29,6 +29,34 @@ Rule: BAFT stays hidden from `/v1/engines`, Wizard and preflight until every **R
 - Only the `h2` mTLS carrier is accepted. `ws` and `utls` carriers stay hidden.
 - Hosted-runner and LAB evidence only; not production evidence. Unrelated firewall drift on the abroad LAB host was observed earlier and is not claimed absent.
 
-## Verdict
+## Verdict (2026-11-09)
 
-_Filled after the exact-SHA LAB run (see HQ Issue #2 and the Roadmap)._
+Evidence: [LAB run 42552860541](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42552860541), main `3a95c7f1e0be880dcce1e8ca731bc2302bd94500`, engine from signed prerelease `v0.1.0-rc.4` (digest `e4f04837…3647` = manifest pin), two real LAB hosts (Ubuntu 22.04 / systemd 249), result `PHASE1_TWO_HOST_E2E=PASS`. PR #116 CI (rust, ubuntu-2204-baseline, lab-config) green before merge.
+
+| # | Result | Evidence |
+|---|--------|----------|
+| A1 | PASS | Signed-release step passed with the identity restriction and the new negative controls (foreign repo and feature-branch ref must not verify; the step exits non-zero otherwise) |
+| A2, A3 | PASS (earlier, unchanged inputs) | `baft-engine-conformance` workflow; pin and manifest unchanged |
+| A4 | PASS | `BAFT_SYSTEMD_RESULT hardened_direct_ok=1 mdwe=yes no_seccomp_kill=1 store_launch_ok=1` |
+| A5 | PASS | `BAFT_RESULT direct_ok=1`, 64 KiB + 2 MiB integrity |
+| A6 | PASS | `unauthorized_refused=1 wrong_pin_refused=1 revoked_refused=1 revoked_listener_refused=1 bad_hash_refused=1 store_pin_mismatch_refused=1` |
+| A7 | PASS | `BAFT_STORE_ROLLBACK_RESULT … rollback_to_a=1 tampered_rollback_refused=1 a_carried_2mib_after_rollback=1` |
+| A8 | PASS | listener restart recovery 34 s (plain) / 43 s (systemd); engine SIGKILL recovery 35 s |
+| A9 | PASS (bounded) | 1200 s soak, 84 rounds, fd 18→18 on both sides, RSS 23.5→25.2 MB (dialer) and 23.6→29.0 MB (listener); 2% real TCP loss, 6 packets dropped, data still carried, nft table removed |
+| A10 | PASS | stage cleanup; loss table removed; no stray processes reported |
+| A11 | DOCUMENTED LIMIT | BAFT has no control API or counters; status must stay `unknown` |
+| A12 | DOCUMENTED LIMIT | BAFT "reverse" in the LAB is a swapped dialer, not ADR-0021 Reverse; Direct only |
+
+### What may be shown
+
+- **BAFT may appear in the Wizard and `/v1/engines` as Preview, Direct only**, behind an explicit "Preview" label, using the signed-release Store → Launcher path only (pinned digest, no manual binary paths).
+- It must show: traffic and end-to-end status are **unknown** for this engine; process crash resets active flows; Reverse unavailable; h2 mTLS carrier only.
+- It must **not** be shown as Stable, as production-ready, or as supporting Reverse.
+
+### What remains (not claimed)
+
+1. The Wizard/capabilities exposure itself is a separate code change (currently `capabilities.rs` still omits `baft` and a test asserts it). It was not made in this task.
+2. No multi-hour soak; the 20-minute soak and 2% loss on a short flow are bounded evidence (only 6 packets dropped).
+3. No BAFT status/diagnostics integration (needs a probe-based design); no preflight check specific to the BAFT engine.
+4. Listener RSS grew about 23% over the soak; watch it in a longer soak before Stable.
+5. Hosted-runner and LAB evidence only; unrelated firewall drift on the abroad host was seen earlier and is not claimed absent.
