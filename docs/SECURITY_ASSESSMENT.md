@@ -3,7 +3,7 @@
 Date: 2026-11-09. Baseline: `main` at `4852ecf` (PR #109). Reviewer: an assessor that did not
 write the reviewed code. Method: manual source review of the files below, unit tests for every
 fix, CI on the fix branches. No LAB run was needed: every fix is covered by unit tests or the
-real-systemd `ubuntu-2204-baseline` job. Not production-ready claims are unchanged.
+real-systemd `ubuntu-2204-baseline` job. Nothing here makes the product production-ready.
 
 Scope: agent control API and token auth (`src/agent.rs`, `src/main.rs`), diagnostics / status /
 audit / traffic routes, Apply/Verify/Receipt (`src/apply.rs`, `src/setup.rs`), systemd units and
@@ -21,12 +21,12 @@ the most exposed component); an attacker who can influence a release; holder of 
 
 | ID | Severity | Title | Status |
 |----|----------|-------|--------|
-| SA-01 | Medium | Agent could run as root; Apply then creates files as root at a caller-chosen path | Fixed (PR A) |
-| SA-02 | Medium | Compromised tunnel process could read the agent token (same user) | Fixed (PR A) |
-| SA-03 | Medium | Release signature policy accepts any ref; `ref` input can sign an unreviewed commit | Fixed (PR B) |
-| SA-04 | Low | No `Host` check on the loopback API (DNS rebinding) | Fixed (PR A) |
-| SA-05 | Low | Slow clients could hold all 16 agent connection slots for 45 s each | Fixed (PR A) |
-| SA-06 | Low | Release workflow expands a dispatcher-controlled tag directly in shell | Fixed (PR B) |
+| SA-01 | Medium | Agent could run as root; Apply then creates files as root at a caller-chosen path | Fixed (#112) |
+| SA-02 | Medium | Compromised tunnel process could read the agent token (same user) | Fixed (#112) |
+| SA-03 | Medium | Release signature policy accepts any ref; `ref` input can sign an unreviewed commit | Fixed (#114) |
+| SA-04 | Low | No `Host` check on the loopback API (DNS rebinding) | Fixed (#112) |
+| SA-05 | Low | Slow clients could hold all 16 agent connection slots for 45 s each | Fixed (#112) |
+| SA-06 | Low | Release workflow expands a dispatcher-controlled tag directly in shell | Fixed (#114) |
 | SA-07 | Low | Apply/preflight accept any absolute `dir`; preflight probes any IP:port | Accepted (token = admin) |
 | SA-08 | Low | `audit.log` grows without rotation; `GET /v1/audit` reads the whole file | Open |
 | SA-09 | Low | Agent and tunnel share one uid; the tunnel can still signal (kill) the agent | Open |
@@ -138,5 +138,12 @@ refuse it. Effect: Apply `start` refuses dotted names (fails closed). Recommenda
 
 ## Evidence
 
-Filled in when the fix PRs merge: PR numbers, merge SHAs and CI runs (`rust`,
-`ubuntu-2204-baseline`, `lab-config`).
+- PR #112 (SA-01, SA-02, SA-04, SA-05 and this document): head `64ebbed`, checks `rust`,
+  `ubuntu-2204-baseline` (run 42548543707), `lab-config` (run 42548543817), `fuzz`
+  (run 42548543657) all green; merged as `a8d160b`.
+- PR #114 (SA-03, SA-06): head `a0be0ff`, `rust` and `ubuntu-2204-baseline` (run 42549668812),
+  `lab-config` (run 42549668945) green; merged as `f3c8b54`. The signing certificates of
+  v0.1.0-phase1-pre, rc.2, rc.3 and rc.4 all name `release.yml@refs/heads/main` and match the
+  pinned identity.
+- Exact main `f3c8b54`: `phase1-rust` workflow_dispatch run 42550456502.
+- No LAB run, no tag, release or deploy. Open items: SA-07 (accepted), SA-08, SA-09, SA-10.
