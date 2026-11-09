@@ -25,17 +25,23 @@ pub enum Stage {
     Init,
     /// Verify the peer's bundle and write the final configuration.
     Join,
-    /// Ask systemd (through the root control helper, ADR-0023) to start `baft-tunnel@NAME`, then
-    /// verify; stop it again if verification fails.
+    /// Ask systemd (through the root control helper, ADR-0023) to enable `baft-tunnel@NAME` at boot
+    /// and start it now, then verify; stop and disable it again if verification fails.
     Start,
+    /// Stop `baft-tunnel@NAME` and disable it at boot, then verify that it is down.
+    Stop,
+    /// Stop, then start and enable again (same verification as `start`).
+    Restart,
 }
 
 impl Stage {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Init => "init",
             Self::Join => "join",
             Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Restart => "restart",
         }
     }
 }
@@ -157,6 +163,8 @@ pub struct UnitState {
     pub restarts: u32,
     pub result: String,
     pub main_pid: u32,
+    /// `UnitFileState`: `enabled` means the instance starts at boot.
+    pub enabled: String,
 }
 
 /// Control of `baft-tunnel@NAME`. The real implementation only drops a request file that the
@@ -202,7 +210,7 @@ pub fn valid_instance(name: &str) -> bool {
 
 impl Units for SystemUnits {
     fn request(&self, name: &str, verb: &str) -> Result<(), String> {
-        if !valid_instance(name) || !matches!(verb, "start" | "stop") {
+        if !valid_instance(name) || !matches!(verb, "start" | "stop" | "enable" | "disable") {
             return Err("invalid instance or verb".into());
         }
         if !self.control_dir.is_dir() {
@@ -230,6 +238,8 @@ impl Units for SystemUnits {
                 "Result",
                 "-p",
                 "MainPID",
+                "-p",
+                "UnitFileState",
                 "--no-pager",
             ])
             .output();
@@ -245,6 +255,7 @@ impl Units for SystemUnits {
                     Some(("NRestarts", v)) => st.restarts = v.parse().unwrap_or(0),
                     Some(("Result", v)) => st.result = v.into(),
                     Some(("MainPID", v)) => st.main_pid = v.parse().unwrap_or(0),
+                    Some(("UnitFileState", v)) => st.enabled = v.into(),
                     _ => {}
                 }
             }
@@ -268,6 +279,76 @@ impl Units for SystemUnits {
     }
 }
 
+impl Stage {
+    /// Stages that act on the systemd unit and write no files.
+    pub fn is_lifecycle(self) -> bool {
+        matches!(self, Self::Start | Self::Stop | Self::Restart)
+    }
+}
+
+/// The stored receipt for this idempotency key: replayed when the request matches, else a conflict.
+fn replay(stored: &Path, digest: &str) -> Option<(u16, Value)> {
+    let text = std::fs::read_to_string(stored).ok()?;
+    Some(match serde_json::from_str::<Value>(&text) {
+        Ok(mut old) if old["request_sha256"] == json!(digest) => {
+            old["replayed"] = json!(true);
+            (200, old)
+        }
+        _ => (
+            409,
+            json!({"error": "idempotency key already used for a different request"}),
+        ),
+    })
+}
+
+fn base_receipt(key: &str, stage: Stage, request: Value, digest: &str) -> Value {
+    json!({
+        "receipt_version": 1,
+        "id": key,
+        "stage": stage.as_str(),
+        "started_at": now(),
+        "request": request,
+        "request_sha256": digest,
+        "replayed": false,
+        "secrets": "none recorded: key material, the agent token and bundle contents are never written to a receipt",
+    })
+}
+
+/// Start, stop or restart the instance the agent is bound to, without a setup plan (panel
+/// lifecycle buttons). Same gates, verification, receipt and idempotency as Apply.
+pub fn lifecycle(
+    stage: Stage,
+    instance: &str,
+    dir: &Path,
+    key: &str,
+    receipts: &Path,
+    units: &dyn Units,
+) -> (u16, Value) {
+    if !stage.is_lifecycle() {
+        return (
+            422,
+            json!({"error": "only start, stop and restart act on a running instance"}),
+        );
+    }
+    let request =
+        json!({"stage": stage.as_str(), "instance": instance, "dir": dir.to_string_lossy()});
+    let digest = sha(request.to_string().as_bytes());
+    let stored = receipts.join(format!("{key}.json"));
+    if let Some(old) = replay(&stored, &digest) {
+        return old;
+    }
+    let receipt = base_receipt(key, stage, request, &digest);
+    run_lifecycle(
+        stage,
+        Some(instance.to_string()),
+        dir,
+        receipt,
+        &stored,
+        receipts,
+        units,
+    )
+}
+
 /// Run one stage. Returns the HTTP status and the receipt.
 pub fn run(r: &ApplyRequest, receipts: &Path, gate: Option<&Gate>) -> (u16, Value) {
     run_with(r, receipts, gate, &SystemUnits::default())
@@ -279,34 +360,23 @@ pub fn run_with(
     gate: Option<&Gate>,
     units: &dyn Units,
 ) -> (u16, Value) {
-    let started = now();
     let digest = request_digest(r);
     let stored = receipts.join(format!("{}.json", r.key));
-    if let Ok(text) = std::fs::read_to_string(&stored) {
-        return match serde_json::from_str::<Value>(&text) {
-            Ok(mut old) if old["request_sha256"] == json!(digest) => {
-                old["replayed"] = json!(true);
-                (200, old)
-            }
-            _ => (
-                409,
-                json!({"error": "idempotency key already used for a different request"}),
-            ),
-        };
+    if let Some(old) = replay(&stored, &digest) {
+        return old;
     }
     let dir = r.plan.dir.clone();
-    let mut receipt = json!({
-        "receipt_version": 1,
-        "id": r.key,
-        "stage": r.stage.as_str(),
-        "started_at": started,
-        "request": request_summary(r),
-        "request_sha256": digest,
-        "replayed": false,
-        "secrets": "none recorded: key material, the agent token and bundle contents are never written to a receipt",
-    });
-    if r.stage == Stage::Start {
-        return run_start(r, receipt, receipts, &stored, units);
+    let mut receipt = base_receipt(&r.key, r.stage, request_summary(r), &digest);
+    if r.stage.is_lifecycle() {
+        return run_lifecycle(
+            r.stage,
+            r.plan.instance.clone(),
+            &dir,
+            receipt,
+            &stored,
+            receipts,
+            units,
+        );
     }
     if let Some(g) = gate {
         receipt["gate"] = json!({
@@ -340,7 +410,9 @@ pub fn run_with(
             Err(e) => action_error = Some(format!("{e:#}")),
         },
         Stage::Join => action_error = join(r, &dir).err(),
-        Stage::Start => unreachable!("start is handled by run_start"),
+        Stage::Start | Stage::Stop | Stage::Restart => {
+            unreachable!("lifecycle stages are handled by run_lifecycle")
+        }
     }
     let created: Vec<(&Tracked, PathBuf)> = files
         .iter()
@@ -426,7 +498,7 @@ fn verify(
 ) -> Vec<Value> {
     let mut v = Vec::new();
     match r.stage {
-        Stage::Start => {}
+        Stage::Start | Stage::Stop | Stage::Restart => {}
         Stage::Init => {
             let state = dir.join(setup::STATE_FILE);
             let state_json: Option<Value> = std::fs::read(&state)
@@ -536,9 +608,11 @@ fn next_commands(r: &ApplyRequest) -> Vec<String> {
         (Stage::Init, _) => vec![
             "Compare the bundle checksum with the peer's over a separate channel, then run the join stage here with the peer's bundle and checksum.".into(),
         ],
-        (Stage::Join, Some(name)) => vec![format!("systemctl enable --now baft-tunnel@{name}")],
+        (Stage::Join, Some(name)) => vec![format!(
+            "Start baft-tunnel@{name} from the panel (Tunnels, Start) or with the Apply stage start; it is then enabled at boot"
+        )],
         (Stage::Join, None) => vec![format!("baft-tunnel apply --config {d}/config.json --confirm")],
-        (Stage::Start, _) => vec![],
+        (_, _) => vec![],
     }
 }
 
@@ -566,11 +640,38 @@ fn tcp_open(addr: &str) -> bool {
     TcpStream::connect_timeout(&sa, std::time::Duration::from_secs(2)).is_ok()
 }
 
-fn run_start(
-    r: &ApplyRequest,
+fn is_up(st: &UnitState) -> bool {
+    matches!(st.active.as_str(), "active" | "activating" | "reloading")
+}
+
+/// Poll until `done` holds (at most about 20 s; systemd acts asynchronously on a request).
+fn wait_for(units: &dyn Units, name: &str, done: impl Fn(&UnitState) -> bool) -> UnitState {
+    let mut st = units.state(name);
+    for _ in 0..40 {
+        if done(&st) {
+            break;
+        }
+        units.settle(std::time::Duration::from_millis(500));
+        st = units.state(name);
+    }
+    st
+}
+
+fn boot_view(st: &UnitState) -> Value {
+    json!({
+        "enabled_at_boot": st.enabled == "enabled",
+        "unit_file_state": if st.enabled.is_empty() { "unknown" } else { st.enabled.as_str() },
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_lifecycle(
+    stage: Stage,
+    instance: Option<String>,
+    dir: &Path,
     mut receipt: Value,
-    receipts: &Path,
     stored: &Path,
+    receipts: &Path,
     units: &dyn Units,
 ) -> (u16, Value) {
     let refuse = |mut rc: Value, why: String, code: u16| {
@@ -580,30 +681,67 @@ fn run_start(
         rc["finished_at"] = json!(now());
         (code, rc)
     };
-    let Some(name) = r.plan.instance.clone().filter(|n| valid_instance(n)) else {
+    let Some(name) = instance.filter(|n| valid_instance(n)) else {
         return refuse(
             receipt,
-            "start needs an instance name (letters, digits, '_' or '-')".into(),
+            format!(
+                "{} needs an instance name (letters, digits, '_' or '-')",
+                stage.as_str()
+            ),
             409,
         );
     };
-    if r.plan.dir != Path::new("/etc/baft-tunnel") && !cfg!(test) {
+    if dir != Path::new("/etc/baft-tunnel") && !cfg!(test) {
         return refuse(
             receipt,
-            "start only manages instances under /etc/baft-tunnel".into(),
+            format!(
+                "{} only manages instances under /etc/baft-tunnel",
+                stage.as_str()
+            ),
             409,
         );
     }
-    let config_path = r.plan.dir.join(format!("{name}.json"));
-    // Parse only: validate() resolves a `key_credential` through the systemd credential directory,
-    // which exists only inside the unit. The unit validates itself and fails closed; the verify
-    // checks below catch a unit that does not come up.
+    let unit = format!("baft-tunnel@{name}.service");
+    let before = units.state(&name);
+    receipt["before"] = json!({
+        "active_state": before.active,
+        "main_pid": before.main_pid,
+        "boot": boot_view(&before),
+    });
+    if stage == Stage::Stop {
+        return run_stop(
+            &name, &unit, &before, receipt, stored, receipts, units, refuse,
+        );
+    }
+    match stage {
+        Stage::Start if is_up(&before) => {
+            return refuse(
+                receipt,
+                format!("{unit} is already {}; use restart", before.active),
+                409,
+            );
+        }
+        Stage::Restart if !is_up(&before) => {
+            return refuse(
+                receipt,
+                format!("{unit} is not running ({}); use start", before.active),
+                409,
+            );
+        }
+        _ => {}
+    }
+    let config_path = dir.join(format!("{name}.json"));
+    // Parse only: validate() reads the private key, which the agent cannot (SA-09). The unit
+    // validates itself and fails closed; the verify checks below catch a unit that does not come up.
     let config = match crate::config::load(&config_path) {
         Ok(c) => c,
         Err(e) => return refuse(receipt, format!("configuration is not ready: {e:#}"), 409),
     };
-    let direction = s(&r.plan.direction);
-    if !crate::capabilities::supports_direction(config.engine_name(), &direction) {
+    if let Err(e) = config.validate_public() {
+        return refuse(receipt, format!("configuration is not valid: {e:#}"), 409);
+    }
+    let direction = config.direction_name();
+    if !crate::capabilities::supports_direction(config.engine_name(), direction) {
         return refuse(
             receipt,
             format!(
@@ -613,32 +751,43 @@ fn run_start(
             409,
         );
     }
-    let before = units.state(&name);
-    if before.active == "active" || before.active == "activating" {
-        return refuse(
-            receipt,
-            format!("baft-tunnel@{name} is already {}", before.active),
-            409,
-        );
+    let mut v = Vec::new();
+    if stage == Stage::Restart {
+        if let Err(e) = units.request(&name, "stop") {
+            return refuse(receipt, e, 409);
+        }
+        let down = wait_for(units, &name, |st| !is_up(st));
+        let ok = !is_up(&down);
+        v.push(check(
+            "stopped_before_start",
+            ok,
+            format!("ActiveState={} after the stop request", down.active),
+        ));
+        if !ok {
+            receipt["verification"] = json!(v);
+            receipt["result"] = json!("failed");
+            receipt["changes"] =
+                json!([{"kind": "service", "action": "stop requested", "unit": unit}]);
+            receipt["reason"] = json!("the unit did not stop; nothing was started");
+            receipt["ready"] = json!("unknown");
+            receipt["finished_at"] = json!(now());
+            persist(receipts, stored, &mut receipt);
+            return (500, receipt);
+        }
     }
-    if let Err(e) = units.request(&name, "start") {
+    // `enable --now`: the unit starts now and again after every reboot (ADR-0023 amendment).
+    if let Err(e) = units.request(&name, "enable") {
         return refuse(receipt, e, 409);
     }
-    // Wait for the unit to come up (the helper runs asynchronously).
-    let mut st = units.state(&name);
-    for _ in 0..40 {
-        if st.active == "active" && st.sub == "running" {
-            break;
-        }
-        units.settle(std::time::Duration::from_millis(500));
-        st = units.state(&name);
-    }
-    let mut v = vec![check(
+    let st = wait_for(units, &name, |st| {
+        st.active == "active" && st.sub == "running"
+    });
+    v.push(check(
         "unit_active",
         st.active == "active" && st.sub == "running",
         format!("ActiveState={} SubState={}", st.active, st.sub),
-    )];
-    if v[0]["result"] == "pass" {
+    ));
+    if st.active == "active" && st.sub == "running" {
         units.settle(std::time::Duration::from_secs(3));
         let again = units.state(&name);
         v.push(check(
@@ -649,6 +798,18 @@ fn run_start(
                 again.active, again.restarts, again.result
             ),
         ));
+        v.push(check(
+            "enabled_at_boot",
+            again.enabled == "enabled",
+            format!("UnitFileState={}", again.enabled),
+        ));
+        if stage == Stage::Restart {
+            v.push(check(
+                "new_process",
+                again.main_pid != 0 && again.main_pid != before.main_pid,
+                format!("MainPID {} -> {}", before.main_pid, again.main_pid),
+            ));
+        }
         // A Reverse service node dials out and has no listener (ADR-0021): there is nothing to connect to.
         if let Some(c) = listener_check(config.listen_addr()) {
             v.push(c);
@@ -688,23 +849,29 @@ fn run_start(
     }
     // Never "ready" from this stage: no observation of bytes crossing the tunnel exists here.
     receipt["ready"] = json!("unknown");
-    receipt["changes"] = json!([{"kind": "service", "action": "started", "unit": format!("baft-tunnel@{name}.service")}]);
+    let mut changes = Vec::new();
+    if stage == Stage::Restart {
+        changes.push(json!({"kind": "service", "action": "stopped", "unit": unit}));
+    }
+    changes.push(json!({"kind": "service", "action": "started and enabled at boot", "unit": unit}));
+    receipt["changes"] = json!(changes);
     if failed {
-        let stop = units.request(&name, "stop");
-        units.settle(std::time::Duration::from_secs(2));
-        let after = units.state(&name);
+        // Stop it and remove the boot link, so a broken unit neither loops now nor after a reboot.
+        let stop = units.request(&name, "disable");
+        let after = wait_for(units, &name, |st| !is_up(st));
         receipt["result"] = json!("rolled_back");
         receipt["rollback"] = json!({
             "performed": stop.is_ok(),
-            "action": "stop requested",
+            "action": "stop and disable at boot requested",
             "error": stop.err(),
-            "state_after": {"active": after.active, "sub": after.sub},
+            "state_after": {"active": after.active, "sub": after.sub, "boot": boot_view(&after)},
         });
+        receipt["boot"] = boot_view(&after);
     } else {
         receipt["result"] = json!("applied");
-        receipt["rollback"] = json!({"performed": false, "how_to_undo": format!("systemctl stop baft-tunnel@{name}")});
+        receipt["boot"] = boot_view(&units.state(&name));
+        receipt["rollback"] = json!({"performed": false, "how_to_undo": "run the stop stage (panel: Stop); it stops the unit and disables it at boot"});
         receipt["not_done"] = json!([
-            "the unit is not enabled at boot (run: systemctl enable baft-tunnel@NAME)",
             "no firewall rule was changed or inspected; open the tunnel port by hand where needed",
             if session_seen {
                 "an authorized peer session was observed; the peer node itself was not checked from here"
@@ -712,9 +879,70 @@ fn run_start(
                 "no authorized peer session was observed yet (the peer may not be started, or may be unreachable); an accepted local connection proves nothing about the peer"
             },
             "the peer node was not verified from here; start and check it too",
+            "start at boot is configured, not proven: no reboot was performed",
             "data integrity over the tunnel is Unknown: Apply does not move test data through it (the P0-5 acceptance run does)",
         ]);
     }
+    receipt["finished_at"] = json!(now());
+    persist(receipts, stored, &mut receipt);
+    (if failed { 500 } else { 200 }, receipt)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_stop(
+    name: &str,
+    unit: &str,
+    before: &UnitState,
+    mut receipt: Value,
+    stored: &Path,
+    receipts: &Path,
+    units: &dyn Units,
+    refuse: impl Fn(Value, String, u16) -> (u16, Value),
+) -> (u16, Value) {
+    if !is_up(before) && before.enabled != "enabled" {
+        return refuse(
+            receipt,
+            format!(
+                "{unit} is already stopped ({}) and not enabled at boot",
+                before.active
+            ),
+            409,
+        );
+    }
+    // `disable --now`: stopped now and not started again at boot.
+    if let Err(e) = units.request(name, "disable") {
+        return refuse(receipt, e, 409);
+    }
+    let after = wait_for(units, name, |st| !is_up(st) && st.enabled != "enabled");
+    let v = vec![
+        check(
+            "unit_inactive",
+            !is_up(&after),
+            format!("ActiveState={} SubState={}", after.active, after.sub),
+        ),
+        check(
+            "not_enabled_at_boot",
+            after.enabled != "enabled",
+            format!("UnitFileState={}", after.enabled),
+        ),
+    ];
+    let failed = v.iter().any(|c| c["result"] != "pass");
+    receipt["verification"] = json!(v);
+    receipt["changes"] =
+        json!([{"kind": "service", "action": "stopped and disabled at boot", "unit": unit}]);
+    receipt["boot"] = boot_view(&after);
+    receipt["stages"] = json!({
+        "files_applied": "unknown (this stage does not write files)",
+        "service_state": if failed { "failed" } else { "stopped" },
+    });
+    receipt["ready"] = json!("unknown");
+    receipt["result"] = json!(if failed { "failed" } else { "applied" });
+    receipt["rollback"] = json!({"performed": false, "how_to_undo": "run the start stage (panel: Start); it starts the unit and enables it at boot"});
+    receipt["not_done"] = json!([
+        "the peer node was not changed; it reports no session until this node starts again",
+        "no firewall rule was changed or inspected",
+        "configuration and keys were not touched",
+    ]);
     receipt["finished_at"] = json!(now());
     persist(receipts, stored, &mut receipt);
     (if failed { 500 } else { 200 }, receipt)
@@ -923,6 +1151,12 @@ mod tests {
                     result: "success".into(),
                     restarts: 0,
                     main_pid: 4242,
+                    enabled: if active == "active" {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                    .into(),
                 }),
                 comes_up,
                 session: false,
@@ -935,13 +1169,20 @@ mod tests {
         fn request(&self, name: &str, verb: &str) -> Result<(), String> {
             self.log.lock().unwrap().push(format!("{verb} {name}"));
             let mut st = self.st.lock().unwrap();
-            if verb == "start" && self.comes_up {
+            if matches!(verb, "start" | "enable") && self.comes_up && st.active != "active" {
                 st.active = "active".into();
                 st.sub = "running".into();
+                st.main_pid += 1;
             }
-            if verb == "stop" {
+            if verb == "enable" {
+                st.enabled = "enabled".into();
+            }
+            if matches!(verb, "stop" | "disable") {
                 st.active = "inactive".into();
                 st.sub = "dead".into();
+            }
+            if verb == "disable" {
+                st.enabled = "disabled".into();
             }
             Ok(())
         }
@@ -950,7 +1191,8 @@ mod tests {
         }
         fn settle(&self, _: std::time::Duration) {}
         fn session(&self, _: &str, pid: u32) -> Option<Value> {
-            (self.session && pid == 4242).then(|| json!({"state":"authorized","pid":4242,"authorized_sessions":1,"since_unix":1,"tunnel_id":"t","direction":"direct"}))
+            let cur = self.st.lock().unwrap().main_pid;
+            (self.session && pid == cur).then(|| json!({"state":"authorized","pid":cur,"authorized_sessions":1,"since_unix":1,"tunnel_id":"t","direction":"direct"}))
         }
     }
 
@@ -1022,11 +1264,17 @@ mod tests {
             .iter()
             .map(|v| v["id"].as_str().unwrap().to_string())
             .collect();
-        for id in ["unit_active", "stable_3s", "listener_accepting"] {
+        for id in [
+            "unit_active",
+            "stable_3s",
+            "enabled_at_boot",
+            "listener_accepting",
+        ] {
             assert!(ids.contains(&id.to_string()), "{ids:?}");
         }
         assert!(out["not_done"].to_string().contains("firewall"));
-        assert_eq!(*units.log.lock().unwrap(), vec!["start edge"]);
+        assert_eq!(*units.log.lock().unwrap(), vec!["enable edge"]);
+        assert_eq!(out["boot"]["enabled_at_boot"], true);
         // No session indicator: the peer stays Unknown, and nothing is ever "ready" from Apply.
         assert_eq!(out["stages"]["authorized_session"], "unknown");
         assert_eq!(out["stages"]["authenticated_peer"], "unknown");
@@ -1069,8 +1317,13 @@ mod tests {
         );
         assert_eq!(code, 500, "{out}");
         assert_eq!(out["result"], "rolled_back");
-        assert_eq!(*units.log.lock().unwrap(), vec!["start edge", "stop edge"]);
+        assert_eq!(
+            *units.log.lock().unwrap(),
+            vec!["enable edge", "disable edge"]
+        );
         assert_eq!(out["rollback"]["state_after"]["active"], "inactive");
+        // A unit that failed verification is not left enabled at boot.
+        assert_eq!(out["boot"]["enabled_at_boot"], false);
     }
 
     #[test]
@@ -1129,6 +1382,119 @@ mod tests {
             assert!(u.request(bad, "start").is_err(), "{bad}");
         }
         assert!(u.request("edge", "restart").is_err());
+        assert!(u.request("edge", "enable").is_ok());
+        assert!(u.request("edge", "disable").is_ok());
+        assert!(u.request("edge", "mask").is_err());
+    }
+
+    #[test]
+    fn stop_disables_at_boot_and_refuses_when_already_down() {
+        let (dir, _listener) = paired_instance("stop");
+        let units = Fake::new(true, "active");
+        let (code, out) = lifecycle(
+            Stage::Stop,
+            "edge",
+            &dir,
+            "key-stop-0001",
+            &dir.join("r"),
+            &units,
+        );
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["result"], "applied");
+        assert_eq!(*units.log.lock().unwrap(), vec!["disable edge"]);
+        assert_eq!(out["boot"]["enabled_at_boot"], false);
+        assert_eq!(out["before"]["boot"]["enabled_at_boot"], true);
+        // Same key: replayed, nothing requested again.
+        let (code, again) = lifecycle(
+            Stage::Stop,
+            "edge",
+            &dir,
+            "key-stop-0001",
+            &dir.join("r"),
+            &units,
+        );
+        assert_eq!((code, again["replayed"].clone()), (200, json!(true)));
+        assert_eq!(units.log.lock().unwrap().len(), 1);
+        // Already stopped and disabled: refused, nothing requested.
+        let (code, out) = lifecycle(
+            Stage::Stop,
+            "edge",
+            &dir,
+            "key-stop-0002",
+            &dir.join("r"),
+            &units,
+        );
+        assert_eq!(code, 409, "{out}");
+        assert!(out["reason"].as_str().unwrap().contains("already stopped"));
+        assert_eq!(units.log.lock().unwrap().len(), 1);
+        // A different request under a used key is a conflict.
+        let (code, _) = lifecycle(
+            Stage::Start,
+            "edge",
+            &dir,
+            "key-stop-0001",
+            &dir.join("r"),
+            &units,
+        );
+        assert_eq!(code, 409);
+    }
+
+    #[test]
+    fn restart_stops_then_starts_a_new_process_and_refuses_a_stopped_unit() {
+        let (dir, _listener) = paired_instance("restart");
+        let stopped = Fake::new(true, "inactive");
+        let (code, out) = lifecycle(
+            Stage::Restart,
+            "edge",
+            &dir,
+            "key-rs-00001",
+            &dir.join("r"),
+            &stopped,
+        );
+        assert_eq!(code, 409, "{out}");
+        assert!(out["reason"].as_str().unwrap().contains("use start"));
+        assert!(stopped.log.lock().unwrap().is_empty());
+
+        let units = Fake::new(true, "active");
+        let (code, out) = lifecycle(
+            Stage::Restart,
+            "edge",
+            &dir,
+            "key-rs-00002",
+            &dir.join("r"),
+            &units,
+        );
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["result"], "applied");
+        assert_eq!(*units.log.lock().unwrap(), vec!["stop edge", "enable edge"]);
+        let ids: Vec<_> = out["verification"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["id"].as_str().unwrap().to_string())
+            .collect();
+        for id in [
+            "stopped_before_start",
+            "unit_active",
+            "enabled_at_boot",
+            "new_process",
+        ] {
+            assert!(ids.contains(&id.to_string()), "{ids:?}");
+        }
+        assert_eq!(out["ready"], "unknown");
+        // Init and join are not lifecycle actions.
+        assert_eq!(
+            lifecycle(
+                Stage::Init,
+                "edge",
+                &dir,
+                "key-rs-00003",
+                &dir.join("r"),
+                &units
+            )
+            .0,
+            422
+        );
     }
 
     #[test]

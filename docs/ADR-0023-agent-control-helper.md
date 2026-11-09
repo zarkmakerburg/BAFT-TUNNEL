@@ -27,9 +27,26 @@ let the agent start any unit. sudo is blocked by `NoNewPrivileges`.
    run showed a forward node holds a local connection open even with no peer, so it proved nothing. Reading unit state needs no privilege (`systemctl show`).
 4. Instance names for this path are limited to `A-Za-z0-9_-`.
 
+## Amendment 1 (2026-11-09, U3): stop, restart and boot persistence
+
+Two more fixed commands, same mechanism (request file -> root path unit -> one `systemctl` command
+for exactly `baft-tunnel@NAME`): `baft-tunnel-control-enable@NAME` runs `systemctl --no-block enable --now`
+and `baft-tunnel-control-disable@NAME` runs `systemctl --no-block disable --now`. Apply stage `start`
+now requests `enable` (started now and after every reboot) and verifies `UnitFileState=enabled`; a
+start that fails verification is rolled back with `disable` (stopped and not started at boot). New
+stages `stop` (requests `disable`, verifies inactive and not enabled) and `restart` (requests `stop`,
+waits for inactive, then `enable`; verifies a new main PID). The same three are offered without a
+setup plan for the instance the agent is bound to: `POST /v1/tunnel/lifecycle`
+(`{"action":"start|stop|restart","confirm":true,"idempotency_key":"..."}`), used by the panel's
+Tunnels page. Receipts state `boot.enabled_at_boot`; a reboot itself is not performed or claimed.
+The agent runs as its own user `baft-tunnel-agent` (SA-09) from the shipped unit
+`baft-tunnel-agent@NAME.service`, started by `baft-tunnel-agent@NAME.path` once `NAME.json` exists
+and enabled at boot; `install.sh --register NAME` (or `install-agent-control.sh --instance NAME`)
+installs all of it in one step.
+
 ## Not done (stated in every receipt)
 
-- Not enabled at boot, no firewall change or inspection. The running unit writes a session
+- (Before Amendment 1: not enabled at boot.) No firewall change or inspection. The running unit writes a session
   indicator (`$RUNTIME_DIRECTORY/session.json`, no secrets, bound to its main PID) while an
   authenticated and authorized session exists; Apply `start` records it as `observed`, otherwise
   `unknown`. `data_path_integrity` and `ready` stay `unknown` in every Apply receipt: only a test

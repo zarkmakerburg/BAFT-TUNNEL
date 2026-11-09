@@ -10,7 +10,7 @@ use std::{
     fs,
     io::Write,
     net::{IpAddr, SocketAddr},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -459,6 +459,13 @@ pub async fn run(cfg: RuntimeConfig) -> Result<()> {
         .ok()
         .and_then(|value| value.split(':').next().map(PathBuf::from))
         .context("RUNTIME_DIRECTORY is not set; start this engine from the systemd unit")?;
+    // The unit's runtime directory is group-readable so the agent (its own user, SA-09) can read
+    // the session and counter files; the bundle with the key copy goes into a private child.
+    let runtime_dir = runtime_dir.join("engine");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&runtime_dir)
+        .with_context(|| format!("create {}", runtime_dir.display()))?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .context("system clock is before the Unix epoch")?

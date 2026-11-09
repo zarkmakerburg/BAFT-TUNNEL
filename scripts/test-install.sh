@@ -115,11 +115,27 @@ cmp -s "$KEY1" "$CRED_DIR/node-key"
 [[ -f "$DROPIN" ]]
 
 write_fake 0.3.0
-"$INSTALL" --binary "$FAKE" --destdir "$STAGE" >/dev/null
-# The agent control helper is part of the installation: uninstall removes its units and tmpfiles entry.
-"$ROOT/scripts/install-agent-control.sh" --instance iran --destdir "$STAGE" >/dev/null
+# One step: binary plus agent service and control helper for an instance (--register).
+"$INSTALL" --binary "$FAKE" --register iran --agent-listen 127.0.0.1:18085 --destdir "$STAGE" >/dev/null
+for v in start stop enable disable; do
+  [[ -f "$STAGE/etc/systemd/system/baft-tunnel-control-$v@.path" && -f "$STAGE/etc/systemd/system/baft-tunnel-control-$v@.service" ]]
+done
+grep -qx 'ExecStart=/usr/bin/systemctl --no-block enable --now baft-tunnel@%i.service' "$STAGE/etc/systemd/system/baft-tunnel-control-enable@.service"
+AGENT_UNIT="$STAGE/etc/systemd/system/baft-tunnel-agent@.service"
+grep -qx 'User=baft-tunnel-agent' "$AGENT_UNIT" && ! grep -q '^User=baft-tunnel$' "$AGENT_UNIT"
+grep -qx 'SupplementaryGroups=baft-tunnel' "$AGENT_UNIT" && grep -qx 'NoNewPrivileges=true' "$AGENT_UNIT"
+grep -q -- '--listen ${BAFT_AGENT_LISTEN}' "$AGENT_UNIT" && grep -q -- '--instance %i' "$AGENT_UNIT"
+grep -qx 'Environment=BAFT_AGENT_LISTEN=127.0.0.1:18085' "$STAGE/etc/systemd/system/baft-tunnel-agent@iran.service.d/listen.conf"
+[[ -f "$STAGE/etc/systemd/system/baft-tunnel-agent@.path" ]]
+grep -qx 'RuntimeDirectoryMode=0750' "$UNIT" && grep -q 'InaccessiblePaths=.*/var/lib/baft-tunnel-agent' "$UNIT"
+# The agent never listens off loopback, and a bad name or address is refused.
+refused() { if "$@" >/dev/null 2>&1; then echo "accepted: $*" >&2; exit 1; fi; }
+refused "$ROOT/scripts/install-agent-control.sh" --instance iran --listen 0.0.0.0:18080 --destdir "$STAGE"
+refused "$INSTALL" --binary "$FAKE" --register 'a.b' --destdir "$STAGE"
+refused "$INSTALL" --binary "$FAKE" --agent-listen 127.0.0.1:1 --destdir "$STAGE"
 mkdir -p "$STAGE/etc/systemd/system/multi-user.target.wants" "$STAGE/run/baft-tunnel/control"
 ln -sf ../baft-tunnel-control-start@.path "$STAGE/etc/systemd/system/multi-user.target.wants/baft-tunnel-control-start@iran.path"
+ln -sf ../baft-tunnel-agent@.path "$STAGE/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@iran.path"
 [[ -f "$STAGE/etc/systemd/system/baft-tunnel-control-start@.path" && -f "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf" ]]
 if "$UNINSTALL" --destdir "$STAGE" --purge-config >/dev/null 2>&1; then
   echo "uninstall accepted config purge without --yes" >&2
@@ -129,8 +145,10 @@ fi
 [[ ! -e "$STAGE/etc/baft-tunnel" && ! -e "$STAGE/var/lib/baft-tunnel" ]]
 [[ ! -e "$DROPIN" && ! -e "$(dirname "$DROPIN")" ]]
 [[ ! -e "$STAGE/usr/local/bin/baft-tunnel" && ! -e "$STAGE/etc/systemd/system/baft-tunnel@.service" ]]
-! compgen -G "$STAGE/etc/systemd/system/baft-tunnel-control-*" >/dev/null
+[[ -z "$(compgen -G "$STAGE/etc/systemd/system/baft-tunnel-control-*" || true)" ]]
 [[ ! -e "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf" && ! -e "$STAGE/run/baft-tunnel/control" ]]
 [[ ! -L "$STAGE/etc/systemd/system/multi-user.target.wants/baft-tunnel-control-start@iran.path" ]]
+[[ -z "$(compgen -G "$STAGE/etc/systemd/system/baft-tunnel-agent@*" || true)" ]]
+[[ ! -L "$STAGE/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@iran.path" && ! -e "$STAGE/var/lib/baft-tunnel-agent" ]]
 
-echo "BAFT_INSTALL_TEST=PASS (staged install, systemd hardening, rollback, baseline credential provisioning/replace/rollback, fail-closed credential checks, safe uninstall, explicit config purge, control helper removed)"
+echo "BAFT_INSTALL_TEST=PASS (staged install, systemd hardening, rollback, baseline credential provisioning/replace/rollback, fail-closed credential checks, safe uninstall, explicit config purge, one-step agent registration, agent and control helper removed)"

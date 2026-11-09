@@ -4,10 +4,11 @@ usage() {
   cat <<'EOF'
 Usage: uninstall.sh [--destdir ROOT] [--stop] [--purge-config --yes]
 
-Removes the binary and systemd template. Config, node-key credentials
-(/etc/baft-tunnel/credentials), their instance drop-ins, state, and the
-service account are retained unless --purge-config --yes is explicitly
-supplied (the service account is always retained).
+Removes the binary, the systemd templates, the agent units and the control helper.
+Config, node-key credentials (/etc/baft-tunnel/credentials), their instance
+drop-ins, state, and the agent token and state (/var/lib/baft-tunnel-agent)
+are retained unless --purge-config --yes is explicitly supplied. The service
+accounts baft-tunnel and baft-tunnel-agent are always retained.
 Running/enabled instances must be stopped with --stop first.
 EOF
 }
@@ -50,17 +51,29 @@ if [[ "$STAGING" == "0" ]]; then
     systemctl disable --now "${units[@]}"
   fi
 fi
-# Agent control helper (scripts/install-agent-control.sh): per-instance path units, templates,
-# tmpfiles entry and the runtime request directory belong to this installation too.
+# Agent service and control helper (scripts/install-agent-control.sh): per-instance agent and path
+# units, templates, tmpfiles entry and the runtime request directory belong to this installation too.
 if [[ "$STAGING" == "0" ]]; then
-  mapfile -t ctl < <(systemctl list-units --all --plain --no-legend 'baft-tunnel-control-*' | awk '{print $1}' | sort -u)
+  mapfile -t ctl < <(systemctl list-units --all --plain --no-legend 'baft-tunnel-agent@*' 'baft-tunnel-control-*' | awk '{print $1}' | sort -u
+    systemctl list-unit-files --no-legend 'baft-tunnel-agent@*' | awk '$2 == "enabled" {print $1}')
   if (("${#ctl[@]}" > 0)); then systemctl disable --now "${ctl[@]}" 2>/dev/null || systemctl stop "${ctl[@]}" 2>/dev/null || true; fi
 fi
 rm -f "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel-control-*.path \
-  "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-start@.path "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-start@.service \
-  "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-stop@.path "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-stop@.service \
+  "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@*.path \
+  "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@*.service \
+  "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-*@.path "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-*@.service \
+  "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-agent@.path "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-agent@.service \
   "$ROOT_PREFIX/etc/tmpfiles.d/baft-tunnel-control.conf"
 rm -rf "$ROOT_PREFIX/run/baft-tunnel/control"
+# Agent listen drop-ins written by install-agent-control.sh (no secrets, no operator content).
+shopt -s nullglob
+for dropin in "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-agent@*.service.d/listen.conf; do
+  if grep -Fqx '# Managed by BAFT-TUNNEL scripts/install-agent-control.sh' "$dropin"; then
+    rm -f "$dropin"
+    rmdir "$(dirname "$dropin")" 2>/dev/null || true
+  fi
+done
+shopt -u nullglob
 rm -f "$ROOT_PREFIX/usr/local/bin/baft-tunnel" "$ROOT_PREFIX/etc/systemd/system/baft-tunnel@.service"
 if [[ "$PURGE" == "1" ]]; then
   # Remove only drop-ins written by install.sh; leave any operator-owned files.
@@ -72,7 +85,7 @@ if [[ "$PURGE" == "1" ]]; then
     fi
   done
   shopt -u nullglob
-  rm -rf "$ROOT_PREFIX/etc/baft-tunnel" "$ROOT_PREFIX/var/lib/baft-tunnel"
+  rm -rf "$ROOT_PREFIX/etc/baft-tunnel" "$ROOT_PREFIX/var/lib/baft-tunnel" "$ROOT_PREFIX/var/lib/baft-tunnel-agent"
 fi
 if [[ "$STAGING" == "0" ]]; then systemctl daemon-reload; fi
 echo "Removed binary and systemd template. Service account was retained."

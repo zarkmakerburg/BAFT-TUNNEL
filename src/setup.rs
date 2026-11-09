@@ -4,7 +4,7 @@
 use std::{
     io::Write,
     net::IpAddr,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -411,6 +411,83 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
         checksum: bundle.checksum(),
         bundle_path,
     })
+}
+
+/// The user and group that run `baft-tunnel@NAME` (created by `scripts/install.sh`).
+pub const SERVICE_USER: &str = "baft-tunnel";
+
+fn lookup_service_ids() -> Option<(u32, u32)> {
+    let name = std::ffi::CString::new(SERVICE_USER).ok()?;
+    // SAFETY: getpwnam/getgrnam read static buffers; we copy the ids out immediately and the
+    // CLI is single-threaded at this point.
+    unsafe {
+        let pw = libc::getpwnam(name.as_ptr());
+        let gr = libc::getgrnam(name.as_ptr());
+        (!pw.is_null() && !gr.is_null()).then(|| ((*pw).pw_uid, (*gr).gr_gid))
+    }
+}
+
+/// Run as root for an installed instance (`--instance`): hand the files `baft-tunnel@NAME` reads
+/// to the service user, so no manual `chown`/`chgrp` is needed. The private key becomes
+/// `baft-tunnel:baft-tunnel` with its mode kept at 0600; the configuration, pairing state and
+/// public PKI files get group `baft-tunnel` and group read. Symlinks are never followed. Does
+/// nothing (and returns an empty list) when not root.
+pub fn adopt_for_service(dir: &Path, config_file: &str) -> Result<Vec<String>> {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(vec![]);
+    }
+    let Some((uid, gid)) = lookup_service_ids() else {
+        bail!(
+            "the service user {SERVICE_USER} does not exist; run scripts/install.sh --binary first, then repeat this step"
+        );
+    };
+    let mut done = Vec::new();
+    let mut adopt = |name: &str, owner: Option<u32>, group_read: bool| -> Result<()> {
+        let path = dir.join(name);
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            return Ok(());
+        };
+        if !meta.is_file() && !meta.is_dir() {
+            bail!(
+                "{} is not a regular file; refusing to change its owner",
+                path.display()
+            );
+        }
+        std::os::unix::fs::lchown(&path, owner, Some(gid))
+            .with_context(|| format!("chown {}", path.display()))?;
+        let mode = meta.permissions().mode() & 0o7777;
+        let want = if group_read {
+            mode | 0o040 | if meta.is_dir() { 0o010 } else { 0 }
+        } else {
+            mode
+        };
+        if want != mode {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(want))?;
+        }
+        done.push(format!(
+            "{} -> {}:{SERVICE_USER} {:04o}",
+            path.display(),
+            if owner.is_some() {
+                SERVICE_USER
+            } else {
+                "(owner kept)"
+            },
+            want
+        ));
+        Ok(())
+    };
+    // The directory itself only gets the group when setup created it (root-owned, no group yet).
+    if std::fs::metadata(dir).is_ok_and(|m| m.uid() == 0 && m.gid() == 0) {
+        adopt(".", None, true)?;
+    }
+    for key in [KEY_FILE, "node.key"] {
+        adopt(key, Some(uid), false)?;
+    }
+    for public in [config_file, STATE_FILE, "ca.crt", "ca.crl", "node.crt"] {
+        adopt(public, None, true)?;
+    }
+    Ok(done)
 }
 
 fn engine_name(engine: EngineKind) -> &'static str {

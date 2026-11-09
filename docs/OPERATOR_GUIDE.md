@@ -156,6 +156,9 @@ Two hosts, no hand-written JSON. On each host, the commands are `setup init` and
 The bundle holds only public material (Noise public key or certificate pin, ids, ports, and for `tcp-tls` serving nodes the certificate name). It never contains a private key.
 
 
+## Installed agent service and tunnel lifecycle (U2, U3)
+One step per host, as root: `sudo scripts/install.sh --binary ./baft-tunnel --register NAME` installs the binary, the tunnel template, the agent service `baft-tunnel-agent@NAME` (its own user `baft-tunnel-agent`, loopback `127.0.0.1:18080`; change with `--agent-listen 127.0.0.1:PORT`), the API token `/var/lib/baft-tunnel-agent/token` and the control helper. Then `sudo baft-tunnel setup init ... --instance NAME` and `sudo baft-tunnel setup join ...`: run as root they hand `node.noise`/`node.key` to `baft-tunnel:baft-tunnel` (mode 0600) and make `NAME.json`, the pairing state and the public PKI files group `baft-tunnel` readable, so no `chown`/`chgrp` is needed. The agent starts by itself as soon as `NAME.json` exists, and after every reboot. Open the panel (`ssh -L 18080:127.0.0.1:18080 HOST`, token: `sudo cat /var/lib/baft-tunnel-agent/token`), Tunnels: **Start** starts the tunnel and enables it at boot, **Stop** stops it and disables it at boot, **Restart** restarts it; each asks for confirmation, is verified and leaves a receipt (never "ready"). **Run diagnostics** shows each tier and one next action. `scripts/uninstall.sh --stop` also removes the agent units. The manual `setpriv` commands below remain for development.
+
 ## Local status API (read-only, P3-002 A1)
 ```
 install -d -o baft-tunnel -g baft-tunnel -m 0700 /var/lib/baft-tunnel/agent

@@ -1,0 +1,10 @@
+[Unit]
+Description=Start the BAFT-TUNNEL agent for instance %i once its configuration exists
+
+[Path]
+# setup join (or the operator) writes /etc/baft-tunnel/%i.json; the agent then starts by itself.
+PathExists=/etc/baft-tunnel/%i.json
+Unit=baft-tunnel-agent@%i.service
+
+[Install]
+WantedBy=multi-user.target

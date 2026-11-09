@@ -5,6 +5,8 @@ umask 022
 ROOT_PREFIX=""
 BINARY=""
 INSTANCE=""
+REGISTER=""
+AGENT_LISTEN=""
 NODE_KEY=""
 CREDENTIAL_MODE="baseline"
 REPLACE_CREDENTIAL=0
@@ -20,11 +22,19 @@ usage() {
   cat <<'EOF'
 Usage: install.sh [--binary PATH] [--instance NAME --node-key PATH
                   [--credential-mode baseline|encrypted] [--replace-credential]]
+                  [--register NAME [--agent-listen 127.0.0.1:PORT]]
                   [--destdir ROOT [--systemd-version N]]
 
 Install the BAFT-TUNNEL binary and systemd template unit, and/or provision the
 node-key service credential for one instance. At least one of --binary or
---instance is required. Nothing is enabled, started, or restarted.
+--instance is required. No tunnel is enabled, started, or restarted.
+
+--register NAME (one step for an installed instance): also installs the local
+agent service baft-tunnel-agent@NAME under its own user baft-tunnel-agent, its
+API token, and the root control helper for baft-tunnel@NAME
+(scripts/install-agent-control.sh). The agent starts by itself once
+/etc/baft-tunnel/NAME.json exists (after `setup join --instance NAME`) and at
+boot; the panel then starts, stops and restarts the tunnel.
 
 Credential modes (the private key never goes into JSON, environment, or args):
   baseline   Default. systemd 247+ (Ubuntu 22.04 / systemd 249 supported).
@@ -51,6 +61,8 @@ while (($#)); do
     --binary) (($# >= 2)) || die "--binary needs a path"; BINARY="$2"; shift 2 ;;
     --destdir) (($# >= 2)) || die "--destdir needs a path"; ROOT_PREFIX="$2"; shift 2 ;;
     --instance) (($# >= 2)) || die "--instance needs a name"; INSTANCE="$2"; shift 2 ;;
+    --register) (($# >= 2)) || die "--register needs a name"; REGISTER="$2"; shift 2 ;;
+    --agent-listen) (($# >= 2)) || die "--agent-listen needs 127.0.0.1:PORT"; AGENT_LISTEN="$2"; shift 2 ;;
     --node-key) (($# >= 2)) || die "--node-key needs a path"; NODE_KEY="$2"; shift 2 ;;
     --credential-mode) (($# >= 2)) || die "--credential-mode needs a value"; CREDENTIAL_MODE="$2"; shift 2 ;;
     --replace-credential) REPLACE_CREDENTIAL=1; shift ;;
@@ -61,6 +73,13 @@ while (($#)); do
 done
 
 [[ -n "$BINARY" || -n "$INSTANCE" ]] || { usage >&2; die "provide --binary and/or --instance"; }
+if [[ -n "$REGISTER" ]]; then
+  [[ "$REGISTER" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$ ]] ||
+    die "invalid --register name (allowed: letters, digits, _ -; max 63; start alphanumeric)"
+  [[ -f "$SCRIPT_DIR/install-agent-control.sh" ]] || die "install-agent-control.sh not found next to install.sh"
+else
+  [[ -z "$AGENT_LISTEN" ]] || die "--agent-listen requires --register"
+fi
 [[ -f "$UNIT_SOURCE" ]] || die "systemd template not found: $UNIT_SOURCE"
 if [[ -n "$BINARY" ]]; then
   [[ -x "$BINARY" ]] || die "provide an executable release binary with --binary"
@@ -304,4 +323,10 @@ if [[ -n "$INSTANCE" ]]; then
   fi
 fi
 echo "Backup: $BACKUP_DIR"
-echo "No service was enabled, started, or restarted."
+if [[ -n "$REGISTER" ]]; then
+  REG_ARGS=(--instance "$REGISTER")
+  [[ -z "$AGENT_LISTEN" ]] || REG_ARGS+=(--listen "$AGENT_LISTEN")
+  [[ "$STAGING" == "0" ]] || REG_ARGS+=(--destdir "$ROOT_PREFIX")
+  "$SCRIPT_DIR/install-agent-control.sh" "${REG_ARGS[@]}"
+fi
+echo "No tunnel was enabled, started, or restarted."

@@ -1,0 +1,9 @@
+[Unit]
+Description=BAFT-TUNNEL agent request to enable instance %i at boot (and start it now)
+
+[Path]
+PathExists=/run/baft-tunnel/control/%i.enable
+Unit=baft-tunnel-control-enable@%i.service
+
+[Install]
+WantedBy=multi-user.target

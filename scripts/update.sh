@@ -98,6 +98,8 @@ restart_all() {
     systemctl reset-failed "$(unit_of "$n")" >/dev/null 2>&1 || true
     systemctl restart "$(unit_of "$n")" || { echo "update: restart of $n failed" >&2; return 1; }
   done
+  # Running agents pick up the new binary too (not part of the tunnel health gate).
+  systemctl try-restart 'baft-tunnel-agent@*.service' >/dev/null 2>&1 || true
 }
 
 DIGEST_BEFORE="$(state_digest)"

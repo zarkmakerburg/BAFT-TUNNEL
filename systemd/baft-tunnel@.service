@@ -20,9 +20,11 @@ ExecStart=/usr/local/bin/baft-tunnel apply --config /etc/baft-tunnel/%i.json --c
 Restart=on-failure
 RestartSec=3s
 TimeoutStopSec=20s
-# Per-tunnel private tmpfs directory; the baft engine bundle (config, key copy) is written here.
+# Per-tunnel tmpfs directory. Group-readable so the agent (its own user in group baft-tunnel,
+# SA-09) can read the session and counter files; the baft engine bundle (config, key copy) goes
+# into a private 0700 child directory, engine/.
 RuntimeDirectory=baft-tunnel/%i
-RuntimeDirectoryMode=0700
+RuntimeDirectoryMode=0750
 KillSignal=SIGTERM
 UMask=0077
 LimitNOFILE=4096
@@ -37,7 +39,7 @@ ProtectSystem=strict
 ProtectHome=true
 # The local agent keeps its API token and state here; a compromised tunnel process (same user)
 # must not be able to read the token and drive the agent (docs/SECURITY_ASSESSMENT.md, SA-02).
-InaccessiblePaths=-/var/lib/baft-tunnel
+InaccessiblePaths=-/var/lib/baft-tunnel -/var/lib/baft-tunnel-agent
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

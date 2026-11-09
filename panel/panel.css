@@ -181,3 +181,4 @@ pre{direction:ltr;text-align:left;overflow-x:auto;white-space:pre-wrap;word-brea
   .nav-row button{flex:1}
 }
 button+p,button+div,button+ul{margin-block-start:var(--s3)}
+.next-action{border-inline-start:3px solid var(--accent);padding:var(--s2) var(--s3);background:var(--surface-2,transparent);border-radius:4px}

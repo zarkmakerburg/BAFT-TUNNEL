@@ -45,7 +45,7 @@ TAR="$BACKUP_DIR/backup.tar"
 mapfile -t names < <(tar -tf "$TAR")
 mapfile -t verbose < <(tar -tvf "$TAR")
 ((${#names[@]} > 0 && ${#names[@]} == ${#verbose[@]})) || die "unreadable or ambiguous archive listing"
-name_re='^(etc/baft-tunnel|var/lib/baft-tunnel|etc/systemd/system/baft-tunnel@[A-Za-z0-9][A-Za-z0-9_.-]*\.service\.d)(/[^[:cntrl:]]*)?$'
+name_re='^(etc/baft-tunnel|var/lib/baft-tunnel|var/lib/baft-tunnel-agent|etc/systemd/system/baft-tunnel@[A-Za-z0-9][A-Za-z0-9_.-]*\.service\.d)(/[^[:cntrl:]]*)?$'
 for i in "${!names[@]}"; do
   n="${names[$i]}"; n="${n%/}"
   [[ "$n" =~ $name_re && "$n" != *"/../"* && "$n" != */.. && "$n" != *"/./"* ]] || die "archive entry outside the allowlist"
@@ -103,6 +103,7 @@ swap() { # swap REL: move current REL aside (if any), move the restored one in
 }
 swap etc/baft-tunnel
 [[ ! -d "$STAGE/new/var/lib/baft-tunnel" ]] || swap var/lib/baft-tunnel
+[[ ! -d "$STAGE/new/var/lib/baft-tunnel-agent" ]] || swap var/lib/baft-tunnel-agent
 # Instance drop-ins mirror the backup exactly: current ones go aside, backed-up ones come in.
 shopt -s nullglob
 for d in "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel@*.service.d "$STAGE"/new/etc/systemd/system/baft-tunnel@*.service.d; do

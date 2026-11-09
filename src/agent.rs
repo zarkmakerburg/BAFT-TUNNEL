@@ -109,6 +109,11 @@ pub struct Ctx {
     runtime_dir: Option<PathBuf>,
     /// Unit counter readings, oldest first, deduplicated by sample time.
     traffic: std::sync::Mutex<std::collections::VecDeque<crate::observe::TrafficSample>>,
+    /// systemd access for the bound instance: state reads, and start/stop/enable/disable requests
+    /// through the root control helper (ADR-0023). Tests substitute a fake.
+    units: Arc<dyn crate::apply::Units + Send + Sync>,
+    /// Where `NAME.json` lives; lifecycle actions only manage instances here.
+    config_dir: PathBuf,
 }
 
 const SAMPLE_SECONDS: u64 = 5;
@@ -132,7 +137,20 @@ impl Ctx {
             instance: None,
             runtime_dir: None,
             traffic: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            units: Arc::new(crate::apply::SystemUnits::default()),
+            config_dir: PathBuf::from("/etc/baft-tunnel"),
         }
+    }
+
+    #[cfg(test)]
+    fn with_units(
+        mut self,
+        units: Arc<dyn crate::apply::Units + Send + Sync>,
+        config_dir: PathBuf,
+    ) -> Self {
+        self.units = units;
+        self.config_dir = config_dir;
+        self
     }
 
     /// Report on `baft-tunnel@NAME`, reading its evidence from `runtime_dir`.
@@ -457,6 +475,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/engines"
             | "/v1/traffic"
             | "/v1/diagnostics"
+            | "/v1/tunnel/lifecycle"
     ) {
         return (404, json!({"error": "not found"}));
     }
@@ -480,6 +499,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         ("POST", "/v1/setup/plan") => setup_plan(body),
         ("POST", "/v1/setup/preflight") => preflight(body).await,
         ("POST", "/v1/setup/apply") => setup_apply(ctx, body).await,
+        ("POST", "/v1/tunnel/lifecycle") => tunnel_lifecycle(ctx, body).await,
         _ => (405, json!({"error": "method not allowed"})),
     }
 }
@@ -984,11 +1004,7 @@ async fn setup_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
         .to_string();
     let result = receipt["result"].as_str().unwrap_or("conflict");
     if receipt["replayed"] != json!(true) {
-        let stage = match request.stage {
-            crate::apply::Stage::Init => "init",
-            crate::apply::Stage::Join => "join",
-            crate::apply::Stage::Start => "start",
-        };
+        let stage = request.stage.as_str();
         let _ = audit(
             state_dir,
             ctx,
@@ -1000,6 +1016,98 @@ async fn setup_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
                 instance: request.plan.instance.as_deref(),
                 sha256: &digest,
                 detail: stage,
+                receipt_id: receipt["id"].as_str(),
+            },
+        );
+    }
+    (code, receipt)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LifecycleBody {
+    /// `start` (and enable at boot), `stop` (and disable at boot) or `restart`.
+    action: crate::apply::Stage,
+    /// Must be literally `true`: this changes the running tunnel.
+    confirm: bool,
+    idempotency_key: String,
+}
+
+/// Panel Start / Stop / Restart for the instance this agent is bound to (`--instance`). The agent
+/// only drops a request file for the root control helper; it has no other systemd rights.
+async fn tunnel_lifecycle(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
+    let Some(state_dir) = &ctx.state_dir else {
+        return (
+            404,
+            json!({"error": "lifecycle actions are disabled; receipts need the state directory"}),
+        );
+    };
+    let Some(name) = ctx.instance.clone() else {
+        return (
+            409,
+            json!({"error": "the agent was started without --instance; it does not manage a unit"}),
+        );
+    };
+    let req: LifecycleBody = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(error) => {
+            return (
+                422,
+                json!({"error": "invalid request", "detail": error.to_string()}),
+            );
+        }
+    };
+    if !req.confirm {
+        return (
+            422,
+            json!({"error": "lifecycle actions require \"confirm\": true"}),
+        );
+    }
+    if !req.action.is_lifecycle() {
+        return (
+            422,
+            json!({"error": "action must be start, stop or restart"}),
+        );
+    }
+    if !crate::apply::valid_key(&req.idempotency_key) {
+        return (
+            422,
+            json!({"error": "idempotency_key must be 8-64 characters of A-Z a-z 0-9 - _"}),
+        );
+    }
+    let _guard = ctx.lock.lock().await;
+    let receipts_dir = state_dir.join("receipts");
+    let (units, dir, stage, key) = (
+        ctx.units.clone(),
+        ctx.config_dir.clone(),
+        req.action,
+        req.idempotency_key.clone(),
+    );
+    let instance = name.clone();
+    let (code, receipt) = match tokio::task::spawn_blocking(move || {
+        crate::apply::lifecycle(stage, &instance, &dir, &key, &receipts_dir, units.as_ref())
+    })
+    .await
+    {
+        Ok(out) => out,
+        Err(e) => return (500, json!({"error": format!("lifecycle task failed: {e}")})),
+    };
+    if receipt["replayed"] != json!(true) && receipt.get("receipt_version").is_some() {
+        let digest = receipt["request_sha256"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let _ = audit(
+            state_dir,
+            ctx,
+            AuditEvent {
+                action: "lifecycle",
+                result: receipt["result"].as_str().unwrap_or("conflict"),
+                resource: format!("tunnel/{}", stage.as_str()),
+                node: None,
+                instance: Some(&name),
+                sha256: &digest,
+                detail: stage.as_str(),
                 receipt_id: receipt["id"].as_str(),
             },
         );
@@ -1391,10 +1499,8 @@ async fn unit_view(ctx: &Ctx) -> (Value, Option<u32>) {
             None,
         );
     };
-    use crate::apply::Units;
-    match tokio::task::spawn_blocking(move || crate::apply::SystemUnits::default().state(&name))
-        .await
-    {
+    let units = ctx.units.clone();
+    match tokio::task::spawn_blocking(move || units.state(&name)).await {
         Ok(st) => {
             let result = match st.active.as_str() {
                 "active" => "active",
@@ -1402,7 +1508,14 @@ async fn unit_view(ctx: &Ctx) -> (Value, Option<u32>) {
                 _ => "inactive",
             };
             (
-                json!({"result": result, "active_state": st.active, "sub_state": st.sub, "restarts": st.restarts}),
+                json!({
+                    "result": result,
+                    "active_state": st.active,
+                    "sub_state": st.sub,
+                    "restarts": st.restarts,
+                    "enabled_at_boot": st.enabled == "enabled",
+                    "unit_file_state": if st.enabled.is_empty() { "unknown" } else { st.enabled.as_str() },
+                }),
                 (st.main_pid > 0).then_some(st.main_pid),
             )
         }
@@ -1529,6 +1642,67 @@ fn tier(id: &str, result: &str, source: &str, evidence: String) -> Value {
 }
 
 const STAGES: [&str; 4] = ["tcp", "secure_channel", "identity", "authorization"];
+
+/// One operator action for a tier that did not pass. `None` when the tier passed or there is
+/// nothing to do on this node.
+fn tier_next(id: &str, result: &str, dials_peer: bool) -> Option<&'static str> {
+    if !matches!(result, "fail" | "unknown") || id == "integrity" {
+        return None;
+    }
+    let fail = result == "fail";
+    Some(match (id, fail) {
+        ("tcp_reachability", true) => {
+            "the peer's tunnel port does not answer: check that the peer is started, its address and port, and any firewall between the nodes"
+        }
+        ("tcp_reachability", false) if dials_peer => "start the peer and run diagnostics again",
+        ("tcp_reachability", false) => return None,
+        ("secure_channel", true) => {
+            "the TLS/Noise handshake failed: check that both nodes use the same engine and that certificates, CA and CRL are valid (renew the CRL if it expired)"
+        }
+        ("identity", true) => {
+            "the peer's identity did not match: compare the pinned fingerprint or Noise key with the peer's bundle checksum and re-run join if it changed"
+        }
+        ("authorization", true) => {
+            "the peer was not authorized: check the peer id, tunnel id and that its certificate is not revoked"
+        }
+        ("session", true) => {
+            "the unit runs but no peer is connected: start the peer node, then run diagnostics again"
+        }
+        ("data_path", _) => {
+            "send traffic through the tunnel (open the service through it), then run diagnostics again"
+        }
+        (_, _) => return None,
+    })
+}
+
+/// The single next step for the whole report: the unit first, then the first tier (in order)
+/// that did not pass, which is what blocks every later tier.
+fn report_next(unit: &Value, tiers: &[Value], verified: bool) -> Value {
+    match unit["result"].as_str() {
+        Some("inactive") => {
+            return json!({"action": "start", "text": "the tunnel unit is not running: press Start (it is then enabled at boot)"});
+        }
+        Some("unknown") | None => {
+            return json!({"action": "check", "text": "the unit state could not be read: check baft-tunnel@NAME with systemctl status on this host, then run diagnostics again"});
+        }
+        _ => {}
+    }
+    if verified {
+        return json!({"action": "none", "text": "nothing to do: the data path was observed; integrity stays Unknown (Verify/LAB only)"});
+    }
+    let blocker = tiers.iter().find(|t| {
+        t["id"] != "integrity" && !matches!(t["result"].as_str(), Some("pass" | "not_applicable"))
+    });
+    match blocker {
+        Some(t) if t.get("next").is_some() => {
+            json!({"action": "fix", "tier": t["id"], "text": t["next"]})
+        }
+        Some(t) => {
+            json!({"action": "rerun", "tier": t["id"], "text": "no evidence for this tier yet: wait a minute (or start the peer), then run diagnostics again"})
+        }
+        None => json!({"action": "rerun", "text": "run diagnostics again in a minute"}),
+    }
+}
 
 /// Peer-aware diagnostics (ADR-0024): TCP reachability, secure channel, identity, authorization,
 /// session and data path are separate tiers, each with its own source. A tier is `pass` only on
@@ -1696,6 +1870,27 @@ async fn run_diagnostics(ctx: &Ctx) -> Value {
         }
     }
     let verified = highest == "data_path";
+    let remote = ctx.config.remote().is_some();
+    for t in &mut tiers {
+        if let Some(n) = tier_next(
+            t["id"].as_str().unwrap_or(""),
+            t["result"].as_str().unwrap_or(""),
+            remote,
+        ) {
+            t["next"] = json!(n);
+        }
+    }
+    // Sending traffic only helps once a session exists; before that the session tier is the blocker.
+    if session.is_none() {
+        for t in &mut tiers {
+            if t["id"] == "data_path" {
+                if let Some(o) = t.as_object_mut() {
+                    o.remove("next");
+                }
+            }
+        }
+    }
+    let next_action = report_next(&unit, &tiers, verified);
     let previous = stored_diagnostics(ctx).and_then(|d| d["verified_unix"].as_u64());
     let report = json!({
         "diagnostics_version": 1,
@@ -1706,6 +1901,7 @@ async fn run_diagnostics(ctx: &Ctx) -> Value {
         "highest_passed_tier": highest,
         "verified": verified,
         "verified_unix": if verified { Some(now) } else { previous },
+        "next_action": next_action,
         "note": "each tier is separate evidence; TCP reachability alone never means a working tunnel, and integrity stays unknown",
     });
     if let Some(dir) = &ctx.state_dir {
@@ -2404,6 +2600,36 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn lifecycle_and_next_action_strings_exist_in_both_languages() {
+        let i18n = include_str!("../panel/i18n.js");
+        let (fa, en) = i18n.split_once("    en: {").expect("two language blocks");
+        for key in [
+            "life.state",
+            "life.boot",
+            "life.boot.on",
+            "life.boot.off",
+            "life.act.start",
+            "life.act.stop",
+            "life.act.restart",
+            "life.confirm.start",
+            "life.confirm.stop",
+            "life.confirm.restart",
+            "life.rolled",
+            "life.noinstance",
+            "diag.col.next",
+            "diag.next",
+            "diag.next.start",
+        ] {
+            let needle = format!("'{key}':");
+            assert!(fa.contains(&needle), "fa missing {key}");
+            assert!(en.contains(&needle), "en missing {key}");
+        }
+        let pages = include_str!("../panel/pages.js");
+        assert!(pages.contains("'/v1/tunnel/lifecycle'"));
+        assert!(pages.contains("window.confirm(t('life.confirm.' + action))"));
+    }
+
     #[tokio::test]
     async fn audit_log_rotates_and_the_endpoint_reads_only_a_bounded_tail() {
         let dir = state_dir("auditrot");
@@ -2618,5 +2844,129 @@ mod tests {
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(read_token(&p).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    struct AgentFake {
+        st: std::sync::Mutex<crate::apply::UnitState>,
+        log: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl crate::apply::Units for AgentFake {
+        fn request(&self, name: &str, verb: &str) -> Result<(), String> {
+            self.log.lock().unwrap().push(format!("{verb} {name}"));
+            let mut st = self.st.lock().unwrap();
+            if verb == "disable" {
+                st.active = "inactive".into();
+                st.enabled = "disabled".into();
+            }
+            Ok(())
+        }
+        fn state(&self, _: &str) -> crate::apply::UnitState {
+            self.st.lock().unwrap().clone()
+        }
+        fn settle(&self, _: Duration) {}
+    }
+
+    fn lifecycle_ctx(dir: &Path, instance: Option<&str>, active: &str) -> (Ctx, Arc<AgentFake>) {
+        let fake = Arc::new(AgentFake {
+            st: std::sync::Mutex::new(crate::apply::UnitState {
+                active: active.into(),
+                sub: "running".into(),
+                enabled: "enabled".into(),
+                ..Default::default()
+            }),
+            log: std::sync::Mutex::new(vec![]),
+        });
+        let ctx = Ctx::new(sample(), TOKEN.into(), Some(dir.to_path_buf()))
+            .with_unit(instance.map(str::to_string), None)
+            .with_units(fake.clone(), dir.to_path_buf());
+        (ctx, fake)
+    }
+
+    fn post(path: &str) -> String {
+        format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}")
+    }
+
+    #[tokio::test]
+    async fn lifecycle_needs_token_instance_confirm_and_a_lifecycle_action() {
+        let dir = state_dir("life");
+        let (ctx, fake) = lifecycle_ctx(&dir, None, "active");
+        let body = br#"{"action":"stop","confirm":true,"idempotency_key":"life-0001"}"#;
+        let head = "POST /v1/tunnel/lifecycle HTTP/1.1\r\nHost: 127.0.0.1";
+        assert_eq!(route(head, body, &ctx).await.0, 401);
+        assert_eq!(
+            route(&post("/v1/tunnel/lifecycle"), body, &ctx).await.0,
+            409
+        );
+        let (ctx, _) = lifecycle_ctx(&dir, Some("edge"), "active");
+        for bad in [
+            r#"{"action":"stop","confirm":false,"idempotency_key":"life-0001"}"#,
+            r#"{"action":"init","confirm":true,"idempotency_key":"life-0001"}"#,
+            r#"{"action":"reboot","confirm":true,"idempotency_key":"life-0001"}"#,
+            r#"{"action":"stop","confirm":true,"idempotency_key":"x"}"#,
+        ] {
+            assert_eq!(
+                route(&post("/v1/tunnel/lifecycle"), bad.as_bytes(), &ctx)
+                    .await
+                    .0,
+                422,
+                "{bad}"
+            );
+        }
+        assert!(fake.log.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_stop_writes_a_receipt_and_an_audit_line() {
+        let dir = state_dir("life-stop");
+        let (ctx, fake) = lifecycle_ctx(&dir, Some("edge"), "active");
+        let body = br#"{"action":"stop","confirm":true,"idempotency_key":"life-stop-1"}"#;
+        let (code, out) = route(&post("/v1/tunnel/lifecycle"), body, &ctx).await;
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["result"], "applied");
+        assert_eq!(out["boot"]["enabled_at_boot"], false);
+        assert_eq!(*fake.log.lock().unwrap(), vec!["disable edge"]);
+        assert!(dir.join("receipts/life-stop-1.json").exists());
+        let audit = std::fs::read_to_string(dir.join(AUDIT_FILE)).unwrap();
+        assert!(audit.contains("\"resource\":\"tunnel/stop\""), "{audit}");
+        assert!(!audit.contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn diagnostics_name_one_next_action() {
+        let dir = state_dir("diag-next");
+        let (ctx, _) = lifecycle_ctx(&dir, Some("edge"), "inactive");
+        let (code, out) = route(&post("/v1/diagnostics"), b"", &ctx).await;
+        assert_eq!(code, 200);
+        assert_eq!(out["next_action"]["action"], "start", "{out}");
+        assert_eq!(out["unit"]["enabled_at_boot"], true);
+        assert!(
+            out["tiers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|t| t["id"] != "integrity" || t.get("next").is_none())
+        );
+        assert_eq!(
+            tier_next("session", "fail", true),
+            Some(
+                "the unit runs but no peer is connected: start the peer node, then run diagnostics again"
+            )
+        );
+        assert_eq!(tier_next("session", "pass", true), None);
+        assert_eq!(tier_next("tcp_reachability", "unknown", false), None);
+        let tiers = vec![
+            json!({"id": "tcp_reachability", "result": "pass"}),
+            json!({"id": "session", "result": "fail", "next": "x"}),
+            json!({"id": "data_path", "result": "unknown", "next": "y"}),
+        ];
+        assert_eq!(
+            report_next(&json!({"result": "active"}), &tiers, false)["tier"],
+            "session"
+        );
+        assert_eq!(
+            report_next(&json!({"result": "active"}), &[], true)["action"],
+            "none"
+        );
     }
 }
