@@ -63,19 +63,46 @@
         h('div', { text: w.text }), h('div', { class: 'sub', text: w.next }));
     }));
   }
+  function fmtBytes(n) {
+    if (n == null || isNaN(n)) { return null; }
+    var u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'], i = 0, v = Number(n);
+    while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+    return BAFT.fmtNum(v, i ? 1 : 0) + ' ' + u[i];
+  }
+  function tierKind(r) {
+    return r === 'pass' || r === 'observed' || r === 'traffic_observed' || r === 'active' ? 'ok' : r === 'fail' ? 'bad' : r === 'no_recent_traffic' || r === 'not_observed' ? 'warn' : 'unknown';
+  }
+  function tierPill(r) { return pill(tierKind(r), t('tier.r.' + r) === 'tier.r.' + r ? String(r || 'unknown') : t('tier.r.' + r)); }
+  function tunnelState(tn) {
+    var k = tn ? tn.state : 'unknown';
+    return { k: k === 'carrying_traffic' ? 'ok' : k === 'session_authorized' ? 'ok' : k === 'running_no_session' ? 'warn' : k === 'down' ? 'bad' : 'unknown', l: t('ts.' + (k || 'unknown')) };
+  }
   function dirLabel(x) { return x ? t('dir.' + x) : '—'; }
   function roleLabel(x) { return x ? t('role.' + x) : '—'; }
 
+  function trafficBody(tr) {
+    if (!tr) { return empty(t('ov.traffic.body')); }
+    var r = tr.rate, hist = (tr.history || []);
+    var rows = [[t('tr.from'), BAFT.ltr(fmtBytes(tr.bytes_from_peer))], [t('tr.to'), BAFT.ltr(fmtBytes(tr.bytes_to_peer))],
+      [t('tr.rate'), r ? BAFT.ltr('↓ ' + fmtBytes(r.from_peer_bps) + '/s · ↑ ' + fmtBytes(r.to_peer_bps) + '/s') : t('tr.norate')],
+      [t('tr.streams'), BAFT.fmtNum(tr.streams_total || 0, 0)], [t('tr.sessions'), BAFT.fmtNum(tr.sessions_total || 0, 0)],
+      [t('tr.sampled'), BAFT.ago(tr.sampled_unix) + ' · ' + t('tr.interval', { s: BAFT.fmtNum(tr.sampling_interval_s || 0, 0) })]];
+    var chart = hist.length > 1 ? C.line(hist.map(function (x) { return { x: x.t, y: (x.from_peer_bps || 0) + (x.to_peer_bps || 0) }; }),
+      { label: t('tr.rate') + ' (B/s)', fmtX: BAFT.fmtTime, fmtY: function (v) { return fmtBytes(v) + '/s'; } }) : null;
+    return h('div', null, kv(rows), chart, h('p', { class: 'sub', text: t('tr.source') }));
+  }
+
   /* ---- Overview ---- */
-  BAFT.register({ id: 'overview', icon: 'overview', order: 1, primary: true, needs: ['history', 'security', 'audit', 'desired'], render: function (ctx) {
-    var d = ctx.data, s = d.status, c = conf(d), st = stats(d), ws = warnings(d), hist = st.hist;
+  BAFT.register({ id: 'overview', icon: 'overview', order: 1, primary: true, needs: ['history', 'security', 'audit', 'desired', 'traffic'], render: function (ctx) {
+    var d = ctx.data, s = d.status, c = conf(d), st = stats(d), ws = warnings(d), hist = st.hist, tr = d.traffic && d.traffic.available ? d.traffic : null;
     var entries = ((d.audit || {}).entries || []).slice().reverse();
     var fresh = !d.desired && !entries.length;
     var kpis = h('div', { class: 'grid kpis' },
       kpi(t('kpi.servers'), '1', t('kpi.servers.hint')),
       kpi(t('kpi.tunnels'), '1', t('kpi.tunnels.hint'), listenState(s)),
       kpi(t('kpi.attention'), BAFT.fmtNum(ws.filter(function (w) { return w.sev !== 'info'; }).length, 0), t('kpi.attention.hint')),
-      kpi(t('kpi.traffic'), t('kpi.traffic.value'), t('kpi.traffic.hint'), { k: 'unknown', l: t('unknown') }));
+      tr ? kpi(t('kpi.traffic'), fmtBytes((tr.bytes_from_peer || 0) + (tr.bytes_to_peer || 0)), t('kpi.traffic.live', { ago: BAFT.ago(tr.sampled_unix) }), tr.fresh ? { k: 'ok', l: t('fresh') } : { k: 'warn', l: t('stale') })
+         : kpi(t('kpi.traffic'), t('kpi.traffic.value'), t('kpi.traffic.hint'), { k: 'unknown', l: t('unknown') }));
     var timeline = hist.length ? h('div', null, C.strip(hist, { label: t('ov.health') }),
       h('div', { class: 'legend' }, h('span', { text: BAFT.fmtTime(hist[0].t) }), h('span', { text: BAFT.fmtTime(hist[hist.length - 1].t) }))) : empty(t('empty.history'));
     var pts = hist.map(function (x) { return { x: x.t, y: x.rtt_ms }; });
@@ -85,7 +112,7 @@
     var avail = st.avail == null ? null : h('p', { class: 'sub', text: t('ov.avail') + ': ' + BAFT.fmtNum(st.avail, 1) + '% · ' + t('ov.window', { n: BAFT.fmtNum(hist.length, 0) }) });
     var recent = entries.length ? h('ul', { class: 'warns' }, entries.slice(0, 5).map(function (e) {
       return h('li', null, h('div', { class: 'top' }, pill(e.result === 'accepted' ? 'ok' : 'bad', t(e.result) === e.result ? e.result : t(e.result)), h('span', { class: 'sub', text: new Date(e.ts * 1000).toLocaleString(BAFT.lang === 'fa' ? 'fa-IR' : 'en-GB') })),
-        h('div', { text: t('op.desired') }));
+        h('div', null, opLabel(e)));
     })) : h('p', { class: 'muted', text: d.audit === null ? t('activity.disabled') : t('ov.recent.empty') });
     return h('div', null,
       fresh ? h('div', { class: 'banner info' }, h('h2', { text: t('ov.start.title') }), h('p', { text: t('ov.start.body') }), h('a', { class: 'btn primary', href: '#/setup', text: t('ov.start.cta') })) : null,
@@ -94,7 +121,7 @@
         h('div', { class: 'stack' },
           card(t('ov.health'), h('div', null, timeline, src, avail)),
           card(t('ov.latency'), latency),
-          card(t('ov.traffic.title'), empty(t('ov.traffic.body')))),
+          card(t('ov.traffic.title'), trafficBody(tr))),
         h('div', { class: 'stack' },
           card(t('ov.warnings'), warnList(ws)),
           card(t('ov.recent'), recent, '', h('a', { href: '#/activity', text: t('nav.activity') })))));
@@ -130,15 +157,48 @@
     return h('div', { class: 'stack' }, h('p', { class: 'muted', text: t('servers.note') }), h('div', { class: 'grid cols-2' }, thisNode, peer));
   } });
 
+  /* ---- Diagnostics report (POST/GET /v1/diagnostics): each tier is separate evidence ---- */
+  function diagTable(rep) {
+    var tiers = rep.tiers || [];
+    var head = h('p', { class: 'sub', text: t('diag.at', { ago: BAFT.ago(rep.at_unix) }) + ' · ' + (rep.verified ? t('diag.verified') : t('diag.notverified')) +
+      (rep.highest_passed_tier ? ' · ' + t('diag.highest', { tier: t('tier.' + rep.highest_passed_tier) }) : '') });
+    var tbl = h('div', { class: 'table-wrap' }, h('table', { class: 'cards' },
+      h('thead', null, h('tr', null, ['diag.col.tier', 'diag.col.result', 'diag.col.source', 'diag.col.evidence'].map(function (k) { return h('th', { scope: 'col', text: t(k) }); }))),
+      h('tbody', null, tiers.map(function (x) {
+        return h('tr', null, h('td', { 'data-label': t('diag.col.tier'), text: t('tier.' + x.id) === 'tier.' + x.id ? x.id : t('tier.' + x.id) }),
+          h('td', { 'data-label': t('diag.col.result') }, tierPill(x.result)),
+          h('td', { 'data-label': t('diag.col.source') }, BAFT.ltr(x.source)),
+          h('td', { 'data-label': t('diag.col.evidence') }, BAFT.ltr(x.evidence)));
+      }))));
+    return h('div', null, head, tbl, h('p', { class: 'sub', text: t('diag.integrity') }));
+  }
+
   /* ---- Tunnels ---- */
-  BAFT.register({ id: 'tunnels', icon: 'tunnels', order: 3, primary: true, needs: ['history', 'security'], render: function (ctx) {
-    var d = ctx.data, s = d.status, c = conf(d), st = stats(d), ls = listenState(s);
+  BAFT.register({ id: 'tunnels', icon: 'tunnels', order: 3, primary: true, needs: ['history', 'security', 'diagnostics'], render: function (ctx) {
+    var d = ctx.data, s = d.status, c = conf(d), st = stats(d), ls = listenState(s), tn = s.tunnel || null, ts = tunnelState(tn), dg = d.diagnostics || null;
+    var diagOut = h('div', { 'aria-live': 'polite' });
+    function showDiag(rep) { diagOut.textContent = ''; diagOut.appendChild(diagTable(rep)); }
+    function runDiag(btn) {
+      btn.disabled = true; diagOut.textContent = t('diag.running');
+      BAFT.api('POST', '/v1/diagnostics').then(function (r) {
+        btn.disabled = false;
+        if (r.status === 200) { showDiag(r.body); } else { diagOut.textContent = t('diag.failed'); }
+      }, function () { btn.disabled = false; diagOut.textContent = t('diag.failed'); });
+    }
+    var diagBtn = h('button', { type: 'button', onclick: function () { runDiag(diagBtn); }, text: t('diag.run') });
+    if (dg) { showDiag(dg); }
     var res = h('section', { class: 'card res' },
       h('div', { class: 'head' }, h('div', null, h('div', { class: 'title' }, BAFT.ltr(c.tunnel_id)),
-        h('div', { class: 'sub' }, dirLabel(c.direction) + ' · ', BAFT.ltr(c.local_identity), ' ⇄ ', BAFT.ltr(c.peer_identity))), pill(ls.k, ls.l)),
-      h('p', { class: 'sub', text: t('state.why.local') + ' ' + t('checked', { ago: BAFT.ago(BAFT.fetchedAt) }) }),
-      kv([[t('f.engine'), BAFT.ltr(s.engine)], [t('f.role'), roleLabel(c.mode)], [t('f.peerconn'), pill('unknown', t('state.unknown'))],
-        [t('f.verified'), t('f.verified.none')]]),
+        h('div', { class: 'sub' }, dirLabel(c.direction) + ' · ', BAFT.ltr(c.local_identity), ' ⇄ ', BAFT.ltr(c.peer_identity))), pill(tn ? ts.k : ls.k, tn ? ts.l : ls.l)),
+      h('p', { class: 'sub', text: (tn ? t('ts.why') : t('state.why.local')) + ' ' + t('checked', { ago: BAFT.ago(BAFT.fetchedAt) }) }),
+      kv([[t('f.engine'), BAFT.ltr(s.engine)], [t('f.role'), roleLabel(c.mode)],
+        [t('f.peerconn'), tn ? tierPill((tn.tiers.authorized_session || {}).result) : pill('unknown', t('state.unknown'))],
+        [t('f.peer'), tn && tn.tiers.authorized_session && tn.tiers.authorized_session.peer_id ? BAFT.ltr(tn.tiers.authorized_session.peer_id) : null],
+        [t('tier.data_path'), tn ? tierPill((tn.tiers.data_path || {}).result) : pill('unknown', t('state.unknown'))],
+        [t('tier.integrity'), pill('unknown', t('state.unknown'))],
+        [t('f.verified'), tn && tn.last_verified_unix ? BAFT.ago(tn.last_verified_unix) : t('f.verified.none')],
+        [t('ts.lastfail'), tn && tn.last_failure ? t('tier.' + tn.last_failure.stage) + ' · ' + BAFT.ago(tn.last_failure.at_unix) : t('ts.nofail')]]),
+      h('hr', { class: 'sep' }), h('h3', { text: t('diag.title') }), h('p', { class: 'sub', text: t('diag.note') }), diagBtn, diagOut,
       h('hr', { class: 'sep' }), h('h3', { text: t('tunnels.metrics') }),
       kv([[t('f.latency'), st.med == null ? t('unknown') : BAFT.ltr(BAFT.fmtNum(st.med, 2) + ' ms')], [t('f.avail'), st.avail == null ? t('unknown') : [BAFT.ltr(BAFT.fmtNum(st.avail, 1) + '%'), ' · ' + t('ov.window', { n: BAFT.fmtNum(st.hist.length, 0) })]]]),
       h('hr', { class: 'sep' }), h('h3', { text: t('tunnels.config') }),
@@ -376,6 +436,15 @@
     return root;
   } });
 
+  /* ---- Operations guidance: read-only. The agent is unprivileged, so the panel never runs these. ---- */
+  function opsBody() {
+    var cmds = [['ops.backup', 'sudo scripts/backup.sh'], ['ops.restore', 'sudo scripts/restore.sh --stop --yes BACKUP_DIR'],
+      ['ops.update', 'sudo scripts/update.sh --binary NEW_BINARY --instance NAME'], ['ops.rollback', 'sudo scripts/rollback.sh']];
+    return h('div', null, h('p', { class: 'sub', text: t('ops.note') }),
+      h('ul', { class: 'warns' }, cmds.map(function (c) { return h('li', null, h('strong', { text: t(c[0]) }), h('div', { class: 'sub', text: t(c[0] + '.d') }), h('code', { dir: 'ltr', text: c[1] })); })),
+      h('p', { class: 'sub', text: t('ops.limits') }));
+  }
+
   /* ---- Agent ---- */
   BAFT.register({ id: 'agent', icon: 'agent', order: 5, needs: ['history', 'audit', 'engines'], render: function (ctx) {
     var d = ctx.data, s = d.status, hist = d.history || {};
@@ -386,7 +455,7 @@
         out.textContent = t('agent.healthok', { ms: BAFT.fmtNum(performance.now() - t0, 0) });
       }, function () { out.textContent = t('agent.healthfail'); });
     }
-    return h('div', { class: 'grid cols-2' },
+    return h('div', { class: 'stack' }, h('div', { class: 'grid cols-2' },
       card(t('agent.health'), h('div', null, kv([[t('f.version'), BAFT.ltr('v' + s.version)], [t('f.lastseen'), t('checked', { ago: BAFT.ago(BAFT.fetchedAt) })]]),
         h('p', { class: 'sub', text: t('agent.sampler', { s: BAFT.fmtNum(hist.interval_s || 0, 0), n: BAFT.fmtNum(hist.capacity || 0, 0) }) }),
         h('button', { type: 'button', onclick: check, text: t('agent.check') }), out)),
@@ -396,10 +465,16 @@
           h('li', null, t('cap.desired') + ': ', pill(d.audit === null ? 'unknown' : 'ok', d.audit === null ? t('cap.off') : t('cap.on'))),
           h('li', null, t('cap.plan') + ': ', pill('ok', t('cap.on'))),
           h('li', null, t('cap.apply') + ': ', pill('ok', t('cap.on')))),
-        h('p', { class: 'sub', text: t('agent.loopback') }), h('p', { class: 'sub', text: t('agent.secret') }))));
+        h('p', { class: 'sub', text: t('agent.loopback') }), h('p', { class: 'sub', text: t('agent.secret') }))),
+      ), card(t('ops.title'), opsBody()));
   } });
 
   /* ---- Activity ---- */
+  function opLabel(e) {
+    var k = 'op.' + (e.resource || 'desired_state');
+    var v = t(k);
+    return v === k ? BAFT.ltr(e.resource || e.action || '—') : v;
+  }
   var activityFilter = 'all';
   BAFT.register({ id: 'activity', icon: 'activity', order: 6, needs: ['audit'], render: function (ctx) {
     var a = ctx.data.audit;
@@ -409,16 +484,18 @@
     var sel = h('select', { 'aria-label': t('filter.result'), onchange: function () { activityFilter = sel.value; BAFT.refresh(true); } },
       [['all', t('filter.all')], ['accepted', t('accepted')], ['rejected', t('rejected')]].map(function (o) { return h('option', { value: o[0], text: o[1], selected: o[0] === activityFilter ? true : null }); }));
     var table = rows.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'cards' },
-      h('thead', null, h('tr', null, ['col.time', 'col.op', 'col.result', 'col.receipt', 'col.detail'].map(function (k) { return h('th', { scope: 'col', text: t(k) }); }))),
+      h('thead', null, h('tr', null, ['col.time', 'col.op', 'col.actor', 'col.target', 'col.result', 'col.receipt', 'col.detail'].map(function (k) { return h('th', { scope: 'col', text: t(k) }); }))),
       h('tbody', null, rows.map(function (e) {
         return h('tr', null,
           h('td', { 'data-label': t('col.time'), text: new Date(e.ts * 1000).toLocaleString(BAFT.lang === 'fa' ? 'fa-IR' : 'en-GB') }),
-          h('td', { 'data-label': t('col.op'), text: t('op.desired') }),
+          h('td', { 'data-label': t('col.op') }, opLabel(e)),
+          h('td', { 'data-label': t('col.actor') }, e.actor ? BAFT.ltr(t('actor.token') + ' ' + String(e.actor.fingerprint || '').slice(0, 8)) : t('unknown')),
+          h('td', { 'data-label': t('col.target') }, e.target ? BAFT.ltr([e.target.node, e.target.instance].filter(Boolean).join(' / ')) : '—'),
           h('td', { 'data-label': t('col.result') }, pill(e.result === 'accepted' ? 'ok' : 'bad', t(e.result) === e.result ? e.result : t(e.result))),
-          h('td', { 'data-label': t('col.receipt') }, h('code', { text: String(e.sha256 || '').slice(0, 12) })),
+          h('td', { 'data-label': t('col.receipt') }, h('code', { text: String(e.receipt_id || e.sha256 || '').slice(0, 12) })),
           h('td', { 'data-label': t('col.detail') }, e.detail ? BAFT.ltr(e.detail) : '—'));
       })))) : empty(t('activity.empty'));
-    return card(t('activity.title'), h('div', null, h('p', { class: 'sub', text: t('activity.note') + ' ' + t('activity.noactor') }),
+    return card(t('activity.title'), h('div', null, h('p', { class: 'sub', text: t('activity.note') + ' ' + t('activity.actor') }),
       h('label', { class: 'field' }, h('span', { text: t('filter.result') }), sel), table));
   } });
 
