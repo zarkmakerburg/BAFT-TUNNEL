@@ -53,7 +53,7 @@ Evidence classifications are deliberately separate: current source code, merged-
 |---|---|---|---|
 | `tcp-tls` | Supported; real two-host integrity/recovery evidence exists | Real data path; dedicated LAB pass (run 42506805986) plus R3 breadth LAB pass (run 42525790470, P0-4) | Direct supported; Reverse **Preview** |
 | `noise-tcp` | Experimental; Direct two-host evidence exists | Unproven; earlier label-only result is not valid data-path evidence | Direct Experimental; Reverse unavailable |
-| `baft` | Separate-process adapter and launcher; Store→Launcher path, store rollback and signed release asset passed real-host LAB (P0-3) | BAFT's own behavior is separate and must not inherit Rust Reverse claims | Hidden from `/v1/engines` and Wizard until Store/release acceptance |
+| `baft` | Separate-process adapter and launcher; Store→Launcher path, store rollback and signed release asset passed real-host LAB (P0-3) | BAFT's own behavior is separate and must not inherit Rust Reverse claims | Independent acceptance passed 2026-11-09 ([LAB run 42552860541](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42552860541), main `3a95c7f`): may be shown as **Preview, Direct only** (see [BAFT_ENGINE_ACCEPTANCE.md](BAFT_ENGINE_ACCEPTANCE.md)). Still hidden in code until the exposure change lands |
 | `ws-tls`, `utls-sidecar`, `quic` / UDP | Not implemented/advertised | Not implemented/advertised | Hidden / future |
 
 **Evidence caveats**
@@ -136,7 +136,7 @@ WebSocket/TLS, uTLS sidecar, QUIC/UDP, Relay, multi-engine failover and automati
 2. BAFT stays a separate pinned process with its own lifecycle and licence/attribution obligations.
 3. Hashem/BCC/BAFT lessons are patterns, not source-code transfer.
 4. TCP-TLS Reverse remains Preview; Noise Reverse remains unavailable.
-5. BAFT remains hidden from capability discovery and Wizard until its independent acceptance gates pass.
+5. BAFT acceptance gates passed on 2026-11-09 for Preview/Direct only ([BAFT_ENGINE_ACCEPTANCE.md](BAFT_ENGINE_ACCEPTANCE.md)); it stays hidden in code until the separate exposure change lands, and is never Stable or Reverse without further evidence.
 6. No fake success, stale-green UI, unsupported action button or unverified engine option.
 7. Apply/Job operations must be authorized, scoped, idempotent where possible, verifiable, receipted and recoverable.
 8. No firewall/routes/sysctl/production-host changes by default.
