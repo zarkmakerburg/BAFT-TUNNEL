@@ -228,24 +228,14 @@ fn default_config_file() -> String {
     CONFIG_FILE.into()
 }
 
-/// `config.json`, or `NAME.json` for a systemd instance (same name rules as scripts/install.sh).
+/// `config.json`, or `NAME.json` for a systemd instance (same name rules as `apply::valid_instance`).
 pub fn config_file_name(instance: Option<&str>) -> Result<String> {
     let Some(name) = instance else {
         return Ok(CONFIG_FILE.into());
     };
-    let valid = !name.is_empty()
-        && name.len() <= 63
-        && name
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphanumeric())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
-        && !name.contains("..");
-    if !valid {
+    if !crate::apply::valid_instance(name) {
         bail!(
-            "instance must be 1-63 ASCII letters, digits, '.', '_' or '-' and start with an alphanumeric"
+            "instance must be 1-63 ASCII letters, digits, '_' or '-' and start with an alphanumeric"
         );
     }
     Ok(format!("{name}.json"))
@@ -693,7 +683,16 @@ mod tests {
     fn instance_names_the_config_file_the_systemd_unit_reads() {
         assert_eq!(config_file_name(None).unwrap(), "config.json");
         assert_eq!(config_file_name(Some("edge-1")).unwrap(), "edge-1.json");
-        for bad in ["", "../x", "a/b", ".hidden", "a..b", "x y", &"a".repeat(64)] {
+        for bad in [
+            "",
+            "../x",
+            "a/b",
+            ".hidden",
+            "a.b",
+            "a..b",
+            "x y",
+            &"a".repeat(64),
+        ] {
             assert!(config_file_name(Some(bad)).is_err(), "{bad}");
         }
         let mut req = request(EngineKind::NoiseTcp, Role::Serve);
