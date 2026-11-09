@@ -65,7 +65,7 @@ as_cleanup() {
 trap 'as_status=$?; set +e; as_cleanup; (exit "$as_status"); cleanup' EXIT
 
 echo "--- one-step install with --register (${MVP_SOURCE}, sha256 ${AS_SHA}) ---"
-tar -czf "$LOCAL_TMP/as-pkg.tgz" scripts/install.sh scripts/uninstall.sh scripts/install-agent-control.sh systemd
+tar -czf "$LOCAL_TMP/as-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-as"
 for side in iran abroad; do
   inst="$(as_inst "$side")"

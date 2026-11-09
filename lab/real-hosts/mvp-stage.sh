@@ -42,7 +42,7 @@ mvp_cleanup() {
 trap 'mvp_status=$?; set +e; mvp_cleanup; (exit "$mvp_status"); cleanup' EXIT
 
 echo "--- MVP install (${MVP_SOURCE}, sha256 ${MVP_SHA}) ---"
-tar -czf "$LOCAL_TMP/mvp-pkg.tgz" scripts/install.sh scripts/uninstall.sh scripts/install-agent-control.sh systemd
+tar -czf "$LOCAL_TMP/mvp-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-mvp"
 for side in iran abroad; do
   copy_to_host "$side" "$LOCAL_TMP/mvp-pkg.tgz" "$LOCAL_TMP/baft-tunnel-mvp"
