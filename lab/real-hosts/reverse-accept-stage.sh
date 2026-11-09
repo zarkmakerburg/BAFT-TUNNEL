@@ -45,7 +45,7 @@ ra_cleanup() {
 trap 'ra_status=$?; set +e; ra_cleanup; (exit "$ra_status"); cleanup' EXIT
 
 echo "--- install (${MVP_SOURCE}, sha256 ${MVP_SHA}) ---"
-tar -czf "$LOCAL_TMP/ra-pkg.tgz" scripts/install.sh scripts/uninstall.sh scripts/install-agent-control.sh scripts/backup.sh scripts/restore.sh scripts/update.sh scripts/rollback.sh systemd
+tar -czf "$LOCAL_TMP/ra-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-ra"
 # Update candidates: same code with a different digest (trailing NUL), and a binary that passes --version but exits at start.
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-ra-new"; printf '\0' >> "$LOCAL_TMP/baft-tunnel-ra-new"; chmod 755 "$LOCAL_TMP/baft-tunnel-ra-new"
