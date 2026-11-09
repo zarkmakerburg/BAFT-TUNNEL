@@ -176,7 +176,7 @@ Effort: **S** = one small PR; **M** = one or two PRs, about a day with CI; **L**
 | S3 | Reboot persistence on real hosts, or on disposable VMs (S9) | S | Yes | O1 |
 | S4 | Fuzz depth: weekly 10–30 min per target; new targets for the Apply body, bundle import and the runtime evidence file readers | S–M | — | — |
 | S5 | Full independent pre-stable security review | — | — | O6 |
-| S6 | ~~Licence review of distributing the AGPL BAFT engine~~ Closed 2026-11-09: the owner owns BAFT and allows its code in BAFT-TUNNEL. Left as a release check in U6: the bundle keeps the licence texts and SBOM of the third-party modules inside the engine | — | — | — |
+| S6 | ~~Licence review of distributing the AGPL BAFT engine~~ Closed 2026-11-09: the owner confirmed BAFT is theirs and its use is allowed, so shipping it as a separate AGPL binary (ADR-0019) needs no further review. Left as a release check in U6: the bundle keeps the engine's source link and the licence texts and SBOM of its third-party modules. Copying BAFT code into BAFT-TUNNEL's own Rust is a separate act: ADR-0019 still asks for the other BAFT contributors' consent ([BAFT_ENGINE_INTEGRATION_DESIGN.md](BAFT_ENGINE_INTEGRATION_DESIGN.md) §15) and its own ADR; nothing in this plan does that | — | — | — |
 | S7 | IPv6 evidence (the catalog says `unknown`) if the LAB hosts have IPv6 | S | Yes | — |
 | S8 | CRL reload without restarting the unit (today every activation drops connections) | M | Yes | — |
 | S9 | Acceptance on fresh VMs instead of cleaned shared hosts | S | Yes | O4 |
@@ -225,7 +225,7 @@ Parallel tracks that do not share files or LAB time: (U1, Q1–Q4) alongside U2.
 | O2 | Find what changes the nftables address set on the abroad host | S10 (clean firewall claim) |
 | O3 | One check of the panel on a real phone through `ssh -L` | B6, U5a sign-off |
 | O4 | Fresh VM pair for release acceptance (optional, recommended before Stable) | S9 |
-| O5 | ~~Licence review of shipping the AGPL BAFT engine~~ Done 2026-11-09: the owner confirmed BAFT is theirs and its code may be used | — |
+| O5 | ~~Licence review of shipping the AGPL BAFT engine~~ Done 2026-11-09: the owner confirmed BAFT is theirs and its use is allowed (separate-binary model, ADR-0019) | — |
 | O6 | External full security review before v1.0 | S5 |
 | O7 | Reserve the LAB hosts for multi-hour soak windows | S1 |
 | O8 | Release authorization for `rc.5` (delegated to the coordinator under the owner's standing approval; still a separate gate from merge) | U6, U7 |
