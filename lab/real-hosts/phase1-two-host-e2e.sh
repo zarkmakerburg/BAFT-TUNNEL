@@ -783,6 +783,40 @@ if (( BAFT == 1 )); then
   probe_host iran 65536
   probe_host iran 2097289
   BAFT_RSS_SERVE="$(baft_rss abroad serve)"; BAFT_RSS_FWD="$(baft_rss iran forward)"
+  baft_fds() { # side role : open fds of launcher + child
+    ssh_host "$1" "p=\$(cat '$REMOTE_DIR/$2.pid'); t=0; for q in \$p \$(pgrep -P \$p); do t=\$((t + \$(ls /proc/\$q/fd | wc -l))); done; echo \$t"
+  }
+  BAFT_SOAK_RESULT=""; BAFT_LOSS_RESULT=""
+  if (( SOAK_SECONDS > 0 )); then
+    echo "--- BAFT stability: ${SOAK_SECONDS}s soak over the BAFT Direct tunnel ---"
+    bf0="$(baft_fds iran forward)"; bsf0="$(baft_fds abroad serve)"; br0="$BAFT_RSS_FWD"; bsr0="$BAFT_RSS_SERVE"
+    end=$((SECONDS + SOAK_SECONDS)); bn=0
+    while (( SECONDS < end )); do
+      probe_host iran 65536 >/dev/null; bn=$((bn + 1))
+      if (( bn % 6 == 0 )); then probe_host iran 2097289 >/dev/null; fi
+      sleep 10
+    done
+    bf1="$(baft_fds iran forward)"; bsf1="$(baft_fds abroad serve)"; br1="$(baft_rss iran forward)"; bsr1="$(baft_rss abroad serve)"
+    BAFT_SOAK_RESULT="soak_s=$SOAK_SECONDS soak_rounds=$bn fwd_fd=$bf0->$bf1 serve_fd=$bsf0->$bsf1 fwd_rss_kb=$br0->$br1 serve_rss_kb=$bsr0->$bsr1"
+    echo "BAFT_SOAK_RESULT $BAFT_SOAK_RESULT"
+    (( bf1 <= bf0 + 8 && bsf1 <= bsf0 + 8 )) || { echo "BAFT fd growth during soak" >&2; exit 1; }
+    (( br1 <= br0 * 2 + 20480 && bsr1 <= bsr0 * 2 + 20480 )) || { echo "BAFT memory growth during soak" >&2; exit 1; }
+  fi
+  if (( LOSS > 0 )); then
+    echo "--- BAFT stability: real TCP packet loss ${LOSS}% on the BAFT flow ---"
+    ssh_host iran "command -v nft >/dev/null" || { echo "nft is not available on the Iran host" >&2; exit 1; }
+    ssh_host iran "! nft list table inet $LOSS_TABLE >/dev/null 2>&1" || { echo "stale $LOSS_TABLE table exists" >&2; exit 1; }
+    if [[ "$LAB_ABROAD_HOST" == *:* ]]; then bfam=ip6; else bfam=ip; fi
+    ssh_host iran "nft add table inet $LOSS_TABLE && nft add chain inet $LOSS_TABLE out '{ type filter hook output priority 0; policy accept; }' && nft add chain inet $LOSS_TABLE in '{ type filter hook input priority 0; policy accept; }' && nft add rule inet $LOSS_TABLE out $bfam daddr $LAB_ABROAD_HOST tcp dport $E2E_PORT numgen random mod 100 '<' $LOSS counter drop && nft add rule inet $LOSS_TABLE in $bfam saddr $LAB_ABROAD_HOST tcp sport $E2E_PORT numgen random mod 100 '<' $LOSS counter drop"
+    probe_host iran 65536; probe_host iran 524288; probe_host iran 65536
+    bdropped="$(ssh_host iran "nft list table inet $LOSS_TABLE" | awk '/packets/ {for(i=1;i<NF;i++) if($i=="packets") sum+=$(i+1)} END{print sum+0}')"
+    ssh_host iran "nft delete table inet $LOSS_TABLE"
+    ssh_host iran "! nft list table inet $LOSS_TABLE >/dev/null 2>&1" || { echo "loss table was not removed" >&2; exit 1; }
+    (( bdropped > 0 )) || { echo "no packets were dropped; loss was not exercised" >&2; exit 1; }
+    probe_host iran 65536
+    BAFT_LOSS_RESULT="loss_percent=$LOSS loss_dropped_packets=$bdropped"
+    echo "BAFT_LOSS_RESULT $BAFT_LOSS_RESULT"
+  fi
   echo "--- BAFT unauthorized identity: valid certificate that is not the allowed peer ---"
   stop_role iran forward; sleep 1
   baft_start iran forward "$(baft_cfg forward control abroad b-control.crt b-control.key "$LAB_ABROAD_HOST" abroad.lab)"
@@ -950,7 +984,7 @@ MANIFEST
     sd_cleanup; trap cleanup EXIT
     echo "BAFT_SYSTEMD_RESULT hardened_direct_ok=1 mdwe=yes no_seccomp_kill=1 recovery_s=$SD_REC_S dialer_unit_restarts=$SD_NRESTARTS engine_kill_recovered=1 engine_kill_recovery_s=$SD_KILL_S store_launch_ok=1 store_pin_mismatch_refused=1 store_rollback_ok=1 engine_source=${BAFT_ENGINE_SOURCE:-unknown}"
   fi
-  echo "BAFT_RESULT direct_ok=1 unauthorized_refused=1 restart_recovered=1 restart_recovery_s=$BAFT_RECOVERY_S dialer_restarted=$BAFT_DIALER_RESTARTED bad_hash_refused=1 reverse_ok=1 revoked_refused=1 pin_ok=1 wrong_pin_refused=1 revoked_listener_refused=1 rss_kb_serve=$BAFT_RSS_SERVE rss_kb_forward=$BAFT_RSS_FWD"
+  echo "BAFT_RESULT direct_ok=1 unauthorized_refused=1 restart_recovered=1 restart_recovery_s=$BAFT_RECOVERY_S dialer_restarted=$BAFT_DIALER_RESTARTED bad_hash_refused=1 reverse_ok=1 revoked_refused=1 pin_ok=1 wrong_pin_refused=1 revoked_listener_refused=1 rss_kb_serve=$BAFT_RSS_SERVE rss_kb_forward=$BAFT_RSS_FWD $BAFT_SOAK_RESULT $BAFT_LOSS_RESULT"
 fi
 
 echo "=== CERTIFICATE REVOCATION: server rejects revoked client certificate ==="
