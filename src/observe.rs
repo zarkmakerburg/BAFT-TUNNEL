@@ -99,16 +99,28 @@ pub fn rates(samples: &[TrafficSample]) -> Vec<Value> {
         .collect()
 }
 
-/// The latest sample time at which payload grew in *both* directions since the previous sample
-/// of the same process: the strongest data-path signal the agent can observe without payload.
+/// The latest sample time at which payload had grown in *both* directions, the strongest data-path
+/// signal the agent can observe without payload. A short echo can straddle two sampling windows, so
+/// growth in each direction within `BIDIRECTIONAL_SLACK_S` of the other counts as one exchange.
 pub fn last_bidirectional(samples: &[TrafficSample]) -> Option<u64> {
+    const BIDIRECTIONAL_SLACK_S: u64 = 10;
+    let latest = |pid: u64, grew: fn(&TrafficSample, &TrafficSample) -> bool| {
+        samples
+            .windows(2)
+            .filter(|w| w[0].pid == pid && w[1].pid == pid && grew(&w[0], &w[1]))
+            .map(|w| w[1].t)
+            .max()
+    };
     samples
-        .windows(2)
-        .filter(|w| {
-            let (a, b) = (w[0], w[1]);
-            a.pid == b.pid && b.from_peer > a.from_peer && b.to_peer > a.to_peer
+        .iter()
+        .map(|x| x.pid)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|pid| {
+            let from = latest(pid, |a, b| b.from_peer > a.from_peer)?;
+            let to = latest(pid, |a, b| b.to_peer > a.to_peer)?;
+            (from.abs_diff(to) <= BIDIRECTIONAL_SLACK_S).then(|| from.max(to))
         })
-        .map(|w| w[1].t)
         .max()
 }
 
@@ -140,6 +152,14 @@ mod tests {
         assert_eq!(r[1]["t"], 25);
         assert_eq!(last_bidirectional(&list), Some(15));
         assert_eq!(last_bidirectional(&list[2..]), None);
+    }
+
+    #[test]
+    fn an_exchange_split_across_two_windows_still_counts() {
+        let split = [s(10, 1, 0, 0), s(15, 1, 0, 100), s(20, 1, 100, 100)];
+        assert_eq!(last_bidirectional(&split), Some(20));
+        let far = [s(10, 1, 0, 0), s(15, 1, 0, 100), s(60, 1, 100, 100)];
+        assert_eq!(last_bidirectional(&far), None);
     }
 
     #[test]
