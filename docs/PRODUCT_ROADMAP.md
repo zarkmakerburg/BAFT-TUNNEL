@@ -116,7 +116,7 @@ The P0 gates proved the runtime; they did not make the product usable by a non-e
 | 7 | U8 | Quickstart en/fa and troubleshooting rewritten for the accepted path | — | — |
 | 8 | U4, U5b | Panel-complete pairing: root config-promote helper (ADR-0026) and bundle export/import in the panel (closes P1-8 "Add from Link") | yes | — |
 | 9 | B1, B2 | Preflight evidence codes fully localized (P1-6); in-product "Test tunnel" integrity probe (ADR) | B2 yes | — |
-| 10 | B3–B6, S1–S10 | Read-only firewall view (P1-7), BAFT configurable (ADR-0019 phase F), history/alerts, accessibility; multi-hour soak, cross-version chain, reboot proof, fuzz depth, external review, licence review | as listed | O2, O4–O7 |
+| 10 | B3–B6, S1–S10 | Read-only firewall view (P1-7), BAFT configurable (ADR-0019 phase F), history/alerts, accessibility; multi-hour soak, cross-version chain, reboot proof, fuzz depth, external review (BAFT licence review closed 2026-11-09: the owner owns BAFT) | as listed | O2, O4, O6, O7 |
 
 Not before the MVP queue is done: P1-1 enrollment and P2 Fleet/Jobs (Tier L in the plan).
 

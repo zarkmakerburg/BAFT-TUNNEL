@@ -145,7 +145,7 @@ Effort: **S** = one small PR; **M** = one or two PRs, about a day with CI; **L**
 | U2 | Installed layout and agent service: hardened `baft-tunnel-agent@NAME.service` (non-root, loopback), token created at install, separate agent user (SA-09) in group `baft-tunnel`; `install.sh --instance NAME` registers the instance (control helper, agent unit, directories); `setup init/join --instance` sets owners and modes itself; uninstall, backup, restore and update know the agent unit | F2, F3, SA-09 | — | L | Via U7 | — | Real-systemd CI: agent unit up after install, panel served, no manual `chown`/`chgrp`, uninstall leaves nothing |
 | U3 | Lifecycle completeness: Apply `stop` and `restart`; enable at boot through the helper (ADR-0023 amendment, fixed `enable --now` / `disable --now` only); receipt states boot persistence; agent unit enabled at boot | F4 | U2 | M | Via U7 | O1 for a real reboot | Real-systemd CI: `is-enabled`, stop/restart receipts, refusals |
 | U5a | Panel lifecycle: Tunnels page Start / Stop / Restart (confirm, receipt), Run diagnostics with one next action per failing tier, boot-persistence state; Wizard last step: the printed setup commands, then Start once the config exists, then diagnostics | Panel integration (owner focus) | U3 | M | Via U7 | O3 phone check | Browser QA against a real agent (fa/en, mobile) |
-| U6 | Signed release bundle: `baft-tunnel-<tag>-linux-x86_64.tar.gz` with the binary, scripts, systemd units, PKI helpers and docs, inside `SHA256SUMS` + cosign; install docs: verify, then `sudo ./install.sh`; then prerelease `rc.5` | F6 | U2, U3 | M | — | O8 (release authorization) | Release run; bundle verifies; `rc.5` published as prerelease |
+| U6 | Signed release bundle: `baft-tunnel-<tag>-linux-x86_64.tar.gz` with the binary, scripts, systemd units, PKI helpers and docs, inside `SHA256SUMS` + cosign; install docs: verify, then `sudo ./install.sh`; then prerelease `rc.5` | F6 | U2, U3 | M | — | O8 (release authorization) | Release run; bundle verifies; licence texts and SBOM for the BAFT engine's third-party modules present; `rc.5` published as prerelease |
 | U7 | MVP acceptance v2 on LAB with the signed `rc.5` bundle: clean hosts, verified install, setup via the printed commands, agent unit, Apply start/stop/restart through the agent API, diagnostics up to `data_path` on both nodes, 64 KiB + 2 MiB integrity by the stage, `is-enabled`, backup/restore, update from the previous prerelease when layout-compatible (else recorded N/A with the reason), revocation, uninstall including the agent unit, cleanup | Proves the operator journey, not only the engine | U1–U6 | M + LAB | ~60 min | — | `PHASE1_TWO_HOST_E2E=PASS`, new result line, HQ entry |
 | U8 | Operator docs for the supported path: quickstart en/fa rewritten (install bundle, PKI, setup, start, diagnostics, CRL and certificate renewal, backup/update, uninstall); troubleshooting by diagnostics tier | MVP promise items 6–7 | U7 | S–M | — | — | Docs follow the U7 run step for step |
 
@@ -176,7 +176,7 @@ Effort: **S** = one small PR; **M** = one or two PRs, about a day with CI; **L**
 | S3 | Reboot persistence on real hosts, or on disposable VMs (S9) | S | Yes | O1 |
 | S4 | Fuzz depth: weekly 10–30 min per target; new targets for the Apply body, bundle import and the runtime evidence file readers | S–M | — | — |
 | S5 | Full independent pre-stable security review | — | — | O6 |
-| S6 | Licence review of distributing the AGPL BAFT engine | — | — | O5 |
+| S6 | ~~Licence review of distributing the AGPL BAFT engine~~ Closed 2026-11-09: the owner owns BAFT and allows its code in BAFT-TUNNEL. Left as a release check in U6: the bundle keeps the licence texts and SBOM of the third-party modules inside the engine | — | — | — |
 | S7 | IPv6 evidence (the catalog says `unknown`) if the LAB hosts have IPv6 | S | Yes | — |
 | S8 | CRL reload without restarting the unit (today every activation drops connections) | M | Yes | — |
 | S9 | Acceptance on fresh VMs instead of cleaned shared hosts | S | Yes | O4 |
@@ -225,7 +225,7 @@ Parallel tracks that do not share files or LAB time: (U1, Q1–Q4) alongside U2.
 | O2 | Find what changes the nftables address set on the abroad host | S10 (clean firewall claim) |
 | O3 | One check of the panel on a real phone through `ssh -L` | B6, U5a sign-off |
 | O4 | Fresh VM pair for release acceptance (optional, recommended before Stable) | S9 |
-| O5 | Licence review of shipping the AGPL BAFT engine | S6, any Stable BAFT claim |
+| O5 | ~~Licence review of shipping the AGPL BAFT engine~~ Done 2026-11-09: the owner confirmed BAFT is theirs and its code may be used | — |
 | O6 | External full security review before v1.0 | S5 |
 | O7 | Reserve the LAB hosts for multi-hour soak windows | S1 |
 | O8 | Release authorization for `rc.5` (delegated to the coordinator under the owner's standing approval; still a separate gate from merge) | U6, U7 |
@@ -244,7 +244,7 @@ Parallel tracks that do not share files or LAB time: (U1, Q1–Q4) alongside U2.
 | Cross-version update never tested | Medium | High | U7, S2 |
 | No multi-hour soak (BAFT listener RSS +23 % in 1200 s) | Medium | Medium | S1 |
 | Agent DoS by a compromised tunnel (SA-09) | Low | Medium | U2 |
-| AGPL obligations for the BAFT engine | Low | High | S6 before Stable or wider distribution |
+| Third-party licences inside the BAFT engine (BAFT itself is the owner's, confirmed 2026-11-09) | Low | Low | Release keeps their licence texts and SBOM (U6) |
 | Scope creep (new engines, Fleet) before the MVP | Medium | High | Tier L frozen until Tier U is done |
 
 ## 8. Release gate status (Roadmap §7, as of this baseline)
@@ -254,7 +254,7 @@ Parallel tracks that do not share files or LAB time: (U1, Q1–Q4) alongside U2.
 | P0-1..P0-5 with exact SHA and CI/LAB evidence | Met |
 | Catalogue, CLI, Preflight, Wizard and runtime agree | Partly: BAFT selectable-then-blocked since #133 (Q4); panel Apply vs installed layout (Q3, U4) |
 | Reverse Preview and Noise Reverse unavailability truthful | Met |
-| BAFT Store path uses the pinned artifact and manifest; licence package verified | Artifact met (A1–A3); licence review open (S6) |
+| BAFT Store path uses the pinned artifact and manifest; licence package verified | Artifact met (A1–A3); licence: the owner owns BAFT and allows its use (2026-11-09), attribution package checked in U6 |
 | Apply receipts disclose what happened and what is unverified | Met |
 | Signed asset, checksum, signature, manifest, rollback verified | Binary met (rc.4, P0-5); scripts and units unsigned (U6) |
 | Upgrade/restore/uninstall on baseline hosts | Same version met (LAB 42635190485, 42619848756); cross-version open (U7, S2) |
