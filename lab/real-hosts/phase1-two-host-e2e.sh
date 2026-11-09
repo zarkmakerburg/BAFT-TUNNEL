@@ -87,10 +87,18 @@ ssh_host() {
   else
     host="$LAB_ABROAD_HOST"; user="$ABROAD_USER"; port="$ABROAD_SSH_PORT"
   fi
-  ssh -i "$SSH_KEY_FILE" -p "$port" -o BatchMode=yes -o IdentitiesOnly=yes \
-    -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" \
-    -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 \
-    -o LogLevel=ERROR "$user@$host" "$command"
+  # ssh exits 255 only when the connection itself failed (timeout, banner exchange, reset): the
+  # command did not run, so a bounded retry is safe. Any other status is the command's own.
+  local attempt rc=0
+  for attempt in 1 2 3; do
+    ssh -i "$SSH_KEY_FILE" -p "$port" -o BatchMode=yes -o IdentitiesOnly=yes \
+      -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" \
+      -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 \
+      -o LogLevel=ERROR "$user@$host" "$command" && return 0 || rc=$?
+    (( rc == 255 )) || return "$rc"
+    sleep $((attempt * 5))
+  done
+  return "$rc"
 }
 copy_to_host() {
   local side="$1"; shift
