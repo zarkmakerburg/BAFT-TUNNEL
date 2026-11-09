@@ -149,10 +149,14 @@ The bundle holds only public material (Noise public key or certificate pin, ids,
 
 ## Local status API (read-only, P3-002 A1)
 ```
-baft-tunnel agent-token --out /etc/baft-tunnel/agent.token
-baft-tunnel agent --config /etc/baft-tunnel/config.json --token-file /etc/baft-tunnel/agent.token
-curl -H "Authorization: Bearer $(cat /etc/baft-tunnel/agent.token)" http://127.0.0.1:18080/v1/status
+install -d -o baft-tunnel -g baft-tunnel -m 0700 /var/lib/baft-tunnel/agent
+AS="setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups"
+$AS baft-tunnel agent-token --out /var/lib/baft-tunnel/agent/token
+$AS baft-tunnel agent --config /etc/baft-tunnel/NAME.json --token-file /var/lib/baft-tunnel/agent/token
+curl -H "Authorization: Bearer $(cat /var/lib/baft-tunnel/agent/token)" http://127.0.0.1:18080/v1/status
 ```
+The agent runs as the unprivileged `baft-tunnel` user and refuses to start as root unless `--allow-root` is given (not recommended: Apply would then create files as root). The tunnel unit cannot read `/var/lib/baft-tunnel`, so a compromised tunnel process cannot read the agent token. Requests whose `Host` is not `127.0.0.1`, `localhost` or `[::1]` (any port) are refused (DNS-rebinding defence). See `docs/SECURITY_ASSESSMENT.md`.
+
 Loopback only; the output is the redacted support report plus `listener_accepting`. The agent does not start or change a tunnel.
 
 Desired state (A2): add `--state-dir /var/lib/baft-tunnel/agent` (must exist). `PUT /v1/desired` with a JSON config validates it and stores `desired.json`; every attempt is logged in `audit.log` (hash and result only). The agent never applies it: review it, then run `baft-tunnel apply --config ... --confirm`.

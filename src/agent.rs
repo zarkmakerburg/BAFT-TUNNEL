@@ -255,35 +255,42 @@ pub async fn serve(listener: TcpListener, ctx: Arc<Ctx>) -> Result<()> {
     }
 }
 
+/// Host names a browser may use to reach the loopback agent (any port, so `ssh -L` keeps working).
+/// Anything else is refused before routing: a DNS-rebinding page names its own domain here.
+fn allowed_host(head: &str) -> bool {
+    let Some(host) = header(head, "host") else {
+        return true; // non-browser clients (HTTP/1.0, tests); browsers always send Host
+    };
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        rest.split_once(']').map_or(rest, |(n, _)| n)
+    } else {
+        host.rsplit_once(':').map_or(host, |(n, _)| n)
+    };
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "127.0.0.1" | "localhost" | "::1"
+    )
+}
+
 async fn handle(mut stream: TcpStream, ctx: &Ctx) -> Result<()> {
-    let mut buf = Vec::with_capacity(512);
-    let mut chunk = [0u8; 1024];
-    let head_end = loop {
-        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-            break i + 4;
-        }
-        if buf.len() >= MAX_REQUEST_BYTES {
-            return respond(&mut stream, 431, &json!({"error": "request too large"})).await;
-        }
-        let n = timeout(IO_TIMEOUT, stream.read(&mut chunk)).await??;
-        if n == 0 {
-            return Ok(());
-        }
-        buf.extend_from_slice(&chunk[..n]);
+    // The whole request must arrive within one I/O timeout, so a client trickling bytes cannot
+    // hold one of the few connection slots for the full handler time.
+    let read = timeout(IO_TIMEOUT, read_request(&mut stream)).await;
+    let Ok(read) = read else {
+        return Ok(());
+    };
+    let Some((buf, head_end, length)) = read? else {
+        return Ok(());
     };
     let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
-    let length = header(&head, "content-length")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0);
+    if length == usize::MAX {
+        return respond(&mut stream, 431, &json!({"error": "request too large"})).await;
+    }
     if length > MAX_BODY_BYTES {
         return respond(&mut stream, 413, &json!({"error": "body too large"})).await;
     }
-    while buf.len() < head_end + length {
-        let n = timeout(IO_TIMEOUT, stream.read(&mut chunk)).await??;
-        if n == 0 {
-            return Ok(());
-        }
-        buf.extend_from_slice(&chunk[..n]);
+    if !allowed_host(&head) {
+        return respond(&mut stream, 421, &json!({"error": "misdirected request"})).await;
     }
     let body = &buf[head_end..head_end + length];
     if let Some((kind, text)) = static_asset(&head) {
@@ -291,6 +298,40 @@ async fn handle(mut stream: TcpStream, ctx: &Ctx) -> Result<()> {
     }
     let (status, out) = route(&head, body, ctx).await;
     respond(&mut stream, status, &out).await
+}
+
+/// Read one request. `None` = the client closed early. A too-large head is reported as
+/// `length == usize::MAX`, a too-large body by its declared length (both answered by the caller).
+async fn read_request(stream: &mut TcpStream) -> Result<Option<(Vec<u8>, usize, usize)>> {
+    let mut buf = Vec::with_capacity(512);
+    let mut chunk = [0u8; 1024];
+    let head_end = loop {
+        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
+        if buf.len() >= MAX_REQUEST_BYTES {
+            return Ok(Some((buf, 0, usize::MAX)));
+        }
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    };
+    let length = header(&String::from_utf8_lossy(&buf[..head_end]), "content-length")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    if length > MAX_BODY_BYTES {
+        return Ok(Some((buf, head_end, length)));
+    }
+    while buf.len() < head_end + length {
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    Ok(Some((buf, head_end, length)))
 }
 
 /// Fuzz entry (see fuzz/): the request parser and router with no state directory.
@@ -1565,6 +1606,7 @@ async fn respond(stream: &mut TcpStream, code: u16, body: &Value) -> Result<()> 
         404 => "Not Found",
         405 => "Method Not Allowed",
         413 => "Payload Too Large",
+        421 => "Misdirected Request",
         422 => "Unprocessable Entity",
         500 => "Internal Server Error",
         _ => "Request Header Fields Too Large",
@@ -1620,7 +1662,7 @@ mod tests {
         ));
         let mut s = TcpStream::connect(addr).await.unwrap();
         let mut req = format!(
-            "{method} {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n",
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:18080\r\nContent-Length: {}\r\n",
             body.len()
         );
         if let Some(a) = auth {
@@ -1647,6 +1689,96 @@ mod tests {
         assert!(body.contains("\"listener_accepting\":false"));
         assert!(!body.contains("/secret"));
         assert!(!body.contains("192.0.2.1"));
+    }
+
+    async fn raw(req: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(serve(
+            listener,
+            Arc::new(Ctx::new(sample(), TOKEN.into(), None)),
+        ));
+        let mut s = TcpStream::connect(addr).await.unwrap();
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out).await;
+        task.abort();
+        out
+    }
+
+    #[test]
+    fn only_loopback_host_names_are_accepted() {
+        for ok in [
+            "127.0.0.1",
+            "127.0.0.1:18080",
+            "localhost:9999",
+            "LOCALHOST",
+            "[::1]:18080",
+            "[::1]",
+        ] {
+            assert!(
+                allowed_host(&format!("GET / HTTP/1.1\r\nHost: {ok}\r\n\r\n")),
+                "{ok}"
+            );
+        }
+        for bad in [
+            "evil.example",
+            "evil.example:18080",
+            "127.0.0.1.evil.example",
+            "localhost.evil.example:18080",
+            "[::2]:18080",
+            "",
+        ] {
+            assert!(
+                !allowed_host(&format!("GET / HTTP/1.1\r\nHost: {bad}\r\n\r\n")),
+                "{bad}"
+            );
+        }
+        assert!(allowed_host("GET / HTTP/1.0\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn a_rebinding_host_is_refused_before_auth_and_assets() {
+        for path in ["/", "/v1/health", "/v1/status"] {
+            let out = raw(&format!(
+                "GET {path} HTTP/1.1\r\nHost: rebind.example:18080\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
+            ))
+            .await;
+            assert!(out.starts_with("HTTP/1.1 421 "), "{path}: {out}");
+        }
+        let out = raw(&format!(
+            "GET /v1/status HTTP/1.1\r\nHost: localhost:18080\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
+        ))
+        .await;
+        assert!(out.starts_with("HTTP/1.1 200 "), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_trickling_client_is_dropped_within_one_io_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(serve(
+            listener,
+            Arc::new(Ctx::new(sample(), TOKEN.into(), None)),
+        ));
+        let mut s = TcpStream::connect(addr).await.unwrap();
+        let started = std::time::Instant::now();
+        let mut closed = false;
+        // One byte every second never completes the head; the agent must close the connection.
+        for b in b"GET /v1/health HTTP/1.1\r\nX-Slow: aaaaaaaaaaaaaaaaaaaa" {
+            if s.write_all(&[*b]).await.is_err() {
+                closed = true;
+                break;
+            }
+            let mut probe = [0u8; 1];
+            if let Ok(Ok(0)) = timeout(Duration::from_secs(1), s.read(&mut probe)).await {
+                closed = true;
+                break;
+            }
+        }
+        task.abort();
+        assert!(closed, "connection still open");
+        assert!(started.elapsed() < IO_TIMEOUT + Duration::from_secs(3));
     }
 
     #[tokio::test]
