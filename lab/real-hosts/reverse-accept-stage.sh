@@ -128,6 +128,8 @@ for k in sys.argv[1].split("."): d = d.get(k, "") if isinstance(d, dict) else ""
 print(d)' "$1"; }
 unit_active() { ssh_host "$1" "systemctl is-active --quiet baft-tunnel@$2.service"; }
 unit_stop() { ssh_host "$1" "setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups touch /run/baft-tunnel/control/$2.stop; for n in \$(seq 1 40); do systemctl is-active --quiet baft-tunnel@$2.service || exit 0; sleep 0.5; done; exit 1"; }
+RA_SINCE_iran="$(ssh_host iran 'date -u "+%F %T"')"; RA_SINCE_abroad="$(ssh_host abroad 'date -u "+%F %T"')"
+ra_authfail() { local since="RA_SINCE_$1"; ssh_host "$1" "journalctl --utc --since '${!since}' -u baft-tunnel@$2.service --no-pager 2>/dev/null | grep -c 'secure_channel stage failed' || true"; }
 ra_wait() { local t0=$SECONDS; while (( SECONDS - t0 < $1 )); do probe_host iran 65536 >/dev/null 2>&1 && { echo $((SECONDS - t0)); return 0; }; sleep 2; done; return 1; }
 mainpid() { ssh_host "$1" "systemctl show -p MainPID --value baft-tunnel@$2.service"; }
 unit_stats() { ssh_host "$1" "p=\$(systemctl show -p MainPID --value baft-tunnel@$2.service); echo \$(ls /proc/\$p/fd | wc -l) \$(awk '/VmRSS/{print \$2}' /proc/\$p/status) \$(systemctl show -p NRestarts --value baft-tunnel@$2.service)"; }
@@ -221,7 +223,9 @@ echo "REVERSE_SOAK $RA_SOAK_LINE"
 (( pr1 <= pr0 * 2 + 20480 && sr1 <= sr0 * 2 + 20480 )) || { echo "memory growth during the Reverse soak" >&2; exit 1; }
 sleep 6
 ra_evidence soak 2097289
-echo "REVERSE_SECURE_CHANNEL_FAILURES_AFTER_SOAK public=$(ssh_host iran "journalctl -u baft-tunnel@$PUB.service --no-pager 2>/dev/null | grep -c 'secure_channel stage failed' || true") service=$(ssh_host abroad "journalctl -u baft-tunnel@$SVC.service --no-pager 2>/dev/null | grep -c 'secure_channel stage failed' || true")"
+RA_SOAK_FAILS="$(ra_authfail iran $PUB) $(ra_authfail abroad $SVC)"
+echo "REVERSE_SECURE_CHANNEL_FAILURES_AFTER_SOAK public/service=${RA_SOAK_FAILS// //} (this run only)"
+[[ "$RA_SOAK_FAILS" == "0 0" ]] || { echo "secure_channel stage failures were logged during a healthy soak: $RA_SOAK_FAILS" >&2; exit 1; }
 
 echo "--- reconnect: service-node SIGKILL (systemd restart), public-node SIGKILL, restarts through stop + Apply start ---"
 ssh_host abroad "kill -KILL \$(systemctl show -p MainPID --value baft-tunnel@$SVC.service)"
@@ -279,8 +283,9 @@ sleep 14
 probe_host iran 65536
 sleep 12   # the agents sample unit counters every 5 s; the data_path tier needs payload inside its window
 ra_evidence update 65536
-ra_authfail() { ssh_host "$1" "journalctl -u baft-tunnel@$2.service --no-pager 2>/dev/null | grep -c 'secure_channel stage failed' || true"; }
-echo "REVERSE_SECURE_CHANNEL_FAILURES_AFTER_UPDATE public=$(ra_authfail iran $PUB) service=$(ra_authfail abroad $SVC) (no revocation in effect yet)"
+RA_UPD_FAILS="$(ra_authfail iran $PUB) $(ra_authfail abroad $SVC)"
+echo "REVERSE_SECURE_CHANNEL_FAILURES_AFTER_UPDATE public/service=${RA_UPD_FAILS// //} (this run only, no revocation yet)"
+[[ "$RA_UPD_FAILS" == "0 0" ]] || { echo "secure_channel stage failures were logged before revocation: $RA_UPD_FAILS" >&2; exit 1; }
 # Bad update on the service node: must exit non-zero, restore the previous digest and bring the tunnel back.
 if ssh_host abroad "bash '$PKG/scripts/update.sh' --binary '$REMOTE_DIR/baft-tunnel-ra-bad' --instance $SVC --health-secs 6" >"$LOCAL_TMP/ra-badupdate.log" 2>&1; then
   echo "update with a failing binary was accepted" >&2; exit 1

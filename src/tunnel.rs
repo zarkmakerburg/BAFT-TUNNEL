@@ -400,6 +400,12 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                 let ingress_side = ingress.clone();
                 tasks.spawn(async move {
                     let result: Result<()> = async {
+                        // A bare TCP connect that closes without sending anything is a reachability
+                        // probe (the local agent samples this port every few seconds), not a failed
+                        // secure-channel attempt: do not log it or record it as a failure.
+                        if closed_without_data(&socket).await {
+                            return Ok(());
+                        }
                         let mut secure = engine.accept(socket).await?;
                         timeout(
                             HANDSHAKE_TIMEOUT,
@@ -576,6 +582,15 @@ async fn serve_streams<S>(
         }
     }
     drain_stream_tasks(&mut stream_tasks, "server").await;
+}
+
+/// True when the peer closed the TCP connection before sending a single byte.
+async fn closed_without_data(socket: &TcpStream) -> bool {
+    let mut byte = [0u8; 1];
+    matches!(
+        timeout(HANDSHAKE_TIMEOUT, socket.peek(&mut byte)).await,
+        Ok(Ok(0))
+    )
 }
 
 async fn connect_peer(options: &ForwardOptions) -> Result<Session<BoxedSecureStream>> {
@@ -965,6 +980,19 @@ pub async fn forward(options: ForwardOptions) -> Result<()> {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+
+    #[tokio::test]
+    async fn bare_tcp_probe_is_told_apart_from_a_handshake_attempt() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(TcpStream::connect(addr).await.unwrap());
+        let (probe, _) = listener.accept().await.unwrap();
+        assert!(closed_without_data(&probe).await);
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client.write_all(&[0x16]).await.unwrap();
+        let (attempt, _) = listener.accept().await.unwrap();
+        assert!(!closed_without_data(&attempt).await);
+    }
 
     #[test]
     fn destination_requires_specific_unicast_socket() {
