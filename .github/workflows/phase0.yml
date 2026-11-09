@@ -22,9 +22,11 @@ jobs:
       - name: Validate Bash scripts
         run: |
           set -eu
-          for script in lab/scripts/integration-netem.sh lab/scripts/test-clear-netem.sh lab/real-hosts/*.sh scripts/pki/*.sh scripts/install.sh scripts/rollback.sh scripts/uninstall.sh scripts/test-install.sh scripts/backup.sh scripts/restore.sh scripts/update.sh scripts/test-backup-update.sh; do
+          for script in lab/scripts/integration-netem.sh lab/scripts/test-clear-netem.sh lab/real-hosts/*.sh scripts/pki/*.sh scripts/install.sh scripts/rollback.sh scripts/uninstall.sh scripts/test-install.sh scripts/backup.sh scripts/restore.sh scripts/update.sh scripts/test-backup-update.sh scripts/menu.sh scripts/test-menu.sh; do
             bash -n "$script"
           done
+      - name: ShellCheck the interactive menu and the scripts it changes
+        run: shellcheck -S warning scripts/menu.sh scripts/test-menu.sh scripts/install.sh scripts/rollback.sh scripts/uninstall.sh
       - name: Test staged install, rollback, and uninstall
         run: bash scripts/test-install.sh
       - name: Test staged backup, restore, guarded update and automatic rollback

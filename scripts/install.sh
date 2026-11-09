@@ -20,7 +20,8 @@ DROPIN_MARKER="# Managed by BAFT-TUNNEL scripts/install.sh"
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--binary PATH] [--instance NAME --node-key PATH
+Usage: install.sh                (no arguments on a terminal: interactive menu)
+       install.sh [--binary PATH] [--instance NAME --node-key PATH
                   [--credential-mode baseline|encrypted] [--replace-credential]]
                   [--register NAME [--agent-listen 127.0.0.1:PORT]]
                   [--destdir ROOT [--systemd-version N]]
@@ -28,6 +29,11 @@ Usage: install.sh [--binary PATH] [--instance NAME --node-key PATH
 Install the BAFT-TUNNEL binary and systemd template unit, and/or provision the
 node-key service credential for one instance. At least one of --binary or
 --instance is required. No tunnel is enabled, started, or restarted.
+With --binary the scripts and units are also copied to /usr/local/lib/baft-tunnel
+so that `baft-tunnel menu` (Persian/English interactive menu) works afterwards.
+
+--instance/--node-key (PEM key) are for the tcp-tls engine only; noise-tcp
+creates its own key with `baft-tunnel setup init` and needs neither.
 
 --register NAME (one step for an installed instance): also installs the local
 agent service baft-tunnel-agent@NAME under its own user baft-tunnel-agent, its
@@ -55,6 +61,11 @@ backup directory so rollback.sh can restore it.
 EOF
 }
 die() { echo "install: $*" >&2; exit 2; }
+
+# No arguments on a terminal: the interactive menu (it calls this script with flags).
+if (($# == 0)) && [[ -t 0 && -t 1 && -f "$SCRIPT_DIR/menu.sh" ]]; then
+  exec bash "$SCRIPT_DIR/menu.sh"
+fi
 
 while (($#)); do
   case "$1" in
@@ -145,6 +156,8 @@ STATE_DIR="$ROOT_PREFIX/var/lib/baft-tunnel"
 BACKUP_ROOT="$ROOT_PREFIX/var/backups"
 BIN_DEST="$BIN_DIR/baft-tunnel"
 UNIT_DEST="$UNIT_DIR/baft-tunnel@.service"
+# Scripts and units for `baft-tunnel menu` (same relative layout as the release tree).
+LIB_DEST="$ROOT_PREFIX/usr/local/lib/baft-tunnel"
 
 if [[ -z "$BINARY" ]]; then
   [[ -x "$BIN_DEST" && -f "$UNIT_DEST" ]] || die "binary/template not installed yet; pass --binary as well"
@@ -200,12 +213,22 @@ fi
 mkdir -p "$BIN_DIR" "$UNIT_DIR" "$CONFIG_DIR/pki" "$STATE_DIR" "$BACKUP_ROOT"
 chmod 0750 "$CONFIG_DIR" "$CONFIG_DIR/pki" "$STATE_DIR"
 
+# A failed first install removes the account and group it created (they are not left behind).
+CREATED_USER=0
+CREATED_GROUP=0
+remove_created_account() {
+  if [[ "$CREATED_USER" == "1" ]]; then userdel "$SERVICE_USER" >/dev/null 2>&1 || true; fi
+  if [[ "$CREATED_GROUP" == "1" ]]; then groupdel "$SERVICE_USER" >/dev/null 2>&1 || true; fi
+}
 if [[ "$STAGING" == "0" ]]; then
+  trap 'remove_created_account' EXIT
   if ! getent group "$SERVICE_USER" >/dev/null 2>&1; then
     groupadd --system "$SERVICE_USER"
+    CREATED_GROUP=1
   fi
   if ! id "$SERVICE_USER" >/dev/null 2>&1; then
     useradd --system --gid "$SERVICE_USER" --home-dir "$STATE_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+    CREATED_USER=1
   fi
   chown root:"$SERVICE_USER" "$CONFIG_DIR" "$CONFIG_DIR/pki"
   chown "$SERVICE_USER":"$SERVICE_USER" "$STATE_DIR"
@@ -219,6 +242,7 @@ if [[ -n "$BINARY" ]]; then
   : > "$BACKUP_DIR/scope-binary"
   [[ ! -e "$BIN_DEST" ]] || { cp -p "$BIN_DEST" "$BACKUP_DIR/baft-tunnel"; : > "$BACKUP_DIR/had-binary"; }
   [[ ! -e "$UNIT_DEST" ]] || { cp -p "$UNIT_DEST" "$BACKUP_DIR/baft-tunnel@.service"; : > "$BACKUP_DIR/had-unit"; }
+  [[ ! -d "$LIB_DEST" ]] || { cp -a "$LIB_DEST" "$BACKUP_DIR/lib"; : > "$BACKUP_DIR/had-lib"; }
 fi
 if [[ -n "$INSTANCE" ]]; then
   printf '%s\n' "$INSTANCE" > "$BACKUP_DIR/scope-credential"
@@ -257,7 +281,10 @@ rollback_install() {
     if [[ -n "$BINARY" ]]; then
       if [[ -f "$BACKUP_DIR/had-binary" ]]; then cp -p "$BACKUP_DIR/baft-tunnel" "$BIN_DEST"; else rm -f "$BIN_DEST"; fi
       if [[ -f "$BACKUP_DIR/had-unit" ]]; then cp -p "$BACKUP_DIR/baft-tunnel@.service" "$UNIT_DEST"; else rm -f "$UNIT_DEST"; fi
+      rm -rf "$LIB_DEST.new.$$"
+      if [[ -f "$BACKUP_DIR/had-lib" ]]; then rm -rf "$LIB_DEST"; cp -a "$BACKUP_DIR/lib" "$LIB_DEST"; else rm -rf "$LIB_DEST"; fi
     fi
+    if [[ "$STAGING" == "0" ]]; then remove_created_account; fi
     if [[ "$CRED_TOUCHED" == "1" ]]; then restore_credential; fi
     if [[ "$STAGING" == "0" ]]; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
     echo "install: failed; previous files restored" >&2
@@ -271,6 +298,18 @@ if [[ -n "$BINARY" ]]; then
   mv -f "$BIN_DEST.new.$$" "$BIN_DEST"
   install -m 0644 "$UNIT_SOURCE" "$UNIT_DEST.new.$$"
   mv -f "$UNIT_DEST.new.$$" "$UNIT_DEST"
+  # Copy only the operator scripts and unit files (no tests, no panel QA tooling).
+  rm -rf "$LIB_DEST.new.$$"
+  install -d -m 0755 "$LIB_DEST.new.$$/scripts/pki" "$LIB_DEST.new.$$/systemd"
+  for f in "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/pki/*.sh; do
+    case "$(basename "$f")" in test-*|apply-branch-protection.sh|build-baft-engine.sh|baft-validate-golden.sh) continue ;; esac
+    rel="${f#"$SCRIPT_DIR"/}"
+    install -m 0755 "$f" "$LIB_DEST.new.$$/scripts/$rel"
+  done
+  cp -R "$SCRIPT_DIR/../systemd/." "$LIB_DEST.new.$$/systemd/"
+  chmod -R u=rwX,go=rX "$LIB_DEST.new.$$"
+  rm -rf "$LIB_DEST"
+  mv -f "$LIB_DEST.new.$$" "$LIB_DEST"
 fi
 
 if [[ -n "$INSTANCE" ]]; then
@@ -309,7 +348,8 @@ if [[ "$STAGING" == "0" ]]; then
 fi
 
 SUCCESS=1
-if [[ -n "$BINARY" ]]; then echo "Installed $BIN_DEST and $UNIT_DEST"; fi
+if [[ -t 1 && -f "$SCRIPT_DIR/menu.sh" ]]; then bash "$SCRIPT_DIR/menu.sh" --banner; fi
+if [[ -n "$BINARY" ]]; then echo "Installed $BIN_DEST and $UNIT_DEST"; echo "Menu: sudo baft-tunnel menu (Persian/English)"; fi
 if [[ -n "$INSTANCE" ]]; then
   echo "Credential: $CREDENTIAL_MODE mode for instance $INSTANCE (systemd ${SYSTEMD_VERSION})"
   echo "  source:  $CRED_FILE (root:root 0600, directory 0700)$([[ "$CRED_UNCHANGED" == "1" ]] && echo ', unchanged')"
@@ -330,3 +370,12 @@ if [[ -n "$REGISTER" ]]; then
   "$SCRIPT_DIR/install-agent-control.sh" "${REG_ARGS[@]}"
 fi
 echo "No tunnel was enabled, started, or restarted."
+if [[ -n "$BINARY" ]]; then
+  NEXT_NAME="${REGISTER:-main}"
+  echo
+  echo "Next step: pair this node with the other node (run on both, one with --role serve):"
+  echo "  sudo baft-tunnel menu   ->  Pair the two nodes"
+  echo "  or: sudo baft-tunnel setup init --engine noise-tcp --role forward|serve --direction direct \\"
+  echo "        --node-id THIS_NODE --peer-id OTHER_NODE --tunnel-id $NEXT_NAME --service-port PORT \\"
+  echo "        [--peer-host OTHER_NODE_IP  (forward only)] --instance $NEXT_NAME"
+fi
