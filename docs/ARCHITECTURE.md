@@ -15,9 +15,9 @@ No BAFT implementation, history, keys, production configuration, CI secrets, or 
 - **CLI:** diagnostics, enrollment, plan/apply, backup/restore, and support bundle.
 - **Connection manager:** evaluates authorized Direct/Reverse/Relay paths and selects a healthy authenticated route.
 - **Transport adapters:** versioned, replaceable TCP and later QUIC data-plane implementations.
-- **Web UI:** React + TypeScript + Vite, Persian-first RTL with English support.
+- **Web UI:** plain JavaScript with no build step, served by the agent; Persian-first RTL with English support.
 
-The core engine, agent, API, CLI, and installer are Rust. Tokio is the async runtime; rustls is used for TLS 1.3 transport and HTTPS/API endpoints; Axum provides HTTP/API routing. SQLite WAL is the initial store; PostgreSQL is optional. The Noise prototype is isolated research code and is not the Phase 1 production data plane.
+The core engine, agent, API and CLI are Rust; the installer and PKI helpers are shell scripts. Tokio is the async runtime; rustls is used for TLS 1.3 transport. The agent API is a small loopback HTTP server on Tokio (no web framework). State is kept in JSON files; there is no database. `noise-tcp` (Noise IK over TCP) is an Experimental engine, Direct only.
 
 ## Connectivity modes
 

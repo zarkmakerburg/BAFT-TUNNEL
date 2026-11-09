@@ -24,7 +24,12 @@ Usage:
   baft-pki.sh new-node NODE_ID NODE_DIR
   baft-pki.sh issue-node CA_DIR NODE_ID CSR_FILE OUTPUT_DIR SERVER_NAME [VALID_DAYS]
   baft-pki.sh revoke-node CA_DIR NODE_CERT OUTPUT_DIR
+  baft-pki.sh renew-crl CA_DIR OUTPUT_DIR [VALID_DAYS]
   baft-pki.sh verify-node CA_DIR CRL_FILE NODE_CERT NODE_ID SERVER_NAME
+
+Peers refuse every connection once the CRL has expired. Run renew-crl weekly
+(default validity 30 days, 2-90 allowed), check the result with crl-status.sh
+and distribute it with push-crl.sh. Revocations already recorded are kept.
 
 The CA key created by init-ca is encrypted and should remain offline.
 Node keys are unencrypted EC P-256 files with mode 0600 because the
@@ -86,7 +91,7 @@ serial = "$dir/serial"
 crlnumber = "$dir/crlnumber"
 default_md = sha384
 default_days = 90
-default_crl_days = 7
+default_crl_days = 30
 policy = policy_node
 unique_subject = no
 copy_extensions = none
@@ -191,6 +196,29 @@ revoke_node() {
   TMP_DIR=""
 }
 
+renew_crl() {
+  local ca_dir="$1" out_dir="$2" days="${3:-30}"
+  require_ca "$ca_dir"
+  [[ "$days" =~ ^[0-9]{1,2}$ ]] && (( days >= 2 && days <= 90 )) ||
+    die "CRL validity must be 2-90 days (push-crl.sh refuses CRLs with under 72 hours left)"
+  mkdir -p "$out_dir"
+  chmod 700 "$out_dir"
+  [[ ! -e "$out_dir/ca.crl" ]] || die "ca.crl already exists in output directory; use an empty directory"
+  TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/baft-pki.XXXXXX")"
+  # -crldays overrides default_crl_days, so CAs created before this command (7 days) also renew
+  # for the requested period. The CA database is reused: every earlier revocation stays listed.
+  openssl ca "${PASSIN[@]}" -gencrl -batch -crldays "$days" -config "$ca_dir/openssl.cnf" -out "$TMP_DIR/ca.crl"
+  openssl crl -in "$TMP_DIR/ca.crl" -noout -CAfile "$ca_dir/ca.crt" >/dev/null 2>&1 ||
+    die "renewed CRL does not verify against ca.crt"
+  [[ -e "$out_dir/ca.crt" ]] || cp "$ca_dir/ca.crt" "$out_dir/ca.crt"
+  cp "$TMP_DIR/ca.crl" "$out_dir/ca.crl"
+  chmod 644 "$out_dir/ca.crt" "$out_dir/ca.crl"
+  echo "CRL renewed for $days days. Check it with crl-status.sh, then distribute it with push-crl.sh."
+  openssl crl -in "$out_dir/ca.crl" -noout -crlnumber -nextupdate
+  rm -rf "$TMP_DIR"
+  TMP_DIR=""
+}
+
 verify_node() {
   local ca_dir="$1" crl="$2" cert="$3" node_id="$4" server_dns="$5"
   validate_node_id "$node_id"
@@ -218,6 +246,7 @@ case "$command" in
   new-node) [[ $# == 2 ]] || { usage; exit 2; }; new_node "$1" "$2" ;;
   issue-node) [[ $# == 5 || $# == 6 ]] || { usage; exit 2; }; issue_node "$@" ;;
   revoke-node) [[ $# == 3 ]] || { usage; exit 2; }; revoke_node "$@" ;;
+  renew-crl) [[ $# == 2 || $# == 3 ]] || { usage; exit 2; }; renew_crl "$@" ;;
   verify-node) [[ $# == 5 ]] || { usage; exit 2; }; verify_node "$@" ;;
   -h|--help|help) usage ;;
   *) usage; die "unknown command: $command" ;;

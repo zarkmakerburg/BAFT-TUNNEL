@@ -608,6 +608,7 @@ async fn preflight(body: &[u8]) -> (u16, Value) {
             "the setup directory does not exist on this host yet".into(),
         ));
     }
+    checks.push(directory_writable_check(dir));
     if dir.join("pairing-state.json").exists() {
         checks.push(check(
             "existing_pairing",
@@ -759,6 +760,52 @@ async fn probe_peer(host: &str, port: u16) -> Value {
     }
 }
 
+/// Can this agent process create files where Apply `init` will write them? On the installed
+/// layout `/etc/baft-tunnel` is `root:baft-tunnel 0750`, so an agent running as `baft-tunnel`
+/// cannot; Apply must then stay disabled and the printed commands are run as root instead.
+/// Read-only: uses access(2), never creates a probe file.
+fn directory_writable_check(dir: &std::path::Path) -> Value {
+    let target = if dir.is_dir() {
+        Some(dir)
+    } else if dir.exists() {
+        None
+    } else {
+        dir.parent().filter(|p| p.is_dir())
+    };
+    let Some(target) = target else {
+        return check(
+            "directory_writable",
+            "unknown",
+            "neither the setup directory nor its parent exists, so write access could not be checked".into(),
+        );
+    };
+    let Ok(c_path) = std::ffi::CString::new(target.as_os_str().as_encoded_bytes()) else {
+        return check(
+            "directory_writable",
+            "blocked",
+            "the setup path contains a NUL byte".into(),
+        );
+    };
+    // SAFETY: c_path is a valid NUL-terminated string; access(2) only reads it.
+    let ok = unsafe { libc::access(c_path.as_ptr(), libc::W_OK | libc::X_OK) } == 0;
+    if ok {
+        check(
+            "directory_writable",
+            "pass",
+            format!("the agent can create files in {}", target.display()),
+        )
+    } else {
+        check(
+            "directory_writable",
+            "blocked",
+            format!(
+                "the agent user cannot create files in {}; Apply cannot run here. Run the printed setup commands as root instead",
+                target.display()
+            ),
+        )
+    }
+}
+
 fn remediation(id: &str) -> &'static str {
     match id {
         "planner" => "Fix the highlighted setting; the same rule applies on the command line.",
@@ -766,6 +813,9 @@ fn remediation(id: &str) -> &'static str {
             "Choose the Direct direction, or tcp-tls for the Reverse preview; Reverse is not available for this engine yet."
         }
         "directory" => "Create the setup directory or choose another one.",
+        "directory_writable" => {
+            "Run the printed setup commands as root on this server; the panel Apply button stays disabled here."
+        }
         "existing_pairing" => {
             "Choose another directory or instance; setup never overwrites a pairing."
         }
@@ -1069,12 +1119,26 @@ fn security(config: &RuntimeConfig) -> Value {
     let Some((crl, cert)) = config.tls_files() else {
         return json!({"engine": config.engine_name(), "tls": false});
     };
+    let crl_remaining = crate::tls::crl_seconds_remaining(crl).ok();
     json!({
         "engine": config.engine_name(),
         "tls": true,
-        "crl_seconds_remaining": crate::tls::crl_seconds_remaining(crl).ok(),
+        "crl_seconds_remaining": crl_remaining,
+        "crl_state": crl_state(crl_remaining),
         "certificate_seconds_remaining": crate::tls::certificate_seconds_remaining(cert).ok(),
     })
+}
+
+/// `expired`: peers refuse every connection now. `renew_now`: under 72 h, the point where
+/// `push-crl.sh` refuses to distribute it. `renew_soon`: under 7 days. `unknown`: unreadable.
+fn crl_state(remaining: Option<i64>) -> &'static str {
+    match remaining {
+        None => "unknown",
+        Some(r) if r <= 0 => "expired",
+        Some(r) if r < 72 * 3600 => "renew_now",
+        Some(r) if r < crate::config::CRL_WARNING_SECONDS => "renew_soon",
+        Some(_) => "ok",
+    }
 }
 
 fn get_audit(ctx: &Ctx) -> (u16, Value) {
@@ -1278,7 +1342,39 @@ async fn status(ctx: &Ctx) -> Value {
         "config": config.support_report(),
         "listener_accepting": listening,
         "tunnel": tunnel_status(ctx, listening).await,
+        "warnings": status_warnings(config),
     })
+}
+
+/// Operator warnings drawn only from local observation. Today: CRL lifetime, because an expired
+/// CRL makes both TLS roles refuse every connection (fail closed).
+fn status_warnings(config: &RuntimeConfig) -> Value {
+    let Some((crl, _)) = config.tls_files() else {
+        return json!([]);
+    };
+    let remaining = crate::tls::crl_seconds_remaining(crl).ok();
+    let state = crl_state(remaining);
+    let (severity, text) = match state {
+        "ok" => return json!([]),
+        "expired" => (
+            "error",
+            "the CRL has expired; peers refuse every connection until a renewed CRL is installed",
+        ),
+        "renew_now" => (
+            "error",
+            "the CRL expires in under 72 hours; push-crl.sh will refuse it, renew it now",
+        ),
+        "renew_soon" => ("warning", "the CRL expires in under 7 days"),
+        _ => ("warning", "the CRL lifetime could not be read"),
+    };
+    json!([{
+        "id": "crl",
+        "state": state,
+        "severity": severity,
+        "seconds_remaining": remaining,
+        "text": text,
+        "next": "run baft-pki.sh renew-crl on the offline CA, check it with crl-status.sh, then distribute it with push-crl.sh",
+    }])
 }
 
 fn unix_now() -> u64 {
@@ -1916,7 +2012,8 @@ mod tests {
 
     #[tokio::test]
     async fn preflight_is_read_only_and_never_turns_unknown_into_pass() {
-        let body = plan_body("/nonexistent-baft-dir");
+        let missing = std::env::temp_dir().join(format!("baft-pf-missing-{}", std::process::id()));
+        let body = plan_body(&missing.to_string_lossy());
         assert_eq!(
             call(None, "POST", "/v1/setup/preflight", None, &body)
                 .await
@@ -1942,7 +2039,48 @@ mod tests {
         for id in ["peer_reachability", "peer_identity", "firewall"] {
             assert_eq!(result(id).as_deref(), Some("unknown"), "{id}");
         }
-        assert!(!std::path::Path::new("/nonexistent-baft-dir").exists());
+        assert_eq!(result("directory_writable").as_deref(), Some("pass"));
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn crl_state_warns_a_week_ahead_and_never_invents_ok() {
+        assert_eq!(crl_state(None), "unknown");
+        assert_eq!(crl_state(Some(-1)), "expired");
+        assert_eq!(crl_state(Some(0)), "expired");
+        assert_eq!(crl_state(Some(71 * 3600)), "renew_now");
+        assert_eq!(crl_state(Some(3 * 86400)), "renew_soon");
+        assert_eq!(crl_state(Some(7 * 86400 - 1)), "renew_soon");
+        assert_eq!(crl_state(Some(7 * 86400)), "ok");
+        assert_eq!(crl_state(Some(30 * 86400)), "ok");
+    }
+
+    #[test]
+    fn directory_writable_blocks_where_the_agent_cannot_create_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("baft-pf-w-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        assert_eq!(directory_writable_check(&base)["result"], "pass");
+        // A missing directory is judged by its parent, which setup would create it in.
+        assert_eq!(
+            directory_writable_check(&base.join("new"))["result"],
+            "pass"
+        );
+        assert_eq!(
+            directory_writable_check(&base.join("a/b"))["result"],
+            "unknown"
+        );
+        let ro = base.join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o550)).unwrap();
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } != 0 {
+            let c = directory_writable_check(&ro);
+            assert_eq!(c["result"], "blocked", "{c}");
+            assert!(c["evidence"].as_str().unwrap().contains("as root"));
+        }
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o750)).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[tokio::test]
@@ -2201,6 +2339,16 @@ mod tests {
         assert!(
             body["crl_seconds_remaining"].is_null(),
             "unreadable CRL is null, not invented"
+        );
+        assert_eq!(body["crl_state"], "unknown");
+        let (_, st) = get_json(&ctx, "/v1/status").await;
+        assert_eq!(st["warnings"][0]["id"], "crl", "{st}");
+        assert_eq!(st["warnings"][0]["state"], "unknown");
+        assert!(
+            st["warnings"][0]["next"]
+                .as_str()
+                .unwrap()
+                .contains("renew-crl")
         );
         audit(
             &dir,

@@ -89,10 +89,10 @@ on:
         type: string
         default: '0'
       ref:
-        description: The Phase 1 branch to test (restricted to phase1/rust-tcp-transport)
+        description: The ref to test (restricted to main)
         required: true
         type: string
-        default: phase1/rust-tcp-transport
+        default: main
 
 permissions:
   contents: read
@@ -115,8 +115,8 @@ jobs:
             echo "Invalid confirmation. No LAB hosts were contacted." >&2
             exit 2
           fi
-          if [[ "$REF" != "phase1/rust-tcp-transport" && "$REF" != "main" ]]; then
-            echo "Only main or the reviewed Phase 1 branch may be tested." >&2
+          if [[ "$REF" != "main" ]]; then
+            echo "Only main may be tested." >&2
             exit 2
           fi
 

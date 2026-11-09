@@ -31,11 +31,9 @@ const ok = (n, c, d) => { results.push([c ? 'PASS' : 'FAIL', n, d || '']); };
     ok(`${tag} baft shown as Preview, not Stable`, /Preview|پیش‌نمایش/.test(bt) && !/Stable|پایدار/.test(bt), bt);
     ok(`${tag} baft states unknown status limit`, /unknown|نامشخص/.test(bt));
     ok(`${tag} baft never Ready`, !/\bReady\b|آماده/.test(bt));
-    await baft.click(); await next().click(); await p.waitForTimeout(200);
-    await p.locator('button.primary').filter({ hasText: lang === 'fa' ? 'اجرای بررسی' : 'Run checks' }).first().click();
-    await p.waitForSelector('.pf'); 
-    ok(`${tag} baft preflight is blocked (setup cannot create its config)`, await p.locator('.pf .badge.bad').count() >= 1);
-    ok(`${tag} baft continue stays disabled`, await next().isDisabled());
+    ok(`${tag} baft shown but not selectable (setup cannot create its config)`, await baft.locator('input').isDisabled());
+    ok(`${tag} baft says it is not configurable here`, /Not configurable here|قابل تنظیم نیست/.test(bt), bt);
+    ok(`${tag} tcp-tls stays selectable`, !(await choices.filter({ hasText: 'tcp-tls' }).locator('input').isDisabled()));
     // Reverse: roles
     await p.goto(BASE + '/#/setup'); await p.reload(); await p.waitForSelector('.shell'); await p.waitForTimeout(500);
     await p.evaluate(() => { window.BAFT.wiz = null; });

@@ -15,6 +15,7 @@ fn tcp_tls() -> Value {
     json!({
         "id": "tcp-tls",
         "status": "stable",
+        "guided_setup": {"available": true},
         "directions": ["direct", "reverse"],
         "reverse": {"state": "preview", "reason": "real two-host LAB passed once (ADR-0021 Amendment 1); not stable, not production-ready"},
         "security": "TLS 1.3 mutual authentication, offline CA, mandatory CRL",
@@ -43,6 +44,7 @@ fn noise_tcp() -> Value {
     json!({
         "id": "noise-tcp",
         "status": "experimental",
+        "guided_setup": {"available": true},
         "directions": ["direct"],
         "reverse": {"state": "unavailable", "reason": "reverse-is-a-label-only"},
         "security": "Noise static keys pinned per peer, no CA",
@@ -71,6 +73,7 @@ fn baft() -> Value {
     json!({
         "id": "baft",
         "status": "preview",
+        "guided_setup": {"available": false, "reason": "setup cannot create a baft configuration yet (ADR-0019 phase F)"},
         "directions": ["direct"],
         "reverse": {"state": "unavailable", "reason": "engine-has-no-reverse; its LAB reverse case only swaps which host dials"},
         "security": "BAFT h2 mutual TLS carrier (separate Go engine host, pinned release digest)",
@@ -228,6 +231,11 @@ mod tests {
         assert_eq!(baft["limits"]["end_to_end_status"], "unknown");
         assert!(supports_direction("baft", "direct"));
         assert!(!supports_direction("baft", "reverse"));
+        // Shown but not selectable in the Wizard until setup can write its config.
+        assert_eq!(baft["guided_setup"]["available"], false);
+        for e in engines.iter().filter(|e| e["id"] != "baft") {
+            assert_eq!(e["guided_setup"]["available"], true);
+        }
         assert!(engines.iter().all(|e| e["status"] != "ready"));
         assert_eq!(
             engines.iter().filter(|e| e["status"] == "stable").count(),

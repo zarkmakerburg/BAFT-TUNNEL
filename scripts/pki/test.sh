@@ -83,6 +83,35 @@ if "$PKI" verify-node "$CA" "$REVOKED/ca.crl" "$NODE/node.crt" iran tunnel.iran.
   exit 1
 fi
 openssl crl -in "$REVOKED/ca.crl" -noout -text | grep -q 'Revoked Certificates'
+# renew-crl: new CRL number, requested validity (beats default_crl_days = 2), revocations kept.
+before="$(openssl crl -in "$REVOKED/ca.crl" -noout -crlnumber | cut -d= -f2)"
+"$PKI" renew-crl "$CA" "$TMP/renewed" 30 >/dev/null
+after="$(openssl crl -in "$TMP/renewed/ca.crl" -noout -crlnumber | cut -d= -f2)"
+(( after > before )) || { echo "renew-crl did not increase the CRL number ($before -> $after)" >&2; exit 1; }
+next="$(openssl crl -in "$TMP/renewed/ca.crl" -noout -nextupdate | cut -d= -f2)"
+next_epoch="$(date -d "$next" +%s 2>/dev/null || date -j -f '%b %e %T %Y %Z' "$next" +%s)"
+left_days=$(( (next_epoch - $(date +%s)) / 86400 ))
+(( left_days >= 29 && left_days <= 30 )) || { echo "renewed CRL validity is $left_days days, expected 30" >&2; exit 1; }
+"$ROOT/scripts/pki/crl-status.sh" "$TMP/renewed/ca.crl" 72 >/dev/null || { echo "crl-status rejected the renewed CRL" >&2; exit 1; }
+if "$PKI" verify-node "$CA" "$TMP/renewed/ca.crl" "$NODE/node.crt" iran tunnel.iran.example.test >/dev/null 2>&1; then
+  echo "renewed CRL dropped an earlier revocation" >&2
+  exit 1
+fi
+"$PKI" verify-node "$CA" "$TMP/renewed/ca.crl" "$ABROAD/node.crt" abroad 192.0.2.10 >/dev/null
+cmp -s "$CA/ca.crt" "$TMP/renewed/ca.crt" || { echo "renew-crl did not copy ca.crt" >&2; exit 1; }
+[[ ! -e "$TMP/renewed/ca.key" ]] || { echo "CA private key leaked by renew-crl" >&2; exit 1; }
+"$PKI" renew-crl "$CA" "$TMP/default-days" >/dev/null
+for bad in 1 91 abc; do
+  if "$PKI" renew-crl "$CA" "$TMP/bad-$bad" "$bad" >/dev/null 2>&1; then
+    echo "renew-crl accepted validity $bad" >&2
+    exit 1
+  fi
+done
+if "$PKI" renew-crl "$CA" "$TMP/renewed" 30 >/dev/null 2>&1; then
+  echo "renew-crl overwrote an existing ca.crl" >&2
+  exit 1
+fi
+
 mkdir -p "$TMP/not-empty"
 : > "$TMP/not-empty/keep"
 if "$PKI" init-ca "$TMP/not-empty" </dev/null >/dev/null 2>&1; then
@@ -95,4 +124,4 @@ if "$PKI" init-ca "$TMP/bad-name-ca" 'bad/name' </dev/null >/dev/null 2>&1; then
   exit 1
 fi
 [[ ! -e "$TMP/bad-name-ca/ca.key" ]] || { echo "init-ca created a CA for an invalid name" >&2; exit 1; }
-echo "BAFT_PKI_TEST=PASS (P-256 node CSR, CA signing, URI/DNS/IP SANs, 0600 node key, CA isolation, revocation, mismatch rejection)"
+echo "BAFT_PKI_TEST=PASS (P-256 node CSR, CA signing, URI/DNS/IP SANs, 0600 node key, CA isolation, revocation, CRL renewal, mismatch rejection)"

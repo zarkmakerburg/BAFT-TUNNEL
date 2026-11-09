@@ -27,33 +27,33 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 
 ## Project status
 
-<sub>Updated: 8 November 2026 · evidence tied to `main` at `2d8cd5e`</sub>
+<sub>Updated: 9 November 2026 · evidence tied to `main` · plan in [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
 
 <blockquote>
-**Active development — Phase 1, pre-release, not production-ready**
+**Active development — pre-release, not production-ready**
 
-- **Direct** is the supported mode. It passed the two-host LAB (Iran and abroad hosts, Ubuntu 22.04 / systemd 249) with 64 KiB and 2 MiB integrity checks, listener-restart recovery and certificate-revocation checks.
-- **Reverse** for `tcp-tls` is **implemented in the Rust core and configuration** (the service node dials out; the public node accepts and ingresses). It passed a dedicated two-host LAB run (see below). It is a **preview**: it is **not Stable**, the panel, wizard and capability API offer it with a Preview label, and `noise-tcp` Reverse is implemented but unproven and not offered.
-- The **BAFT engine** (pinned Go binary, separate process) passed a two-host LAB run under hardened systemd 249 units. It is still hidden from the wizard; the Engine Store is not yet read by the Launcher.
-- Still open: multi-hour soak, real packet-loss test, remote CRL distribution and CA/pin rollover, online enrollment, service start and end-to-end verification through Apply (Apply, Verify, Receipt covers only the local `setup init`/`join` stages, ADR-0022). An independent security review was waived by the owner and has **not** been performed.
+- **Direct** (`tcp-tls`) is the supported mode. It passed the two-host LAB (Iran and abroad hosts, Ubuntu 22.04 / systemd 249) with 64 KiB and 2 MiB integrity checks, recovery, revocation, a 3600 s soak, real TCP packet loss (nftables) and installed-product operations acceptance (backup/restore, same-version update/rollback).
+- **Reverse** for `tcp-tls` is a **Preview**: it passed dedicated two-host LAB runs including breadth (R3) and operations acceptance. `noise-tcp` Reverse is implemented but unproven and not offered.
+- The **BAFT engine** (pinned Go binary, separate process) is a **Preview, Direct only**. The Wizard shows it but cannot configure it yet.
+- **Apply → Verify → Receipt** covers `setup init`, `setup join` and `start` (ADR-0022/0023); `start` ran on real hosts (P0-5). Stop/restart and start at boot are not implemented. On an installed host the agent cannot write `/etc/baft-tunnel`, so Preflight blocks the panel Apply button and the printed commands are run as root.
+- Still open: multi-hour soak, online enrollment, agent service unit, boot persistence, signed operator scripts. A P0+P1 security assessment was performed ([SECURITY_ASSESSMENT.md](docs/SECURITY_ASSESSMENT.md)); a full independent pre-stable review has not.
 </blockquote>
 
 | Area | Current state |
 |---|---|
 | Architecture and threat model | Defined |
-| Rust TCP transport (`tcp-tls`) | Implemented; review and acceptance ongoing |
-| Direct | Real two-host LAB evidence, stable engines (tcp-tls; Noise experimental) |
-| Reverse (tcp-tls) | **Preview.** Real in Core and Config; two-host LAB PASS (run 42506805986: outbound-only service node, 64 KiB + 2 MiB integrity, reconnect, wrong identity/pin, revoked certificate). Breadth (R3) still open |
+| Rust TCP transport (`tcp-tls`) | Stable for Direct (pre-release) |
+| Direct | Real two-host LAB evidence: `tcp-tls` Stable, `noise-tcp` Experimental |
+| Reverse (tcp-tls) | **Preview.** Two-host LAB PASS, R3 breadth and operations acceptance passed |
 | Reverse (Noise) | Implemented in the core, **unproven** (no two-host LAB); not offered |
-| BAFT engine | Hidden until its gates pass (ADR-0019/0020); Engine Store → Launcher execution cycle is not complete |
-| Apply → Verify → Receipt | Local `setup init` / `setup join` stages through the agent and panel, gated, verified, rolled back on failure, receipt without secrets (ADR-0022). A `start` stage (ADR-0023, root path-unit helper, opt-in) is implemented and unit-tested but **not yet run on a real host**; no firewall change |
+| BAFT engine | **Preview, Direct only.** LAB PASS under hardened systemd 249 units; shown in the Wizard but not configurable there yet (ADR-0019 phase F) |
+| Apply → Verify → Receipt | `init`, `join`, `start` through the agent; no stop/restart, not enabled at boot |
 | Mutual TLS and peer identity | Implemented with negative tests |
-| Offline PKI and CRL revocation | Experimental; manual workflow |
-| Installer and systemd unit | Implemented; Ubuntu 22.04 / systemd 249 baseline passes CI and isolated LAB test |
-| BAFT engine host | Pinned engine built and shipped in signed releases; LAB PASS under systemd 249; Engine Store to Launcher wiring open; hidden from the wizard |
-| Web panel and guided wizard | Read-only preview; Apply, Verify and Receipt not implemented |
-| Online enrollment / control plane | Not complete |
-| Production release | Not available |
+| Offline PKI and CRL revocation | Offline CA tool with `renew-crl`; CRL push helper; manual workflow |
+| Installer and systemd unit | Implemented; Ubuntu 22.04 / systemd 249 baseline passes CI and LAB |
+| Web panel and guided wizard | Status, diagnostics, traffic counters, audit and the setup Wizard; it cannot yet finish setup on an installed host |
+| Online enrollment / control plane | Not started |
+| Production release | Not available; signed prereleases only |
 
 Project record: [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
@@ -70,7 +70,7 @@ Security is part of the transport design, not an optional add-on.
 - No forwarded-payload logging.
 - Least-privilege service execution and hardened systemd defaults.
 
-The current node private keys are unencrypted PEM files. Offline CA issuance and CRL distribution are manual. Encrypted key custody, online enrollment, automated revocation distribution, key/pin rotation, and further adversarial testing remain open work; independent security review was waived by the owner and has not been performed. This project does not claim to be undetectable or to provide censorship-proof connectivity.
+The current node private keys are unencrypted PEM files. Offline CA issuance and CRL distribution are manual. Encrypted key custody, online enrollment, automated revocation distribution and further adversarial testing remain open work. A P0+P1 security assessment found no Critical or High issue; a full independent pre-stable review has not been performed. This project does not claim to be undetectable or to provide censorship-proof connectivity.
 
 ## Technology
 
@@ -80,11 +80,12 @@ The current node private keys are unencrypted PEM files. Offline CA issuance and
 | Async runtime | Tokio |
 | Secure transport | rustls · TLS 1.3 |
 | Multiplexing | Yamux |
-| HTTP/API | Axum |
-| Web interface | React · TypeScript · Vite |
-| Initial persistence | SQLite WAL |
+| Alternative engine | Noise IK over TCP (`noise-tcp`, Experimental) |
+| HTTP/API | Small loopback HTTP server on Tokio (no framework) |
+| Web interface | Plain JavaScript, no build step; Persian-first RTL with English |
+| Persistence | JSON files in the state directory |
 
-QUIC is a planned optional transport, not part of the current production data plane. The isolated Noise IK prototype is research-only and is not used to carry tunnel traffic.
+QUIC is a planned optional transport, not part of the current data plane.
 
 ## Verified LAB evidence
 
@@ -97,7 +98,7 @@ All runs used the configured Iran and abroad LAB hosts with temporary files and 
 
 Earlier "Reverse" LAB results (before 8 November 2026) tested a label only, not a reverse data path, and are **not** evidence for the current Reverse implementation (see [ADR-0021](docs/ADR-0021-connection-topology-and-reverse.md)).
 
-These are bounded LAB results, not a production-readiness certification or a long-duration reliability claim. Soak, real packet loss and `noise-tcp` Reverse are untested.
+These are bounded LAB results, not a production-readiness certification or a long-duration reliability claim. Multi-hour soak and `noise-tcp` Reverse are untested.
 
 ## Engineering principles
 

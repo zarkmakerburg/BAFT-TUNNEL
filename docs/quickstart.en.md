@@ -1,6 +1,8 @@
 # BAFT-TUNNEL Phase 1 — local TCP forwarding
 
 > Experimental development build. Use only on loopback or disposable test hosts. Not production-ready.
+>
+> **Legacy developer path.** This page builds from source and runs the binary by hand. For a server, use the installed-service path in the [Operator guide](OPERATOR_GUIDE.md) (`scripts/install.sh`, `baft-tunnel@` unit). A rewritten quickstart follows the MVP acceptance run.
 
 ## Requirements
 
@@ -46,7 +48,7 @@ Connections to `127.0.0.1:18080` are forwarded to the server's fixed configured 
 - TLS 1.3 is the only enabled version; no plaintext fallback exists.
 - Per-session Yamux streams and process-wide forwarded streams are bounded.
 - The source-side forwarder retries carrier establishment with bounded exponential backoff and jitter. A carrier loss still terminates in-flight TCP streams; they are not transparently resumed. New local connections can wait in a bounded queue during reconnect.
-- No installer or firewall automation exists. These commands do not change host settings.
+- These commands do not install anything or change host settings. An installer exists (`scripts/install.sh`, see the Operator guide); there is no firewall automation.
 
 
 ## JSON configuration workflow
