@@ -618,7 +618,7 @@ if (( SETUP == 1 )); then
   switch_s=$((SECONDS - t1))
   # P3-002 A3: the agent reports the live tunnel and accepts a validated desired state.
   ad="$SEP-tls"
-  ssh_host abroad "'$BIN' agent-token --out '$ad/agent.token' >/dev/null; mkdir -p '$ad/state'; nohup '$BIN' agent --config '$ad/config.json' --token-file '$ad/agent.token' --state-dir '$ad/state' --listen 127.0.0.1:18081 > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid'"
+  ssh_host abroad "'$BIN' agent-token --out '$ad/agent.token' >/dev/null; mkdir -p '$ad/state'; nohup '$BIN' agent --config '$ad/config.json' --token-file '$ad/agent.token' --state-dir '$ad/state' --listen 127.0.0.1:18081 --allow-root > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid'"
   sleep 1
   agent_call() {
     ssh_host abroad "python3 - '$ad' $1 $2 <<'PY'

@@ -35,6 +35,9 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+# The local agent keeps its API token and state here; a compromised tunnel process (same user)
+# must not be able to read the token and drive the agent (docs/SECURITY_ASSESSMENT.md, SA-02).
+InaccessiblePaths=-/var/lib/baft-tunnel
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

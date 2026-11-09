@@ -148,6 +148,10 @@ enum Command {
         /// traffic counters and last failure stage from /run/baft-tunnel/NAME.
         #[arg(long)]
         instance: Option<String>,
+        /// Run although the effective user is root. Not recommended: the agent is designed for
+        /// the unprivileged `baft-tunnel` user (see docs/SECURITY_ASSESSMENT.md, SA-01).
+        #[arg(long)]
+        allow_root: bool,
     },
 }
 
@@ -509,7 +513,14 @@ async fn main() -> Result<()> {
             listen,
             state_dir,
             instance,
+            allow_root,
         } => {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if unsafe { libc::geteuid() } == 0 && !allow_root {
+                anyhow::bail!(
+                    "refusing to run the agent as root: run it as the baft-tunnel user (for example `setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups baft-tunnel agent ...`), or pass --allow-root to accept the risk"
+                );
+            }
             let config = config::load(&path)?;
             config.validate()?;
             let token = agent::read_token(&token_file)?;
