@@ -30,7 +30,7 @@ cleanup() {
   local status=$?
   trap - EXIT
   if [[ -n "$AGENT_PID" ]]; then sudo kill "$AGENT_PID" >/dev/null 2>&1 || true; fi
-  if [[ -n "${OBS_PID:-}" ]]; then sudo kill "$OBS_PID" >/dev/null 2>&1 || true; fi
+  if [[ -n "${OBS_PID:-}" ]]; then sudo pkill -TERM -u baft-tunnel -f -- '--listen 127.0.0.1:18091' >/dev/null 2>&1 || true; fi
   [[ -n "$ECHO_PID" ]] && kill "$ECHO_PID" >/dev/null 2>&1 || true
   for i in "$SERVE" "$FWD" "$POS_S" "$POS_C"; do
     sudo "$ROOT/scripts/install-agent-control.sh" --remove --instance "$i" >/dev/null 2>&1 || true
@@ -430,7 +430,10 @@ assert len(lines) >= 2 and all(l["audit_version"] == 2 and l["actor"]["kind"] ==
                                and l["target"]["node"] == "possrv" and l["resource"] == "diagnostics" for l in lines), lines
 PY
 ! sudo grep -q -- "$TOKEN" /var/lib/baft-tunnel/agent-obs/audit.log /var/lib/baft-tunnel/agent/audit.log || die "an audit log contains the token"
-sudo kill "$OBS_PID" 2>/dev/null || true; OBS_PID=""
+# sudo does not relay a signal sent from the script's own process group, so stop the agent itself
+# (only processes of the baft-tunnel user match; the pattern names this agent's unique port).
+sudo pkill -TERM -u baft-tunnel -f -- '--listen 127.0.0.1:18091' 2>/dev/null || true
+wait "$OBS_PID" 2>/dev/null || true; OBS_PID=""
 # Wait until the observing agent has released its port, so the side-effect snapshot is clean.
 for n in $(seq 1 40); do curl -fs --max-time 1 http://127.0.0.1:18091/v1/health >/dev/null 2>&1 || break; sleep 0.25; done
 ! curl -fs --max-time 1 http://127.0.0.1:18091/v1/health >/dev/null 2>&1 || die "observing agent did not stop"
