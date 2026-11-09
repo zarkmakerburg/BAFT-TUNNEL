@@ -88,6 +88,11 @@ on:
         required: false
         type: string
         default: '0'
+      crl_push:
+        description: With ops_stage, also renew the CRL (renew-crl) and push it to both nodes with push-crl.sh (0 or 1)
+        required: false
+        type: string
+        default: '0'
       ref:
         description: The ref to test (restricted to main)
         required: true
@@ -142,6 +147,7 @@ jobs:
       LAB_MVP: ${{ inputs.mvp }}
       LAB_REVERSE_ACCEPT: ${{ inputs.reverse_accept }}
       LAB_OPS: ${{ inputs.ops_stage }}
+      LAB_CRL_PUSH: ${{ inputs.crl_push }}
       LAB_BAFT_SYSTEMD: ${{ inputs.baft_systemd }}
       LAB_ROLLOVER: ${{ inputs.rollover }}
       LAB_SETUP: ${{ inputs.setup }}

@@ -41,6 +41,9 @@ if (( OPS_SOAK > 0 )); then
   [[ -x "$MVP_BINARY_PATH" ]] || { echo "LAB_OPS needs MVP_BINARY" >&2; exit 2; }
   [[ "$MVP" == 0 && "$REVERSE_ACCEPT" == 0 ]] || { echo "LAB_OPS is a separate run from LAB_MVP and LAB_REVERSE_ACCEPT" >&2; exit 2; }
 fi
+CRL_PUSH="${LAB_CRL_PUSH:-0}"
+[[ "$CRL_PUSH" == 0 || "$CRL_PUSH" == 1 ]] || { echo "LAB_CRL_PUSH must be 0 or 1" >&2; exit 2; }
+(( CRL_PUSH == 0 || OPS_SOAK > 0 )) || { echo "LAB_CRL_PUSH runs inside the Direct operations stage (LAB_OPS>0)" >&2; exit 2; }
 [[ "$REVERSE_R3" =~ ^[0-9]+$ ]] && (( REVERSE_R3 <= 3600 )) || { echo "LAB_REVERSE_R3 must be 0-3600 (Reverse R3 soak seconds; 0 = off)" >&2; exit 2; }
 [[ "$REVERSE" == 0 || "$REVERSE" == 1 ]] || { echo "LAB_REVERSE must be 0 or 1" >&2; exit 2; }
 BAFT="${LAB_BAFT:-0}"
