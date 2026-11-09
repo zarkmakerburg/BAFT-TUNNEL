@@ -2,25 +2,29 @@
 
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
-## وضعیت در 2026-11-08
+## وضعیت در 2026-11-09
 
-- **Baseline بررسی‌شده:** `main` در SHA `05a2b8078cc7afae751520209dba7fd474914bfb` (PR #86).
-- **وضعیت محصول:** توسعه فعال / Pre-release؛ آماده Production نیست.
-- **TCP-TLS Direct:** مسیر پشتیبانی‌شده با شواهد واقعی LAB.
-- **TCP-TLS Reverse:** پیاده‌سازی واقعی و یک تست دو‌میزبانه موفق؛ فقط **Preview**، نه Stable.
-- **Noise-TCP:** Direct آزمایشی؛ Reverse همچنان اثبات‌نشده و غیرقابل انتخاب.
-- **BAFT Engine:** پردازش Go مستقل و Hash-pinned؛ اتصال Engine Store به Launcher در کد main ادغام شده، ولی مسیر Store به‌طور مستقل در LAB واقعی اثبات نشده و موتور در Wizard مخفی است.
-- **Apply در main:** فقط مراحل محلی `init` و `join` با Verify، Receipt و rollback محدود.
-- **PR #88:** افزودن مرحله Start از طریق systemd helper؛ باز و Merge نشده و هنوز تست واقعی systemd ندارد.
-- **پنل:** رابط محلی سبک، فارسی RTL و انگلیسی LTR؛ Fleet مرکزی، اتصال احراز‌شده همتا، آمار کامل ترافیک و Firewall inspection هنوز موجود نیست.
+- **Baseline بررسی‌شده:** `main` در SHA `92b0645f8104694bbe9d016e24f7ec0c8f43eeb0` (PR #106).
+- **وضعیت محصول:** توسعه فعال / Pre-release؛ **آماده Production نیست.** Tag پایدار، Release پایدار یا Deploy انجام نشده است.
+- **گیت‌های P0:** هر پنج گیت با SHA و شناسه اجرا بسته شده‌اند؛ شواهد کامل در [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2) و [Roadmap](PRODUCT_ROADMAP.md).
+  - **P0-1** (PR #88، helper سیستم‌دی): PR #88 ادغام شده؛ تست واقعی systemd 249 در اجرای 42523536944 (SHA `22e94f1`).
+  - **P0-2:** رسید Apply با نشانگر Session مجاز (اجرای 42524638625) و اثبات دو‌میزبانه در P0-5؛ `ready` عمداً Unknown می‌ماند.
+  - **P0-3** (Engine Store ← Launcher برای BAFT): اجراهای 42510577167 و 42522105698 با Asset امضاشده rc.2؛ BAFT هنوز در Wizard مخفی است.
+  - **P0-4** (Reverse R3): اجرای 42525790470 روی `5a72a25`؛ Reverse همچنان **Preview**.
+  - **P0-5** (MVP یکپارچه): اجرای 42538458094 روی `92c4e70` با Prerelease امضاشده `v0.1.0-rc.4` روی هر دو میزبان LAB؛ یکپارچگی 64 KiB و 2 MiB تأیید شد.
+- **rc.3 منسوخ است** (نیازمند glibc 2.39؛ روی Ubuntu 22.04 اجرا نمی‌شود)؛ rc.4 جایگزین آن است.
+- **هشدار:** روی میزبان خارج از کشور Drift نامرتبط Firewall دیده شد؛ فقط «بدون تغییر Firewall مربوط به BAFT» ادعا می‌شود، نه «بدون هیچ اثر Firewall».
+- **TCP-TLS Direct:** مسیر پشتیبانی‌شده با شواهد واقعی LAB. **Reverse:** فقط Preview. **Noise-TCP:** Direct آزمایشی؛ Reverse اثبات‌نشده و غیرقابل انتخاب.
+- **پنل:** رابط محلی سبک، فارسی RTL و انگلیسی LTR؛ Fleet مرکزی، آمار کامل ترافیک و Firewall inspection هنوز موجود نیست.
 
 ## مسیر اجرایی بعدی
 
-1. تکمیل بررسی امنیتی و LAB واقعی PR #88 روی Ubuntu 22.04 / systemd 249.
-2. تکمیل قرارداد وضعیت اتصال: تفکیک Listener، TCP Reachability، احراز هویت همتا، Session و Data Path.
-3. تست واقعی Engine Store → Launcher برای BAFT با Manifest و SHA دقیق.
-4. تکمیل شواهد R3 برای TCP-TLS Reverse؛ حفظ Preview تا پذیرش.
-5. پذیرش یکپارچه با Signed Artifact روی دو میزبان، سپس تصمیم درباره نسخه MVP.
+۱. بازبینی مالک روی شواهد P0؛ P1/P2 تا آن زمان متوقف است.
+۲. تنظیم حفاظت شاخه `main` (الزام CI و بازبینی) و سیاست Merge.
+۳. اجرای CI فاز ۱ روی SHA دقیق `main`.
+۴. تکمیل P1: Diagnostics واقعی، وضعیت End-to-End، شمارنده ترافیک و Audit.
+۵. ارزیابی امنیتی مستقل، تست Backup/Restore و Update/Rollback.
+۶. پذیرش جداگانه Reverse و BAFT پیش از نمایش در محصول.
 
 جزئیات، معیارهای پذیرش و دستورالعمل Agent فقط در [سند فنی تطبیق قابلیت‌ها](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md) و [Roadmap](PRODUCT_ROADMAP.md) نگهداری می‌شود. این برد عمداً وضعیت موازی جداگانه ایجاد نمی‌کند.
 
