@@ -3,6 +3,7 @@
 **Status snapshot:** 2026-11-09  
 **Source baseline:** `main` at `92b0645f8104694bbe9d016e24f7ec0c8f43eeb0` (PR #106).  
 **Gate status:** all five P0 gates (P0-1 to P0-5) are closed with exact-SHA run evidence (see section 5 and [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2)). PR #88 (systemd control helper, ADR-0023) is merged. Signed prerelease `v0.1.0-rc.4` is the clean-install candidate; `rc.3` is superseded (glibc 2.39, unusable on Ubuntu 22.04). No stable tag, release or deploy. P1/P2 are held until owner review.
+**Repository governance:** `main` is protected (2026-11-09): PR required, 0 approvals, required checks `rust`, `ubuntu-2204-baseline`, `lab-config`, no force push or deletion, admin bypass allowed.
 **Product status:** Active development / pre-release. **Not production-ready.** The only published release state recorded in the repository is pre-release `v0.1.0-phase1-pre`.
 
 This file is the single source of truth for phases, engines and delivery order. Detailed cross-project extraction, verified code state and implementation instructions: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). Exact historical test evidence and run IDs: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). Persian task pointer: [PROJECT_BOARD.md](PROJECT_BOARD.md). HQ decisions and append-only evidence log: [Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
