@@ -19,9 +19,9 @@ PLAIN=0; DRY=0; ROOT_PREFIX=""
 NAME_RE='^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$'
 
 banner() {
-  local cols="${COLUMNS:-}"
+  local cols="${BOX_COLS:-${COLUMNS:-}}"
   [[ -n "$cols" ]] || cols="$(tput cols 2>/dev/null || echo 80)"
-  if (( cols >= 68 )); then
+  if (( cols >= 66 )); then
     cat <<'EOF'
   ____    _    _____ _____     _____ _   _ _   _ _   _ _____ _
  | __ )  / \  |  ___|_   _|   |_   _| | | | \ | | \ | | ____| |
@@ -323,6 +323,45 @@ read_key() {
   fi
 }
 
+# ---------------------------------------------------------------- boxes
+# Unicode box drawing on UTF-8 terminals, ASCII otherwise. Widths count characters, not bytes,
+# and ignore zero-width marks (ZWNJ, Persian/Arabic diacritics) so Persian lines align too.
+if [[ "$(locale charmap 2>/dev/null)" == UTF-8 ]]; then
+  B_TL='╭' B_TR='╮' B_BL='╰' B_BR='╯' B_H='─' B_V='│' B_ML='├' B_MR='┤' B_PTR='▶'
+else
+  B_TL='+' B_TR='+' B_BL='+' B_BR='+' B_H='-' B_V='|' B_ML='+' B_MR='+' B_PTR='>'
+fi
+ZW_MARKS=("$(printf '\342\200\214')" "$(printf '\342\200\215')" "$(printf '\331\224')"
+  "$(printf '\331\213')" "$(printf '\331\214')" "$(printf '\331\215')" "$(printf '\331\216')"
+  "$(printf '\331\217')" "$(printf '\331\220')" "$(printf '\331\221')" "$(printf '\331\222')")
+dispw() {
+  local LC_ALL=C.UTF-8 s="$1" m
+  for m in "${ZW_MARKS[@]}"; do s="${s//"$m"/}"; done
+  printf '%s' "${#s}"
+}
+BOX_W=70
+box_width() {
+  local cols="${COLUMNS:-}"
+  [[ -n "$cols" ]] || cols="$(tput cols 2>/dev/null || echo 80)"
+  BOX_W=$(( cols - 4 )); (( BOX_W <= 70 )) || BOX_W=70; (( BOX_W >= 30 )) || BOX_W=30
+}
+box_rule() { local l="$1" r="$2" line; printf -v line '%*s' "$((BOX_W + 2))" ''; printf '%s%s%s\n' "$l" "${line// /$B_H}" "$r"; }
+# box_line TEXT [STYLE]: one framed row; STYLE is an SGR code for the text area (e.g. 7 = reverse).
+box_line() {
+  local text="$1" style="${2:-}" w pad
+  w="$(dispw "$text")"; pad=$(( BOX_W - w )); (( pad >= 0 )) || pad=0
+  if [[ -n "$style" ]]; then printf '%s \033[%sm%s%*s\033[0m %s\n' "$B_V" "$style" "$text" "$pad" '' "$B_V"
+  else printf '%s %s%*s %s\n' "$B_V" "$text" "$pad" '' "$B_V"; fi
+}
+box_text() { # wrap a long text into framed rows
+  local word line="" 
+  for word in $1; do
+    if [[ -n "$line" ]] && (( $(dispw "$line $word") > BOX_W )); then box_line "$line"; line="$word"
+    else line="${line:+$line }$word"; fi
+  done
+  [[ -z "$line" ]] || box_line "$line"
+}
+
 header() {
   banner
   if [[ "$DRY" == "1" ]]; then say "$(t dry)"; fi
@@ -334,7 +373,7 @@ header() {
 CHOICE=-1
 choose() {
   local title="$1"; shift
-  local items=("$@") n=$# sel=0 i key
+  local items=("$@") n=$# sel=0 i key line num
   if [[ "$PLAIN" == "1" ]]; then
     printf '\n== %s ==\n' "$title"
     for i in "${!items[@]}"; do printf ' %d) %s\n' "$((i + 1))" "${items[i]}"; done
@@ -351,12 +390,23 @@ choose() {
   printf '\033[?25l'
   while :; do
     printf '\033[H\033[2J'
-    header
-    printf '\n  \033[1m%s\033[0m\n\n' "$title"
+    box_width
+    box_rule "$B_TL" "$B_TR"
+    while IFS= read -r line; do box_line "$line" 36; done < <(BOX_COLS=$BOX_W banner)
+    [[ "$DRY" == "0" ]] || box_text "$(t dry)"
+    [[ "$STAGING" == "0" ]] || box_text "$(tf staging "$ROOT_PREFIX")"
+    if [[ "$STAGING" == "0" && "$DRY" == "0" && "$(id -u)" != "0" ]]; then box_text "$(t not_root)"; fi
+    box_rule "$B_ML" "$B_MR"
+    box_line "$title" 1
+    box_rule "$B_ML" "$B_MR"
     for i in "${!items[@]}"; do
-      if (( i == sel )); then printf '  \033[7m > %s \033[0m\n' "${items[i]}"; else printf '    %s\n' "${items[i]}"; fi
+      printf -v num '%*d' "${#n}" "$((i + 1))"
+      if (( i == sel )); then box_line "$B_PTR $num. ${items[i]}" 7
+      else box_line "  $num. ${items[i]}"; fi
     done
-    printf '\n  \033[2m%s\033[0m\n' "$(t hint)"
+    box_rule "$B_ML" "$B_MR"
+    box_line "$(t hint)" 2
+    box_rule "$B_BL" "$B_BR"
     key="$(read_key)"
     case "$key" in
       up) sel=$(( (sel - 1 + n) % n )) ;;
@@ -404,7 +454,16 @@ pause() {
   IFS= read -r _ <&3 || true
 }
 
-next_step() { printf '\n%s\n' "$(t next)"; printf '  %b\n' "$*"; }
+next_step() {
+  local text line
+  box_width
+  printf -v text '%b' "$*"
+  echo
+  box_rule "$B_TL" "$B_TR"
+  box_line "$(t next)" 1
+  while IFS= read -r line; do box_text "$line"; done <<< "$text"
+  box_rule "$B_BL" "$B_BR"
+}
 
 # run CMD... : shows the command, runs it (or prints it in --dry-run), reports the result.
 LAST_STATUS=0
@@ -416,6 +475,7 @@ run() {
   fi
   if [[ "$DRY" == "1" ]]; then printf '\n%s %s\n' "$(t would)" "$shown"; LAST_STATUS=0; return 0; fi
   printf '\n%s %s\n' "$(t running)" "$shown"
+  box_width; box_rule "$B_H" "$B_H"
   "$@" <&3
   LAST_STATUS=$?
   if (( LAST_STATUS == 0 )); then say "$(t ok)"; else tf failed "$LAST_STATUS"; echo; fi

@@ -102,7 +102,7 @@ if command -v script >/dev/null 2>&1; then
   { printf '\033[B\033[B\r'; sleep 0.5; printf '\033'; sleep 0.5; printf 'q'; sleep 0.5; } |
     timeout 20 script -qec "bash '$MENU' --lang en --destdir '$TMP/tty'" /dev/null > "$TMP/out" 2>&1 ||
     fail "pty run failed"
-  has '|____/_/   \_\_|'; has ' > Pair the two nodes (init / join) '; has 'This node first'; has 'Bye.'
+  has '|____/_/   \_\_|'; has '3. Pair the two nodes (init / join)'; has 'This node first'; has 'Bye.'
   has 'Up/Down: move'
 fi
 echo "BAFT_MENU_TEST=PASS (banner, fa/en, install+register+next step, init/join with checksum compare, clean join error, config plan, staged service actions, backup/restore, rollback next step, uninstall, dry run, arrow/Enter/Esc/q on a pty)"
