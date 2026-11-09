@@ -244,7 +244,7 @@ Do not expose buttons for “Deploy best”, Direct/Reverse selection, firewall 
 - Keep current UI state Preview until this evidence is reviewed.
 - Test Noise Reverse separately; do not inherit TCP-TLS results.
 
-**P0-5 — Integrated two-host MVP acceptance**
+**P0-5 — Integrated two-host MVP acceptance** — *LAB gate closed 2026-11-09: run 42538458094 on `92c4e70` with signed prerelease v0.1.0-rc.4; see PHASE1_IMPLEMENTATION_STATUS. Setup init/join used the guided CLI with bundle checksums; Apply drove start. Not production-ready.*
 - Start from clean Ubuntu 22.04/systemd 249 test hosts.
 - Install the signed pre-release artifact, not only a locally compiled executable.
 - Complete setup using the supported CLI/Wizard path with bundle integrity checks.
