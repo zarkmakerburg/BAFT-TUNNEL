@@ -393,6 +393,32 @@ impl RuntimeConfig {
         }
     }
 
+    /// `(local_id, peer_id, tunnel_id)`: node identities, not secrets.
+    pub fn ids(&self) -> (&str, &str, &str) {
+        match self {
+            Self::Serve {
+                local_id,
+                peer_id,
+                tunnel_id,
+                ..
+            }
+            | Self::Forward {
+                local_id,
+                peer_id,
+                tunnel_id,
+                ..
+            } => (local_id, peer_id, tunnel_id),
+        }
+    }
+
+    /// The peer's tunnel socket when this node dials (`forward`); `None` when the peer dials in.
+    pub fn remote(&self) -> Option<&str> {
+        match self {
+            Self::Serve { .. } => None,
+            Self::Forward { remote, .. } => Some(remote),
+        }
+    }
+
     pub fn listen_addr(&self) -> &str {
         match self {
             Self::Serve { listen, .. } | Self::Forward { listen, .. } => listen,

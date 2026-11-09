@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
+use crate::session_status::Stage;
 use crate::{
     authorization::{ConnectionDirection, StreamCapability},
     engine::{BoxedSecureStream, NoiseEngine, NoiseSettings, StreamEngine, TlsEngine},
@@ -177,6 +178,7 @@ async fn pump_with_idle_timeout<R, W>(
     mut reader: R,
     mut writer: W,
     idle: Duration,
+    count: fn(usize),
 ) -> std::io::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -195,20 +197,24 @@ where
             return Ok(());
         }
         writer.write_all(&buffer[..read]).await?;
+        count(read);
     }
 }
 
 /// Relay both directions until each side closes, failing a direction that is idle too long.
-async fn relay_with_idle_timeout<A, B>(a: A, b: B, idle: Duration) -> std::io::Result<()>
+/// `peer` is the tunnel side (the multiplexed stream); `local` is the local socket. Relayed
+/// payload bytes are counted per direction for the unit's traffic counters (ADR-0024).
+async fn relay_with_idle_timeout<A, B>(peer: A, local: B, idle: Duration) -> std::io::Result<()>
 where
     A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let (a_read, a_write) = tokio::io::split(a);
-    let (b_read, b_write) = tokio::io::split(b);
+    crate::session_status::stream_opened();
+    let (a_read, a_write) = tokio::io::split(peer);
+    let (b_read, b_write) = tokio::io::split(local);
     tokio::try_join!(
-        pump_with_idle_timeout(a_read, b_write, idle),
-        pump_with_idle_timeout(b_read, a_write, idle)
+        pump_with_idle_timeout(a_read, b_write, idle, crate::session_status::add_from_peer),
+        pump_with_idle_timeout(b_read, a_write, idle, crate::session_status::add_to_peer)
     )?;
     Ok(())
 }
@@ -270,6 +276,7 @@ async fn queue_when_session_present(
 }
 
 pub async fn serve(options: ServerOptions) -> Result<()> {
+    crate::session_status::start_publisher();
     let listen = socket(&options.listen, "--listen")?;
     let ingress_addr = options
         .ingress
@@ -399,7 +406,9 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                             handshake::server_handshake(&mut secure, &local, &peer, &tunnel, direction),
                         )
                         .await
-                        .context("protocol handshake timeout")??;
+                        .context("protocol handshake timeout")
+                        .context(Stage::Authorization)?
+                        .context(Stage::Authorization)?;
                         // Authenticated: release the pre-auth slot, then take an established-session slot.
                         drop(pending_guard);
                         let _session_permit = sessions
@@ -407,7 +416,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                             .map_err(|_| anyhow::anyhow!("session capacity reached"))?;
                         match ingress_side {
                             None => {
-                                server_session(secure, target, max, stream_slots, tunnel, direction, session_shutdown).await;
+                                server_session(secure, target, max, stream_slots, tunnel, peer, direction, session_shutdown).await;
                             }
                             Some(side) => {
                                 // Reverse: the dialing peer holds the service. This node opens the streams.
@@ -428,7 +437,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                                 let _presence = SessionPresence::attach(side.clone());
                                 let mut receiver = side.receiver.lock().await;
                                 let session = Session::new_server(secure, yamux_config(max));
-                                let outcome = run_forward_session(session, &mut receiver, &stream_slots, direction, &tunnel, end_rx).await;
+                                let outcome = run_forward_session(session, &mut receiver, &stream_slots, direction, &tunnel, &peer, end_rx).await;
                                 relay_end.abort();
                                 if let Err(error) = outcome {
                                     eprintln!("reverse session ended: {error:#}");
@@ -439,6 +448,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                     }
                     .await;
                     if let Err(error) = result {
+                        crate::session_status::record_failure(&error);
                         eprintln!("peer session from {remote} closed: {error:#}");
                     }
                 });
@@ -469,19 +479,21 @@ async fn drain_stream_tasks(tasks: &mut JoinSet<()>, role: &str) {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // one call site; the ids are the session identity
 async fn server_session<S>(
     stream: S,
     target: SocketAddr,
     max: usize,
     slots: Arc<Semaphore>,
     tunnel: String,
+    peer: String,
     direction: ConnectionDirection,
     shutdown: watch::Receiver<bool>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let session = Session::new_server(stream, yamux_config(max));
-    let _mark = crate::session_status::SessionMark::open(&tunnel, direction);
+    let _mark = crate::session_status::SessionMark::open(&tunnel, &peer, direction);
     serve_streams(session, target, slots, tunnel, direction, shutdown).await;
 }
 
@@ -567,6 +579,14 @@ async fn serve_streams<S>(
 }
 
 async fn connect_peer(options: &ForwardOptions) -> Result<Session<BoxedSecureStream>> {
+    let result = connect_peer_staged(options).await;
+    if let Err(error) = &result {
+        crate::session_status::record_failure(error);
+    }
+    result
+}
+
+async fn connect_peer_staged(options: &ForwardOptions) -> Result<Session<BoxedSecureStream>> {
     let remote = socket(&options.remote, "--remote")?;
     // Rebuilt on every (re)connect so a refreshed CRL on disk is picked up.
     let engine: Box<dyn StreamEngine> = match &options.noise {
@@ -601,7 +621,9 @@ async fn connect_peer(options: &ForwardOptions) -> Result<Session<BoxedSecureStr
         ),
     )
     .await
-    .context("protocol handshake timeout")??;
+    .context("protocol handshake timeout")
+    .context(Stage::Authorization)?
+    .context(Stage::Authorization)?;
 
     Ok(Session::new_client(
         secure,
@@ -615,9 +637,10 @@ async fn run_forward_session(
     slots: &Arc<Semaphore>,
     direction: ConnectionDirection,
     tunnel: &str,
+    peer: &str,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    let _mark = crate::session_status::SessionMark::open(tunnel, direction);
+    let _mark = crate::session_status::SessionMark::open(tunnel, peer, direction);
     let mut control = session.control();
     let mut stream_tasks = JoinSet::new();
     let mut driver = tokio::spawn(async move {
@@ -680,7 +703,7 @@ async fn run_forward_session(
                         )
                         .await
                         .context("authorize TCP forwarding stream")?;
-                        relay_with_idle_timeout(&mut local, &mut stream, STREAM_IDLE_TIMEOUT)
+                        relay_with_idle_timeout(&mut stream, &mut local, STREAM_IDLE_TIMEOUT)
                             .await
                             .context("forward local TCP stream")?;
                         Ok(())
@@ -744,6 +767,7 @@ async fn supervise_forward(
                     &slots,
                     options.direction,
                     &options.tunnel_id,
+                    &options.peer_id,
                     shutdown.clone(),
                 )
                 .await
@@ -837,6 +861,11 @@ async fn supervise_reverse_service(
             Ok(session) => {
                 eprintln!("authenticated reverse tunnel session established");
                 backoff = INITIAL_BACKOFF;
+                let _mark = crate::session_status::SessionMark::open(
+                    &options.tunnel_id,
+                    &options.peer_id,
+                    options.direction,
+                );
                 serve_streams(
                     session,
                     target,
@@ -865,6 +894,7 @@ async fn supervise_reverse_service(
 }
 
 pub async fn forward(options: ForwardOptions) -> Result<()> {
+    crate::session_status::start_publisher();
     if options.target.is_some() {
         return reverse_service(options).await;
     }
@@ -1132,6 +1162,7 @@ mod tests {
                 &stream_slots,
                 direction,
                 "e2e-tunnel",
+                "e2e-peer",
                 shutdown_rx,
             )
             .await
@@ -1268,7 +1299,14 @@ mod tests {
         )
         .await
         .expect("wrong-key attempt timed out");
-        assert!(wrong.is_err(), "dialer accepted an unpinned server key");
+        let Err(wrong) = wrong else {
+            panic!("dialer accepted an unpinned server key")
+        };
+        assert_eq!(
+            wrong.downcast_ref::<Stage>(),
+            Some(&Stage::SecureChannel),
+            "a wrong pinned key is attributed to the secure-channel tier: {wrong:#}"
+        );
         // A dialer using an unenrolled static key must be refused by the server.
         let unenrolled = timeout(
             Duration::from_secs(10),
@@ -1298,6 +1336,7 @@ mod tests {
                 &stream_slots,
                 direction,
                 "noise-e2e",
+                "noise-peer",
                 shutdown_rx,
             )
             .await

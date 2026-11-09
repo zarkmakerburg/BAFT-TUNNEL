@@ -30,6 +30,7 @@ cleanup() {
   local status=$?
   trap - EXIT
   if [[ -n "$AGENT_PID" ]]; then sudo kill "$AGENT_PID" >/dev/null 2>&1 || true; fi
+  if [[ -n "${OBS_PID:-}" ]]; then sudo kill "$OBS_PID" >/dev/null 2>&1 || true; fi
   [[ -n "$ECHO_PID" ]] && kill "$ECHO_PID" >/dev/null 2>&1 || true
   for i in "$SERVE" "$FWD" "$POS_S" "$POS_C"; do
     sudo "$ROOT/scripts/install-agent-control.sh" --remove --instance "$i" >/dev/null 2>&1 || true
@@ -340,6 +341,23 @@ out="$(apply "$POS_C" forward ctl-pos-c-0001 '"127.0.0.1"' '"tunnel.example.test
 # The serve side reports the same session, bound to its own main PID.
 spid="$(sudo systemctl show -p MainPID --value "baft-tunnel@$POS_S.service")"
 [[ "$(sudo python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["state"], d["pid"])' "/run/baft-tunnel/$POS_S/session.json")" == "authorized $spid" ]] || die "serve session file does not match its main PID"
+step "4b P1 operations evidence: agent bound to the serve instance (ADR-0024)"
+# A second agent reports on the serve unit: session, counters and failure stage from its runtime dir.
+sudo install -o baft-tunnel -g baft-tunnel -m 0600 "$NODE/possrv.key" /var/lib/baft-tunnel/agent/pos.key
+sudo install -d -o baft-tunnel -g baft-tunnel -m 0700 /var/lib/baft-tunnel/agent-obs
+python3 - "$TMP/pos-srv.json" "$TMP/obs-config.json" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1])); c.pop("key_credential"); c["key"] = "/var/lib/baft-tunnel/agent/pos.key"
+json.dump(c, open(sys.argv[2], "w"))
+PY
+sudo install -o baft-tunnel -g baft-tunnel -m 0600 "$TMP/obs-config.json" /var/lib/baft-tunnel/agent-obs/config.json
+sudo -u baft-tunnel "$RUNTIME_BIN" agent --config /var/lib/baft-tunnel/agent-obs/config.json --token-file /var/lib/baft-tunnel/agent/token \
+  --state-dir /var/lib/baft-tunnel/agent-obs --listen 127.0.0.1:18091 --instance "$POS_S" >"$TMP/obs.log" 2>&1 &
+OBS_PID=$!
+for n in $(seq 1 40); do curl -fs http://127.0.0.1:18091/v1/health >/dev/null 2>&1 && break; sleep 0.25; done
+obs() { curl -s --max-time 30 -X "$1" "http://127.0.0.1:18091$2" -H "Authorization: Bearer $TOKEN"; }
+# Let the agent take counter samples before traffic (unit publishes every 5 s, agent samples every 5 s).
+sleep 12
 # Data path: 64 KiB and 2 MiB of random bytes round-trip through the tunnel unchanged.
 for size in 65536 2097152; do
   head -c "$size" /dev/urandom >"$TMP/pos-in.bin"
@@ -359,10 +377,60 @@ open(sys.argv[2], "wb").write(out)
 PY
   cmp "$TMP/pos-in.bin" "$TMP/pos-out.bin" || die "$size bytes changed on the way through the tunnel"
 done
+sleep 12
+obs GET /v1/traffic >"$TMP/obs-traffic.json"
+python3 - "$TMP/obs-traffic.json" <<'PY' || { cat "$TMP/obs-traffic.json" >&2; die "traffic counters do not show the relayed bytes"; }
+import json, sys
+d = json.load(open(sys.argv[1]))
+need = 65536 + 2097152
+assert d["available"] and d["units"] == "bytes" and d["fresh"], d
+assert d["bytes_from_peer"] >= need and d["bytes_to_peer"] >= need, d
+assert d["streams_total"] >= 2 and d["sessions_total"] >= 1, d
+assert any(r["from_peer_bps"] > 0 and r["to_peer_bps"] > 0 for r in d["history"]), d
+print("traffic: from_peer=%d to_peer=%d streams=%d" % (d["bytes_from_peer"], d["bytes_to_peer"], d["streams_total"]))
+PY
+obs POST /v1/diagnostics >"$TMP/obs-diag.json"
+python3 - "$TMP/obs-diag.json" <<'PY' || { cat "$TMP/obs-diag.json" >&2; die "diagnostics did not verify the data path tier by tier"; }
+import json, sys
+d = json.load(open(sys.argv[1]))
+r = {t["id"]: t["result"] for t in d["tiers"]}
+assert r == {"tcp_reachability": "pass", "secure_channel": "pass", "identity": "pass", "authorization": "pass",
+             "session": "pass", "data_path": "pass", "integrity": "unknown"}, r
+assert d["verified"] is True and d["highest_passed_tier"] == "data_path" and d["unit"]["result"] == "active", d
+PY
+obs GET /v1/status >"$TMP/obs-status.json"
+python3 - "$TMP/obs-status.json" <<'PY' || { cat "$TMP/obs-status.json" >&2; die "end-to-end status does not match the evidence"; }
+import json, sys
+t = json.load(open(sys.argv[1]))["tunnel"]
+assert t["state"] == "carrying_traffic", t
+assert t["tiers"]["authorized_session"]["peer_id"] == "poscli", t
+assert t["tiers"]["integrity"]["result"] == "unknown" and isinstance(t["last_verified_unix"], int), t
+PY
 # Stop the forward node: the session indicator on the serve node must clear.
 sudo -u baft-tunnel touch "/run/baft-tunnel/control/$POS_C.stop"; wait_state "$POS_C" inactive || die "could not stop $POS_C"
 for n in $(seq 1 40); do sudo test -e "/run/baft-tunnel/$POS_S/session.json" || break; sleep 0.5; done
 ! sudo test -e "/run/baft-tunnel/$POS_S/session.json" || die "serve session indicator stayed after the peer left"
+# Without the peer the status drops a tier, diagnostics fail at the session tier, and the last
+# verified time is kept, not invented or cleared.
+obs GET /v1/status >"$TMP/obs-status2.json"
+obs POST /v1/diagnostics >"$TMP/obs-diag2.json"
+python3 - "$TMP/obs-status2.json" "$TMP/obs-diag2.json" <<'PY' || { cat "$TMP/obs-status2.json" "$TMP/obs-diag2.json" >&2; die "status or diagnostics kept a session that ended"; }
+import json, sys
+t = json.load(open(sys.argv[1]))["tunnel"]; d = json.load(open(sys.argv[2]))
+assert t["state"] == "running_no_session", t
+r = {x["id"]: x["result"] for x in d["tiers"]}
+assert r["session"] == "fail" and r["data_path"] == "unknown" and d["verified"] is False, d
+assert isinstance(d["verified_unix"], int), d
+PY
+# Audit: actor fingerprint, target node and resource; never the token.
+sudo python3 - /var/lib/baft-tunnel/agent-obs/audit.log <<'PY' || die "audit lines miss actor/target/resource"
+import json, sys
+lines = [json.loads(l) for l in open(sys.argv[1])]
+assert len(lines) >= 2 and all(l["audit_version"] == 2 and l["actor"]["kind"] == "api_token" and len(l["actor"]["fingerprint"]) == 16
+                               and l["target"]["node"] == "possrv" and l["resource"] == "diagnostics" for l in lines), lines
+PY
+! sudo grep -q -- "$TOKEN" /var/lib/baft-tunnel/agent-obs/audit.log /var/lib/baft-tunnel/agent/audit.log || die "an audit log contains the token"
+sudo kill "$OBS_PID" 2>/dev/null || true; OBS_PID=""
 sudo -u baft-tunnel touch "/run/baft-tunnel/control/$POS_S.stop"; wait_state "$POS_S" inactive || die "could not stop $POS_S"
 kill "$ECHO_PID" 2>/dev/null || true; ECHO_PID=""
 step "3 receipts and side effects"
@@ -374,4 +442,4 @@ sudo kill "$AGENT_PID" 2>/dev/null || true; sleep 2; AGENT_PID=""; step "3 agent
 snapshot after >"$TMP/side-after.txt"
 diff "$TMP/side-before.txt" "$TMP/side-after.txt" >&2 || { diff "$TMP/fw-before.txt" "$TMP/fw-after.txt" >&2 || true; die "firewall, listeners or unrelated units changed"; }
 
-echo "AGENT_CONTROL_LIFECYCLE=PASS (systemd $v: path units active, control dir root:baft-tunnel 0770, request starts and stops only baft-tunnel@NAME, no direct rights for the agent user, Apply start verified and replayed, running unit refused, failing start rolled back, real authorized session observed between two nodes with 64 KiB and 2 MiB intact, malformed/unregistered/duplicate/stale/symlink requests harmless, no firewall/listener/unit side effects)"
+echo "AGENT_CONTROL_LIFECYCLE=PASS (systemd $v: path units active, control dir root:baft-tunnel 0770, request starts and stops only baft-tunnel@NAME, no direct rights for the agent user, Apply start verified and replayed, running unit refused, failing start rolled back, real authorized session observed between two nodes with 64 KiB and 2 MiB intact, agent diagnostics/status/traffic/audit tiers matched the unit evidence, malformed/unregistered/duplicate/stale/symlink requests harmless, no firewall/listener/unit side effects)"
