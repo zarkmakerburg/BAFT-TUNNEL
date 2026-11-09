@@ -45,7 +45,7 @@ mkdir -p "$BACKUP_ROOT"
 DIR="$(mktemp -d "$BACKUP_ROOT/baft-tunnel-backup.XXXXXX")"
 chmod 0700 "$DIR"
 trap 'rm -rf "$DIR"' ERR
-tar --numeric-owner -C "$ROOT_PREFIX" -cpf "$DIR/backup.tar" "${paths[@]}"
+tar --numeric-owner -C "${ROOT_PREFIX:-/}" -cpf "$DIR/backup.tar" "${paths[@]}"
 chmod 0600 "$DIR/backup.tar"
 (cd "$DIR" && sha256sum backup.tar > backup.tar.sha256 && chmod 0600 backup.tar.sha256)
 {
