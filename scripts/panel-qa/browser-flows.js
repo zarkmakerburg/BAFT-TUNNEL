@@ -11,7 +11,7 @@ const ok = (n, c, d) => { results.push([c ? 'PASS' : 'FAIL', n, d || '']); };
     for (const lang of ['fa','en']) {
       const ctx = await b.newContext({ viewport: vp, deviceScaleFactor: 1 });
       const p = await ctx.newPage();
-      const errs = []; p.on('response', r => { if (r.status()>=400 && !r.url().endsWith('/v1/desired')) errs.push(r.status()+' '+r.url()); }); p.on('pageerror', e => errs.push(String(e)));
+      const errs = []; p.on('response', r => { if (r.status()>=400 && !r.url().endsWith('/v1/desired') && !(r.status()===404 && r.request().method()==='GET' && r.url().endsWith('/v1/diagnostics'))) errs.push(r.status()+' '+r.url()); }); p.on('pageerror', e => errs.push(String(e)));
       await p.addInitScript(([t,l]) => { sessionStorage.setItem('token', t); sessionStorage.setItem('lang', l); }, [TOKEN, lang]);
       await p.goto(BASE+'/');
       await p.waitForSelector('.shell');
@@ -63,6 +63,17 @@ const ok = (n, c, d) => { results.push([c ? 'PASS' : 'FAIL', n, d || '']); };
       await next().click(); await p.waitForTimeout(200);
       const txt = await p.locator('.content').innerText();
       const goBtn = p.locator('button.primary', {hasText: lang==='fa'?'اعمال و بررسی':'Apply and verify'});
+      // Last step (U5a): 1. root commands, 2. Start once bound, 3. diagnostics; agent-side Apply sits under Advanced.
+      ok(`${tag} last step shows three ordered steps`, (await p.locator('ol.fin > li').count()) === 3);
+      ok(`${tag} last step prints the root commands`, (await p.locator('ol.fin > li').first().locator('pre').count()) === 1);
+      const startBtn = p.locator('ol.fin > li').nth(1).locator('button', {hasText: lang==='fa'?/^شروع$/:/^Start$/});
+      const recheck = p.locator('ol.fin > li').nth(1).locator('button', {hasText: lang==='fa'?'بررسی دوباره':'Check again'});
+      ok(`${tag} start step offers Start (bound agent) or the register command, and Check again`, ((await startBtn.count()) === 1 || (await p.locator('ol.fin > li').nth(1).locator('pre').count()) === 1) && (await recheck.count()) === 1);
+      const dBtn = p.locator('ol.fin > li').nth(2).locator('button', {hasText: lang==='fa'?'اجرای عیب‌یابی':'Run diagnostics'});
+      ok(`${tag} diagnostics step has a run button`, (await dBtn.count()) === 1);
+      await dBtn.click(); await p.waitForSelector('ol.fin .next-action', {timeout: 15000}).catch(() => {});
+      ok(`${tag} diagnostics in the last step shows one next action`, (await p.locator('ol.fin .next-action').count()) === 1);
+      await p.locator('ol.fin details summary').first().click();
       ok(`${tag} apply button exists but is disabled until confirmed`, (await goBtn.count())===1 && await goBtn.isDisabled());
       if (!(await p.locator('input[type=checkbox]').count())) { console.log('DIAG', tag, (await p.locator('.content').innerText()).slice(0,600)); }
       await p.locator('input[type=checkbox]').check({timeout: 3000});

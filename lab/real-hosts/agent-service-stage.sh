@@ -133,7 +133,7 @@ as_api() { # side METHOD path [json-body] -> response JSON on stdout (token read
   ssh_host "$1" "python3 - <<'PY'
 import json, urllib.request
 tok = open('$AGS/token').read().strip()
-body = '''$4'''.encode() if '''$4''' else (b'' if '$2' == 'POST' else None)
+body = '''${4:-}'''.encode() if '''${4:-}''' else (b'' if '$2' == 'POST' else None)
 r = urllib.request.Request('http://127.0.0.1:$MAG$3', data=body, method='$2', headers={'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json'})
 try:
     print(urllib.request.urlopen(r, timeout=120).read().decode())
