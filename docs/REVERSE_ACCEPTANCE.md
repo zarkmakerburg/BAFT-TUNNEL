@@ -61,4 +61,4 @@ Cause: the local agent samples the tunnel port every 5 s with a bare TCP connect
 - Cross-version update not tested (`cross_version_update=0`).
 - Single LAB pair; no real packet-loss run in this gate (covered in R3).
 - Unrelated firewall drift on the abroad host during the run (3 lines of an nft set, not BAFT-TUNNEL rules; `baft_fw_rules=0`).
-- Wizard role labels ("Hosts the service" / "User entry point") should be checked for Reverse wording before public display.
+- Wizard role labels: fixed. In Reverse the Wizard now says "Public node (receives users)" for `serve` and "Service node (dials out)" for `forward`, labels the public node's port as the user-facing port, and shows Reverse as Preview (never Stable or Ready).
