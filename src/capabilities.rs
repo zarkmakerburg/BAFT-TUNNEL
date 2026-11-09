@@ -2,8 +2,9 @@
 //!
 //! The catalogue is built from facts this build really has: which engines are compiled in, which
 //! configuration they accept and what has been verified. Anything not established is the string
-//! "unknown", never "supported". The BAFT engine is intentionally absent until its acceptance
-//! gates pass (ADR-0019); it must not be listed here or offered by the panel before that.
+//! "unknown", never "supported". The BAFT engine is listed as a Preview, Direct only, after its
+//! acceptance gates passed (docs/BAFT_ENGINE_ACCEPTANCE.md, LAB run 42552860541). It is never
+//! Stable, never advertises Reverse, and its traffic and end-to-end status stay "unknown".
 
 use serde_json::{Value, json};
 
@@ -62,6 +63,40 @@ fn noise_tcp() -> Value {
             "unit_tests": true,
             "lab_two_host": {"direct": "pass", "reverse": "label-only"},
             "source": "docs/PHASE1_IMPLEMENTATION_STATUS.md"
+        }
+    })
+}
+
+fn baft() -> Value {
+    json!({
+        "id": "baft",
+        "status": "preview",
+        "directions": ["direct"],
+        "reverse": {"state": "unavailable", "reason": "engine-has-no-reverse; its LAB reverse case only swaps which host dials"},
+        "security": "BAFT h2 mutual TLS carrier (separate Go engine host, pinned release digest)",
+        "transport": {"carrier": "tcp", "encapsulation": "h2-mtls", "udp": false},
+        "roles": {"listener": true, "dialer": true},
+        "network": {"ipv4": "supported", "ipv6": "unknown", "dns": "unknown"},
+        "identity": {
+            "kind": "x509",
+            "requires_ca": "unknown",
+            "requires_crl": "unknown",
+            "sni": "unknown",
+            "san": "unknown",
+            "peer_pinning": "unknown",
+            "certificate_validation": "unknown"
+        },
+        "limits": {
+            "traffic_counters": "unknown",
+            "end_to_end_status": "unknown",
+            "crash_resets_active_flows": true,
+            "carriers": ["h2"]
+        },
+        "platform": {"os": ["linux"], "min_agent": "0.1.0"},
+        "evidence": {
+            "unit_tests": true,
+            "lab_two_host": {"direct": "pass", "reverse": "not-offered"},
+            "source": "docs/BAFT_ENGINE_ACCEPTANCE.md"
         }
     })
 }
@@ -138,7 +173,7 @@ pub fn catalog() -> Value {
         "platform": {"os": std::env::consts::OS, "arch": std::env::consts::ARCH},
         "direction_model": direction_model(),
         "runtime": runtime_limits(),
-        "engines": [tcp_tls(), noise_tcp()]
+        "engines": [tcp_tls(), noise_tcp(), baft()]
     })
 }
 
@@ -151,7 +186,7 @@ mod tests {
         let doc = catalog();
         assert_eq!(doc["contract_version"], 1);
         let engines = doc["engines"].as_array().unwrap();
-        assert_eq!(engines.len(), 2);
+        assert_eq!(engines.len(), 3);
         for e in engines {
             for key in [
                 "id",
@@ -182,10 +217,22 @@ mod tests {
     }
 
     #[test]
-    fn unverified_capabilities_are_unknown_and_baft_is_not_listed() {
+    fn unverified_capabilities_are_unknown_and_baft_is_preview_direct_only() {
         let doc = catalog();
         let engines = doc["engines"].as_array().unwrap();
-        assert!(engines.iter().all(|e| e["id"] != "baft"));
+        let baft = engines.iter().find(|e| e["id"] == "baft").unwrap();
+        assert_eq!(baft["status"], "preview");
+        assert_eq!(baft["directions"], json!(["direct"]));
+        assert_eq!(baft["reverse"]["state"], "unavailable");
+        assert_eq!(baft["limits"]["traffic_counters"], "unknown");
+        assert_eq!(baft["limits"]["end_to_end_status"], "unknown");
+        assert!(supports_direction("baft", "direct"));
+        assert!(!supports_direction("baft", "reverse"));
+        assert!(engines.iter().all(|e| e["status"] != "ready"));
+        assert_eq!(
+            engines.iter().filter(|e| e["status"] == "stable").count(),
+            1
+        );
         for e in engines {
             assert_eq!(e["network"]["ipv6"], "unknown");
         }

@@ -78,7 +78,7 @@
     return { k: k === 'carrying_traffic' ? 'ok' : k === 'session_authorized' ? 'ok' : k === 'running_no_session' ? 'warn' : k === 'down' ? 'bad' : 'unknown', l: t('ts.' + (k || 'unknown')) };
   }
   function dirLabel(x) { return x ? t('dir.' + x) : '—'; }
-  function roleLabel(x) { return x ? t('role.' + x) : '—'; }
+  function roleLabel(x, dir) { return x ? t((dir === 'reverse' ? 'role.rev.' : 'role.') + x) : '—'; }
 
   function trafficBody(tr) {
     if (!tr) { return empty(t('ov.traffic.body')); }
@@ -144,7 +144,7 @@
       [t('f.cert'), life(sec.certificate_seconds_remaining) || '—'], [t('f.crl'), life(sec.crl_seconds_remaining) || '—'], [t('f.keysrc'), c.private_key_source]]);
     var ls = listenState(s);
     var thisNode = h('section', { class: 'card res' },
-      h('div', { class: 'head' }, h('div', null, h('div', { class: 'title' }, BAFT.ltr(c.local_identity)), h('div', { class: 'sub', text: t('servers.this') + ' · ' + roleLabel(c.mode) })), pill(ls.k, ls.l)),
+      h('div', { class: 'head' }, h('div', null, h('div', { class: 'title' }, BAFT.ltr(c.local_identity)), h('div', { class: 'sub', text: t('servers.this') + ' · ' + roleLabel(c.mode, c.direction) })), pill(ls.k, ls.l)),
       h('p', { class: 'sub', text: t('state.why.local') }),
       kv([[t('f.lastseen'), t('checked', { ago: BAFT.ago(BAFT.fetchedAt) })], [t('f.version'), BAFT.ltr('v' + s.version)],
         [t('f.diag'), st.med == null ? t('unknown') : t('f.latency') + ': ' + BAFT.fmtNum(st.med, 2) + ' ms · ' + t('f.avail') + ': ' + BAFT.fmtNum(st.avail, 1) + '%']]),
@@ -191,7 +191,7 @@
       h('div', { class: 'head' }, h('div', null, h('div', { class: 'title' }, BAFT.ltr(c.tunnel_id)),
         h('div', { class: 'sub' }, dirLabel(c.direction) + ' · ', BAFT.ltr(c.local_identity), ' ⇄ ', BAFT.ltr(c.peer_identity))), pill(tn ? ts.k : ls.k, tn ? ts.l : ls.l)),
       h('p', { class: 'sub', text: (tn ? t('ts.why') : t('state.why.local')) + ' ' + t('checked', { ago: BAFT.ago(BAFT.fetchedAt) }) }),
-      kv([[t('f.engine'), BAFT.ltr(s.engine)], [t('f.role'), roleLabel(c.mode)],
+      kv([[t('f.engine'), BAFT.ltr(s.engine)], [t('f.role'), roleLabel(c.mode, c.direction)],
         [t('f.peerconn'), tn ? tierPill((tn.tiers.authorized_session || {}).result) : pill('unknown', t('state.unknown'))],
         [t('f.peer'), tn && tn.tiers.authorized_session && tn.tiers.authorized_session.peer_id ? BAFT.ltr(tn.tiers.authorized_session.peer_id) : null],
         [t('tier.data_path'), tn ? tierPill((tn.tiers.data_path || {}).result) : pill('unknown', t('state.unknown'))],
@@ -306,12 +306,12 @@
         h('p', { class: 'sub', text: t('dir.same') }), w.errors.direction ? h('p', { class: 'fielderr', role: 'alert', text: w.errors.direction }) : null);
     }
     function stepServers() {
-      var fwd = w.role === 'forward';
+      var fwd = w.role === 'forward', rev = w.direction === 'reverse';
       return h('div', null, h('h2', { text: t('srv.q') }), h('p', { class: 'sub', text: t('srv.noinv') }),
         h('div', { class: 'choices', role: 'radiogroup', 'aria-label': t('srv.q') },
-          choice('role', 'forward', fwd, t('srv.forward'), t('srv.opens'), function (v) { w.role = v; invalidate(); draw(); }),
-          choice('role', 'serve', !fwd, t('srv.serve'), '', function (v) { w.role = v; invalidate(); draw(); })),
-        h('div', { class: 'form-grid' }, field('node', t('f.node')), field('peerId', t('f.peerid')), field('tunnel', t('f.tunnel')), field('port', t('f.port'), { type: 'number', inputmode: 'numeric' }),
+          choice('role', 'forward', fwd, t(rev ? 'srv.rev.forward' : 'srv.forward'), t(rev ? 'srv.rev.forward.d' : 'srv.opens'), function (v) { w.role = v; invalidate(); draw(); }),
+          choice('role', 'serve', !fwd, t(rev ? 'srv.rev.serve' : 'srv.serve'), rev ? t('srv.rev.serve.d') : '', function (v) { w.role = v; invalidate(); draw(); })),
+        h('div', { class: 'form-grid' }, field('node', t('f.node')), field('peerId', t('f.peerid')), field('tunnel', t('f.tunnel')), field('port', t(rev && !fwd ? 'f.port.ingress' : 'f.port'), { type: 'number', inputmode: 'numeric' }),
           fwd ? field('peerHost', t('f.peerhost'), { inputmode: 'decimal' }) : null,
           fwd && w.engine === 'tcp-tls' ? field('serverName', t('f.servername')) : null),
         h('details', null, h('summary', { text: t('adv') }), h('div', { class: 'form-grid' }, field('tport', t('f.tport'), { type: 'number', inputmode: 'numeric' }), field('dir', t('f.dir')), field('inst', t('f.inst')))));
@@ -320,9 +320,10 @@
       var ok = engines.filter(function (e) { return e.directions.indexOf(w.direction) >= 0; });
       return h('div', null, h('h2', { text: t('meth.q') }), h('div', { class: 'choices', role: 'radiogroup', 'aria-label': t('meth.q') }, ok.map(function (e) {
         var rec = e.status === 'stable' && w.direction !== 'reverse';
+        var pre = e.status === 'preview' || w.direction === 'reverse';
         var lab = (((e.evidence || {}).lab_two_host) || {})[w.direction];
         var labPill = lab === 'pass' ? pill('ok', t('meth.lab.pass')) : pill('unknown', t('meth.lab.unknown'));
-        return choice('engine', e.id, w.engine === e.id, [BAFT.ltr(e.id), pill(rec ? 'ok' : 'warn', rec ? t('meth.rec') + ' · ' + t('meth.stable') : t('meth.experimental')), labPill], t('meth.' + e.id),
+        return choice('engine', e.id, w.engine === e.id, [BAFT.ltr(e.id), pill(rec ? 'ok' : 'warn', rec ? t('meth.rec') + ' · ' + t('meth.stable') : pre ? t('dir.preview') : t('meth.experimental')), labPill], t('meth.' + e.id) + (e.id === 'baft' ? ' ' + t('meth.baft.limits') : '') + (w.direction === 'reverse' ? ' ' + t('meth.rev.note') : ''),
           function (v) { w.engine = v; invalidate(); draw(); });
       })));
     }
@@ -343,16 +344,16 @@
     }
     function effects(p) {
       var pf = w.pf, cfg = p.config || {}, eng = engines.filter(function (e) { return e.id === w.engine; })[0] || {};
-      var serve = cfg.mode === 'serve';
+      var serve = cfg.mode === 'serve', rev = w.direction === 'reverse';
       var unknown = pf ? pf.checks.filter(function (c) { return c.result === 'unknown'; }).map(function (c) { return t('pfc.' + c.id) === 'pfc.' + c.id ? c.id : t('pfc.' + c.id); }) : [];
       var lab = ((eng.evidence || {}).lab_two_host || {})[w.direction];
       return h('div', null,
         h('h3', { text: t('pv.topology') }),
-        kv([[t('sum.dir'), dirLabel(w.direction)], [t('pv.thisrole'), roleLabel(serve ? 'serve' : 'forward')],
-          [t('pv.otherrole'), roleLabel(serve ? 'forward' : 'serve')], [t('sum.engine'), BAFT.ltr(w.engine)],
+        kv([[t('sum.dir'), dirLabel(w.direction)], [t('pv.thisrole'), roleLabel(serve ? 'serve' : 'forward', w.direction)],
+          [t('pv.otherrole'), roleLabel(serve ? 'forward' : 'serve', w.direction)], [t('sum.engine'), BAFT.ltr(w.engine)],
           [t('pv.listener'), serve ? h('span', null, BAFT.ltr(cfg.listen || '—'), ' (' + t('pv.thisserver') + ')') : t('pv.otherserver')],
           [t('pv.dialer'), serve ? t('pv.otherserver') : h('span', null, BAFT.ltr(cfg.remote || '—'), ' (' + t('pv.thisserver') + ' → ' + t('pv.otherserver') + ')')],
-          [t('pv.service'), BAFT.ltr(serve ? (cfg.target || '—') : (cfg.listen || '—'))],
+          [t(rev && serve ? 'pv.ingress' : 'pv.service'), BAFT.ltr(rev ? (serve ? (cfg.ingress || '—') : (cfg.target || '—')) : (serve ? (cfg.target || '—') : (cfg.listen || '—')))],
           [t('pv.labstate'), lab === 'pass' ? pill('ok', t('meth.lab.pass')) : pill('unknown', t('meth.lab.unknown'))]]),
         h('h3', { text: t('pv.thisserver') }), h('p', { text: t('pv.thisfx') }),
         h('h3', { text: t('pv.otherserver') }), h('p', { text: t('pv.otherfx') }),

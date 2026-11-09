@@ -75,7 +75,9 @@ fn check_port(value: u16, what: &str) -> Result<()> {
 
 pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
     if req.engine == EngineKind::Baft {
-        bail!("engine baft is not available in setup yet (ADR-0019 phase F)");
+        bail!(
+            "baft is a Preview engine, Direct only: this setup cannot create its configuration yet (ADR-0019 phase F); it is installed from the signed Engine Store path"
+        );
     }
     validate_identity(&req.node_id)?;
     validate_identity(&req.peer_id)?;

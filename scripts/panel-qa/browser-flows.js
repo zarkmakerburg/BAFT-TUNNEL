@@ -40,7 +40,7 @@ const ok = (n, c, d) => { results.push([c ? 'PASS' : 'FAIL', n, d || '']); };
       await p.locator('.form-grid input').nth(5).fill('node-b');
       await p.screenshot({ path: `${SHOTS}/${tag}-wiz-servers.png`, fullPage: true });
       await next().click(); await p.waitForTimeout(200);
-      ok(`${tag} method step lists only supported engines`, await p.locator('.choice').count() === 2);
+      ok(`${tag} method step lists only supported engines (tcp-tls, noise-tcp, baft preview)`, await p.locator('.choice').count() === 3);
       await p.screenshot({ path: `${SHOTS}/${tag}-wiz-method.png`, fullPage: true });
       await next().click(); await p.waitForTimeout(200);
       ok(`${tag} preflight continue disabled before run`, await next().isDisabled());

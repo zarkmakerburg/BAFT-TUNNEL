@@ -2179,12 +2179,40 @@ mod tests {
         let (_, body) = get_json(&ctx, "/v1/audit").await;
         assert_eq!(body["entries"].as_array().unwrap().len(), 1);
         let (_, body) = get_json(&ctx, "/v1/engines").await;
-        assert_eq!(body["engines"].as_array().unwrap().len(), 2);
+        assert_eq!(body["engines"].as_array().unwrap().len(), 3);
         let bare = Ctx::new(sample(), TOKEN.into(), None);
         assert_eq!(get_json(&bare, "/v1/audit").await.0, 404);
         let unauth = route("GET /v1/history HTTP/1.1\r\n\r\n", b"", &bare).await;
         assert_eq!(unauth.0, 401);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn wizard_strings_for_baft_and_reverse_exist_in_both_languages_and_never_claim_ready() {
+        let i18n = include_str!("../panel/i18n.js");
+        let (fa, en) = i18n.split_once("    en: {").expect("two language blocks");
+        for key in [
+            "role.rev.serve",
+            "role.rev.forward",
+            "srv.rev.serve",
+            "srv.rev.serve.d",
+            "srv.rev.forward",
+            "srv.rev.forward.d",
+            "f.port.ingress",
+            "pv.ingress",
+            "meth.baft",
+            "meth.baft.limits",
+            "meth.rev.note",
+        ] {
+            let needle = format!("'{key}':");
+            assert!(fa.contains(&needle), "fa missing {key}");
+            assert!(en.contains(&needle), "en missing {key}");
+        }
+        let pages = include_str!("../panel/pages.js");
+        assert!(!pages.contains("meth.ready"));
+        assert!(en.contains(
+            "'meth.rev.note': 'Reverse is a Preview, not Stable; readiness is not verified.'"
+        ));
     }
 
     fn serve_config() -> RuntimeConfig {

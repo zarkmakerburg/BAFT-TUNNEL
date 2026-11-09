@@ -55,7 +55,7 @@ Evidence: [LAB run 42552860541](https://github.com/zarkmakerburg/BAFT-TUNNEL/act
 
 ### What remains (not claimed)
 
-1. The Wizard/capabilities exposure itself is a separate code change (currently `capabilities.rs` still omits `baft` and a test asserts it). It was not made in this task.
+1. ~~Wizard/capabilities exposure~~ Done: `/v1/engines` lists `baft` as `preview`, Direct only, and the Wizard shows it with a Preview label and the unknown-status limits. Wizard setup/preflight still blocks BAFT (the planner cannot create its configuration yet), so it is displayed but not configurable from the Wizard.
 2. No multi-hour soak; the 20-minute soak and 2% loss on a short flow are bounded evidence (only 6 packets dropped).
 3. No BAFT status/diagnostics integration (needs a probe-based design); no preflight check specific to the BAFT engine.
 4. Listener RSS grew about 23% over the soak; watch it in a longer soak before Stable.
