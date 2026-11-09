@@ -141,6 +141,17 @@ pub enum RuntimeConfig {
 
 impl RuntimeConfig {
     pub fn validate(&self) -> Result<()> {
+        self.validate_with(true)
+    }
+
+    /// Everything `validate` checks except the private key, which the local agent cannot read: it
+    /// runs as its own user (SA-09) and never sees the tunnel's key file or systemd credential.
+    /// The tunnel unit runs the full validation itself and fails closed.
+    pub fn validate_public(&self) -> Result<()> {
+        self.validate_with(false)
+    }
+
+    fn validate_with(&self, check_key: bool) -> Result<()> {
         match self {
             Self::Serve {
                 listen,
@@ -185,20 +196,26 @@ impl RuntimeConfig {
                         )?;
                     }
                 }
-                let key_path = private_key_path(key.as_deref(), key_credential.as_deref())?;
+                let key_path = if check_key {
+                    Some(private_key_path(key.as_deref(), key_credential.as_deref())?)
+                } else {
+                    None
+                };
                 match engine {
                     EngineKind::TcpTls => {
                         validate_fingerprint(peer_fingerprint)?;
                         require_tls_paths(&[ca, crl, cert])?;
                         reject_noise_fields(noise_peer_public.as_deref())?;
-                        tls::server_config(ca, crl, cert, &key_path)
-                            .context("server TLS material is invalid")?;
+                        if let Some(key_path) = &key_path {
+                            tls::server_config(ca, crl, cert, key_path)
+                                .context("server TLS material is invalid")?;
+                        }
                     }
                     EngineKind::NoiseTcp => {
                         validate_noise(
                             &[ca, crl, cert],
                             peer_fingerprint,
-                            &key_path,
+                            key_path.as_deref(),
                             noise_peer_public.as_deref(),
                         )?;
                     }
@@ -210,8 +227,10 @@ impl RuntimeConfig {
                             noise_peer_public.as_deref(),
                             baft.as_ref(),
                         )?;
-                        tls::server_config(ca, crl, cert, &key_path)
-                            .context("server TLS material is invalid")?;
+                        if let Some(key_path) = &key_path {
+                            tls::server_config(ca, crl, cert, key_path)
+                                .context("server TLS material is invalid")?;
+                        }
                     }
                 }
             }
@@ -259,15 +278,21 @@ impl RuntimeConfig {
                     }
                 }
                 validate_target(parse_socket(remote, "remote")?)?;
-                let key_path = private_key_path(key.as_deref(), key_credential.as_deref())?;
+                let key_path = if check_key {
+                    Some(private_key_path(key.as_deref(), key_credential.as_deref())?)
+                } else {
+                    None
+                };
                 match engine {
                     EngineKind::TcpTls => {
                         validate_fingerprint(peer_fingerprint)?;
                         require_tls_paths(&[ca, crl, cert])?;
                         reject_noise_fields(noise_peer_public.as_deref())?;
                         tls::server_name(server_name)?;
-                        tls::client_config(ca, crl, cert, &key_path)
-                            .context("client TLS material is invalid")?;
+                        if let Some(key_path) = &key_path {
+                            tls::client_config(ca, crl, cert, key_path)
+                                .context("client TLS material is invalid")?;
+                        }
                     }
                     EngineKind::NoiseTcp => {
                         if !server_name.is_empty() {
@@ -276,7 +301,7 @@ impl RuntimeConfig {
                         validate_noise(
                             &[ca, crl, cert],
                             peer_fingerprint,
-                            &key_path,
+                            key_path.as_deref(),
                             noise_peer_public.as_deref(),
                         )?;
                     }
@@ -289,8 +314,10 @@ impl RuntimeConfig {
                             baft.as_ref(),
                         )?;
                         tls::server_name(server_name)?;
-                        tls::client_config(ca, crl, cert, &key_path)
-                            .context("client TLS material is invalid")?;
+                        if let Some(key_path) = &key_path {
+                            tls::client_config(ca, crl, cert, key_path)
+                                .context("client TLS material is invalid")?;
+                        }
                     }
                 }
             }
@@ -373,6 +400,12 @@ impl RuntimeConfig {
     pub fn engine_name(&self) -> &'static str {
         let (Self::Serve { engine, .. } | Self::Forward { engine, .. }) = self;
         engine.as_str()
+    }
+
+    /// `direct` or `reverse`, as configured.
+    pub fn direction_name(&self) -> &'static str {
+        let (Self::Serve { direction, .. } | Self::Forward { direction, .. }) = self;
+        direction.as_str()
     }
 
     /// `(crl, cert)` paths when the engine is TLS (they are empty for noise-tcp).
@@ -743,13 +776,16 @@ fn reject_noise_fields(noise_peer_public: Option<&str>) -> Result<()> {
 fn validate_noise(
     tls_paths: &[&PathBuf],
     peer_fingerprint: &str,
-    key_path: &Path,
+    key_path: Option<&Path>,
     noise_peer_public: Option<&str>,
 ) -> Result<()> {
     if tls_paths.iter().any(|path| !path.as_os_str().is_empty()) || !peer_fingerprint.is_empty() {
         bail!("ca, crl, cert and peer_fingerprint must be omitted with engine noise-tcp");
     }
     let peer = noise_peer_public.context("engine noise-tcp requires noise_peer_public")?;
+    let Some(key_path) = key_path else {
+        return Ok(());
+    };
     crate::engine::NoiseSettings {
         private_key: key_path.to_path_buf(),
         peer_public: peer.to_owned(),

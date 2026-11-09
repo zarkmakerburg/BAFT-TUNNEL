@@ -1,0 +1,9 @@
+[Unit]
+Description=BAFT-TUNNEL agent request to disable instance %i at boot (and stop it now)
+
+[Path]
+PathExists=/run/baft-tunnel/control/%i.disable
+Unit=baft-tunnel-control-disable@%i.service
+
+[Install]
+WantedBy=multi-user.target

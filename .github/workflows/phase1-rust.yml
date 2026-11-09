@@ -80,3 +80,7 @@ jobs:
         run: |
           bash -n scripts/pki/test-agent-control-lifecycle.sh
           timeout 600 bash scripts/pki/test-agent-control-lifecycle.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"
+      - name: Validate the agent service on real systemd (one-step install, own user, setup owners, Start/Restart/Stop with boot persistence, uninstall)
+        run: |
+          bash -n scripts/pki/test-agent-service-lifecycle.sh
+          timeout 600 bash scripts/pki/test-agent-service-lifecycle.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"

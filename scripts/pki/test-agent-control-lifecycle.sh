@@ -21,11 +21,12 @@ for c in systemctl openssl python3 sudo install curl; do command -v "$c" >/dev/n
 v="$(systemctl --version | awk 'NR == 1 { print $2 }')"
 [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 247 )) || die "systemd 247+ required; found $v"
 [[ "$(ps -p 1 -o comm= | tr -d '[:space:]')" == systemd ]] || die "PID 1 is not systemd"
-for p in /usr/local/bin/baft-tunnel /etc/systemd/system/baft-tunnel@.service /etc/baft-tunnel /var/lib/baft-tunnel /run/baft-tunnel/control; do
+for p in /usr/local/bin/baft-tunnel /etc/systemd/system/baft-tunnel@.service /etc/baft-tunnel /var/lib/baft-tunnel /var/lib/baft-tunnel-agent /run/baft-tunnel/control; do
   [[ ! -e "$p" ]] || die "refusing to overwrite pre-existing path: $p"
 done
 getent group baft-tunnel >/dev/null 2>&1 || CREATED_GROUP=1
 id baft-tunnel >/dev/null 2>&1 || CREATED_USER=1
+CREATED_AGENT=0; id baft-tunnel-agent >/dev/null 2>&1 || CREATED_AGENT=1
 cleanup() {
   local status=$?
   trap - EXIT
@@ -34,14 +35,17 @@ cleanup() {
   [[ -n "$ECHO_PID" ]] && kill "$ECHO_PID" >/dev/null 2>&1 || true
   for i in "$SERVE" "$FWD" "$POS_S" "$POS_C"; do
     sudo "$ROOT/scripts/install-agent-control.sh" --remove --instance "$i" >/dev/null 2>&1 || true
-    sudo systemctl stop "baft-tunnel@$i.service" >/dev/null 2>&1 || true
+    sudo systemctl disable --now "baft-tunnel@$i.service" >/dev/null 2>&1 || true
   done
-  sudo rm -f /etc/systemd/system/baft-tunnel-control-*@.path /etc/systemd/system/baft-tunnel-control-*@.service /etc/tmpfiles.d/baft-tunnel-control.conf
+  sudo rm -f /etc/systemd/system/baft-tunnel-control-*@.path /etc/systemd/system/baft-tunnel-control-*@.service /etc/tmpfiles.d/baft-tunnel-control.conf \
+    /etc/systemd/system/baft-tunnel-agent@.path /etc/systemd/system/baft-tunnel-agent@.service
+  sudo rm -rf /etc/systemd/system/baft-tunnel-agent@*.service.d /var/lib/baft-tunnel-agent
   sudo rm -rf /run/baft-tunnel/control
   if [[ "$INSTALL_DONE" == 1 ]]; then sudo "$ROOT/scripts/uninstall.sh" --stop --purge-config --yes >/dev/null 2>&1 || true; fi
   sudo rm -rf /etc/baft-tunnel /var/lib/baft-tunnel
   sudo rm -f /usr/local/bin/baft-tunnel /etc/systemd/system/baft-tunnel@.service
   sudo systemctl daemon-reload >/dev/null 2>&1 || true
+  [[ "$CREATED_AGENT" == 1 ]] && { sudo userdel baft-tunnel-agent >/dev/null 2>&1; sudo groupdel baft-tunnel-agent >/dev/null 2>&1; } || true
   [[ "$CREATED_USER" == 1 ]] && sudo userdel baft-tunnel >/dev/null 2>&1 || true
   [[ "$CREATED_GROUP" == 1 ]] && sudo groupdel baft-tunnel >/dev/null 2>&1 || true
   rm -rf "$TMP"
@@ -138,7 +142,7 @@ snapshot() {
   { sudo nft list ruleset 2>/dev/null | sed -E 's/packets [0-9]+ bytes [0-9]+//' || true
     sudo iptables-save 2>/dev/null | grep -v '^#' | sed -E 's/\[[0-9]+:[0-9]+\]//' || true; } >"$TMP/fw-$1.txt"
   sha256sum <"$TMP/fw-$1.txt" | cut -d' ' -f1
-  ss -ltnH | awk '{print $4}' | grep -vE ':(18090|18443|18444|18445|18081|18082|18099)$' | sort
+  ss -ltnH | awk '{print $4}' | grep -vE ':(18090|18443|18444|18445|18081|18082|18099|1810[0-3])$' | sort
   # Units outside BAFT-TUNNEL, by persistent state only. Which .service units happen to be running is not
   # configuration: dbus-activated and on-demand ones (polkit, timedated, hostnamed, the cloud agent) start
   # and exit on their own. What this test must not leave behind is enabled unit files and active
@@ -162,9 +166,10 @@ wait_state() { # NAME active|inactive
 }
 
 # 1. Install the helper explicitly, per instance.
-sudo "$ROOT/scripts/install-agent-control.sh" --instance "$SERVE" >"$TMP/ctl-serve.log"
-sudo "$ROOT/scripts/install-agent-control.sh" --instance "$FWD" >"$TMP/ctl-fwd.log"
-for k in start stop; do
+# Each registration also starts that instance's agent service (own user); distinct loopback ports.
+sudo "$ROOT/scripts/install-agent-control.sh" --instance "$SERVE" --listen 127.0.0.1:18100 >"$TMP/ctl-serve.log"
+sudo "$ROOT/scripts/install-agent-control.sh" --instance "$FWD" --listen 127.0.0.1:18101 >"$TMP/ctl-fwd.log"
+for k in start stop enable disable; do
   sudo systemctl is-active --quiet "baft-tunnel-control-$k@$SERVE.path" || die "path unit $k for $SERVE is not active"
 done
 [[ "$(sudo stat -c '%U:%G %a' /run/baft-tunnel/control)" == "root:baft-tunnel 770" ]] || die "control dir is not root:baft-tunnel 0770"
@@ -313,8 +318,8 @@ PY
 sudo install -o root -g baft-tunnel -m 0640 "$TMP/pos-srv.json" "/etc/baft-tunnel/$POS_S.json"
 sudo install -o root -g baft-tunnel -m 0640 "$TMP/pos-cli.json" "/etc/baft-tunnel/$POS_C.json"
 sudo systemctl daemon-reload
-sudo "$ROOT/scripts/install-agent-control.sh" --instance "$POS_S" >/dev/null
-sudo "$ROOT/scripts/install-agent-control.sh" --instance "$POS_C" >/dev/null
+sudo "$ROOT/scripts/install-agent-control.sh" --instance "$POS_S" --listen 127.0.0.1:18102 >/dev/null
+sudo "$ROOT/scripts/install-agent-control.sh" --instance "$POS_C" --listen 127.0.0.1:18103 >/dev/null
 # A fixed echo target stands in for the service behind the serve node.
 python3 - <<'PY' &
 import socketserver

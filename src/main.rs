@@ -468,12 +468,17 @@ async fn main() -> Result<()> {
                     tunnel_port,
                     peer_host,
                     server_name: None,
-                    dir,
-                    instance,
+                    dir: dir.clone(),
+                    instance: instance.clone(),
                 },
                 bundle_out.as_deref(),
             )?;
             println!("Key created (mode 0600, never exported).");
+            if let Some(name) = &instance {
+                for line in setup::adopt_for_service(&dir, &format!("{name}.json"))? {
+                    println!("Owner/mode set for the service: {line}");
+                }
+            }
             println!("Public bundle: {}", result.bundle_path.display());
             println!(
                 "Checksum (compare with the other node out of band): {}",
@@ -491,6 +496,16 @@ async fn main() -> Result<()> {
         } => {
             let path = setup::join(&dir, &bundle, &checksum)?;
             println!("Configuration written: {}", path.display());
+            // An instance configuration (`NAME.json`) is read by baft-tunnel@NAME as the service user.
+            let file = path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or_default();
+            if file != "config.json" {
+                for line in setup::adopt_for_service(&dir, file)? {
+                    println!("Owner/mode set for the service: {line}");
+                }
+            }
             println!(
                 "Review it with: baft-tunnel config plan --config {}",
                 path.display()
@@ -522,7 +537,9 @@ async fn main() -> Result<()> {
                 );
             }
             let config = config::load(&path)?;
-            config.validate()?;
+            // The agent runs as its own user and cannot read the tunnel's private key (SA-09);
+            // the tunnel unit validates the key itself and fails closed.
+            config.validate_public()?;
             let token = agent::read_token(&token_file)?;
             agent::run(
                 config,

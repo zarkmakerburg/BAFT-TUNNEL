@@ -34,6 +34,8 @@ umask 077
 
 paths=(etc/baft-tunnel)
 [[ ! -d "$ROOT_PREFIX/var/lib/baft-tunnel" ]] || paths+=(var/lib/baft-tunnel)
+# Agent token, receipts, desired state and audit log (baft-tunnel-agent@NAME, SA-09).
+[[ ! -d "$ROOT_PREFIX/var/lib/baft-tunnel-agent" ]] || paths+=(var/lib/baft-tunnel-agent)
 shopt -s nullglob
 for dropin in "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel@*.service.d; do
   paths+=("etc/systemd/system/$(basename "$dropin")")

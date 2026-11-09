@@ -29,7 +29,7 @@ the most exposed component); an attacker who can influence a release; holder of 
 | SA-06 | Low | Release workflow expands a dispatcher-controlled tag directly in shell | Fixed (#114) |
 | SA-07 | Low | Apply/preflight accept any absolute `dir`; preflight probes any IP:port | Accepted (token = admin) |
 | SA-08 | Low | `audit.log` grows without rotation; `GET /v1/audit` reads the whole file | Fixed (4 MiB rotation to `audit.log.1`; endpoint reads a 256 KiB tail) |
-| SA-09 | Low | Agent and tunnel share one uid; the tunnel can still signal (kill) the agent | Accepted for Preview (needs a LAB-validated split; see below) |
+| SA-09 | Low | Agent and tunnel share one uid; the tunnel can still signal (kill) the agent | Fixed in code (U2): agent runs as `baft-tunnel-agent`; real-systemd CI evidence; LAB check pending |
 | SA-10 | Info | Instance-name rules differ (`.` allowed by install/setup, refused by the control helper) | Fixed (one rule: letters, digits, `_`, `-`) |
 
 ### SA-01 (Medium): agent as root
@@ -101,11 +101,13 @@ whose holder administers the host; with SA-01 fixed the agent cannot write outsi
 `audit.log` is append-only without rotation and `GET /v1/audit` reads the whole file to return the
 last 100 lines. Token holders only. Fix: `audit.log` is renamed to `audit.log.1` (one generation, mode 0600 kept) before an append finds it at 4 MiB or more, and `GET /v1/audit` reads only the last 256 KiB of each file and returns the newest 100 entries.
 
-### SA-09 (Low, accepted for Preview): shared uid between agent and tunnel
+### SA-09 (Low, fixed in code by U2): shared uid between agent and tunnel
 
 Same uid means a compromised tunnel process can still send signals to the agent (denial of service)
 and, where Yama `ptrace_scope` is 0, ptrace it (Ubuntu default is 1, which blocks it). Recommendation:
 a separate `baft-tunnel-agent` user in group `baft-tunnel` and a shipped hardened agent unit. Not done in this pass: the split changes state-directory ownership, the control directory group and the token path, so it must be validated on the LAB hosts before shipping. Impact today is denial of service of the agent only (it restarts under systemd; Ubuntu `ptrace_scope` 1 blocks ptrace). Tracked for the first production-hardening phase.
+
+**Fix (U2, 2026-11-09):** the shipped unit `baft-tunnel-agent@NAME.service` runs the agent as its own system user `baft-tunnel-agent` (supplementary group `baft-tunnel` for read access to the instance configuration and the unit's session/counter files, and for writing control requests). Token and state live in `/var/lib/baft-tunnel-agent` (0700, owner `baft-tunnel-agent`; the tunnel unit also has it in `InaccessiblePaths=`). The tunnel user can no longer read the token, signal or ptrace the agent. The agent never reads the tunnel's private key (it validates the configuration without the key, `validate_public`). The tunnel's runtime directory is 0750 so the agent can read the evidence files; the BAFT engine's bundle with its key copy moved to a private 0700 child (`engine/`). Residual: the tunnel user can still drop control requests (start/stop/enable/disable of its own registered instance only), unchanged from ADR-0023. Evidence: `scripts/pki/test-agent-service-lifecycle.sh` on real systemd 249.
 
 ### SA-10 (Info, fixed): instance-name rules
 

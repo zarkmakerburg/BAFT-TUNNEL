@@ -163,14 +163,63 @@
     var head = h('p', { class: 'sub', text: t('diag.at', { ago: BAFT.ago(rep.at_unix) }) + ' · ' + (rep.verified ? t('diag.verified') : t('diag.notverified')) +
       (rep.highest_passed_tier ? ' · ' + t('diag.highest', { tier: t('tier.' + rep.highest_passed_tier) }) : '') });
     var tbl = h('div', { class: 'table-wrap' }, h('table', { class: 'cards' },
-      h('thead', null, h('tr', null, ['diag.col.tier', 'diag.col.result', 'diag.col.source', 'diag.col.evidence'].map(function (k) { return h('th', { scope: 'col', text: t(k) }); }))),
+      h('thead', null, h('tr', null, ['diag.col.tier', 'diag.col.result', 'diag.col.source', 'diag.col.evidence', 'diag.col.next'].map(function (k) { return h('th', { scope: 'col', text: t(k) }); }))),
       h('tbody', null, tiers.map(function (x) {
         return h('tr', null, h('td', { 'data-label': t('diag.col.tier'), text: t('tier.' + x.id) === 'tier.' + x.id ? x.id : t('tier.' + x.id) }),
           h('td', { 'data-label': t('diag.col.result') }, tierPill(x.result)),
           h('td', { 'data-label': t('diag.col.source') }, BAFT.ltr(x.source)),
-          h('td', { 'data-label': t('diag.col.evidence') }, BAFT.ltr(x.evidence)));
+          h('td', { 'data-label': t('diag.col.evidence') }, BAFT.ltr(x.evidence)),
+          h('td', { 'data-label': t('diag.col.next') }, x.next ? BAFT.ltr(x.next) : '—'));
       }))));
-    return h('div', null, head, tbl, h('p', { class: 'sub', text: t('diag.integrity') }));
+    var na = rep.next_action || null;
+    var next = na ? h('p', { class: 'next-action', role: 'status' }, h('strong', { text: t('diag.next') + ' ' }),
+      t('diag.next.' + na.action) === 'diag.next.' + na.action ? '' : t('diag.next.' + na.action) + ' · ', BAFT.ltr(na.text || '')) : null;
+    return h('div', null, head, next, tbl, h('p', { class: 'sub', text: t('diag.integrity') }));
+  }
+
+  /* ---- Lifecycle (POST /v1/tunnel/lifecycle): Start enables at boot, Stop disables, Restart ---- */
+  function lifeKey() {
+    var a = new Uint8Array(12); (window.crypto || {}).getRandomValues && window.crypto.getRandomValues(a);
+    return 'ui-life-' + Array.prototype.map.call(a, function (x) { return ('0' + x.toString(16)).slice(-2); }).join('');
+  }
+  function lifeReceipt(rc) {
+    var ok = rc.result === 'applied';
+    var boot = rc.boot ? (rc.boot.enabled_at_boot ? t('life.boot.on') : t('life.boot.off')) : null;
+    return h('div', { class: 'card', role: 'status' },
+      h('p', null, pill(ok ? 'ok' : 'warn', t('rc.' + rc.result) === 'rc.' + rc.result ? String(rc.result) : t('rc.' + rc.result)), ' ', t('life.act.' + rc.stage), ' · ', BAFT.ltr(rc.id || '')),
+      rc.reason ? h('p', null, BAFT.ltr(rc.reason)) : null,
+      boot ? h('p', { class: 'sub', text: boot }) : null,
+      rc.verification ? h('ul', null, rc.verification.map(function (v) { return h('li', null, pill(v.result === 'pass' ? 'ok' : 'warn', v.result), ' ', BAFT.ltr(v.id), h('span', { class: 'muted', text: ' · ' + v.evidence })); })) : null,
+      rc.rollback && rc.rollback.performed ? h('p', { class: 'error', text: t('life.rolled') }) : null,
+      rc.not_done ? h('details', null, h('summary', { text: t('rc.notdone') }), h('ul', null, rc.not_done.map(function (x) { return h('li', { text: x }); }))) : null,
+      h('p', { class: 'sub', text: t('rc.nosecret') }));
+  }
+  function lifecycle(tn) {
+    var unit = tn && tn.tiers && tn.tiers.unit;
+    if (!unit || unit.result === 'unknown' && unit.reason) { return h('p', { class: 'sub', text: t('life.noinstance') }); }
+    var up = unit.result === 'active', out = h('div', { 'aria-live': 'polite' });
+    var state = kv([[t('life.state'), pill(up ? 'ok' : unit.result === 'inactive' ? 'warn' : 'unknown', up ? t('life.running') : unit.result === 'inactive' ? t('life.stopped') : t('state.unknown'))],
+      [t('life.boot'), unit.enabled_at_boot == null ? t('unknown') : unit.enabled_at_boot ? t('life.boot.on') : t('life.boot.off')]]);
+    var btns = [];
+    function act(action) {
+      if (!window.confirm(t('life.confirm.' + action))) { return; }
+      btns.forEach(function (b) { b.disabled = true; });
+      out.textContent = t('life.working');
+      BAFT.api('POST', '/v1/tunnel/lifecycle', { action: action, confirm: true, idempotency_key: lifeKey() }).then(function (r) {
+        out.textContent = '';
+        if (r.body && r.body.result) { out.appendChild(lifeReceipt(r.body)); } else { out.textContent = (r.body && (r.body.detail || r.body.error)) || t('fail'); }
+      }, function (e) { out.textContent = e.message || t('fail'); }).then(function () {
+        btns.forEach(function (b) { b.disabled = false; });
+        BAFT.toast(t('life.done'));
+      });
+    }
+    function btn(action, enabled, primary) {
+      var b = h('button', { type: 'button', class: primary ? 'primary' : null, disabled: enabled ? null : true, onclick: function () { act(action); }, text: t('life.act.' + action) });
+      btns.push(b); return b;
+    }
+    return h('div', null, state,
+      h('div', { class: 'row' }, btn('start', !up, true), btn('restart', up), btn('stop', up || unit.enabled_at_boot)),
+      h('p', { class: 'sub', text: t('life.note') }), out);
   }
 
   /* ---- Tunnels ---- */
@@ -203,7 +252,7 @@
       kv([[t('f.latency'), st.med == null ? t('unknown') : BAFT.ltr(BAFT.fmtNum(st.med, 2) + ' ms')], [t('f.avail'), st.avail == null ? t('unknown') : [BAFT.ltr(BAFT.fmtNum(st.avail, 1) + '%'), ' · ' + t('ov.window', { n: BAFT.fmtNum(st.hist.length, 0) })]]]),
       h('hr', { class: 'sep' }), h('h3', { text: t('tunnels.config') }),
       kv([[t('f.streams'), BAFT.fmtNum(c.max_streams || 0, 0)], [t('f.pin'), c.peer_certificate_pin_configured == null ? '—' : c.peer_certificate_pin_configured ? t('yes') : t('no')]]),
-      h('hr', { class: 'sep' }), h('h3', { text: t('tunnels.actions') }), h('p', { class: 'sub', text: t('tunnels.noactions' ) }));
+      h('hr', { class: 'sep' }), h('h3', { text: t('tunnels.actions') }), lifecycle(tn));
     return h('div', { class: 'stack' }, h('p', { class: 'muted', text: t('tunnels.note') }), res,
       h('div', null, h('a', { class: 'btn primary', href: '#/setup', text: t('tunnels.create') })));
   } });
