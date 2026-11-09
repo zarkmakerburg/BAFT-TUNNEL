@@ -622,13 +622,31 @@ async fn connect_peer_staged(options: &ForwardOptions) -> Result<Session<BoxedSe
     )
     .await
     .context("protocol handshake timeout")
-    .context(Stage::Authorization)?
-    .context(Stage::Authorization)?;
+    .and_then(|r| r)
+    .map_err(|e| {
+        // TLS 1.3 completes on the client before the server has checked the client certificate,
+        // so a refusal (revoked, untrusted) arrives as an alert during the protocol handshake.
+        let stage = if tls_alert(&e) {
+            Stage::SecureChannel
+        } else {
+            Stage::Authorization
+        };
+        e.context(stage)
+    })?;
 
     Ok(Session::new_client(
         secure,
         yamux_config(options.max_streams),
     ))
+}
+
+/// True when the error came from the TLS layer (for example an alert from the peer).
+fn tls_alert(error: &anyhow::Error) -> bool {
+    error.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .and_then(|io| io.get_ref())
+            .is_some_and(|inner| inner.downcast_ref::<rustls::Error>().is_some())
+    })
 }
 
 async fn run_forward_session(
@@ -955,6 +973,20 @@ mod tests {
         assert!(destination("224.0.0.1:8080").is_err());
         assert!(destination("127.0.0.1:0").is_err());
         assert!(destination("example.invalid:8080").is_err());
+    }
+
+    #[test]
+    fn tls_alerts_are_told_apart_from_protocol_refusals() {
+        let alert = std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            rustls::Error::AlertReceived(rustls::AlertDescription::CertificateRevoked),
+        );
+        assert!(tls_alert(&anyhow::Error::from(alert).context("read")));
+        assert!(!tls_alert(&anyhow::anyhow!(
+            "peer rejected or returned an invalid protocol handshake"
+        )));
+        let eof = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "eof");
+        assert!(!tls_alert(&anyhow::Error::from(eof)));
     }
 
     #[test]

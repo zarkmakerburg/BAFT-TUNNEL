@@ -1406,11 +1406,13 @@ async fn run_diagnostics(ctx: &Ctx) -> Value {
             ),
         },
         (None, None) => match failed {
-            Some(i) if i > 0 => tier(
+            // Only a client that got past the secure channel (a CA-issued certificate or the
+            // enrolled Noise key) counts; an anonymous connection can come from anyone.
+            Some(i) if i >= 2 => tier(
                 "tcp_reachability",
                 "pass",
                 "last_failure",
-                format!("a peer connected over TCP at {failed_at}; a later stage failed"),
+                format!("an enrolled client reached this node over TCP at {failed_at}; a later stage failed"),
             ),
             _ => tier(
                 "tcp_reachability",
@@ -1430,6 +1432,16 @@ async fn run_diagnostics(ctx: &Ctx) -> Value {
             tier(id, "pass", "unit_session", what.into())
         } else {
             match failed {
+                // An inbound handshake failure has no identified sender yet (a scanner, or this
+                // node's own peer's TCP probe, looks the same), so it is not blamed on the peer.
+                Some(f) if f == i && f == 1 && ctx.config.remote().is_none() => tier(
+                    id,
+                    "unknown",
+                    "last_failure",
+                    format!(
+                        "an inbound connection failed the handshake at {failed_at}; the sender is not identified"
+                    ),
+                ),
                 Some(f) if f == i => tier(
                     id,
                     "fail",
@@ -2161,6 +2173,15 @@ mod tests {
             ]
         );
         assert_eq!(d["highest_passed_tier"], "secure_channel");
+        // An anonymous handshake failure on the listening node is not blamed on the peer.
+        std::fs::write(
+            run.join("last_failure.json"),
+            json!({"stage": "secure_channel", "at_unix": now, "pid": me}).to_string(),
+        )
+        .unwrap();
+        let (_, d2) = post_json(&ctx, "/v1/diagnostics").await;
+        assert_eq!(d2["tiers"][0]["result"], "not_applicable");
+        assert_eq!(d2["tiers"][1]["result"], "unknown");
         assert_eq!(d["verified"], false);
         assert!(
             d["verified_unix"].is_u64(),
@@ -2168,7 +2189,7 @@ mod tests {
         );
         let (_, st) = get_json(&ctx, "/v1/status").await;
         assert_eq!(st["tunnel"]["state"], "running_no_session");
-        assert_eq!(st["tunnel"]["last_failure"]["stage"], "identity");
+        assert_eq!(st["tunnel"]["last_failure"]["stage"], "secure_channel");
         std::fs::remove_dir_all(&state).unwrap();
         std::fs::remove_dir_all(&run).unwrap();
     }

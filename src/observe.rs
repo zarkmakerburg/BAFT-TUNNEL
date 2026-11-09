@@ -28,7 +28,17 @@ fn read_json(dir: &Path, name: &str) -> Option<Value> {
     if !meta.is_file() || meta.len() > MAX_FILE {
         return None;
     }
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    // Bounded even if the file grows between the size check and the read.
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(std::fs::File::open(path).ok()?, MAX_FILE + 1),
+        &mut bytes,
+    )
+    .ok()?;
+    if bytes.len() as u64 > MAX_FILE {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
 }
 
 fn owned(v: &Value, expected_pid: Option<u32>) -> bool {

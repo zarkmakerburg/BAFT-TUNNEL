@@ -56,6 +56,23 @@ audit log without actor or target. Rule 1 of the alignment document forbids coll
 7. `baft-tunnel agent --instance NAME` binds the agent to one unit; without it unit evidence is
    reported as Unknown.
 
+## Review notes (security and attribution), 2026-11-09
+
+- All new routes sit behind the existing bearer token (constant-time compare) on a loopback-only
+  listener; `POST /v1/diagnostics` takes no input and only probes the configured peer socket, so
+  it cannot be used to reach arbitrary hosts. Concurrency stays bounded by the agent's 16
+  connection slots; each run adds one audit line.
+- Runtime files are read with a size bound that also holds if a file grows during the read, and
+  only from a live writer. The directory is `0700 baft-tunnel`, the same trust domain as the agent.
+- On a listening node an inbound handshake failure has no identified sender (a scanner, or the
+  peer's own TCP probe, look the same), so it is reported as `unknown`, never as a peer `fail`, and
+  it does not count as TCP reachability; only a client that got past the secure channel does.
+- TLS 1.3 completes on the client before the server checks the client certificate, so a
+  revocation reaches the dialer as an alert inside the protocol handshake. Errors carrying a TLS
+  error are therefore staged as `secure_channel`, not `authorization`.
+- The latest failure overwrites the previous one: noise on a public listener can hide an earlier
+  real failure. The journal keeps the full history.
+
 ## Consequences and limits
 
 - An active TCP probe from a dialing node can appear on the peer as an incomplete
