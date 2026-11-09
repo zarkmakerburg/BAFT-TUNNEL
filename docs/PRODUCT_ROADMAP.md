@@ -45,7 +45,7 @@ Evidence classifications are deliberately separate: current source code, merged-
 | 3 — CLI and local Agent | Setup plan/init/join, local API, desired-state validation, preflight, Apply/Verify/Receipt | **Local stages implemented** | Service lifecycle, authenticated peer/session and data-path verification accepted |
 | 4 — Local panel | Overview, Servers, Tunnels, Wizard, Agent, Activity, Settings; fa/en and responsive behavior | **Core local panel implemented; operational gaps remain** | UI status and actions match a fully verified backend; no placeholder inventory/metrics |
 | 5 — Additional transports | WebSocket/TLS, uTLS sidecar, QUIC/UDP, Relay and auto-rotation | **Future work, not MVP** | Each candidate has a real use case, ADR, security/licence review and acceptance matrix |
-| 6 — Hardening and stable | Longer reliability, backup/restore, update lifecycle, fuzz depth, independent security review and signed stable release | **Open** | All release gates closed and independent review completed |
+| 6 — Hardening and stable | Longer reliability, backup/restore, update lifecycle (ADR-0025: scripts and Ubuntu 22.04 rollback test implemented, evidence below), fuzz depth, independent security review and signed stable release | **Open** | All release gates closed and independent review completed |
 
 ### Engine capability matrix
 

@@ -22,11 +22,13 @@ jobs:
       - name: Validate Bash scripts
         run: |
           set -eu
-          for script in lab/scripts/integration-netem.sh lab/scripts/test-clear-netem.sh lab/real-hosts/*.sh scripts/pki/*.sh scripts/install.sh scripts/rollback.sh scripts/uninstall.sh scripts/test-install.sh; do
+          for script in lab/scripts/integration-netem.sh lab/scripts/test-clear-netem.sh lab/real-hosts/*.sh scripts/pki/*.sh scripts/install.sh scripts/rollback.sh scripts/uninstall.sh scripts/test-install.sh scripts/backup.sh scripts/restore.sh scripts/update.sh scripts/test-backup-update.sh; do
             bash -n "$script"
           done
       - name: Test staged install, rollback, and uninstall
         run: bash scripts/test-install.sh
+      - name: Test staged backup, restore, guarded update and automatic rollback
+        run: bash scripts/test-backup-update.sh
       - name: Enforce immutable workflow action pins
         run: sh lab/scripts/check-workflow-pins.sh
       - name: Test workflow action pin policy (mock fixtures)
