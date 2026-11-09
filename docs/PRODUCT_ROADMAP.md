@@ -1,8 +1,9 @@
 # BAFT-TUNNEL — Product Roadmap and Verified Delivery Queue
 
-**Status snapshot:** 2026-11-08  
-**Source baseline:** `main` at `05a2b8078cc7afae751520209dba7fd474914bfb` (PR #86).  
-**Open parallel work:** [PR #88 — Apply start stage through a root path-unit control helper](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/88), head `969154c0b02dee5656ba91cf410a8be3da006061`; not merged and real-systemd LAB not run.  
+**Status snapshot:** 2026-11-09  
+**Source baseline:** `main` at `92b0645f8104694bbe9d016e24f7ec0c8f43eeb0` (PR #106).  
+**Gate status:** all five P0 gates (P0-1 to P0-5) are closed with exact-SHA run evidence (see section 5 and [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2)). PR #88 (systemd control helper, ADR-0023) is merged. Signed prerelease `v0.1.0-rc.4` is the clean-install candidate; `rc.3` is superseded (glibc 2.39, unusable on Ubuntu 22.04). No stable tag, release or deploy. P1/P2 are held until owner review.
+**Repository governance:** `main` is protected (2026-11-09): PR required, 0 approvals, required checks `rust`, `ubuntu-2204-baseline`, `lab-config`, no force push or deletion, admin bypass allowed.
 **Product status:** Active development / pre-release. **Not production-ready.** The only published release state recorded in the repository is pre-release `v0.1.0-phase1-pre`.
 
 This file is the single source of truth for phases, engines and delivery order. Detailed cross-project extraction, verified code state and implementation instructions: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). Exact historical test evidence and run IDs: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). Persian task pointer: [PROJECT_BOARD.md](PROJECT_BOARD.md). HQ decisions and append-only evidence log: [Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
@@ -62,9 +63,9 @@ Evidence classifications are deliberately separate: current source code, merged-
 - BAFT Engine Store → Launcher (P0-3): [run 42510577167](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42510577167) on `2d2718b` (local-build engine; store launch, kill recovery, wrong pin refused) and [run 42522105698](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42522105698) on `06c273e` with the **signed `v0.1.0-rc.2` release asset** (cosign + SHA256SUMS verified, digest = `engine-manifest.json` pin `e4f04837…3647`): store install/verify, hardened systemd 249 launch, 2 MiB data, listener and engine-kill recovery, wrong pin refused, release B over A, pin follows `current`, rollback to A, tampered previous refused, A carries 2 MiB after rollback, cleanup OK. LAB gate only; BAFT stays hidden from `/v1/engines` and Wizard until a separate owner-approved exposure gate.
 - Direct real 2% TCP-loss, 3600-second soak, CA/pin rollover and earlier setup/agent/panel runs are in [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). Their exact historical SHAs and scope remain part of the evidence; do not silently relabel them as new tests on current HEAD.
 - PR #86 added local Apply init/join and panel receipt flow; its PR description reports local tests/browser QA and a temporary live-agent receipt, but no real-host LAB for that Apply flow.
-- PR #88 is open; its description reports fake-controller tests and staged installer checks, while explicitly stating no real-systemd host test was run.
+- PR #88 is merged (2026-11-08). Its own description reported fake-controller tests only; the real-systemd 249 gate was closed afterwards (P0-1, run 42523536944, SHA 22e94f1).
 
-## 4. Current implementation baseline (main at 05a2b807)
+## 4. Current implementation baseline (main at 92b0645)
 
 ### Implemented in current main
 - Rust data plane with TLS 1.3 mutual authentication, peer identity validation, SHA-256 pinning, CRL-aware certificate checks, bounded Yamux streams and reconnect behavior.
@@ -77,7 +78,7 @@ Evidence classifications are deliberately separate: current source code, merged-
 - Dependency-free static local panel served by the agent, with Persian RTL and English LTR, desktop/mobile navigation and honest empty/unknown/offline states.
 
 ### Not implemented or not yet accepted
-- PR #88 Apply service-start helper is not merged and has no real-systemd LAB evidence.
+- Apply `start` (PR #88 helper) is merged and LAB-proven on two hosts (P0-5), but it is not enabled at boot and Apply never claims `ready`; receipt `ready` stays Unknown by design.
 - No end-to-end authenticated peer/session/data-path readiness result in the current status API; local listener acceptance is not tunnel health.
 - No central online enrollment/control plane or enrolled multi-node inventory.
 - The Servers page is not a Hashem-style Fleet; it has local/configured-peer information only.
