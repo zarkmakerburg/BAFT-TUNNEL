@@ -221,6 +221,7 @@ echo "REVERSE_SOAK $RA_SOAK_LINE"
 (( pr1 <= pr0 * 2 + 20480 && sr1 <= sr0 * 2 + 20480 )) || { echo "memory growth during the Reverse soak" >&2; exit 1; }
 sleep 6
 ra_evidence soak 2097289
+echo "REVERSE_SECURE_CHANNEL_FAILURES_AFTER_SOAK public=$(ssh_host iran "journalctl -u baft-tunnel@$PUB.service --no-pager 2>/dev/null | grep -c 'secure_channel stage failed' || true") service=$(ssh_host abroad "journalctl -u baft-tunnel@$SVC.service --no-pager 2>/dev/null | grep -c 'secure_channel stage failed' || true")"
 
 echo "--- reconnect: service-node SIGKILL (systemd restart), public-node SIGKILL, restarts through stop + Apply start ---"
 ssh_host abroad "kill -KILL \$(systemctl show -p MainPID --value baft-tunnel@$SVC.service)"
@@ -276,7 +277,10 @@ for side in iran abroad; do
 done
 sleep 14
 probe_host iran 65536
+sleep 12   # the agents sample unit counters every 5 s; the data_path tier needs payload inside its window
 ra_evidence update 65536
+ra_authfail() { ssh_host "$1" "journalctl -u baft-tunnel@$2.service --no-pager 2>/dev/null | grep -c 'secure_channel stage failed' || true"; }
+echo "REVERSE_SECURE_CHANNEL_FAILURES_AFTER_UPDATE public=$(ra_authfail iran $PUB) service=$(ra_authfail abroad $SVC) (no revocation in effect yet)"
 # Bad update on the service node: must exit non-zero, restore the previous digest and bring the tunnel back.
 if ssh_host abroad "bash '$PKG/scripts/update.sh' --binary '$REMOTE_DIR/baft-tunnel-ra-bad' --instance $SVC --health-secs 6" >"$LOCAL_TMP/ra-badupdate.log" 2>&1; then
   echo "update with a failing binary was accepted" >&2; exit 1
