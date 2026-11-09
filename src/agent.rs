@@ -1,7 +1,8 @@
-//! Local read-only status API (P3-002 slice A1).
+//! Local status API (P3-002 slice A1; P1 operations evidence, ADR-0024).
 //!
-//! Loopback only, bearer-token protected, GET only. It reports the redacted support report plus a
-//! liveness probe of the configured tunnel listener. It never starts, stops or changes a tunnel.
+//! Loopback only, bearer-token protected. It reports the redacted support report, the tunnel's
+//! end-to-end evidence tiers, traffic counters and peer-aware diagnostics read from the running
+//! unit. It never starts, stops or changes a tunnel except through the confirmed Apply stages.
 
 use std::{
     io::Write,
@@ -30,6 +31,11 @@ const MAX_REQUEST_BYTES: usize = 8 * 1024;
 const MAX_BODY_BYTES: usize = 64 * 1024;
 const DESIRED_FILE: &str = "desired.json";
 const AUDIT_FILE: &str = "audit.log";
+const DIAGNOSTICS_FILE: &str = "diagnostics.json";
+/// Agent-side traffic samples kept in memory (one hour at the default interval).
+const TRAFFIC_LEN: usize = 720;
+/// Bidirectional payload within this window counts as "data path observed".
+const DATA_WINDOW_S: u64 = 60;
 const MAX_CONNECTIONS: usize = 16;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// Whole-request bound. Must exceed the Apply `start` wait (20 s) plus settle.
@@ -91,6 +97,12 @@ pub struct Ctx {
     pub lock: Mutex<()>,
     /// Listener probes, oldest first; kept in memory only (one hour at the default interval).
     history: std::sync::Mutex<std::collections::VecDeque<Sample>>,
+    /// `baft-tunnel@NAME` this agent reports on; `None` leaves unit state Unknown.
+    instance: Option<String>,
+    /// The unit's runtime directory (session, counters, last failure); `None` = no unit evidence.
+    runtime_dir: Option<PathBuf>,
+    /// Unit counter readings, oldest first, deduplicated by sample time.
+    traffic: std::sync::Mutex<std::collections::VecDeque<crate::observe::TrafficSample>>,
 }
 
 const SAMPLE_SECONDS: u64 = 5;
@@ -111,7 +123,51 @@ impl Ctx {
             state_dir,
             lock: Mutex::new(()),
             history: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            instance: None,
+            runtime_dir: None,
+            traffic: std::sync::Mutex::new(std::collections::VecDeque::new()),
         }
+    }
+
+    /// Report on `baft-tunnel@NAME`, reading its evidence from `runtime_dir`.
+    pub fn with_unit(mut self, instance: Option<String>, runtime_dir: Option<PathBuf>) -> Self {
+        self.instance = instance;
+        self.runtime_dir = runtime_dir;
+        self
+    }
+
+    /// Non-secret actor id for audit lines: a domain-separated hash prefix of the API token.
+    fn actor(&self) -> Value {
+        let mut h = Sha256::new();
+        h.update(b"baft-tunnel/agent-token/v1\0");
+        h.update(self.token.as_bytes());
+        json!({"kind": "api_token", "fingerprint": hex::encode(&h.finalize()[..8])})
+    }
+
+    fn record_traffic(&self, sample: crate::observe::TrafficSample) {
+        let mut list = self.traffic.lock().unwrap_or_else(|e| e.into_inner());
+        if list
+            .back()
+            .is_some_and(|last| last.t == sample.t && last.pid == sample.pid)
+        {
+            return;
+        }
+        if list.len() >= TRAFFIC_LEN {
+            list.pop_front();
+        }
+        list.push_back(sample);
+    }
+
+    fn traffic_samples(&self) -> Vec<crate::observe::TrafficSample> {
+        let list = self.traffic.lock().unwrap_or_else(|e| e.into_inner());
+        list.iter().copied().collect()
+    }
+
+    fn evidence(&self, main_pid: Option<u32>) -> crate::observe::Evidence {
+        self.runtime_dir
+            .as_deref()
+            .map(|d| crate::observe::read(d, main_pid))
+            .unwrap_or_default()
     }
 
     fn record(&self, sample: Sample) {
@@ -148,6 +204,14 @@ async fn sampler(ctx: Arc<Ctx>) {
         tick.tick().await;
         let sample = ctx.probe().await;
         ctx.record(sample);
+        if let Some(t) = ctx
+            .evidence(None)
+            .counters
+            .as_ref()
+            .and_then(crate::observe::sample)
+        {
+            ctx.record_traffic(t);
+        }
     }
 }
 
@@ -156,12 +220,21 @@ pub async fn run(
     listen: SocketAddr,
     token: String,
     state_dir: Option<PathBuf>,
+    instance: Option<String>,
 ) -> Result<()> {
+    if let Some(name) = &instance {
+        if !crate::apply::valid_instance(name) {
+            bail!("invalid --instance name");
+        }
+    }
+    let runtime_dir = instance
+        .as_ref()
+        .map(|name| Path::new("/run/baft-tunnel").join(name));
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("cannot bind agent API on {listen}"))?;
     eprintln!("Agent API listening on {listen} (token required; never applies a config itself)");
-    let ctx = Arc::new(Ctx::new(config, token, state_dir));
+    let ctx = Arc::new(Ctx::new(config, token, state_dir).with_unit(instance, runtime_dir));
     tokio::spawn(sampler(ctx.clone()));
     serve(listener, ctx).await
 }
@@ -335,6 +408,8 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/security"
             | "/v1/audit"
             | "/v1/engines"
+            | "/v1/traffic"
+            | "/v1/diagnostics"
     ) {
         return (404, json!({"error": "not found"}));
     }
@@ -345,7 +420,10 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         return (401, json!({"error": "unauthorized"}));
     }
     match (method, path) {
-        ("GET", "/v1/status") => (200, status(&ctx.config).await),
+        ("GET", "/v1/status") => (200, status(ctx).await),
+        ("GET", "/v1/traffic") => (200, traffic(ctx)),
+        ("GET", "/v1/diagnostics") => get_diagnostics(ctx),
+        ("POST", "/v1/diagnostics") => (200, run_diagnostics(ctx).await),
         ("GET", "/v1/history") => (200, history(ctx)),
         ("GET", "/v1/security") => (200, security(&ctx.config)),
         ("GET", "/v1/audit") => get_audit(ctx),
@@ -809,15 +887,23 @@ async fn setup_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
         .to_string();
     let result = receipt["result"].as_str().unwrap_or("conflict");
     if receipt["replayed"] != json!(true) {
-        let _ = audit_action(
+        let stage = match request.stage {
+            crate::apply::Stage::Init => "init",
+            crate::apply::Stage::Join => "join",
+            crate::apply::Stage::Start => "start",
+        };
+        let _ = audit(
             state_dir,
-            "apply",
-            result,
-            &digest,
-            match request.stage {
-                crate::apply::Stage::Init => "init",
-                crate::apply::Stage::Join => "join",
-                crate::apply::Stage::Start => "start",
+            ctx,
+            AuditEvent {
+                action: "apply",
+                result,
+                resource: format!("setup/{stage}"),
+                node: Some(&request.plan.node_id),
+                instance: request.plan.instance.as_deref(),
+                sha256: &digest,
+                detail: stage,
+                receipt_id: receipt["id"].as_str(),
             },
         );
     }
@@ -989,13 +1075,36 @@ async fn put_desired(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
         .and_then(|c| c.validate());
     if let Err(error) = checked {
         let detail = format!("{error:#}");
-        let _ = audit(dir, "rejected", &digest, &detail);
+        let _ = audit(
+            dir,
+            ctx,
+            AuditEvent {
+                action: "put_desired",
+                result: "rejected",
+                resource: "desired_state".into(),
+                node: None,
+                instance: None,
+                sha256: &digest,
+                detail: &detail,
+                receipt_id: None,
+            },
+        );
         return (
             422,
             json!({"error": "configuration rejected", "detail": detail}),
         );
     }
-    match store(dir, body).and_then(|()| audit(dir, "accepted", &digest, "")) {
+    let accepted = AuditEvent {
+        action: "put_desired",
+        result: "accepted",
+        resource: "desired_state".into(),
+        node: None,
+        instance: None,
+        sha256: &digest,
+        detail: "",
+        receipt_id: None,
+    };
+    match store(dir, body).and_then(|()| audit(dir, ctx, accepted)) {
         Ok(()) => (
             200,
             json!({"accepted": true, "sha256": digest, "applied": false}),
@@ -1005,7 +1114,12 @@ async fn put_desired(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
 }
 
 fn store(dir: &Path, body: &[u8]) -> Result<()> {
-    let tmp = dir.join(format!(".desired.{}.tmp", std::process::id()));
+    write_private(dir, DESIRED_FILE, body)
+}
+
+/// Atomic 0600 write of `dir/name`.
+fn write_private(dir: &Path, name: &str, body: &[u8]) -> Result<()> {
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -1014,11 +1128,26 @@ fn store(dir: &Path, body: &[u8]) -> Result<()> {
         .open(&tmp)?;
     file.write_all(body)?;
     file.sync_all()?;
-    std::fs::rename(&tmp, dir.join(DESIRED_FILE))?;
+    std::fs::rename(&tmp, dir.join(name))?;
     Ok(())
 }
 
-fn audit_action(dir: &Path, action: &str, result: &str, sha256: &str, detail: &str) -> Result<()> {
+/// One audit event (ADR-0024). Who (`actor`: token fingerprint), on what (`target`: node and
+/// systemd instance), which `resource`, the outcome, the request hash, a short reason and the
+/// durable receipt it produced. Never holds secrets, tokens, keys or payload.
+struct AuditEvent<'a> {
+    action: &'a str,
+    result: &'a str,
+    resource: String,
+    node: Option<&'a str>,
+    instance: Option<&'a str>,
+    sha256: &'a str,
+    detail: &'a str,
+    receipt_id: Option<&'a str>,
+}
+
+/// Append one audit line and flush it to disk before the response is sent.
+fn audit(dir: &Path, ctx: &Ctx, e: AuditEvent<'_>) -> Result<()> {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
@@ -1027,42 +1156,399 @@ fn audit_action(dir: &Path, action: &str, result: &str, sha256: &str, detail: &s
         .append(true)
         .mode(0o600)
         .open(dir.join(AUDIT_FILE))?;
-    let line =
-        json!({"ts": ts, "action": action, "result": result, "sha256": sha256, "detail": detail});
+    let line = json!({
+        "audit_version": 2,
+        "ts": ts,
+        "actor": ctx.actor(),
+        "action": e.action,
+        "target": {
+            "node": e.node.unwrap_or(ctx.config.ids().0),
+            "instance": e.instance.or(ctx.instance.as_deref()),
+        },
+        "resource": e.resource,
+        "result": e.result,
+        "sha256": e.sha256,
+        "detail": e.detail,
+        "receipt_id": e.receipt_id,
+    });
     writeln!(file, "{line}")?;
+    file.sync_data()?;
     Ok(())
 }
 
-/// Append one audit line. Holds only a timestamp, the action, the body hash and a short reason.
-fn audit(dir: &Path, result: &str, sha256: &str, detail: &str) -> Result<()> {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs();
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(dir.join(AUDIT_FILE))?;
-    let line = json!({"ts": ts, "action": "put_desired", "result": result, "sha256": sha256, "detail": detail});
-    writeln!(file, "{line}")?;
-    Ok(())
-}
-
-async fn status(config: &RuntimeConfig) -> Value {
-    let listening = match config.listen_addr().parse::<SocketAddr>() {
+async fn listener_accepting(config: &RuntimeConfig) -> bool {
+    match config.listen_addr().parse::<SocketAddr>() {
         Ok(addr) => matches!(
             timeout(PROBE_TIMEOUT, TcpStream::connect(addr)).await,
             Ok(Ok(_))
         ),
         Err(_) => false,
-    };
+    }
+}
+
+async fn status(ctx: &Ctx) -> Value {
+    let config = &ctx.config;
+    let listening = listener_accepting(config).await;
     json!({
         "agent": "baft-tunnel",
         "version": env!("CARGO_PKG_VERSION"),
         "engine": config.engine_name(),
         "config": config.support_report(),
         "listener_accepting": listening,
+        "tunnel": tunnel_status(ctx, listening).await,
     })
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// systemd state of the instance and its main PID, when the agent knows the instance.
+async fn unit_view(ctx: &Ctx) -> (Value, Option<u32>) {
+    let Some(name) = ctx.instance.clone() else {
+        return (
+            json!({"result": "unknown", "reason": "the agent was started without --instance"}),
+            None,
+        );
+    };
+    use crate::apply::Units;
+    match tokio::task::spawn_blocking(move || crate::apply::SystemUnits::default().state(&name))
+        .await
+    {
+        Ok(st) => {
+            let result = match st.active.as_str() {
+                "active" => "active",
+                "unknown" | "" => "unknown",
+                _ => "inactive",
+            };
+            (
+                json!({"result": result, "active_state": st.active, "sub_state": st.sub, "restarts": st.restarts}),
+                (st.main_pid > 0).then_some(st.main_pid),
+            )
+        }
+        Err(_) => (json!({"result": "unknown"}), None),
+    }
+}
+
+fn stored_diagnostics(ctx: &Ctx) -> Option<Value> {
+    let path = ctx.state_dir.as_ref()?.join(DIAGNOSTICS_FILE);
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+const INTEGRITY_UNKNOWN: &str = "payload integrity is measured only by an end-to-end echo probe (Verify/LAB); the agent never reads tunnel payload";
+
+/// End-to-end tunnel state as separate evidence tiers (ADR-0024). The summary `state` is the
+/// highest tier actually observed; it never says "ready" and never implies integrity.
+async fn tunnel_status(ctx: &Ctx, listening: bool) -> Value {
+    let now = unix_now();
+    let (unit, pid) = unit_view(ctx).await;
+    let ev = ctx.evidence(pid);
+    let samples = ctx.traffic_samples();
+    let last_bidi = crate::observe::last_bidirectional(&samples);
+    let traffic_recent = last_bidi.is_some_and(|t| now.saturating_sub(t) <= DATA_WINDOW_S);
+    let counters_age = ev
+        .counters
+        .as_ref()
+        .and_then(|c| c["sampled_unix"].as_u64())
+        .map(|t| now.saturating_sub(t));
+    let has_listener = !ctx.config.listen_addr().is_empty();
+    let session = ev.session.is_some();
+    let running = unit["result"] == "active"
+        || counters_age.is_some_and(|a| a <= 3 * crate::session_status::COUNTER_SECONDS)
+        || (has_listener && listening);
+    let state = if session && traffic_recent {
+        "carrying_traffic"
+    } else if session {
+        "session_authorized"
+    } else if running {
+        "running_no_session"
+    } else if ctx.runtime_dir.is_none() && ctx.instance.is_none() {
+        "unknown"
+    } else {
+        "down"
+    };
+    let stored = stored_diagnostics(ctx);
+    json!({
+        "state": state,
+        "observed_unix": now,
+        "tiers": {
+            "unit": unit,
+            "listener": {"result": if !has_listener { "not_applicable" } else if listening { "pass" } else { "fail" }},
+            "authorized_session": match &ev.session {
+                Some(s) => json!({
+                    "result": "observed",
+                    "peer_id": s["peer_id"],
+                    "direction": s["direction"],
+                    "sessions": s["authorized_sessions"],
+                    "since_unix": s["since_unix"],
+                }),
+                None if ctx.runtime_dir.is_none() => json!({"result": "unknown", "reason": "no unit runtime evidence (--instance not set)"}),
+                None => json!({"result": "not_observed"}),
+            },
+            "data_path": json!({
+                "result": if !session { "unknown" } else if traffic_recent { "traffic_observed" } else { "no_recent_traffic" },
+                "window_s": DATA_WINDOW_S,
+                "last_bidirectional_unix": last_bidi,
+            }),
+            "integrity": {"result": "unknown", "reason": INTEGRITY_UNKNOWN},
+        },
+        "last_failure": ev.failure,
+        "last_verified_unix": stored.as_ref().and_then(|d| d["verified_unix"].as_u64()),
+        "last_diagnostics_unix": stored.as_ref().and_then(|d| d["at_unix"].as_u64()),
+    })
+}
+
+/// Traffic counters of the running unit with units, sampling interval, provenance and freshness.
+fn traffic(ctx: &Ctx) -> Value {
+    let now = unix_now();
+    let Some(c) = ctx.evidence(None).counters else {
+        return json!({
+            "available": false,
+            "result": "unknown",
+            "reason": if ctx.runtime_dir.is_none() {
+                "the agent was started without --instance"
+            } else {
+                "the unit publishes no live counters (not running, or an older version)"
+            },
+        });
+    };
+    let samples = ctx.traffic_samples();
+    let rates = crate::observe::rates(&samples);
+    let sampled = c["sampled_unix"].as_u64().unwrap_or(0);
+    let age = now.saturating_sub(sampled);
+    json!({
+        "available": true,
+        "source": "unit counters: relayed payload bytes; excludes TLS/Noise and multiplexing overhead",
+        "units": "bytes",
+        "rate_units": "bytes_per_second",
+        "sampling_interval_s": crate::session_status::COUNTER_SECONDS,
+        "agent_interval_s": SAMPLE_SECONDS,
+        "pid": c["pid"],
+        "started_unix": c["started_unix"],
+        "sampled_unix": sampled,
+        "age_s": age,
+        "fresh": age <= 3 * crate::session_status::COUNTER_SECONDS,
+        "bytes_from_peer": c["bytes_from_peer"],
+        "bytes_to_peer": c["bytes_to_peer"],
+        "streams_total": c["streams_total"],
+        "sessions_total": c["sessions_total"],
+        "rate": rates.last().cloned(),
+        "history": rates,
+    })
+}
+
+fn get_diagnostics(ctx: &Ctx) -> (u16, Value) {
+    match stored_diagnostics(ctx) {
+        Some(v) => (200, v),
+        None => (404, json!({"error": "no diagnostics stored"})),
+    }
+}
+
+fn tier(id: &str, result: &str, source: &str, evidence: String) -> Value {
+    json!({"id": id, "result": result, "source": source, "evidence": evidence})
+}
+
+const STAGES: [&str; 4] = ["tcp", "secure_channel", "identity", "authorization"];
+
+/// Peer-aware diagnostics (ADR-0024): TCP reachability, secure channel, identity, authorization,
+/// session and data path are separate tiers, each with its own source. A tier is `pass` only on
+/// direct evidence; otherwise it is `fail` (a recorded failure at that stage) or `unknown`.
+async fn run_diagnostics(ctx: &Ctx) -> Value {
+    let now = unix_now();
+    let (unit, pid) = unit_view(ctx).await;
+    let ev = ctx.evidence(pid);
+    let samples = ctx.traffic_samples();
+    let session = ev.session.as_ref();
+    let since = session.and_then(|s| s["since_unix"].as_u64()).unwrap_or(0);
+    let failure = ev
+        .failure
+        .as_ref()
+        .filter(|f| session.is_none() || f["at_unix"].as_u64().unwrap_or(0) > since);
+    let failed_at = failure.and_then(|f| f["at_unix"].as_u64()).unwrap_or(0);
+    let failed = failure
+        .and_then(|f| f["stage"].as_str())
+        .and_then(|s| STAGES.iter().position(|o| *o == s));
+    let noise = ctx.config.engine_name() == "noise-tcp";
+    let mut tiers = Vec::new();
+
+    tiers.push(match (session, ctx.config.remote()) {
+        (Some(_), _) => tier(
+            "tcp_reachability",
+            "pass",
+            "unit_session",
+            "an authenticated peer session exists".into(),
+        ),
+        (None, Some(remote)) => match remote.parse::<SocketAddr>() {
+            Ok(addr) => {
+                let c = probe_peer(&addr.ip().to_string(), addr.port()).await;
+                let result = match c["result"].as_str() {
+                    Some("pass") => "pass",
+                    Some("unknown") | None => "unknown",
+                    _ => "fail",
+                };
+                tier(
+                    "tcp_reachability",
+                    result,
+                    "active_tcp_probe",
+                    format!(
+                        "{} (who answers is not verified)",
+                        c["evidence"].as_str().unwrap_or("")
+                    ),
+                )
+            }
+            Err(_) => tier(
+                "tcp_reachability",
+                "unknown",
+                "config",
+                "the peer address is not an IP socket address; not probed".into(),
+            ),
+        },
+        (None, None) => match failed {
+            // Only a client that got past the secure channel (a CA-issued certificate or the
+            // enrolled Noise key) counts; an anonymous connection can come from anyone.
+            Some(i) if i >= 2 => tier(
+                "tcp_reachability",
+                "pass",
+                "last_failure",
+                format!("an enrolled client reached this node over TCP at {failed_at}; a later stage failed"),
+            ),
+            _ => tier(
+                "tcp_reachability",
+                "not_applicable",
+                "config",
+                "the peer dials this node; run diagnostics on the peer".into(),
+            ),
+        },
+    });
+    for (i, id) in STAGES.iter().enumerate().skip(1) {
+        let t = if session.is_some() {
+            let what = if *id == "identity" && noise {
+                "the pinned Noise static key (the peer identity) was proven by the handshake"
+            } else {
+                "the unit records a session only after this stage succeeded"
+            };
+            tier(id, "pass", "unit_session", what.into())
+        } else {
+            match failed {
+                // An inbound handshake failure has no identified sender yet (a scanner, or this
+                // node's own peer's TCP probe, looks the same), so it is not blamed on the peer.
+                Some(f) if f == i && f == 1 && ctx.config.remote().is_none() => tier(
+                    id,
+                    "unknown",
+                    "last_failure",
+                    format!(
+                        "an inbound connection failed the handshake at {failed_at}; the sender is not identified"
+                    ),
+                ),
+                Some(f) if f == i => tier(
+                    id,
+                    "fail",
+                    "last_failure",
+                    format!("the latest connection attempt failed at this stage at {failed_at}"),
+                ),
+                Some(f) if f > i => tier(
+                    id,
+                    "pass",
+                    "last_failure",
+                    format!("passed in the attempt at {failed_at}; a later stage failed"),
+                ),
+                Some(_) => tier(
+                    id,
+                    "unknown",
+                    "last_failure",
+                    "not reached: an earlier stage failed".into(),
+                ),
+                None => tier(
+                    id,
+                    "unknown",
+                    "none",
+                    "no authorized session and no recorded attempt".into(),
+                ),
+            }
+        };
+        tiers.push(t);
+    }
+    let running = unit["result"] == "active" || ev.counters.is_some();
+    tiers.push(match session {
+        Some(s) => tier(
+            "session",
+            "pass",
+            "unit_session",
+            format!(
+                "{} authorized session(s) with peer {} since {}",
+                s["authorized_sessions"],
+                s["peer_id"].as_str().unwrap_or("?"),
+                since
+            ),
+        ),
+        None if running => tier(
+            "session",
+            "fail",
+            "unit_session",
+            "the unit runs but has no authorized session".into(),
+        ),
+        None => tier(
+            "session",
+            "unknown",
+            "none",
+            "the unit's runtime evidence is not available".into(),
+        ),
+    });
+    let last_bidi = crate::observe::last_bidirectional(&samples);
+    tiers.push(match (session, last_bidi) {
+        (None, _) => tier("data_path", "unknown", "none", "not reached: no authorized session".into()),
+        (Some(_), Some(t)) if now.saturating_sub(t) <= DATA_WINDOW_S => tier("data_path", "pass", "unit_counters", format!("payload bytes were relayed in both directions at {t}")),
+        (Some(_), _) => tier("data_path", "unknown", "unit_counters", format!("no payload in both directions within {DATA_WINDOW_S} s; send traffic through the tunnel and run again")),
+    });
+    tiers.push(tier(
+        "integrity",
+        "unknown",
+        "none",
+        INTEGRITY_UNKNOWN.into(),
+    ));
+
+    let mut highest = Value::Null;
+    for t in &tiers {
+        match t["result"].as_str() {
+            Some("pass") => highest = t["id"].clone(),
+            Some("not_applicable") => {}
+            _ => break,
+        }
+    }
+    let verified = highest == "data_path";
+    let previous = stored_diagnostics(ctx).and_then(|d| d["verified_unix"].as_u64());
+    let report = json!({
+        "diagnostics_version": 1,
+        "at_unix": now,
+        "engine": ctx.config.engine_name(),
+        "unit": unit,
+        "tiers": tiers,
+        "highest_passed_tier": highest,
+        "verified": verified,
+        "verified_unix": if verified { Some(now) } else { previous },
+        "note": "each tier is separate evidence; TCP reachability alone never means a working tunnel, and integrity stays unknown",
+    });
+    if let Some(dir) = &ctx.state_dir {
+        let _ = write_private(dir, DIAGNOSTICS_FILE, report.to_string().as_bytes());
+        let digest = hex::encode(Sha256::digest(report.to_string().as_bytes()));
+        let _ = audit(
+            dir,
+            ctx,
+            AuditEvent {
+                action: "diagnostics",
+                result: highest.as_str().unwrap_or("none"),
+                resource: "diagnostics".into(),
+                node: None,
+                instance: None,
+                sha256: &digest,
+                detail: if verified { "data path observed" } else { "" },
+                receipt_id: None,
+            },
+        );
+    }
+    report
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -1543,7 +2029,21 @@ mod tests {
             body["crl_seconds_remaining"].is_null(),
             "unreadable CRL is null, not invented"
         );
-        audit(&dir, "accepted", "abc", "").unwrap();
+        audit(
+            &dir,
+            &ctx,
+            AuditEvent {
+                action: "put_desired",
+                result: "accepted",
+                resource: "desired_state".into(),
+                node: None,
+                instance: None,
+                sha256: "abc",
+                detail: "",
+                receipt_id: None,
+            },
+        )
+        .unwrap();
         let (_, body) = get_json(&ctx, "/v1/audit").await;
         assert_eq!(body["entries"].as_array().unwrap().len(), 1);
         let (_, body) = get_json(&ctx, "/v1/engines").await;
@@ -1553,6 +2053,163 @@ mod tests {
         let unauth = route("GET /v1/history HTTP/1.1\r\n\r\n", b"", &bare).await;
         assert_eq!(unauth.0, 401);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn serve_config() -> RuntimeConfig {
+        serde_json::from_value(json!({
+            "mode": "serve", "listen": "127.0.0.1:1", "target": "127.0.0.1:2",
+            "local_id": "abroad", "peer_id": "iran", "tunnel_id": "t",
+            "direction": "direct", "peer_fingerprint": "00", "key": "/secret/key.pem"
+        }))
+        .unwrap()
+    }
+
+    async fn post_json(ctx: &Ctx, path: &str) -> (u16, Value) {
+        let head = format!("POST {path} HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\n\r\n");
+        route(&head, b"", ctx).await
+    }
+
+    #[tokio::test]
+    async fn diagnostics_status_and_traffic_report_each_tier_from_unit_evidence() {
+        use crate::observe::TrafficSample;
+        let state = state_dir("diag-state");
+        let run = state_dir("diag-run");
+        let me = std::process::id();
+        let now = unix_now();
+        std::fs::write(
+            run.join("session.json"),
+            json!({"state": "authorized", "authorized_sessions": 1, "peer_id": "iran",
+                   "direction": "direct", "pid": me, "since_unix": now - 30})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            run.join("counters.json"),
+            json!({"counters_version": 1, "pid": me, "started_unix": now - 60, "sampled_unix": now,
+                   "bytes_from_peer": 100, "bytes_to_peer": 50, "streams_total": 1, "sessions_total": 1})
+            .to_string(),
+        )
+        .unwrap();
+        let ctx = Ctx::new(serve_config(), TOKEN.into(), Some(state.clone()))
+            .with_unit(None, Some(run.clone()));
+        for (t, a, b) in [(now - 10, 0, 0), (now - 5, 100, 50)] {
+            ctx.record_traffic(TrafficSample {
+                t,
+                pid: u64::from(me),
+                from_peer: a,
+                to_peer: b,
+            });
+        }
+
+        let (code, d) = post_json(&ctx, "/v1/diagnostics").await;
+        assert_eq!(code, 200);
+        let results: Vec<(&str, &str)> = d["tiers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| (t["id"].as_str().unwrap(), t["result"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            results,
+            [
+                ("tcp_reachability", "pass"),
+                ("secure_channel", "pass"),
+                ("identity", "pass"),
+                ("authorization", "pass"),
+                ("session", "pass"),
+                ("data_path", "pass"),
+                ("integrity", "unknown"),
+            ]
+        );
+        assert_eq!(d["highest_passed_tier"], "data_path");
+        assert_eq!(d["verified"], true);
+        assert_eq!(
+            get_json(&ctx, "/v1/diagnostics").await.1["at_unix"],
+            d["at_unix"]
+        );
+        let audit = std::fs::read_to_string(state.join(AUDIT_FILE)).unwrap();
+        let line: Value = serde_json::from_str(audit.lines().last().unwrap()).unwrap();
+        assert_eq!(line["action"], "diagnostics");
+        assert_eq!(line["actor"]["kind"], "api_token");
+        assert_eq!(line["target"]["node"], "abroad");
+        assert_eq!(line["resource"], "diagnostics");
+        assert!(
+            !audit.contains(TOKEN),
+            "the token never reaches the audit log"
+        );
+
+        let (_, st) = get_json(&ctx, "/v1/status").await;
+        assert_eq!(st["tunnel"]["state"], "carrying_traffic");
+        assert_eq!(
+            st["tunnel"]["tiers"]["authorized_session"]["peer_id"],
+            "iran"
+        );
+        assert_eq!(st["tunnel"]["tiers"]["integrity"]["result"], "unknown");
+        assert_eq!(st["tunnel"]["last_verified_unix"], d["verified_unix"]);
+        let (_, tr) = get_json(&ctx, "/v1/traffic").await;
+        assert_eq!(tr["available"], true);
+        assert_eq!(tr["units"], "bytes");
+        assert_eq!(tr["rate"]["from_peer_bps"], 20.0);
+        assert_eq!(tr["fresh"], true);
+
+        // The session ends and the peer is then refused at the identity stage.
+        std::fs::remove_file(run.join("session.json")).unwrap();
+        std::fs::write(
+            run.join("last_failure.json"),
+            json!({"stage": "identity", "at_unix": now, "pid": me}).to_string(),
+        )
+        .unwrap();
+        let (_, d) = post_json(&ctx, "/v1/diagnostics").await;
+        let r: Vec<&str> = d["tiers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["result"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            r,
+            [
+                "pass", "pass", "fail", "unknown", "fail", "unknown", "unknown"
+            ]
+        );
+        assert_eq!(d["highest_passed_tier"], "secure_channel");
+        // An anonymous handshake failure on the listening node is not blamed on the peer.
+        std::fs::write(
+            run.join("last_failure.json"),
+            json!({"stage": "secure_channel", "at_unix": now, "pid": me}).to_string(),
+        )
+        .unwrap();
+        let (_, d2) = post_json(&ctx, "/v1/diagnostics").await;
+        assert_eq!(d2["tiers"][0]["result"], "not_applicable");
+        assert_eq!(d2["tiers"][1]["result"], "unknown");
+        assert_eq!(d["verified"], false);
+        assert!(
+            d["verified_unix"].is_u64(),
+            "the last verified time is kept"
+        );
+        let (_, st) = get_json(&ctx, "/v1/status").await;
+        assert_eq!(st["tunnel"]["state"], "running_no_session");
+        assert_eq!(st["tunnel"]["last_failure"]["stage"], "secure_channel");
+        std::fs::remove_dir_all(&state).unwrap();
+        std::fs::remove_dir_all(&run).unwrap();
+    }
+
+    #[tokio::test]
+    async fn without_unit_evidence_status_and_traffic_stay_unknown() {
+        let ctx = Ctx::new(serve_config(), TOKEN.into(), None);
+        let (_, st) = get_json(&ctx, "/v1/status").await;
+        assert_eq!(st["tunnel"]["state"], "unknown");
+        assert_eq!(
+            st["tunnel"]["tiers"]["authorized_session"]["result"],
+            "unknown"
+        );
+        let (_, tr) = get_json(&ctx, "/v1/traffic").await;
+        assert_eq!(tr["available"], false);
+        assert_eq!(get_json(&ctx, "/v1/diagnostics").await.0, 404);
+        let (_, d) = post_json(&ctx, "/v1/diagnostics").await;
+        assert_eq!(d["tiers"][0]["result"], "not_applicable");
+        assert_eq!(d["tiers"][4]["result"], "unknown");
+        assert_eq!(d["verified"], false);
     }
 
     #[test]

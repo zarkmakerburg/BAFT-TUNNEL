@@ -17,7 +17,7 @@ use tokio::{
 };
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-use crate::{handshake, noise};
+use crate::{handshake, noise, session_status::Stage};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -81,10 +81,12 @@ impl StreamEngine for TlsEngine {
                 .context("engine is not configured as a listener")?;
             let secure = timeout(HANDSHAKE_TIMEOUT, acceptor.accept(socket))
                 .await
-                .context("TLS handshake timeout")??;
+                .context("TLS handshake timeout")
+                .context(Stage::SecureChannel)?
+                .context(Stage::SecureChannel)?;
             let certs = secure.get_ref().1.peer_certificates();
-            handshake::verify_peer_fingerprint(certs, &self.peer_pins)?;
-            handshake::verify_peer_identity(certs, &self.peer_id)?;
+            handshake::verify_peer_fingerprint(certs, &self.peer_pins).context(Stage::Identity)?;
+            handshake::verify_peer_identity(certs, &self.peer_id).context(Stage::Identity)?;
             Ok(Box::new(secure) as BoxedSecureStream)
         })
     }
@@ -97,16 +99,20 @@ impl StreamEngine for TlsEngine {
                 .context("engine is not configured as a dialer")?;
             let socket = timeout(CONNECT_TIMEOUT, TcpStream::connect(remote))
                 .await
-                .context("remote connect timeout")??;
+                .context("remote connect timeout")
+                .context(Stage::Tcp)?
+                .context(Stage::Tcp)?;
             let secure = timeout(
                 HANDSHAKE_TIMEOUT,
                 connector.connect(server_name.clone(), socket),
             )
             .await
-            .context("TLS handshake timeout")??;
+            .context("TLS handshake timeout")
+            .context(Stage::SecureChannel)?
+            .context(Stage::SecureChannel)?;
             let certs = secure.get_ref().1.peer_certificates();
-            handshake::verify_peer_fingerprint(certs, &self.peer_pins)?;
-            handshake::verify_peer_identity(certs, &self.peer_id)?;
+            handshake::verify_peer_fingerprint(certs, &self.peer_pins).context(Stage::Identity)?;
+            handshake::verify_peer_identity(certs, &self.peer_id).context(Stage::Identity)?;
             Ok(Box::new(secure) as BoxedSecureStream)
         })
     }
@@ -229,7 +235,9 @@ impl StreamEngine for NoiseEngine {
                 ),
             )
             .await
-            .context("Noise handshake timeout")??;
+            .context("Noise handshake timeout")
+            .context(Stage::SecureChannel)?
+            .context(Stage::SecureChannel)?;
             Ok(Box::new(secure) as BoxedSecureStream)
         })
     }
@@ -238,7 +246,9 @@ impl StreamEngine for NoiseEngine {
         Box::pin(async move {
             let socket = timeout(CONNECT_TIMEOUT, TcpStream::connect(remote))
                 .await
-                .context("remote connect timeout")??;
+                .context("remote connect timeout")
+                .context(Stage::Tcp)?
+                .context(Stage::Tcp)?;
             let secure = timeout(
                 HANDSHAKE_TIMEOUT,
                 noise::initiate(
@@ -249,7 +259,9 @@ impl StreamEngine for NoiseEngine {
                 ),
             )
             .await
-            .context("Noise handshake timeout")??;
+            .context("Noise handshake timeout")
+            .context(Stage::SecureChannel)?
+            .context(Stage::SecureChannel)?;
             Ok(Box::new(secure) as BoxedSecureStream)
         })
     }

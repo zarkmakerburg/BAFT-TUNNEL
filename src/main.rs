@@ -10,6 +10,7 @@ mod engine_store;
 mod handshake;
 pub mod key_custody;
 mod noise;
+mod observe;
 #[allow(dead_code)] // manifest API is consumed by packaging and the registry (ADR-0020)
 mod runtime_host;
 mod session_status;
@@ -143,6 +144,10 @@ enum Command {
         /// Directory (must exist) for desired.json and audit.log; enables PUT/GET /v1/desired.
         #[arg(long)]
         state_dir: Option<PathBuf>,
+        /// systemd instance (`baft-tunnel@NAME`) to report on: unit state, authorized session,
+        /// traffic counters and last failure stage from /run/baft-tunnel/NAME.
+        #[arg(long)]
+        instance: Option<String>,
     },
 }
 
@@ -503,11 +508,19 @@ async fn main() -> Result<()> {
             token_file,
             listen,
             state_dir,
+            instance,
         } => {
             let config = config::load(&path)?;
             config.validate()?;
             let token = agent::read_token(&token_file)?;
-            agent::run(config, agent::parse_listen(&listen)?, token, state_dir).await
+            agent::run(
+                config,
+                agent::parse_listen(&listen)?,
+                token,
+                state_dir,
+                instance,
+            )
+            .await
         }
         Command::Engine { command } => {
             match command {

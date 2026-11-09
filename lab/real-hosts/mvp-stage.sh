@@ -96,7 +96,7 @@ for side in iran abroad; do
   cfg=$SRV; [[ "$side" == iran ]] && cfg=$CLI
   ssh_host "$side" "set -e; install -d -o baft-tunnel -g baft-tunnel -m 0700 $AGD;
     setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups $UB agent-token --out $AGD/token >/dev/null;
-    nohup setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
+    nohup setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG --instance $cfg > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
     for n in \$(seq 1 40); do python3 -c 'import urllib.request;urllib.request.urlopen(\"http://127.0.0.1:$MAG/v1/health\",timeout=1)' 2>/dev/null && exit 0; sleep 0.25; done; tail -20 '$REMOTE_DIR/agent.log'; exit 1"
 done
 mvp_apply() { # side instance role key -> receipt JSON on stdout
@@ -137,7 +137,45 @@ out="$(mvp_apply iran $CLI forward mvp-cli-0001)"
 [[ "$(echo "$out" | jf result)" == applied ]] || { echo "$out" >&2; ssh_host iran "journalctl -u baft-tunnel@$CLI -n 40 --no-pager" >&2 || true; echo "Apply start (forward) was not applied" >&2; exit 1; }
 MVP_SESSION="$(echo "$out" | jf stages.authorized_session)"; MVP_READY="$(echo "$out" | jf ready)"
 [[ "$MVP_READY" != ready && "$MVP_READY" != true && "$MVP_READY" != True ]] || { echo "Apply receipt claimed ready without a data-path observation" >&2; exit 1; }
+# The agents sample unit counters every 5 s: let them see the idle counters before traffic.
+sleep 12
 probe_host iran 65536; probe_host iran 2097289
+sleep 12
+echo "--- P1 operations evidence (ADR-0024): diagnostics, status, traffic counters, audit on both hosts ---"
+p1_api() { # side METHOD path -> JSON on stdout
+  ssh_host "$1" "python3 - <<'PY'
+import urllib.request
+tok = open('$AGD/token').read().strip()
+r = urllib.request.Request('http://127.0.0.1:$MAG$3', data=b'' if '$2' == 'POST' else None, method='$2', headers={'Authorization': 'Bearer ' + tok})
+try:
+    print(urllib.request.urlopen(r, timeout=30).read().decode())
+except urllib.error.HTTPError as e:
+    print(e.read().decode())
+PY"
+}
+for side in iran abroad; do
+  peer=abroad; [[ "$side" == abroad ]] && peer=iran
+  p1_api "$side" GET /v1/traffic >"$LOCAL_TMP/p1-traffic-$side.json"
+  p1_api "$side" POST /v1/diagnostics >"$LOCAL_TMP/p1-diag-$side.json"
+  p1_api "$side" GET /v1/status >"$LOCAL_TMP/p1-status-$side.json"
+  python3 - "$LOCAL_TMP/p1-traffic-$side.json" "$LOCAL_TMP/p1-diag-$side.json" "$LOCAL_TMP/p1-status-$side.json" "$peer" <<'PY' || { cat "$LOCAL_TMP"/p1-*-"$side".json >&2; echo "P1 evidence on $side does not match the measured tunnel" >&2; exit 1; }
+import json, sys
+tr, dg, st = (json.load(open(f)) for f in sys.argv[1:4]); peer = sys.argv[4]
+need = 65536 + 2097289
+assert tr["available"] and tr["fresh"] and tr["units"] == "bytes", tr
+assert tr["bytes_from_peer"] >= need and tr["bytes_to_peer"] >= need, tr
+r = {t["id"]: t["result"] for t in dg["tiers"]}
+assert r == {"tcp_reachability": "pass", "secure_channel": "pass", "identity": "pass", "authorization": "pass",
+             "session": "pass", "data_path": "pass", "integrity": "unknown"}, r
+assert dg["verified"] is True and dg["unit"]["result"] == "active", dg
+t = st["tunnel"]
+assert t["state"] == "carrying_traffic" and t["tiers"]["authorized_session"]["peer_id"] == peer, t
+print("p1 peer=%s from_peer=%d to_peer=%d state=%s" % (peer, tr["bytes_from_peer"], tr["bytes_to_peer"], t["state"]))
+PY
+  ssh_host "$side" "python3 -c 'import json,sys; [json.loads(l) for l in open(sys.argv[1])]' $AGD/audit.log && grep -q '\"actor\"' $AGD/audit.log && ! grep -qs -- \"\$(cat $AGD/token)\" $AGD/audit.log" \
+    || { echo "audit log on $side lacks actor fields or holds the token" >&2; exit 1; }
+done
+P1_EVIDENCE=1
 [[ "$(mvp_apply iran $CLI forward mvp-cli-0001 | jf replayed)" == True ]] || { echo "idempotent replay failed" >&2; exit 1; }
 [[ "$(mvp_apply iran $CLI forward mvp-cli-0002 | jf result)" == refused ]] || { echo "Apply start on a running unit was not refused" >&2; exit 1; }
 for side in iran abroad; do
@@ -198,6 +236,15 @@ unit_stop abroad $SRV || { echo "could not stop $SRV" >&2; exit 1; }
 sleep 8
 if probe_host iran 4096 >/dev/null 2>&1; then echo "revoked forward certificate still carried data" >&2; exit 1; fi
 ssh_host abroad "journalctl -u baft-tunnel@$SRV --no-pager -n 200 | grep -qi revok" || { echo "serve log shows no revocation refusal" >&2; exit 1; }
+# P1: the revoked forward node attributes the refusal to the secure-channel tier, not to TCP.
+p1_api iran POST /v1/diagnostics >"$LOCAL_TMP/p1-diag-revoked.json"
+python3 - "$LOCAL_TMP/p1-diag-revoked.json" <<'PY' || { cat "$LOCAL_TMP/p1-diag-revoked.json" >&2; echo "diagnostics did not attribute the revocation to the secure channel" >&2; exit 1; }
+import json, sys
+d = json.load(open(sys.argv[1])); r = {t["id"]: t["result"] for t in d["tiers"]}
+assert r["tcp_reachability"] == "pass" and r["secure_channel"] == "fail" and r["session"] in ("fail", "unknown"), r
+assert d["verified"] is False and isinstance(d["verified_unix"], int), d
+PY
+P1_REVOKED_TIER=secure_channel
 LOCAL_PORT="$OLD_LOCAL_PORT"; stop_role abroad echo2
 
 echo "--- MVP uninstall and cleanup proof ---"
@@ -219,4 +266,4 @@ for side in iran abroad; do
     MVP_FW_DRIFT+=("$side")
   fi
 done
-echo "MVP_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} clean_hosts=1 installed=1 wrong_checksum_refused=1 setup_join=1 control_helper=1 apply_start_serve=applied apply_start_forward=applied receipt_session=${MVP_SESSION} receipt_ready=${MVP_READY} integrity_64k_2m=1 replay=1 running_refused=1 receipts_secret_free=1 forward_sigkill_recovery_s=${MVP_KILL_S} serve_restart_recovery_s=${MVP_SRV_S} occupied_port_rolled_back=1 wrong_pin_refused=1 wrong_identity_refused=1 revoked_refused=1 uninstalled=1 listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=${MVP_FW_DRIFT[*]:-none}"
+echo "MVP_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} clean_hosts=1 installed=1 wrong_checksum_refused=1 setup_join=1 control_helper=1 apply_start_serve=applied apply_start_forward=applied receipt_session=${MVP_SESSION} receipt_ready=${MVP_READY} integrity_64k_2m=1 replay=1 running_refused=1 receipts_secret_free=1 forward_sigkill_recovery_s=${MVP_KILL_S} serve_restart_recovery_s=${MVP_SRV_S} occupied_port_rolled_back=1 wrong_pin_refused=1 wrong_identity_refused=1 revoked_refused=1 p1_evidence=${P1_EVIDENCE:-0} p1_revoked_tier=${P1_REVOKED_TIER:-none} uninstalled=1 listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=${MVP_FW_DRIFT[*]:-none}"
