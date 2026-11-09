@@ -29,9 +29,12 @@ ROLLOVER="${LAB_ROLLOVER:-0}"
 REVERSE="${LAB_REVERSE:-0}"
 REVERSE_R3="${LAB_REVERSE_R3:-0}"
 MVP="${LAB_MVP:-0}"
+REVERSE_ACCEPT="${LAB_REVERSE_ACCEPT:-0}"
+[[ "$REVERSE_ACCEPT" =~ ^[0-9]+$ ]] && (( REVERSE_ACCEPT <= 3600 )) || { echo "LAB_REVERSE_ACCEPT must be 0-3600 (acceptance soak seconds; 0 = off)" >&2; exit 2; }
 [[ "$MVP" == 0 || "$MVP" == 1 ]] || { echo "LAB_MVP must be 0 or 1" >&2; exit 2; }
 MVP_BINARY_PATH="${MVP_BINARY:-}"; MVP_SOURCE="${MVP_SOURCE:-unknown}"
-if [[ "$MVP" == 1 ]]; then [[ -x "$MVP_BINARY_PATH" ]] || { echo "LAB_MVP=1 needs MVP_BINARY" >&2; exit 2; }; fi
+if [[ "$MVP" == 1 || "$REVERSE_ACCEPT" != 0 ]]; then [[ -x "$MVP_BINARY_PATH" ]] || { echo "LAB_MVP=1 or LAB_REVERSE_ACCEPT needs MVP_BINARY" >&2; exit 2; }; fi
+[[ "$MVP" == 0 || "$REVERSE_ACCEPT" == 0 ]] || { echo "LAB_MVP and LAB_REVERSE_ACCEPT are separate runs" >&2; exit 2; }
 [[ "$REVERSE_R3" =~ ^[0-9]+$ ]] && (( REVERSE_R3 <= 3600 )) || { echo "LAB_REVERSE_R3 must be 0-3600 (Reverse R3 soak seconds; 0 = off)" >&2; exit 2; }
 [[ "$REVERSE" == 0 || "$REVERSE" == 1 ]] || { echo "LAB_REVERSE must be 0 or 1" >&2; exit 2; }
 BAFT="${LAB_BAFT:-0}"
@@ -1018,6 +1021,11 @@ fi
 if (( MVP == 1 )); then
   # shellcheck source=lab/real-hosts/mvp-stage.sh
   . "$(dirname "${BASH_SOURCE[0]}")/mvp-stage.sh"
+fi
+
+if (( REVERSE_ACCEPT > 0 )); then
+  # shellcheck source=lab/real-hosts/reverse-accept-stage.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/reverse-accept-stage.sh"
 fi
 
 echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE reverse_r3=$REVERSE_R3 mvp=$MVP (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"

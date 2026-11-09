@@ -73,6 +73,11 @@ on:
         required: false
         type: string
         default: ''
+      reverse_accept:
+        description: Reverse acceptance (installed product path, non-root units, backup/restore, update/rollback) with this many soak seconds (0 = off, max 3600); run alone
+        required: false
+        type: string
+        default: '0'
       cleanup_stale:
         description: Only remove leftover temp processes/dirs of earlier runs of this test (0 or 1)
         required: false
@@ -130,6 +135,7 @@ jobs:
       LAB_REVERSE: ${{ inputs.reverse }}
       LAB_REVERSE_R3: ${{ inputs.reverse_r3 }}
       LAB_MVP: ${{ inputs.mvp }}
+      LAB_REVERSE_ACCEPT: ${{ inputs.reverse_accept }}
       LAB_BAFT_SYSTEMD: ${{ inputs.baft_systemd }}
       LAB_ROLLOVER: ${{ inputs.rollover }}
       LAB_SETUP: ${{ inputs.setup }}
@@ -181,16 +187,16 @@ jobs:
           echo "BAFT_ENGINE_BINARY=$RUNNER_TEMP/baft-engine" >> "$GITHUB_ENV"
           echo "BAFT_ENGINE_SOURCE=signed-release:${TAG}" >> "$GITHUB_ENV"
       - name: Use this run's local build for the MVP stage (no release tag given)
-        if: ${{ inputs.mvp == '1' && inputs.mvp_release == '' }}
+        if: ${{ (inputs.mvp == '1' || inputs.reverse_accept != '0') && inputs.mvp_release == '' }}
         run: |
           echo "MVP_BINARY=$GITHUB_WORKSPACE/target/release/baft-tunnel" >> "$GITHUB_ENV"
           echo "MVP_SOURCE=local-build:$(git rev-parse HEAD)" >> "$GITHUB_ENV"
       - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
-        if: ${{ inputs.mvp == '1' && inputs.mvp_release != '' && inputs.baft_release == '' }}
+        if: ${{ (inputs.mvp == '1' || inputs.reverse_accept != '0') && inputs.mvp_release != '' && inputs.baft_release == '' }}
         with:
           cosign-release: v2.5.3
       - name: Fetch and verify the baft-tunnel binary from a signed release (MVP stage)
-        if: ${{ inputs.mvp == '1' && inputs.mvp_release != '' }}
+        if: ${{ (inputs.mvp == '1' || inputs.reverse_accept != '0') && inputs.mvp_release != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.mvp_release }}
