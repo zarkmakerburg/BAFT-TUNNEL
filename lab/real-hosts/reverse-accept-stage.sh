@@ -179,8 +179,8 @@ RA_SESSION="$(echo "$out" | jf stages.authorized_session)"; RA_READY="$(echo "$o
 ra_wait 60 >/dev/null || { echo "Reverse tunnel did not carry data after Apply start" >&2; exit 1; }
 probe_host iran 65536; probe_host iran 2097289
 # Outbound-only: the service node must have no listener on the tunnel port and hold an outbound connection to the public node.
-ssh_host abroad "! ss -ltnH | awk '{print \$4}' | grep -q ':$MTP\$' && ss -tnH state established | awk '{print \$4\" \"\$3}' | grep -q ':$MTP\$'" ||
-  { echo "service node listens on the tunnel port or has no outbound connection to the public node" >&2; exit 1; }
+ssh_host abroad "! ss -ltnH | awk '{print \$4}' | grep -q ':$MTP\$' && ss -tnH state established | awk '{print \$4}' | grep -q ':$MTP\$'" ||
+  { ssh_host abroad "ss -tanH | awk '{print \$1, \$4, \$5}' | grep ':$MTP' | sed -E 's/[0-9]{1,3}(\\.[0-9]{1,3}){3}/<ip>/g'" >&2 || true; echo "service node listens on the tunnel port or has no outbound connection to the public node" >&2; exit 1; }
 ssh_host iran "ss -ltnH | awk '{print \$4}' | grep -q ':$MTP\$' && ss -ltnH | awk '{print \$4}' | grep -q '127.0.0.1:$MSVC\$'" || { echo "public node lacks the tunnel listener or the user ingress" >&2; exit 1; }
 # Both units must run as the service user, not root.
 for pair in "iran $PUB" "abroad $SVC"; do
