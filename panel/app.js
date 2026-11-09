@@ -96,7 +96,7 @@
       });
     });
   };
-  var ENDPOINTS = { status: '/v1/status', history: '/v1/history', security: '/v1/security', engines: '/v1/engines', desired: '/v1/desired', audit: '/v1/audit' };
+  var ENDPOINTS = { status: '/v1/status', history: '/v1/history', security: '/v1/security', engines: '/v1/engines', desired: '/v1/desired', audit: '/v1/audit', traffic: '/v1/traffic', diagnostics: '/v1/diagnostics' };
   BAFT.load = function (needs) {
     var out = {};
     return Promise.all((needs || []).map(function (k) {
