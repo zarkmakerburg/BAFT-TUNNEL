@@ -61,6 +61,7 @@ fi
 rm -f "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel-control-*.path \
   "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@*.path \
   "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@*.service \
+  "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel@*.service \
   "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-*@.path "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-*@.service \
   "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-agent@.path "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-agent@.service \
   "$ROOT_PREFIX/etc/tmpfiles.d/baft-tunnel-control.conf"

@@ -35,7 +35,7 @@ cleanup() {
   [[ -n "$ECHO_PID" ]] && kill "$ECHO_PID" >/dev/null 2>&1 || true
   for i in "$SERVE" "$FWD" "$POS_S" "$POS_C"; do
     sudo "$ROOT/scripts/install-agent-control.sh" --remove --instance "$i" >/dev/null 2>&1 || true
-    sudo systemctl stop "baft-tunnel@$i.service" >/dev/null 2>&1 || true
+    sudo systemctl disable --now "baft-tunnel@$i.service" >/dev/null 2>&1 || true
   done
   sudo rm -f /etc/systemd/system/baft-tunnel-control-*@.path /etc/systemd/system/baft-tunnel-control-*@.service /etc/tmpfiles.d/baft-tunnel-control.conf \
     /etc/systemd/system/baft-tunnel-agent@.path /etc/systemd/system/baft-tunnel-agent@.service
