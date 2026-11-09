@@ -41,6 +41,8 @@ jobs:
         run: cargo +1.88.0 build --locked --release
       - name: Validate staged installer, credential provisioning and rollback
         run: bash scripts/test-install.sh
+      - name: Validate the interactive menu (staged, fa/en, arrow keys on a pty)
+        run: bash scripts/test-menu.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"
       - name: Validate systemd encrypted credential delivery
         run: |
           bash -n scripts/pki/test-systemd-credential-runtime.sh

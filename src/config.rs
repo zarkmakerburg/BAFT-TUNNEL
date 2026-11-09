@@ -372,7 +372,7 @@ impl RuntimeConfig {
             } => format!(
                 "Mode: serve\nDirection: {}\nListen: {listen}\nFixed destination: {target}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nPrivate key source: {}\nSecurity: {}\nHost changes: none",
                 direction.as_str(),
-                key_source_description(key.as_ref(), key_credential.as_deref()),
+                key_source_description(*engine, key.as_ref(), key_credential.as_deref()),
                 security_description(*engine)
             ),
             Self::Forward {
@@ -389,9 +389,15 @@ impl RuntimeConfig {
                 engine,
                 ..
             } => format!(
-                "Mode: forward\nDirection: {}\nLocal listener: {listen}\nRemote peer: {remote}\nTLS server name: {server_name}\nLocal identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nPrivate key source: {}\nSecurity: {}\nHost changes: none",
+                "Mode: forward\nDirection: {}\nLocal listener: {listen}\nRemote peer: {remote}\n{}Local identity: {local_id}\nExpected peer: {peer_id}\nTunnel: {tunnel_id}\nMax streams: {max_streams}\nPrivate key source: {}\nSecurity: {}\nHost changes: none",
                 direction.as_str(),
-                key_source_description(key.as_ref(), key_credential.as_deref()),
+                // Noise has no certificates and no server name: leave the line out, not blank.
+                if *engine == EngineKind::NoiseTcp || server_name.is_empty() {
+                    String::new()
+                } else {
+                    format!("TLS server name: {server_name}\n")
+                },
+                key_source_description(*engine, key.as_ref(), key_credential.as_deref()),
                 security_description(*engine)
             ),
         }
@@ -719,8 +725,17 @@ fn security_description(engine: EngineKind) -> &'static str {
     }
 }
 
-fn key_source_description(key: Option<&PathBuf>, credential_id: Option<&str>) -> String {
+fn key_source_description(
+    engine: EngineKind,
+    key: Option<&PathBuf>,
+    credential_id: Option<&str>,
+) -> String {
     match (key, credential_id) {
+        // `setup init` writes the Noise static key itself (mode 0600, service user only);
+        // that is the supported path for noise-tcp, not a LAB shortcut.
+        (Some(_), None) if engine == EngineKind::NoiseTcp => {
+            "Noise static key file (mode 0600, readable by the service only)".to_owned()
+        }
         (Some(_), None) => "filesystem (LAB compatibility)".to_owned(),
         (None, Some(identifier)) => format!("systemd credential ({identifier})"),
         _ => "invalid (configure exactly one source)".to_owned(),
@@ -1011,11 +1026,23 @@ mod tests {
         assert!(private_key_path(None, None).is_err());
         assert!(private_key_path(Some(Path::new("node.key")), Some("node-key")).is_err());
         assert_eq!(
-            key_source_description(Some(&PathBuf::from("hidden/path")), None),
+            key_source_description(
+                EngineKind::TcpTls,
+                Some(&PathBuf::from("hidden/path")),
+                None
+            ),
             "filesystem (LAB compatibility)"
         );
         assert_eq!(
-            key_source_description(None, Some("node-key")),
+            key_source_description(
+                EngineKind::NoiseTcp,
+                Some(&PathBuf::from("hidden/path")),
+                None
+            ),
+            "Noise static key file (mode 0600, readable by the service only)"
+        );
+        assert_eq!(
+            key_source_description(EngineKind::TcpTls, None, Some("node-key")),
             "systemd credential (node-key)"
         );
     }

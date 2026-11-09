@@ -47,6 +47,16 @@ if [[ "$SCOPE_BINARY" == "1" ]]; then
   else
     rm -f "$UNIT_DEST"
   fi
+  # Scripts/units used by `baft-tunnel menu` (installers that predate the menu have no marker).
+  LIB_DEST="$ROOT_PREFIX/usr/local/lib/baft-tunnel"
+  if [[ -d "$BACKUP_DIR/lib" && -f "$BACKUP_DIR/had-lib" ]]; then
+    rm -rf "$LIB_DEST.rollback.$$"
+    cp -a "$BACKUP_DIR/lib" "$LIB_DEST.rollback.$$"
+    rm -rf "$LIB_DEST"
+    mv -f "$LIB_DEST.rollback.$$" "$LIB_DEST"
+  elif [[ -f "$BACKUP_DIR/scope-binary" ]]; then
+    rm -rf "$LIB_DEST"
+  fi
 fi
 
 if [[ -f "$BACKUP_DIR/scope-credential" ]]; then
@@ -78,3 +88,4 @@ fi
 
 if [[ "$STAGING" == "0" ]]; then systemctl daemon-reload; fi
 echo "Rollback complete. No service was started or restarted."
+echo "Next step: restart the tunnels that use this binary (sudo systemctl restart baft-tunnel@NAME, or menu > Tunnel > Restart) and check their status."

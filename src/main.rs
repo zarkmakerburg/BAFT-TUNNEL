@@ -133,6 +133,13 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Interactive menu (Persian/English) over the install, setup and service commands.
+    /// Runs scripts/menu.sh installed next to the binary (PREFIX/lib/baft-tunnel).
+    Menu {
+        /// Passed to the menu, for example `--lang fa` or `--plain`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Run the local API (loopback only, bearer token): status, and validated desired state storage. Never starts a tunnel; its only writes are the state directory and the confirmed local setup stages of `POST /v1/setup/apply`.
     Agent {
         #[arg(long)]
@@ -282,9 +289,48 @@ enum ConfigCommand {
     },
 }
 
+/// Print errors as one readable line (with their causes) and never a backtrace, even when
+/// RUST_BACKTRACE is set: operators see `Error: ...`, not Rust internals.
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> std::process::ExitCode {
+    match run().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// `PREFIX/lib/baft-tunnel/scripts/menu.sh` for a binary in `PREFIX/bin`, else the default prefix.
+fn menu_script() -> PathBuf {
+    let installed = std::env::current_exe().ok().and_then(|exe| {
+        let prefix = exe.parent()?.parent()?.to_path_buf();
+        Some(prefix.join("lib/baft-tunnel/scripts/menu.sh"))
+    });
+    match installed {
+        Some(path) if path.is_file() => path,
+        _ => PathBuf::from("/usr/local/lib/baft-tunnel/scripts/menu.sh"),
+    }
+}
+
+async fn run() -> Result<()> {
     match Cli::parse().command {
+        Command::Menu { args } => {
+            use std::os::unix::process::CommandExt;
+            let script = menu_script();
+            if !script.is_file() {
+                bail!(
+                    "menu not installed ({}); reinstall with scripts/install.sh --binary PATH",
+                    script.display()
+                );
+            }
+            let error = std::process::Command::new("bash")
+                .arg(&script)
+                .args(&args)
+                .exec();
+            bail!("could not start the menu: {error}")
+        }
         Command::Serve {
             listen,
             target,
