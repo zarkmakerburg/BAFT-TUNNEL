@@ -1,7 +1,8 @@
 # Merge policy and `main` protection
 
-Status: policy documented; protection setting must be applied by a repo admin
-(see "Applying"). Verify with the command at the end.
+Status: protection ACTIVE on `main` (applied 2026-11-09 by the owner's login; verified via API:
+`protected=true`, checks `rust`, `ubuntu-2204-baseline`, `lab-config`, 0 approvals, no force-push,
+no deletion, admins not enforced). Re-apply or verify with the sections below.
 
 ## Rules for `main`
 - Changes land only through a pull request; no direct pushes, no force pushes, no deletion.
@@ -20,7 +21,7 @@ Status: policy documented; protection setting must be applied by a repo admin
 3. Squash-merge; never merge on red; never skip or quarantine a test to get green.
 4. Release tags and LAB runs use the exact merged `main` SHA and record it as evidence.
 
-## Applying
+## Re-applying
 Script (repo-admin `gh` login): `scripts/apply-branch-protection.sh`.
 UI: Settings → Branches → Add branch ruleset/protection rule for `main` → require a pull request
 (0 approvals), require status checks `rust`, `ubuntu-2204-baseline`, `lab-config`, block force pushes
