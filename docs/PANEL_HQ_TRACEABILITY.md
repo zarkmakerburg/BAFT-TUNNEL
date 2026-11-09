@@ -26,11 +26,11 @@ State column: I = implemented, P = partial, M = missing (backend gap, hidden or 
 ## Gaps recorded for the backend (not faked in the UI)
 
 - G1 Enrolled-server inventory and per-server remote state.
-- G2 End-to-end tunnel verification (peer connection, last verified time).
+- G2 (closed by PR #109, panel PR #120) End-to-end tunnel verification (peer connection, last verified time).
 - G3 Preflight checks that need the peer: reachability, identity, port ownership on the peer.
-- G4 (closed for local init/join by ADR-0022) Authorized apply API with idempotency, verification, rollback and a durable receipt. Still open: service start and rollback of a started service.
-- G5 Actor and target fields in the audit log.
-- G6 Runtime traffic and throughput counters exposed through the API.
+- G4 (init/join closed by ADR-0022; start closed by ADR-0023, P0-1/P0-5) Authorized apply API with idempotency, verification, rollback and a durable receipt. Still open: stop/restart and start at boot.
+- G5 (closed by PR #109) Actor and target fields in the audit log.
+- G6 (closed by PR #109, panel PR #120) Runtime traffic and throughput counters exposed through the API.
 - G7 Read-only firewall inspection.
 - G8 Machine-readable evidence codes in preflight results (so evidence can be localized).
 - G9 The BAFT engine is not offered anywhere in the panel; it stays hidden until its runtime and acceptance gates pass.

@@ -48,7 +48,7 @@
     if (sec.tls) {
       var cs = sec.certificate_seconds_remaining, ls = sec.crl_seconds_remaining;
       if (cs != null && cs < 30 * 86400) { out.push({ sev: cs < 7 * 86400 ? 'bad' : 'warn', res: t('servers.this'), text: t('warn.cert'), next: t('warn.cert.next') }); }
-      if (ls != null && ls < 3 * 86400) { out.push({ sev: ls < 86400 ? 'bad' : 'warn', res: 'CRL', text: t('warn.crl'), next: t('warn.crl.next') }); }
+      if (ls != null && ls < 7 * 86400) { out.push({ sev: ls < 3 * 86400 ? 'bad' : 'warn', res: 'CRL', text: t(ls <= 0 ? 'warn.crl.expired' : 'warn.crl'), next: t('warn.crl.next') }); }
       if (c.peer_certificate_pin_configured === false) { out.push({ sev: 'warn', res: c.tunnel_id, text: t('warn.pin'), next: t('warn.pin.next') }); }
     }
     if (st.avail != null && st.hist.length >= 12 && st.avail < 90) { out.push({ sev: 'warn', res: c.tunnel_id, text: t('warn.avail'), next: t('warn.avail.next') }); }
@@ -323,8 +323,8 @@
         var pre = e.status === 'preview' || w.direction === 'reverse';
         var lab = (((e.evidence || {}).lab_two_host) || {})[w.direction];
         var labPill = lab === 'pass' ? pill('ok', t('meth.lab.pass')) : pill('unknown', t('meth.lab.unknown'));
-        return choice('engine', e.id, w.engine === e.id, [BAFT.ltr(e.id), pill(rec ? 'ok' : 'warn', rec ? t('meth.rec') + ' · ' + t('meth.stable') : pre ? t('dir.preview') : t('meth.experimental')), labPill], t('meth.' + e.id) + (e.id === 'baft' ? ' ' + t('meth.baft.limits') : '') + (w.direction === 'reverse' ? ' ' + t('meth.rev.note') : ''),
-          function (v) { w.engine = v; invalidate(); draw(); });
+        return choice('engine', e.id, w.engine === e.id, [BAFT.ltr(e.id), pill(rec ? 'ok' : 'warn', rec ? t('meth.rec') + ' · ' + t('meth.stable') : pre ? t('dir.preview') : t('meth.experimental')), labPill], t('meth.' + e.id) + (e.id === 'baft' ? ' ' + t('meth.baft.limits') : '') + ((e.guided_setup || {}).available === false ? ' ' + t('meth.noguided') : '') + (w.direction === 'reverse' ? ' ' + t('meth.rev.note') : ''),
+          function (v) { w.engine = v; invalidate(); draw(); }, null, (e.guided_setup || {}).available === false);
       })));
     }
     function stepPreflight() {

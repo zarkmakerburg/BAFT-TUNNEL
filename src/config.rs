@@ -54,7 +54,8 @@ impl EngineKind {
     }
 }
 
-const CRL_WARNING_SECONDS: i64 = 24 * 3600;
+/// Warn a week ahead: CRLs are renewed weekly (`baft-pki.sh renew-crl`, 30-day validity).
+pub(crate) const CRL_WARNING_SECONDS: i64 = 7 * 24 * 3600;
 
 pub(crate) fn default_max_streams() -> usize {
     8
@@ -316,10 +317,10 @@ impl RuntimeConfig {
     fn warn_if_crl_expiring(&self) {
         match tls::crl_seconds_remaining(self.crl_path()) {
             Ok(remaining) if remaining <= 0 => eprintln!(
-                "WARNING: certificate revocation list has expired; TLS connections will fail closed until it is refreshed"
+                "WARNING: certificate revocation list has expired; TLS connections will fail closed until it is refreshed (baft-pki.sh renew-crl, then push-crl.sh)"
             ),
             Ok(remaining) if remaining < CRL_WARNING_SECONDS => eprintln!(
-                "WARNING: certificate revocation list expires in {} hours; refresh it before then",
+                "WARNING: certificate revocation list expires in {} hours; renew it with baft-pki.sh renew-crl and distribute it with push-crl.sh",
                 remaining / 3600
             ),
             Ok(_) => {}

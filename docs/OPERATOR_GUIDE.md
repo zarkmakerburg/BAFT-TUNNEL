@@ -115,6 +115,15 @@ During a CA rollover the trust bundle holds the old and the new CA, each with it
 
 `bash scripts/pki/crl-status.sh /etc/baft-tunnel/ca.crl [WARN_HOURS]` prints one line per CRL in the file (issuer, CRL number, nextUpdate, hours remaining) and exits 1 if any CRL is under WARN_HOURS (default 72) or expired. It only reports; it never fetches or changes anything. Re-issue CRLs weekly with a validity of at least 14 days, push them to each node, and run this check from cron or a systemd timer you own.
 
+## Weekly CRL renewal
+
+Peers refuse every connection once the CRL has expired (both TLS roles fail closed). CAs created by `init-ca` issue CRLs valid for 30 days; CAs created before this change issued 7-day CRLs, and `renew-crl` fixes that without touching the CA configuration.
+
+1. Offline, on the CA host: `bash scripts/pki/baft-pki.sh renew-crl ./offline-ca ./crl-$(date +%F) [DAYS]` (default 30, allowed 2–90). It signs a new CRL from the CA database, so every earlier revocation stays listed and the CRL number increases. It writes `ca.crl` and `ca.crt` to an empty output directory and never copies the CA key.
+2. `bash scripts/pki/crl-status.sh ./crl-$(date +%F)/ca.crl` must print `OK`.
+3. Distribute with `push-crl.sh` (next section), or with `apply-crl.sh apply` on each node. Activation restarts the instance, so active connections drop once.
+4. The agent reports the CRL state in `GET /v1/security` (`crl_state`: `ok`, `renew_soon` under 7 days, `renew_now` under 72 hours, `expired`, `unknown`) and as a `crl` entry in `GET /v1/status` `warnings`; the panel shows a warning from 7 days. `baft-tunnel config validate` prints a warning from 7 days.
+
 ## Activating a CRL bundle during CA rollover (ADR-0017 B1)
 
 `apply-crl.sh` accepts a bundle of 1–4 CA certificates as `CA_CERT` and a bundle with one CRL per CA as the CRL files. The candidate must contain a CRL for every configured CA, each signed by that CA, each with a CRL number greater than the installed CRL of the same issuer, and none expired; a CRL from an unconfigured CA, a duplicate issuer, or a CA bundle with two identical subjects is rejected. A CA that has no installed CRL yet (the new CA) is allowed. Removing the old CA is a separate, explicit step: pass the CA bundle without it and a candidate without its CRL.

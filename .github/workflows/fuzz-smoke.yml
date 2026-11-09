@@ -7,6 +7,9 @@ on:
       - 'src/**'
       - 'fuzz/**'
       - '.github/workflows/fuzz-smoke.yml'
+  schedule:
+    # Weekly longer run on main (300 s per target).
+    - cron: '41 4 * * 1'
   workflow_dispatch:
     inputs:
       seconds:
@@ -29,7 +32,7 @@ jobs:
           cargo +nightly-2026-11-07 install cargo-fuzz --version 0.13.2 --locked
       - name: Fuzz each parser for a short time
         env:
-          SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '30' }}
+          SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || (github.event_name == 'schedule' && '300') || '30' }}
         run: |
           cd fuzz
           for target in config_json pairing_bundle agent_http handshake_server; do

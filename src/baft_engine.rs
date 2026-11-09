@@ -3,7 +3,8 @@
 //! BAFT runs as a separate Go process. This module only turns BAFT-TUNNEL desired state into
 //! the JSON configuration that process reads. It is pure: it starts nothing, opens no socket
 //! and reads no key. The output is derived, never edited by hand, and never read back.
-//! Not wired into the engine selection yet (`EngineKind::Baft` arrives in a later phase).
+//! `EngineKind::Baft` routes here from `config.rs`; guided setup cannot create this config yet
+//! (ADR-0019 phase F).
 
 use std::{
     fs,

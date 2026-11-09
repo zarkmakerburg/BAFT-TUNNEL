@@ -6,7 +6,10 @@ on:
       - phase0/six-host-lab-foundation
   push:
     branches:
-      - phase1/rust-tcp-transport
+      - main
+  schedule:
+    # Weekly exact-main run so new RustSec advisories surface without a PR.
+    - cron: '17 3 * * 1'
   workflow_dispatch:
 permissions:
   contents: read
