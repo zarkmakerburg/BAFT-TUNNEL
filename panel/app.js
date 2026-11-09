@@ -91,7 +91,7 @@
     if (body !== undefined) { opts.body = JSON.stringify(body); opts.headers['Content-Type'] = 'application/json'; }
     return fetch(path, opts).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) {
-        if (r.status === 401 && BAFT.token) { BAFT.logout(); }
+        if (r.status === 401 && BAFT.token && !BAFT.signingIn) { BAFT.logout(); }
         return { status: r.status, body: j };
       });
     });
@@ -139,7 +139,9 @@
     function go() {
       BAFT.token = input.value.trim();
       err.hidden = true;
+      BAFT.signingIn = true;
       BAFT.api('GET', '/v1/status').then(function (r) {
+        BAFT.signingIn = false;
         if (r.status === 200) { store('token', BAFT.token); BAFT.start(); }
         else { BAFT.token = ''; err.textContent = r.status === 401 ? t('badtoken') : t('fail'); err.hidden = false; }
       });
