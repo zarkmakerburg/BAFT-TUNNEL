@@ -138,10 +138,14 @@ snapshot() {
     sudo iptables-save 2>/dev/null | grep -v '^#' | sed -E 's/\[[0-9]+:[0-9]+\]//' || true; } >"$TMP/fw-$1.txt"
   sha256sum <"$TMP/fw-$1.txt" | cut -d' ' -f1
   ss -ltnH | awk '{print $4}' | grep -vE ':(18090|18443|18444|18445|18081|18082|18099)$' | sort
-  # Units outside BAFT-TUNNEL. Slices and scopes are skipped: the host agent and logins create them at
-  # any time. polkit.service is started on demand by the denied direct systemctl attempt in this test.
-  systemctl list-units --all --plain --no-legend --state=active,failed 2>/dev/null | awk '{print $1}' \
-    | grep -E '\.(service|socket|path|timer)$' | grep -vE '^(baft-tunnel|polkit\.service|azure|walinuxagent|waagent|hv-|cloud-|session-|user@|systemd-(tmpfiles|journal-flush))' | sort
+  # Units outside BAFT-TUNNEL, by persistent state only. Which .service units happen to be running is not
+  # configuration: dbus-activated and on-demand ones (polkit, timedated, hostnamed, the cloud agent) start
+  # and exit on their own. What this test must not leave behind is enabled unit files and active
+  # socket/path/timer triggers; those are compared, minus BAFT-TUNNEL's own and the host agent's.
+  { systemctl list-unit-files --no-legend --plain --state=enabled,enabled-runtime,linked 2>/dev/null | awk '{print "file " $1}'
+    systemctl list-units --all --plain --no-legend --state=active,failed --type=socket,path,timer 2>/dev/null | awk '{print "trigger " $1}'
+    systemctl list-units --all --plain --no-legend --state=failed --type=service 2>/dev/null | awk '{print "failed " $1}'; } \
+    | grep -vE ' (baft-tunnel|azure|walinuxagent|waagent|hv-|cloud-|session-|user@|systemd-(tmpfiles|journal-flush))' | sort
 }
 snapshot before >"$TMP/side-before.txt"
 
