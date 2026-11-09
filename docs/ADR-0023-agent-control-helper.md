@@ -49,4 +49,5 @@ files), staging run of the install script. Real systemd 249 (hosted Ubuntu 22.04
 - P0-2: two nodes with their own certificates on one host: serve alone stays `unknown`; with the
   forward node the session is `observed`; 64 KiB and 2 MiB round-trip unchanged; the indicator
   clears when the peer stops. Run 42524638625, code SHA 231ba9d, merged as e031475 (#93).
+- P0-2 two-host: P0-5 LAB run 42538458094 (main 92c4e70, signed rc.4): Apply start on setup-written configs on both hosts, `receipt_session=observed`, `receipt_ready=unknown`, 64 KiB + 2 MiB integrity measured by the stage, recovery, occupied-port rollback, cleanup.
 - Limit: one host, loopback, hosted runner. The two-host LAB proof is part of P0-5.
