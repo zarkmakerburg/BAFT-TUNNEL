@@ -56,6 +56,7 @@ cleanup() {
     sudo systemctl daemon-reload >/dev/null 2>&1 || true
   fi
   if [[ -n "$BACKUP_DIR" ]]; then sudo rm -rf "$BACKUP_DIR"; fi
+  sudo rm -rf /var/backups/baft-tunnel-backup.* /var/backups/baft-tunnel-install.* /var/backups/.baft-restore.* 2>/dev/null || true
   if [[ "$CREATED_USER" == "1" ]]; then sudo userdel baft-tunnel >/dev/null 2>&1 || true; fi
   if [[ "$CREATED_GROUP" == "1" ]]; then sudo groupdel baft-tunnel >/dev/null 2>&1 || true; fi
   rm -rf "$TMP"
@@ -243,6 +244,69 @@ if [[ -n "$OLD_BIN" ]]; then
   UPGRADE_RESULT=" upgrade_s=$up_s rollback_s=$rb_s from='$old_version' to='$new_version'"
 fi
 
+# ADR-0025: guarded update with automatic rollback, and backup/restore, on real systemd.
+port_open() {
+  local attempt
+  for attempt in $(seq 1 40); do
+    if python3 -c "import socket; socket.create_connection(('127.0.0.1',18080),1).close()" 2>/dev/null; then return 0; fi
+    sleep 0.25
+  done
+  dump_service
+  return 1
+}
+cfg_digest() { sudo sh -c 'cd /etc/baft-tunnel && find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum' | awk '{print $1}'; }
+bin_sum() { sudo sha256sum /usr/local/bin/baft-tunnel | awk '{print $1}'; }
+no_key_material() { ! grep -q 'PRIVATE KEY' "$@" || die "private key material found in $*"; }
+GOOD_RUNTIME="$TMP/baft-tunnel-current"
+install -m 0755 "$RUNTIME_BIN" "$GOOD_RUNTIME"
+if [[ -n "$OLD_BIN" ]]; then
+  sudo "$ROOT/scripts/update.sh" --binary "$OLD_RUNTIME" --health-secs 5 >"$TMP/update-old.log" || { cat "$TMP/update-old.log" >&2; die "update to the older release failed"; }
+fi
+DIG0="$(cfg_digest)"
+t_u=$SECONDS
+sudo "$ROOT/scripts/update.sh" --binary "$GOOD_RUNTIME" --health-secs 5 >"$TMP/update-good.log" 2>&1 || { cat "$TMP/update-good.log" >&2; die "guarded update failed"; }
+grep -q '^UPDATE_OK ' "$TMP/update-good.log" || die "update did not report UPDATE_OK"
+GUARDED_UPDATE_S=$((SECONDS - t_u))
+[[ "$(bin_sum)" == "$(sha256sum "$GOOD_RUNTIME" | awk '{print $1}')" ]] || die "guarded update did not install the new binary"
+wait_active && port_open || die "service unhealthy after guarded update"
+[[ "$(cfg_digest)" == "$DIG0" ]] || die "guarded update changed config or keys"
+# Failed update: a build that passes --version but cannot run must be rolled back automatically.
+printf '#!/bin/sh\n[ "${1:-}" = "--version" ] && { echo "baft-tunnel 99.0.0-broken"; exit 0; }\nexit 1\n' > "$TMP/baft-tunnel-broken"
+chmod 0755 "$TMP/baft-tunnel-broken"
+GOOD_SUM="$(bin_sum)"
+t_f=$SECONDS
+set +e; sudo "$ROOT/scripts/update.sh" --binary "$TMP/baft-tunnel-broken" --health-secs 7 >"$TMP/update-bad.out" 2>"$TMP/update-bad.err"; bad_rc=$?; set -e
+[[ "$bad_rc" == "1" ]] || { cat "$TMP/update-bad.err" >&2; die "failed update exited $bad_rc, expected 1"; }
+grep -q '^UPDATE_FAILED_ROLLED_BACK ' "$TMP/update-bad.err" || die "failed update did not report a verified rollback"
+FAILED_UPDATE_ROLLBACK_S=$((SECONDS - t_f))
+[[ "$(bin_sum)" == "$GOOD_SUM" ]] || die "failed update did not restore the previous binary"
+wait_active && port_open || die "service unhealthy after the automatic rollback"
+[[ "$(cfg_digest)" == "$DIG0" ]] || die "failed update changed config or keys"
+no_key_material "$TMP/update-good.log" "$TMP/update-bad.out" "$TMP/update-bad.err"
+sudo journalctl -u "$SERVICE_UNIT" --no-pager >"$TMP/journal.txt" 2>&1 || true
+no_key_material "$TMP/journal.txt"
+# Backup: root-only modes, then destroy config, PKI and key and restore them.
+sudo "$ROOT/scripts/backup.sh" >"$TMP/backup.log"
+DATA_BACKUP="$(sed -n 's/^Backup: //p' "$TMP/backup.log" | tail -n 1)"
+[[ "$(sudo stat -c '%U:%G %a' "$DATA_BACKUP")" == "root:root 700" ]] || die "backup directory is not root:root 0700"
+[[ "$(sudo stat -c '%U:%G %a' "$DATA_BACKUP/backup.tar")" == "root:root 600" ]] || die "backup archive is not root:root 0600"
+no_key_material "$TMP/backup.log"
+sudo cp -a "$DATA_BACKUP" "$DATA_BACKUP.tampered"
+sudo sh -c "printf x >> '$DATA_BACKUP.tampered/backup.tar'"
+if sudo "$ROOT/scripts/restore.sh" --yes --stop "$DATA_BACKUP.tampered" >"$TMP/tamper.log" 2>&1; then die "restore accepted a tampered archive"; fi
+sudo systemctl is-active --quiet "$SERVICE_UNIT" || die "a refused restore must not stop the service"
+sudo systemctl stop "$SERVICE_UNIT"
+sudo rm -rf "$PKI_DIR" "$CREDENTIAL_DIR" "$CONFIG_FILE"
+[[ "$(cfg_digest)" != "$DIG0" ]] || die "test setup did not destroy the state"
+sudo "$ROOT/scripts/restore.sh" --yes "$DATA_BACKUP" >"$TMP/restore.log" 2>&1 || { cat "$TMP/restore.log" >&2; die "restore failed"; }
+no_key_material "$TMP/restore.log"
+[[ "$(cfg_digest)" == "$DIG0" ]] || die "restored config/keys differ from the backup"
+[[ "$(sudo stat -c '%U:%G %a' "$CREDENTIAL_DIR")" == "root:root 700" && "$(sudo stat -c '%U:%G %a' "$CREDENTIAL_DIR/node-key")" == "root:root 600" ]] || die "restored credential permissions are not root-only"
+sudo test -f "$DROPIN_DIR/credentials.conf" || die "restore lost the credential drop-in"
+sudo systemctl start "$SERVICE_UNIT" || { dump_service; die "service failed to start after restore"; }
+wait_active && port_open || die "service unhealthy after restore"
+BACKUP_RESTORE_RESULT="guarded_update_s=$GUARDED_UPDATE_S failed_update_rollback_s=$FAILED_UPDATE_ROLLBACK_S"
+
 sudo systemctl stop "$SERVICE_UNIT"
 ! sudo systemctl is-active --quiet "$SERVICE_UNIT" || die "service remained active after stop"
 # Fail-closed: a missing source credential must stop the service from starting.
@@ -267,4 +331,5 @@ INSTALL_DONE=0
 [[ ! -e /etc/systemd/system/baft-tunnel@.service ]] || die "uninstall left the systemd unit installed"
 [[ ! -e /etc/baft-tunnel && ! -e /var/lib/baft-tunnel ]] || die "uninstall left config/state behind"
 echo "UPGRADE_ROLLBACK_RESULT${UPGRADE_RESULT:- skipped}"
+echo "BACKUP_RESTORE_UPDATE_ROLLBACK_RESULT $BACKUP_RESTORE_RESULT (guarded update OK, failed update auto-rolled back with config/keys digest unchanged, tampered restore refused, restore recovered destroyed config/PKI/key and the service came back, no key material in logs)"
 echo "BAFT_SYSTEMD_BASELINE_LIFECYCLE=PASS (systemd $systemd_version, real install, baseline LoadCredential=, root-only perms, start/restart/stop, fail-closed missing credential, safe uninstall, explicit purge)"
