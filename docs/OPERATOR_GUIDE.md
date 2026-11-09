@@ -1,5 +1,21 @@
 # Operator Guide
 
+## Interactive menu (Persian / English)
+
+`sudo scripts/install.sh` with no arguments on a terminal, or `sudo baft-tunnel menu` after an
+install, opens a menu with the BAFT-TUNNEL banner. Up/Down (or j/k) move, Enter selects, Esc (or
+q) goes back, 1-9 jump. It offers: install/upgrade, register an instance with the agent, pair the
+nodes (`setup init` / `setup join`, asking role, node names, ports and the peer IP, and comparing
+the checksum you were read out of band; Persian digits, spaces and upper case are accepted),
+configuration plan/validate/apply, tunnel start/stop/restart (`systemctl enable|disable --now`,
+`restart`), status/logs/support bundle/CRL freshness, CRL renewal (tcp-tls), backup/restore,
+update/rollback and uninstall. It only wraps those commands, shows each one before it runs and
+prints the next step afterwards. `--lang fa|en`, `--plain` (numbered, automatic without a
+terminal), `--dry-run` (print commands only) and `--destdir ROOT` (staging) are accepted. All
+non-interactive flags of the scripts keep working unchanged. Installed copy:
+`/usr/local/lib/baft-tunnel/scripts/menu.sh` (removed by uninstall, restored by rollback).
+Test: `scripts/test-menu.sh BINARY` (run unprivileged).
+
 ## Phase 1 offline certificate bootstrap (experimental)
 
 This is a manual offline-CA workflow for the current TCP/TLS transport. It is not online enrollment and is not yet a production control plane.
