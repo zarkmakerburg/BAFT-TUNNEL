@@ -1,12 +1,12 @@
 # BAFT-TUNNEL — Product Roadmap and Verified Delivery Queue
 
-**Status snapshot:** 2026-11-09  
-**Source baseline:** `main` at `92b0645f8104694bbe9d016e24f7ec0c8f43eeb0` (PR #106).  
-**Gate status:** all five P0 gates (P0-1 to P0-5) are closed with exact-SHA run evidence (see section 5 and [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2)). PR #88 (systemd control helper, ADR-0023) is merged. Signed prerelease `v0.1.0-rc.4` is the clean-install candidate; `rc.3` is superseded (glibc 2.39, unusable on Ubuntu 22.04). No stable tag, release or deploy. P1/P2 are held until owner review.
+**Status snapshot:** 2026-11-09 (assessment refresh)  
+**Source baseline:** `main` at `0a7576b` (PR #132). Earlier snapshot of this file: `92b0645` (PR #106).  
+**Gate status:** all five P0 gates (P0-1 to P0-5) are closed with exact-SHA run evidence (see section 5 and [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2)). P1 items 2–5 are delivered (ADR-0024, PR #109, LAB run 42545941726). Acceptance verdicts: `tcp-tls` Direct two-host operations PASS (run 42635190485), `tcp-tls` Reverse **Preview** (run 42619848756), BAFT **Preview, Direct only** (run 42552860541). Signed prerelease `v0.1.0-rc.4` is the clean-install candidate; `rc.3` is superseded (glibc 2.39, unusable on Ubuntu 22.04). No stable tag, release or deploy.
 **Repository governance:** `main` is protected (2026-11-09): PR required, 0 approvals, required checks `rust`, `ubuntu-2204-baseline`, `lab-config`, no force push or deletion, admin bypass allowed.
-**Product status:** Active development / pre-release. **Not production-ready.** The only published release state recorded in the repository is pre-release `v0.1.0-phase1-pre`.
+**Product status:** Active development / pre-release. **Not production-ready, and not yet usable by a non-expert operator** (see [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md) §1). Published releases are prereleases only: `v0.1.0-phase1-pre`, `v0.1.0-rc.2`, `v0.1.0-rc.3` (superseded), `v0.1.0-rc.4`.
 
-This file is the single source of truth for phases, engines and delivery order. Detailed cross-project extraction, verified code state and implementation instructions: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). Exact historical test evidence and run IDs: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). Persian task pointer: [PROJECT_BOARD.md](PROJECT_BOARD.md). HQ decisions and append-only evidence log: [Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
+This file is the single source of truth for phases, engines and delivery order. Item-by-item status, findings, risks, effort and owner-hands items behind the current queue: [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md). Detailed cross-project extraction, verified code state and implementation instructions: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). Exact historical test evidence and run IDs: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). Persian task pointer: [PROJECT_BOARD.md](PROJECT_BOARD.md). HQ decisions and append-only evidence log: [Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
 ## 1. Product direction and scope
 
@@ -68,9 +68,10 @@ Evidence classifications are deliberately separate: current source code, merged-
 - PR #86 added local Apply init/join and panel receipt flow; its PR description reports local tests/browser QA and a temporary live-agent receipt, but no real-host LAB for that Apply flow.
 - PR #88 is merged (2026-11-08). Its own description reported fake-controller tests only; the real-systemd 249 gate was closed afterwards (P0-1, run 42523536944, SHA 22e94f1).
 
-## 4. Current implementation baseline (main at 92b0645)
+## 4. Current implementation baseline (main at 92b0645; status marks refreshed at 0a7576b)
 
 ### Implemented in current main
+- Since `92b0645`: P1 operations evidence (diagnostics tiers, end-to-end `tunnel` state, traffic counters, audit v2; ADR-0024), local backup/restore and guarded update with automatic rollback (ADR-0025), security fixes SA-01..SA-06, SA-08, SA-10, and panel views of these (PR #120).
 - Rust data plane with TLS 1.3 mutual authentication, peer identity validation, SHA-256 pinning, CRL-aware certificate checks, bounded Yamux streams and reconnect behavior.
 - `tcp-tls` and experimental `noise-tcp` Direct engine paths behind the engine configuration.
 - Actual `tcp-tls` Reverse mode, surfaced as Preview through capability contract, Preflight and Wizard. Noise Reverse remains blocked.
@@ -81,13 +82,15 @@ Evidence classifications are deliberately separate: current source code, merged-
 - Dependency-free static local panel served by the agent, with Persian RTL and English LTR, desktop/mobile navigation and honest empty/unknown/offline states.
 
 ### Not implemented or not yet accepted
-- Apply `start` (PR #88 helper) is merged and LAB-proven on two hosts (P0-5), but it is not enabled at boot and Apply never claims `ready`; receipt `ready` stays Unknown by design.
-- No end-to-end authenticated peer/session/data-path readiness result in the current status API; local listener acceptance is not tunnel health.
+_Status marks added 2026-11-09 at `main` `0a7576b`; details in [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md) §3._
+- Apply `start` (PR #88 helper) is merged and LAB-proven on two hosts (P0-5), but it is not enabled at boot and Apply never claims `ready`; receipt `ready` stays Unknown by design. Apply has no `stop`/`restart` stage. **Open: U3.**
+- ~~No end-to-end authenticated peer/session/data-path readiness result in the current status API~~ **Done** (ADR-0024, PR #109): diagnostics tiers, `tunnel` state and `last_verified_unix`; local listener acceptance is still not tunnel health.
 - No central online enrollment/control plane or enrolled multi-node inventory.
 - The Servers page is not a Hashem-style Fleet; it has local/configured-peer information only.
-- No live throughput counters exposed in the API; traffic KPI remains unavailable.
+- ~~No live throughput counters exposed in the API~~ **Done** (PR #109 `/v1/traffic`, panel PR #120); history is in memory for one hour only.
 - No read-only firewall inspection and no firewall mutation.
-- Audit actor/target completeness and machine-readable/localizable evidence codes remain gaps.
+- ~~Audit actor/target completeness~~ **Done** (audit v2, PR #109). Machine-readable/localizable Preflight evidence codes remain **partial** (B1).
+- The agent is not a systemd service, setup needs manual root ownership steps, the signed release ships binaries only, and the PKI tool cannot renew a 7-day CRL. **Open: U1, U2, U6** (findings F1–F6 in the plan).
 - No customer/subscription/reseller/billing system in core.
 - No production release. Independent security assessment of the P0+P1 surface done 2026-11-09 (`docs/SECURITY_ASSESSMENT.md`): 3 Medium and 3 Low fixed (#112, #114, main `f3c8b54`), 4 Low/Info open or accepted; no Critical/High found. This is not the pre-stable review of the full product.
 
@@ -97,7 +100,27 @@ The current MVP panel source is plain static HTML/CSS/JavaScript in `panel/`, se
 
 ## 5. Prioritized delivery queue
 
-### P0 — current critical path
+### Current queue: usable MVP first (assessment 2026-11-09, `main` `0a7576b`)
+
+The P0 gates proved the runtime; they did not make the product usable by a non-expert operator. The queue below replaces "P1/P2 held" as the working order. IDs, evidence, effort, dependencies, decisions and owner-hands items are in [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md) §4–§6. Scope rule: P1 acceptance and panel integration only; no new engines or protocols.
+
+| Order | ID | Work | LAB | Owner hands |
+|---|---|---|---|---|
+| now, parallel | Q1–Q4 | Exact-SHA CI on push to `main` + weekly audit/fuzz; docs truth pass (README, ARCHITECTURE, quickstarts, traceability, HQ body); Preflight `directory_writable` so the panel never offers an Apply that cannot work; BAFT visible but not selectable until configurable | — | — |
+| 1 | U1 | `baft-pki.sh renew-crl`, 30-day default CRL validity, CRL and certificate renewal runbook, one real `push-crl.sh` run (today `tcp-tls` tunnels stop reconnecting 7 days after setup) | short | — |
+| 2 | U2 | Hardened agent systemd unit with its own user (SA-09), one-step `install.sh --instance`, setup sets owners/modes itself (no manual `chown`/`chgrp`) | via U7 | — |
+| 3 | U3 | Apply `stop`/`restart`, enable at boot through the helper (ADR-0023 amendment) | via U7 | reboot approval (O1) |
+| 4 | U5a | Panel Start/Stop/Restart, diagnostics with a next action per tier, Wizard ends in Start | via U7 | phone check (O3) |
+| 5 | U6 | Signed release bundle (binary + scripts + units + docs), then prerelease `rc.5` | — | release gate (O8) |
+| 6 | U7 | MVP acceptance v2 on LAB with the signed `rc.5` bundle (install → setup → lifecycle through the agent → diagnostics → integrity → backup/restore → update from previous prerelease → uninstall) | yes | — |
+| 7 | U8 | Quickstart en/fa and troubleshooting rewritten for the accepted path | — | — |
+| 8 | U4, U5b | Panel-complete pairing: root config-promote helper (ADR-0026) and bundle export/import in the panel (closes P1-8 "Add from Link") | yes | — |
+| 9 | B1, B2 | Preflight evidence codes fully localized (P1-6); in-product "Test tunnel" integrity probe (ADR) | B2 yes | — |
+| 10 | B3–B6, S1–S10 | Read-only firewall view (P1-7), BAFT configurable (ADR-0019 phase F), history/alerts, accessibility; multi-hour soak, cross-version chain, reboot proof, fuzz depth, external review, licence review | as listed | O2, O4–O7 |
+
+Not before the MVP queue is done: P1-1 enrollment and P2 Fleet/Jobs (Tier L in the plan).
+
+### P0 — critical path (all five gates closed; criteria kept for history)
 
 | ID | Work | Required result / exit evidence |
 |---|---|---|
@@ -111,20 +134,20 @@ The current MVP panel source is plain static HTML/CSS/JavaScript in `panel/`, se
 
 ### P1 — product operations and diagnostics
 
-1. Authenticated Node enrollment and small remote Node inventory, only after a reviewed control-plane trust-boundary ADR.
-2. Real authenticated peer/session/data-path diagnostic endpoint; TCP-only reachability must remain a lower evidence tier.
-3. End-to-end tunnel state and last-verified timestamp.
-4. Complete audit actor, target and resource identity.
-5. Measured throughput/byte counters and history with units, interval, provenance and freshness.
-6. Machine-readable Preflight evidence codes and localized explanations.
-7. Read-only firewall visibility.
-8. Safe “Add from Link” import with versioned schema, checksum, strict validation and preview.
+1. Authenticated Node enrollment and small remote Node inventory, only after a reviewed control-plane trust-boundary ADR. — _Not started; after the MVP queue (L1)._
+2. Real authenticated peer/session/data-path diagnostic endpoint; TCP-only reachability must remain a lower evidence tier. — **Done** (ADR-0024, PR #109, LAB 42545941726).
+3. End-to-end tunnel state and last-verified timestamp. — **Done** (PR #109).
+4. Complete audit actor, target and resource identity. — **Done** for local Apply (PR #109); remote Job receipts wait for item 1.
+5. Measured throughput/byte counters and history with units, interval, provenance and freshness. — **Done** (PR #109, panel PR #120); history beyond one hour is B5.
+6. Machine-readable Preflight evidence codes and localized explanations. — _Partial_ (check ids and remediation localized; evidence text English): B1.
+7. Read-only firewall visibility. — _Not started_: B3.
+8. Safe “Add from Link” import with versioned schema, checksum, strict validation and preview. — _Not started_; delivered as the panel bundle import in U5b.
 
 ### P2 — multi-node operations
 
 1. Fleet inventory, Node groups, version and health freshness.
 2. Remote orchestration via scoped Jobs, idempotency, receipts and rollback.
-3. Update/rollback and backup/restore; require restore acceptance, not just backup success.
+3. Update/rollback and backup/restore; require restore acceptance, not just backup success. — **Done locally** (ADR-0025; restore accepted on LAB in runs 42635190485 and 42619848756, same version); cross-version update and remote Jobs open.
 4. Monitoring, alerts and operational history.
 5. Third-party integration API for external customer/subscription panels if the owner prioritizes it.
 
@@ -147,6 +170,8 @@ WebSocket/TLS, uTLS sidecar, QUIC/UDP, Relay, multi-engine failover and automati
 11. No production release until explicit release gates and required owner authorization are satisfied.
 
 ## 7. Release gate checklist
+
+Gate-by-gate status at `main` `0a7576b`: [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md) §8. The boxes below stay unticked until a release candidate is accepted against them.
 
 - [ ] P0-1 through P0-5 accepted with exact SHA and CI/LAB evidence.
 - [ ] Engine catalogue, CLI, Preflight, Wizard and runtime agree.
