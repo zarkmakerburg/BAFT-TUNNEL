@@ -87,7 +87,7 @@ still fill the slots for 5 s at a time (local users only; loopback listener).
 
 Evidence: `${{ steps.v.outputs.tag }}` (from the dispatch input `tag` or a pushed tag name) was
 expanded into `run:` scripts. Only users with write access can trigger the workflow. Fix: passed
-through `env:` and validated against `^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`.
+through `env:` and validated against `^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`.
 
 ### SA-07 (Low, accepted): caller-chosen paths and probes
 
