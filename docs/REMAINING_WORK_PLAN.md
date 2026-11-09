@@ -1,6 +1,6 @@
 # Remaining work: assessment and prioritized plan
 
-- **Date:** 2026-11-09. **Baseline:** `main` at `0a7576b` (PR #132). In flight and not part of the baseline: PR #133 (BAFT shown as Preview in the Wizard, Reverse role wording).
+- **Date:** 2026-11-09. **Baseline:** `main` at `0a7576b` (PR #132), rechecked at `c7dbd15` after PR #133 merged (BAFT listed as Preview, Direct only, in `/v1/engines` and the Wizard; Reverse role wording). No finding below changed with #133.
 - **Method:** read-only review of the source, docs, ADRs, HQ Issue #2 and the recorded CI/LAB runs. Nothing was built or run for this document; no LAB run, tag, release or deploy.
 - **Evidence labels:** **[CODE]** read in the source at the baseline; **[DOC]** stated in a repository document; **[CI]** / **[LAB]** exact-SHA run evidence recorded elsewhere; **[INF]** inferred from the code, not executed.
 - **Scope rule (owner):** finish P1 acceptance and panel integration; do not add engines or protocols.
@@ -30,7 +30,7 @@
 | F5 | Panel cannot finish setup on an installed host | [CODE] the Wizard calls Apply stage `init` only (`panel/pages.js:382`) with default dir `/etc/baft-tunnel` (`panel/pages.js:232`); `install.sh` makes that directory `root:baft-tunnel 0750` (`scripts/install.sh:182,191`) and the agent runs as `baft-tunnel`. Preflight checks only that the directory exists (`src/agent.rs:592`). [INF] creating files there fails with permission denied; no LAB stage runs Apply `init`/`join` through the agent (stages use the CLI as root). Join and start are not wired in the panel; the Tunnels page offers diagnostics but no lifecycle action | An Apply button that cannot work on the supported layout; setup still needs the CLI |
 | F6 | Operator scripts are not in the signed release | [CODE] `.github/workflows/release.yml:87–107` stages the binary, the BAFT engine, licences, the engine manifest and the SBOM; install/uninstall/update/backup/restore/control-helper scripts and the systemd units are not released | Operators run unsigned scripts from a git checkout; signature covers only part of what they install |
 | F7 | Exact-SHA CI gap on `main` | [CODE] `phase1-rust.yml` runs on PRs and on push to the deleted `phase1/rust-tcp-transport` branch, not on push to `main`; no workflow has a `schedule` | After a squash merge, `rust` and `ubuntu-2204-baseline` never run on the `main` SHA unless dispatched by hand; new RustSec advisories are only seen on the next PR |
-| F8 | BAFT shown but not configurable | [CODE] `src/setup.rs:77–78` rejects engine `baft`; PR #133 lists it in `/v1/engines` and the Wizard, and preflight then blocks it | Selectable-then-blocked conflicts with "unavailable modes cannot be selected or applied" (alignment §7 rule 4) until ADR-0019 phase F |
+| F8 | BAFT shown but not configurable | [CODE] since PR #133 (`c7dbd15`) `/v1/engines` and the Wizard offer `baft`, then `src/setup.rs:77–81` refuses it in plan and preflight and the review step shows that error (`panel/pages.js:285,369`) | Selectable-then-blocked conflicts with "unavailable modes cannot be selected or applied" (alignment §7 rule 4) until ADR-0019 phase F |
 | F9 | Stale statements in docs | [DOC] `README.md:73` (review "waived ... not performed"), `:84` (React/Vite), `:87` (Noise "research-only"), `:100` (soak and real packet loss "untested"); `ARCHITECTURE.md:18–20` (React/Vite, Axum, SQLite; none is in `Cargo.toml`); `quickstart.en.md:49` and `quickstart.fa.md:47` ("no installer"), both still build from source; `PANEL_HQ_TRACEABILITY.md:29,32,33` list G2/G5/G6 open (closed by #109/#120); Roadmap header (baseline `92b0645`, "P1/P2 held", "only ... phase1-pre" released); HQ Issue #2 body §1 dated 2026-11-08 (Reverse "still reported unavailable"); `src/baft_engine.rs:6` "Not wired" although `src/config.rs:529` routes to it | Breaks the project's own "no fake capability" rule in both directions |
 | F10 | Integrity only measurable in LAB | [DOC] READINESS_CONTRACT level 4 is reached only by LAB stages; the agent reports `integrity: unknown` always | Honest, but the product can never show level 4/5 or a "Test tunnel" result without an in-product probe |
 
@@ -88,9 +88,9 @@
 | Engine / mode | Still open |
 |---|---|
 | `tcp-tls` Direct | `ready` unknown (by design); cross-version update; multi-hour soak; unrelated nft drift on the abroad host |
-| `tcp-tls` Reverse (Preview) | Multi-hour soak; cross-version update; single LAB pair; nft drift; Wizard wording (fixed in PR #133, pending merge) |
+| `tcp-tls` Reverse (Preview) | Multi-hour soak; cross-version update; single LAB pair; nft drift; Wizard wording (fixed in PR #133, merged `c7dbd15`) |
 | `noise-tcp` Direct (Experimental) | No loss/soak/ops acceptance; Reverse unavailable. No work planned (L6) |
-| `baft` (Preview, Direct only) | Exposure PR #133; not configurable (B4); no status/diagnostics (unknown by design); multi-hour soak; listener RSS +23 % over 1200 s (watch in S1) |
+| `baft` (Preview, Direct only) | Exposed as Preview, Direct only by PR #133 (merged); not configurable (B4); no status/diagnostics (unknown by design); multi-hour soak; listener RSS +23 % over 1200 s (watch in S1) |
 
 ### 3.6 Security assessment
 
@@ -108,7 +108,7 @@ SA-01..SA-06, SA-08 and SA-10 are fixed. SA-07 is accepted (the token holder is 
 | G6 traffic counters | **Closed** (#109, #120) |
 | G7 firewall inspection | Open, B3 |
 | G8 evidence codes | Partial, B1 |
-| G9 BAFT in the panel | Display: PR #133; configurable: B4 |
+| G9 BAFT in the panel | Display: done in PR #133; configurable: B4 |
 | Physical phone test, formal accessibility audit | Not run, B6 |
 
 ### 3.8 Product UX acceptance (D-008) not yet met
@@ -135,7 +135,7 @@ Effort: **S** = one small PR; **M** = one or two PRs, about a day with CI; **L**
 | Q1 | `phase1-rust` on push to `main`; drop the obsolete branch triggers; weekly `schedule` for `cargo audit`/`cargo deny` and a longer fuzz run | F7: exact-SHA evidence without manual dispatch | S | First push run on `main` green |
 | Q2 | Docs truth pass: README, ARCHITECTURE, quickstart en/fa (mark legacy and point to the installed-service path until U8), traceability G2/G5/G6, HQ Issue #2 body §1, `src/baft_engine.rs:6` comment; list the 25 remote branches besides `main` and delete only those whose PRs are merged | F9 | S | PR merged; HQ body refreshed |
 | Q3 | Preflight check `directory_writable` (can the agent user create files in `dir`); Blocked with "run the printed setup commands as root"; the panel Apply button follows it | F5: no button that fails on every installed host | S | Unit test + real-systemd CI step |
-| Q4 | After PR #133 merges: BAFT visible but not selectable ("Preview, not configurable here yet") until B4 | F8 | XS | Browser QA |
+| Q4 | BAFT stays visible (PR #133) but not selectable ("Preview, not configurable here yet") until B4 | F8 | XS | Browser QA |
 
 ### Tier U — blockers to a usable v0.2.0 MVP (in this order)
 
@@ -252,7 +252,7 @@ Parallel tracks that do not share files or LAB time: (U1, Q1–Q4) alongside U2.
 | Gate | Status |
 |---|---|
 | P0-1..P0-5 with exact SHA and CI/LAB evidence | Met |
-| Catalogue, CLI, Preflight, Wizard and runtime agree | Partly: BAFT selectable-then-blocked after #133 (Q4); panel Apply vs installed layout (Q3, U4) |
+| Catalogue, CLI, Preflight, Wizard and runtime agree | Partly: BAFT selectable-then-blocked since #133 (Q4); panel Apply vs installed layout (Q3, U4) |
 | Reverse Preview and Noise Reverse unavailability truthful | Met |
 | BAFT Store path uses the pinned artifact and manifest; licence package verified | Artifact met (A1–A3); licence review open (S6) |
 | Apply receipts disclose what happened and what is unverified | Met |

@@ -9,7 +9,7 @@
 - **گیت‌های P0:** هر پنج گیت با SHA و شناسه اجرا بسته شده‌اند؛ شواهد کامل در [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2) و [Roadmap](PRODUCT_ROADMAP.md).
   - **P0-1** (PR #88، helper سیستم‌دی): PR #88 ادغام شده؛ تست واقعی systemd 249 در اجرای 42523536944 (SHA `22e94f1`).
   - **P0-2:** رسید Apply با نشانگر Session مجاز (اجرای 42524638625) و اثبات دو‌میزبانه در P0-5؛ `ready` عمداً Unknown می‌ماند.
-  - **P0-3** (Engine Store ← Launcher برای BAFT): اجراهای 42510577167 و 42522105698 با Asset امضاشده rc.2؛ BAFT هنوز در Wizard مخفی است.
+  - **P0-3** (Engine Store ← Launcher برای BAFT): اجراهای 42510577167 و 42522105698 با Asset امضاشده rc.2؛ از PR #133 ‏(`c7dbd15`) BAFT در Wizard به‌صورت Preview و فقط Direct دیده می‌شود، ولی Wizard هنوز نمی‌تواند پیکربندی آن را بسازد.
   - **P0-4** (Reverse R3): اجرای 42525790470 روی `5a72a25`؛ Reverse همچنان **Preview**.
   - **P0-5** (MVP یکپارچه): اجرای 42538458094 روی `92c4e70` با Prerelease امضاشده `v0.1.0-rc.4` روی هر دو میزبان LAB؛ یکپارچگی 64 KiB و 2 MiB تأیید شد.
 - **حفاظت `main` (2026-11-09):** PR الزامی، ۰ تأییدیه، چک‌های الزامی `rust` و `ubuntu-2204-baseline` و `lab-config`، بدون force push و حذف؛ Bypass ادمین مجاز است.
