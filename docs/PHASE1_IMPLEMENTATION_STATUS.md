@@ -395,3 +395,16 @@ Added `scripts/pki/push-crl.sh` (stages the CRL on each node over SSH and runs t
 - v0.1.0-rc.3 is **superseded; do not install it on Ubuntu 22.04**. Its `baft-tunnel` binary was linked on ubuntu-24.04 and needs GLIBC_2.39, so it does not start on 22.04 (run 42528251746; the installer refused it at `--version`). Earlier rc `baft-tunnel` assets share this build host. Fixed in #99: release builds on ubuntu-22.04 and refuses a binary above the glibc 2.35 floor.
 - Leftover-process incident: in run 42528251746 a `set -e` + `(exit N)` stage trap skipped the main cleanup, leaving that run's echo helper (127.0.0.1:19090) and `/tmp/baft-tunnel-e2e-*` directory on the LAB hosts; the earlier statement that the failed run left the hosts unchanged was wrong. The next run (42533396921) refused to start at its port preflight. Fixed in #100; leftovers removed by the scoped `cleanup_stale=1` run 42534285191.
 - #101: the stage now accepts the dash-grouped `setup init` checksum (run 42534426118). #102: the refusal checks no longer use `pkill -f <path>`, which killed its own remote shell (run 42535679925). #103: firewall drift is shown (masked) and classified instead of a bare hash mismatch (run 42536874662).
+
+## P1 operations evidence (ADR-0024): diagnostics, end-to-end status, traffic counters, audit, 2026-11-09
+
+PR #109 merged as main `4852ecf`. What the agent (`--instance NAME`) now serves: `POST/GET /v1/diagnostics` (tiers tcp_reachability, secure_channel, identity, authorization, session, data_path, integrity), `GET /v1/status` → `tunnel` (state, per-tier evidence, last failure stage, `last_verified_unix`), `GET /v1/traffic` (bytes per direction, rates, interval, freshness) and audit v2 (actor fingerprint, target, resource, receipt id). Integrity always stays Unknown.
+
+| Evidence | Result |
+|---|---|
+| Baseline CI, main `92b0645` | phase1-rust run 42542916316: success |
+| PR CI, head `f4c78cc` | phase1-rust 42545238536 (rust + ubuntu-2204-baseline with real-systemd step 4b), phase0 42545238535, fuzz-smoke 42545238632: success |
+| Exact-SHA CI, main `4852ecf` | phase1-rust run 42545957126: success |
+| Real-host LAB, main `4852ecf` (local build, binary sha256 `6160c9be…d5e4`) | phase1-two-host-e2e run 42545941726, mvp=1: PASS. Both hosts `p1_evidence=1`: traffic from_peer = to_peer = 2,162,825 bytes (64 KiB + 2 MiB sent), all tiers pass up to data_path, integrity unknown, state `carrying_traffic` with the correct peer id, audit with actor and no token. After revocation the dialing node reports `secure_channel: fail` (`p1_revoked_tier=secure_channel`). Cleanup: uninstall proven, listeners/units unchanged, no BAFT firewall rules; unrelated nft address-set drift on abroad (as in P0-5) |
+
+Open: remote Job receipts (need the P1-1 enrollment ADR); counter history beyond the agent's one-hour memory; Preflight evidence codes, read-only firewall inspection and "Add from Link" (P1 items 6 to 8).
