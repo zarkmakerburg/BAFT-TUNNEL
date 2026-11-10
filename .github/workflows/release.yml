@@ -117,7 +117,7 @@ jobs:
           bash "$x/$name/scripts/install.sh" --binary "$x/$name/baft-tunnel" \
             --destdir "$x/root" --systemd-version 249 >/dev/null
           cmp "$x/root/usr/local/bin/baft-tunnel" target/release/baft-tunnel
-          for f in scripts/install.sh scripts/menu.sh scripts/uninstall.sh scripts/install-agent-control.sh \
+          for f in scripts/install.sh scripts/menu.sh scripts/uninstall.sh scripts/install-agent-control.sh scripts/quick-install.sh \
                    scripts/pki/baft-pki.sh scripts/pki/push-crl.sh systemd/baft-tunnel@.service; do
             test -f "$x/root/usr/local/lib/baft-tunnel/$f" || { echo "::error::package install lacks $f"; exit 1; }
           done
