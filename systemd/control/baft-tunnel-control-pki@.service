@@ -10,7 +10,7 @@ Type=oneshot
 # with baft-tunnel ownership and mode 0600; no private-key bytes are returned.
 ExecStart=/usr/local/bin/baft-tunnel setup pki-helper --instance %i
 ExecStopPost=/usr/bin/rm -f /run/baft-tunnel/control/%i.pki
-TimeoutStartSec=30s
+TimeoutStartSec=60s
 UMask=0022
 NoNewPrivileges=true
 PrivateTmp=true

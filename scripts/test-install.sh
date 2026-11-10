@@ -124,6 +124,7 @@ done
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel setup helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-setup@.service"
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel setup pki-helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
 grep -qx 'PathExists=/run/baft-tunnel/control/%i.pki' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.path"
+grep -qx 'TimeoutStartSec=60s' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
 grep -qx 'ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
 grep -qx 'ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control' "$STAGE/etc/systemd/system/baft-tunnel-control-setup@.service"
 grep -qx 'CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"

@@ -33,7 +33,7 @@ pp_snapshot() { # side : normalized firewall rules, listeners outside the test p
 echo "--- clean-host check ---"
 PP_USERS_BEFORE=(); PP_DRIFT=()
 for side in iran abroad; do
-  ssh_host "$side" "! test -e $UB && ! test -e $EB && ! test -e /var/lib/baft-tunnel && ! test -e $AGS && [ \"\$(systemctl list-unit-files --no-legend 'baft-tunnel*' | wc -l)\" = 0 ]" ||
+  ssh_host "$side" "! test -e $UB && ! test -e $EB && ! test -e /var/lib/baft-tunnel && ! test -e /var/lib/baft-tunnel-control && ! test -e $AGS && [ \"\$(systemctl list-unit-files --no-legend 'baft-tunnel*' | wc -l)\" = 0 ]" ||
     { echo "$side is not clean: an earlier BAFT-TUNNEL install is present (binary, $EB, state or units)" >&2; exit 1; }
   ssh_host "$side" "systemctl --version | head -1; . /etc/os-release; echo \$PRETTY_NAME"
   for u in baft-tunnel baft-tunnel-agent; do
@@ -94,7 +94,12 @@ PY"
 jf() { python3 -c 'import sys,json; d=json.load(sys.stdin)
 for k in sys.argv[1].split("."): d = d.get(k, "") if isinstance(d, dict) else ""
 print(d)' "$1"; }
-pp_fail() { echo "$1" >&2; ssh_host "$2" "journalctl -u baft-tunnel-agent@$(pp_inst "$2") -u baft-tunnel-control-setup@$(pp_inst "$2") -n 40 --no-pager" >&2 || true; exit 1; }
+pp_fail() {
+  echo "$1" >&2
+  local inst; inst="$(pp_inst "$2")"
+  ssh_host "$2" "systemctl status --no-pager --full baft-tunnel-control-pki@$inst.path baft-tunnel-control-pki@$inst.service 2>&1 || true; systemctl show baft-tunnel-control-pki@$inst.path baft-tunnel-control-pki@$inst.service -p ActiveState -p SubState -p Result -p ExecMainStatus 2>&1 || true; journalctl -u baft-tunnel-control-pki@$inst.path -u baft-tunnel-control-pki@$inst.service -u baft-tunnel-agent@$inst.service -u baft-tunnel-control-setup@$inst.service -n 100 --no-pager 2>&1 || true; echo ---control-metadata---; stat -c '%U:%G %a %n' /run/baft-tunnel/control /var/lib/baft-tunnel-control 2>&1 || true; find /run/baft-tunnel/control -maxdepth 1 -name '$inst.*' -printf '%M %u:%g %p\n' 2>/dev/null || true" >&2 || true
+  exit 1
+}
 
 echo "--- both agents run in setup mode before any configuration ---"
 for side in iran abroad; do
@@ -129,13 +134,17 @@ pp_tls_enroll() {
   mkdir -p "$LOCAL_TMP/d2-certs/csr" "$LOCAL_TMP/d2-certs/signed"
   for side in abroad iran; do
     if [[ "$side" == abroad ]]; then node=abroad; san="$LAB_ABROAD_HOST"; else node=iran; san="$LAB_IRAN_HOST"; fi
+    inst="$(pp_inst "$side")"
+    ssh_host "$side" "systemctl is-enabled --quiet baft-tunnel-control-pki@$inst.path && systemctl is-active --quiet baft-tunnel-control-pki@$inst.path" || pp_fail "PKI root-helper path unit is not enabled and active on $side" "$side"
     req_id="pki-csr-$side-0001"
     python3 - "$LOCAL_TMP/d2-certs/csr-request-$side.json" "$req_id" "$node" "$san" <<'PY'
 import json, sys
 json.dump({"request_id":sys.argv[2],"node_id":sys.argv[3],"server_name":sys.argv[4],"confirm":True},open(sys.argv[1],"w"))
 PY
-    pp_api "$side" POST /v1/pki/csr/create "$LOCAL_TMP/d2-certs/csr-request-$side.json" > "$LOCAL_TMP/d2-certs/csr-response-$side.json"
-    python3 - "$LOCAL_TMP/d2-certs/csr-response-$side.json" "$LOCAL_TMP/d2-certs/csr/$side.csr" "$node" "$san" <<'PY'
+    if ! pp_api "$side" POST /v1/pki/csr/create "$LOCAL_TMP/d2-certs/csr-request-$side.json" > "$LOCAL_TMP/d2-certs/csr-response-$side.json"; then
+      pp_fail "PKI CSR API transport failed on $side" "$side"
+    fi
+    if ! python3 - "$LOCAL_TMP/d2-certs/csr-response-$side.json" "$LOCAL_TMP/d2-certs/csr/$side.csr" "$node" "$san" <<'PY'
 import json, sys
 d=json.load(open(sys.argv[1]))
 assert d.get("result") == "created", d
@@ -145,6 +154,10 @@ assert d.get("private_key_exported") is False, d
 assert len(d.get("public_key_sha256","")) == 64, d
 open(sys.argv[2],"w").write(d["csr_pem"])
 PY
+    then
+      cat "$LOCAL_TMP/d2-certs/csr-response-$side.json" >&2
+      pp_fail "root PKI helper did not complete CSR creation on $side" "$side"
+    fi
     python3 - "$LOCAL_TMP/d2-certs/csr-read-$side.json" "$node" "$san" <<'PY'
 import json, sys
 json.dump({"request_id":"pki-read-"+sys.argv[2]+"-0001","node_id":sys.argv[2],"server_name":sys.argv[3]},open(sys.argv[1],"w"))

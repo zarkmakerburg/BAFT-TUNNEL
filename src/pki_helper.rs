@@ -1661,7 +1661,7 @@ impl PkiHelperClient for SystemPkiClient {
         // on filesystems that do not support syncing directory handles.
         let _ = File::open(&self.control_dir).and_then(|dir| dir.sync_all());
 
-        const WAIT: Duration = Duration::from_secs(35);
+        const WAIT: Duration = Duration::from_secs(65);
         let started = Instant::now();
         while started.elapsed() < WAIT {
             std::thread::sleep(Duration::from_millis(200));
