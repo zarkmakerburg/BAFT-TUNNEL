@@ -151,11 +151,20 @@ jobs:
   validate-d2-candidate:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    outputs:
+      candidate_sha: ${{ steps.candidate.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+      - name: Resolve immutable candidate commit
+        id: candidate
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse --verify HEAD^{commit})"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Candidate SHA: $sha" >> "$GITHUB_STEP_SUMMARY"
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
       - name: Check formatting
@@ -223,8 +232,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.validate-d2-candidate.outputs.candidate_sha }}
           persist-credentials: false
+      - name: Assert exact candidate SHA from validation job
+        env:
+          EXPECTED_SHA: ${{ needs.validate-d2-candidate.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse --verify HEAD^{commit})"
+          echo "Two-host LAB candidate SHA: $actual"
+          [[ -n "$EXPECTED_SHA" && "$actual" == "$EXPECTED_SHA" ]]
+          echo "LAB_CANDIDATE_SHA=$actual" >> "$GITHUB_STEP_SUMMARY"
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal
       - name: Build Linux release binary

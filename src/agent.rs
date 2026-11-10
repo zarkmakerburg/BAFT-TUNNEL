@@ -3455,7 +3455,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preflight_accepts_tcp_tls_reverse_as_a_preview_direction() {
+    async fn preflight_blocks_tcp_tls_reverse_until_independent_acceptance() {
         let body = plan_body("/nonexistent-baft-dir")
             .replace("\"direct\"", "\"reverse\"")
             .replace("noise-tcp", "tcp-tls");
@@ -3467,7 +3467,7 @@ mod tests {
             .iter()
             .find(|c| c["id"] == "direction_support")
             .unwrap();
-        assert_eq!(c["result"], "pass", "{out}");
+        assert_eq!(c["result"], "blocked", "{out}");
     }
 
     fn plan_body(dir: &str) -> String {
