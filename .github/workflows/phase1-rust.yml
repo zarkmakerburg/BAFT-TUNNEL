@@ -108,8 +108,12 @@ jobs:
         run: 'npm install --prefix "$RUNNER_TEMP/baft-panel-qa" --no-save --no-audit --no-fund playwright@1.56.1'
       - name: Install Chromium
         run: '"$RUNNER_TEMP/baft-panel-qa/node_modules/.bin/playwright" install --with-deps chromium'
-      - name: Check panel JavaScript syntax and D2 LAB stage contract
-        run: node --check panel/pages.js && node --check panel/i18n.js && bash scripts/pki/test-panel-tls-lab-stage.sh
+      - name: Check panel JavaScript and real-host LAB script syntax
+        run: |
+          node --check panel/pages.js
+          node --check panel/i18n.js
+          bash -n lab/real-hosts/panel-pairing-stage.sh
+          bash scripts/pki/test-panel-tls-lab-stage.sh
       - name: Exercise panel PKI enrollment in English and Persian
         env:
           NODE_PATH: ${{ runner.temp }}/baft-panel-qa/node_modules
