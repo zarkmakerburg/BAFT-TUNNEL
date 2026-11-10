@@ -412,8 +412,25 @@ pub(crate) fn active_set_dir(config_dir: &Path) -> Result<Option<PathBuf>> {
         &root_meta,
         config_dir == Path::new("/etc/baft-tunnel"),
     )?;
+    let current = root.join("current");
+    let current_meta = match fs::symlink_metadata(&current) {
+        Ok(meta) => Some(meta),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("inspect active PKI version pointer"),
+    };
     let sets = root.join("sets");
-    let sets_meta = fs::symlink_metadata(&sets).context("inspect PKI version sets directory")?;
+    let sets_meta = match fs::symlink_metadata(&sets) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && current_meta.is_none() => {
+            // install.sh creates the fixed pki root for a new node. Until the first
+            // certificate import, that root legitimately has neither sets/ nor current.
+            return Ok(None);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            bail!("active PKI version pointer exists without its sets directory")
+        }
+        Err(error) => return Err(error).context("inspect PKI version sets directory"),
+    };
     ensure!(
         sets_meta.is_dir() && !sets_meta.file_type().is_symlink(),
         "PKI version sets must be a real directory"
@@ -423,11 +440,9 @@ pub(crate) fn active_set_dir(config_dir: &Path) -> Result<Option<PathBuf>> {
         &sets_meta,
         config_dir == Path::new("/etc/baft-tunnel"),
     )?;
-    let current = root.join("current");
-    let current_meta = match fs::symlink_metadata(&current) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).context("inspect active PKI version pointer"),
+    let current_meta = match current_meta {
+        Some(meta) => meta,
+        None => return Ok(None),
     };
     ensure!(
         current_meta.file_type().is_symlink(),
@@ -1892,6 +1907,26 @@ mod tests {
         let receipt = run_at("node1", &control, &config, &receipts, false).unwrap();
         assert_eq!(receipt["result"], "refused");
         assert!(active_set_dir(&config).unwrap().is_none());
+    }
+
+    #[test]
+    fn installer_created_pki_root_without_sets_is_a_pending_enrollment_state() {
+        let (_tmp, _control, config, _receipts) = fixture();
+        let root = config.join("pki");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            active_set_dir(&config).unwrap().is_none(),
+            "a pristine installer-created PKI root without sets/current must mean no active set"
+        );
+
+        std::os::unix::fs::symlink(format!("sets/{}", "a".repeat(64)), root.join("current"))
+            .unwrap();
+        assert!(
+            active_set_dir(&config).is_err(),
+            "a current pointer without its sets directory must remain a hard error"
+        );
     }
 
     #[test]
