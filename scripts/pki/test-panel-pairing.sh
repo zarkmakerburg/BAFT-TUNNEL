@@ -80,8 +80,18 @@ PLAN="{\"engine\":\"noise-tcp\",\"role\":\"serve\",\"direction\":\"direct\",\"no
 
 step "2 tamper and scope refusals by the root helper (nothing written)"
 before="$(sudo find /etc/baft-tunnel -mindepth 1 | sort)"
+# Wait until the helper consumed the request and its one-shot unit finished.
+helper_idle() {
+  for n in $(seq 1 80); do
+    ! sudo test -e "$CTL/$NAME.setup" && ! sudo test -L "$CTL/$NAME.setup" &&
+      ! systemctl is-active --quiet "baft-tunnel-control-setup@$NAME.service" && return 0
+    sleep 0.25
+  done
+  return 1
+}
 helper_result() { # wait for the helper's answer to a request the test dropped as the agent user
-  for n in $(seq 1 40); do sudo test -f "$CTL/$NAME.setup-result" && break; sleep 0.25; done
+  for n in $(seq 1 40); do sudo test -f "$CTL/$NAME.setup-result" && ! sudo test -L "$CTL/$NAME.setup-result" && break; sleep 0.25; done
+  helper_idle || die "the setup helper did not consume the request"
   sudo cat "$CTL/$NAME.setup-result" 2>/dev/null; sudo rm -f "$CTL/$NAME.setup-result"
 }
 echo '{"stage":"init","key":"tamper-0001","plan":{}}' >"$TMP/elsewhere.json"; chmod 644 "$TMP/elsewhere.json"
@@ -102,9 +112,8 @@ head -c 70000 /dev/zero | tr '\0' ' ' | sudo -u baft-tunnel-agent tee "$CTL/$NAM
 echo keep >"$TMP/victim"; chmod 644 "$TMP/victim"
 sudo -u baft-tunnel-agent ln -s "$TMP/victim" "$CTL/$NAME.setup-result"
 printf '%s' "{\"stage\":\"start\",\"key\":\"tamper-0006\",\"plan\":$PLAN}" | sudo -u baft-tunnel-agent tee "$CTL/$NAME.setup" >/dev/null
-for n in $(seq 1 40); do [[ ! -L "$CTL/$NAME.setup-result" ]] && sudo test -f "$CTL/$NAME.setup-result" && break; sleep 0.25; done
+helper_result >/dev/null
 [[ "$(cat "$TMP/victim")" == keep ]] || die "the helper wrote through a planted result link"
-sudo rm -f "$CTL/$NAME.setup-result"
 [[ "$(sudo find /etc/baft-tunnel -mindepth 1 | sort)" == "$before" ]] || die "a refused request changed /etc/baft-tunnel"
 # The API refuses another directory before anything reaches root.
 [[ "$(code POST /v1/setup/apply "{\"stage\":\"init\",\"confirm\":true,\"idempotency_key\":\"api-other-dir\",\"plan\":${PLAN/\/etc\/baft-tunnel//tmp}}")" == 422 ]] || die "API accepted another directory"
