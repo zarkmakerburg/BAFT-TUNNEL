@@ -44,6 +44,8 @@ jobs:
       - name: Validate the signed one-line installer interface
         run: bash scripts/test-quick-install.sh
       - name: Verify a published signed installer package end-to-end
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/quick-install.sh --verify-only --tag v0.1.0-rc.6
       - name: Validate the interactive menu (staged, fa/en, arrow keys on a pty)
         run: bash scripts/test-menu.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"

@@ -180,6 +180,10 @@ PY
       cp /tmp/ca/ca.crl /workspace/signed/iran/ca.crl
       bash /pki/baft-pki.sh verify-node /tmp/ca /tmp/ca/ca.crl /workspace/signed/abroad/node.crt abroad "$D2_ABROAD_SAN" >/dev/null
       bash /pki/baft-pki.sh verify-node /tmp/ca /tmp/ca/ca.crl /workspace/signed/iran/node.crt iran "$D2_IRAN_SAN" >/dev/null
+      # The runner consumes only public certificate/CA/CRL files after the
+      # isolated CA exits; normalize bind-mount permissions for its uid.
+      find /workspace/signed -type d -exec chmod 755 {} +
+      find /workspace/signed -type f -exec chmod 644 {} +
       test -f /tmp/ca/ca.key
       test ! -e /workspace/ca.key
       rm -f /tmp/passphrase

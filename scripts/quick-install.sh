@@ -38,6 +38,19 @@ USAGE
 
 die() { echo "baft-quick-install: $*" >&2; exit 2; }
 
+github_api_get() {
+  local url="$1"
+  local -a args=(--fail --silent --show-error --location --retry 3
+    -H 'Accept: application/vnd.github+json'
+    -H 'User-Agent: baft-tunnel-installer')
+  # CI supplies the workflow token to avoid anonymous API rate limits. The
+  # public one-line installer remains usable without a token.
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    args+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+  fi
+  curl "${args[@]}" "$url"
+}
+
 while (($#)); do
   case "$1" in
     --register) (($# >= 2)) || die "--register needs a name"; INSTANCE="$2"; shift 2 ;;
@@ -84,10 +97,10 @@ trap cleanup EXIT HUP INT TERM
 
 echo "BAFT-TUNNEL: resolving the requested signed release..."
 if [[ -n "$TAG" ]]; then
-  RELEASE_JSON="$(curl -fsSL --retry 3 -H 'Accept: application/vnd.github+json' -H 'User-Agent: baft-tunnel-installer' "$API/releases/tags/$TAG")" ||
+  RELEASE_JSON="$(github_api_get "$API/releases/tags/$TAG")" ||
     die "release $TAG was not found or GitHub API is unavailable"
 else
-  RELEASES_JSON="$(curl -fsSL --retry 3 -H 'Accept: application/vnd.github+json' -H 'User-Agent: baft-tunnel-installer' "$API/releases?per_page=100")" ||
+  RELEASES_JSON="$(github_api_get "$API/releases?per_page=100")" ||
     die "cannot retrieve the GitHub releases list"
   RELEASE_JSON="$(python3 -c '
 import json, re, sys

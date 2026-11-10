@@ -13,6 +13,8 @@ grep -Fq 'verify-blob "$TMP/SHA256SUMS"' "$SCRIPT"
 grep -Fq 'sha256sum --ignore-missing --check SHA256SUMS' "$SCRIPT"
 grep -Fq 'awk -v archive="$ARCHIVE"' "$SCRIPT"
 grep -Fq 'COSIGN_BIN="$TMP/cosign-root/usr/bin/cosign-linux-amd64"' "$SCRIPT"
+grep -Fq 'Authorization: Bearer $GITHUB_TOKEN' "$SCRIPT"
+grep -Fq 'github_api_get "$API/releases/tags/$TAG"' "$SCRIPT"
 grep -Fq 'tarfile' "$SCRIPT"
 grep -Fq 'bash "$PKG/scripts/install.sh" --binary "$PKG/baft-tunnel" --register "$INSTANCE"' "$SCRIPT"
 if "$SCRIPT" --tag '../main' --register test >/dev/null 2>&1; then
