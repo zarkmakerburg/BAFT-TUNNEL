@@ -17,7 +17,8 @@ cp "$TMP/node-abroad/node.csr" "$TMP/csr/abroad.csr"
 cp "$TMP/node-iran/node.csr" "$TMP/csr/iran.csr"
 docker build --quiet -f lab/real-hosts/Dockerfile.offline-ca -t "$IMAGE" lab/real-hosts >/dev/null
 PASS="$(openssl rand -hex 32)"
-printf '%s\n' "$PASS" | docker run --rm -i --network none --read-only \
+printf '%s\n' "$PASS" | docker run --rm -i --network none --read-only --userns=host \
+  --cap-drop=ALL --security-opt=no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777 \
   --user "$(id -u):$(id -g)" \
   -v "$TMP:/workspace:rw" \
