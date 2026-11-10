@@ -91,6 +91,37 @@ jobs:
           [ "$(printf '%s\n2.35\n' "$need" | sort -V | tail -1)" = "2.35" ] \
             || { echo "::error::baft-tunnel needs GLIBC_$need; supported floor is 2.35 (Ubuntu 22.04)"; exit 1; }
           echo "baft-tunnel glibc floor: GLIBC_$need"
+      - name: Stage the install package (binary + operator scripts + units + quick-start)
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          set -euo pipefail
+          name="baft-tunnel-${TAG}-linux-x86_64"
+          root="$RUNNER_TEMP/pkg/$name"
+          mkdir -p "$root/scripts/pki"
+          install -m 0755 target/release/baft-tunnel "$root/baft-tunnel"
+          # Same allowlist install.sh copies to /usr/local/lib/baft-tunnel: no tests or dev tooling.
+          for f in scripts/*.sh scripts/pki/*.sh; do
+            case "$(basename "$f")" in test-*|test.sh|apply-branch-protection.sh|build-baft-engine.sh|baft-validate-golden.sh) continue ;; esac
+            install -m 0755 "$f" "$root/$f"
+          done
+          cp -R systemd "$root/systemd"
+          install -m 0644 docs/quickstart.en.md "$root/QUICKSTART.en.md"
+          install -m 0644 docs/quickstart.fa.md "$root/QUICKSTART.fa.md"
+          chmod -R u=rwX,go=rX "$root"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "dist/${name}.tar.gz" -C "$RUNNER_TEMP/pkg" "$name"
+          # Smoke: the extracted package installs into a staging root without the repo checkout.
+          x="$RUNNER_TEMP/pkg-check"; mkdir -p "$x"
+          tar -xzf "dist/${name}.tar.gz" -C "$x"
+          bash "$x/$name/scripts/install.sh" --binary "$x/$name/baft-tunnel" \
+            --destdir "$x/root" --systemd-version 249 >/dev/null
+          cmp "$x/root/usr/local/bin/baft-tunnel" target/release/baft-tunnel
+          for f in scripts/install.sh scripts/menu.sh scripts/uninstall.sh scripts/install-agent-control.sh \
+                   scripts/pki/baft-pki.sh scripts/pki/push-crl.sh systemd/baft-tunnel@.service; do
+            test -f "$x/root/usr/local/lib/baft-tunnel/$f" || { echo "::error::package install lacks $f"; exit 1; }
+          done
+          echo "package: $(tar -tzf "dist/${name}.tar.gz" | wc -l) entries, staged install OK"
       - name: Build, verify and stage the pinned BAFT engine (Engine #3)
         env:
           TAG: ${{ steps.v.outputs.tag }}

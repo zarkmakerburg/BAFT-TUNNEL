@@ -42,13 +42,20 @@ mvp_cleanup() {
 trap 'mvp_status=$?; set +e; mvp_cleanup; (exit "$mvp_status"); cleanup' EXIT
 
 echo "--- MVP install (${MVP_SOURCE}, sha256 ${MVP_SHA}) ---"
-tar -czf "$LOCAL_TMP/mvp-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd
+# Signed release package (MVP_PKG): install with its own scripts and its bundled binary, which must
+# equal the separately signed binary asset. Otherwise the repo scripts plus MVP_BINARY are shipped.
+if [[ -n "${MVP_PKG:-}" ]]; then
+  cp "$MVP_PKG" "$LOCAL_TMP/mvp-pkg.tgz"; MVP_STRIP=1; MVP_BIN_REMOTE="$REMOTE_DIR/pkg/baft-tunnel"
+  echo "MVP_PACKAGE=signed $(basename "$MVP_PKG") sha256 $(sha256sum "$MVP_PKG" | awk '{print $1}')"
+else
+  tar -czf "$LOCAL_TMP/mvp-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd; MVP_STRIP=0; MVP_BIN_REMOTE="$REMOTE_DIR/baft-tunnel-mvp"
+fi
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-mvp"
 for side in iran abroad; do
   copy_to_host "$side" "$LOCAL_TMP/mvp-pkg.tgz" "$LOCAL_TMP/baft-tunnel-mvp"
-  ssh_host "$side" "set -e; mkdir -p '$REMOTE_DIR/pkg'; tar -xzf '$REMOTE_DIR/mvp-pkg.tgz' -C '$REMOTE_DIR/pkg';
-    [ \"\$(sha256sum '$REMOTE_DIR/baft-tunnel-mvp' | cut -d' ' -f1)\" = '$MVP_SHA' ];
-    bash '$REMOTE_DIR/pkg/scripts/install.sh' --binary '$REMOTE_DIR/baft-tunnel-mvp' >/dev/null;
+  ssh_host "$side" "set -e; mkdir -p '$REMOTE_DIR/pkg'; tar -xzf '$REMOTE_DIR/mvp-pkg.tgz' -C '$REMOTE_DIR/pkg' --strip-components=$MVP_STRIP;
+    [ \"\$(sha256sum '$MVP_BIN_REMOTE' | cut -d' ' -f1)\" = '$MVP_SHA' ];
+    bash '$REMOTE_DIR/pkg/scripts/install.sh' --binary '$MVP_BIN_REMOTE' >/dev/null;
     [ \"\$(sha256sum $UB | cut -d' ' -f1)\" = '$MVP_SHA' ]; $UB --version 2>/dev/null || true"
 done
 

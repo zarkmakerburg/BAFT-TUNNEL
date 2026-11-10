@@ -302,7 +302,7 @@ if [[ -n "$BINARY" ]]; then
   rm -rf "$LIB_DEST.new.$$"
   install -d -m 0755 "$LIB_DEST.new.$$/scripts/pki" "$LIB_DEST.new.$$/systemd"
   for f in "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/pki/*.sh; do
-    case "$(basename "$f")" in test-*|apply-branch-protection.sh|build-baft-engine.sh|baft-validate-golden.sh) continue ;; esac
+    case "$(basename "$f")" in test-*|test.sh|apply-branch-protection.sh|build-baft-engine.sh|baft-validate-golden.sh) continue ;; esac
     rel="${f#"$SCRIPT_DIR"/}"
     install -m 0755 "$f" "$LIB_DEST.new.$$/scripts/$rel"
   done

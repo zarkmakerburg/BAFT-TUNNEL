@@ -248,6 +248,14 @@ jobs:
           install -m 755 "$d/baft-tunnel-${TAG}-linux-x86_64" "$RUNNER_TEMP/baft-tunnel-mvp"
           echo "MVP_BINARY=$RUNNER_TEMP/baft-tunnel-mvp" >> "$GITHUB_ENV"
           echo "MVP_SOURCE=signed-release:${TAG}" >> "$GITHUB_ENV"
+          # Releases from rc.6 on carry the install package (binary + scripts + units); older ones do not.
+          pkg="baft-tunnel-${TAG}-linux-x86_64.tar.gz"
+          if awk -v p="$pkg" '$2==p{f=1} END{exit !f}' "$d/SHA256SUMS"; then
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$d" --pattern "$pkg"
+            (cd "$d" && sha256sum -c --ignore-missing SHA256SUMS | grep -qxF "${pkg}: OK")
+            echo "MVP_PKG=$d/$pkg" >> "$GITHUB_ENV"
+            echo "MVP_SOURCE=signed-release-package:${TAG}" >> "$GITHUB_ENV"
+          fi
       - name: Prepare ephemeral SSH credentials
         shell: bash
         env:
