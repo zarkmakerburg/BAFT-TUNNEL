@@ -18,7 +18,8 @@ cp "$TMP/node-iran/node.csr" "$TMP/csr/iran.csr"
 docker build --quiet -f lab/real-hosts/Dockerfile.offline-ca -t "$IMAGE" lab/real-hosts >/dev/null
 PASS="$(openssl rand -hex 32)"
 printf '%s\n' "$PASS" | docker run --rm -i --network none --read-only \
-  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777 \
+  --user "$(id -u):$(id -g)" \
   -v "$TMP:/workspace:rw" \
   -v "$ROOT/scripts/pki:/pki:ro" \
   -e D2_IRAN_SAN=192.0.2.10 -e D2_ABROAD_SAN=198.51.100.20 \
@@ -47,5 +48,16 @@ test -s "$TMP/signed/abroad/ca.crl"
 test -s "$TMP/signed/iran/node.crt"
 test -s "$TMP/signed/iran/ca.crt"
 test -s "$TMP/signed/iran/ca.crl"
+python3 - "$TMP/signed" <<'PYOWNER'
+import os
+import pathlib
+import sys
+root = pathlib.Path(sys.argv[1])
+for name in ("abroad", "iran"):
+    st = (root / name).stat()
+    assert (st.st_uid, st.st_gid) == (os.getuid(), os.getgid()), (
+        f"{name} output must remain owned by the invoking runner so cleanup is safe"
+    )
+PYOWNER
 cmp -s "$TMP/signed/abroad/ca.crl" "$TMP/signed/iran/ca.crl"
 echo "OFFLINE_CA_CONTAINER_TEST=PASS network=none private_ca_key_exported=0 two_node_certs=2 shared_crl=1"
