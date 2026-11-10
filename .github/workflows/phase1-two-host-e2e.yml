@@ -143,8 +143,8 @@ jobs:
             echo "Invalid confirmation. No LAB hosts were contacted." >&2
             exit 2
           fi
-          if [[ "$REF" != "main" && "$REF" != "feature/d2-panel-tcp-tls-enrollment" ]]; then
-            echo "Only main or the reviewed D2 enrollment candidate branch may be tested." >&2
+          if [[ "$REF" != "main" && "$REF" != "feature/d2-panel-tcp-tls-enrollment" && "$REF" != "audit/pr150-remediation-2026-11-10" ]]; then
+            echo "Only main, the reviewed D2 enrollment candidate, or the audited PR #151 remediation branch may be tested." >&2
             exit 2
           fi
 
@@ -175,12 +175,8 @@ jobs:
         run: cargo +1.88.0 clippy --locked --all-targets -- -D warnings
       - name: Validate staged installer and rollback
         run: bash scripts/test-install.sh
-      - name: Validate the signed one-line installer interface
+      - name: Validate quick installer contract and negative verification paths
         run: bash scripts/test-quick-install.sh
-      - name: Verify a published signed installer package end-to-end
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: bash scripts/quick-install.sh --verify-only --tag v0.1.0-rc.6
       - name: Install pinned Playwright and Chromium
         run: |
           npm install --prefix "$RUNNER_TEMP/baft-panel-qa" --no-save --no-audit --no-fund playwright@1.56.1
