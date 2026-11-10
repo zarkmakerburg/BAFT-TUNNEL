@@ -148,8 +148,41 @@ jobs:
             exit 2
           fi
 
+  validate-d2-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+      - name: Check formatting
+        run: cargo +1.88.0 fmt --all -- --check
+      - name: Run full Rust test suite
+        run: cargo +1.88.0 test --locked --all-targets
+      - name: Run Clippy
+        run: cargo +1.88.0 clippy --locked --all-targets -- -D warnings
+      - name: Validate staged installer and rollback
+        run: bash scripts/test-install.sh
+      - name: Install pinned Playwright and Chromium
+        run: |
+          npm install --prefix "$RUNNER_TEMP/baft-panel-qa" --no-save --no-audit --no-fund playwright@1.56.1
+          "$RUNNER_TEMP/baft-panel-qa/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Validate panel JavaScript, D2 LAB contract and bilingual enrollment
+        env:
+          NODE_PATH: ${{ runner.temp }}/baft-panel-qa/node_modules
+        run: |
+          node --check panel/pages.js
+          node --check panel/i18n.js
+          bash scripts/pki/test-panel-tls-lab-stage.sh
+          node scripts/panel-qa/pki-enrollment.js
+      - name: Validate network-isolated offline CA container
+        run: bash scripts/pki/test-offline-ca-container.sh
+
   two-host-e2e:
-    needs: validate-confirmation
+    needs: [validate-confirmation, validate-d2-candidate]
     runs-on: ubuntu-22.04
     environment: baft-tunnel-lab
     timeout-minutes: 90
