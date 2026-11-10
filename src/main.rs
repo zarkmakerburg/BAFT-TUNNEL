@@ -11,6 +11,7 @@ mod handshake;
 pub mod key_custody;
 mod noise;
 mod observe;
+mod pki_helper;
 #[allow(dead_code)] // manifest API is consumed by packaging and the registry (ADR-0020)
 mod runtime_host;
 mod session_status;
@@ -241,6 +242,12 @@ enum SetupCommand {
     /// /etc/baft-tunnel and writes the receipt to NAME.setup-result. Not for interactive use.
     #[command(hide = true)]
     Helper {
+        #[arg(long)]
+        instance: String,
+    },
+    /// Root-only PKI helper (ADR-0027): fixed CSR create/read operations for one instance.
+    #[command(hide = true)]
+    PkiHelper {
         #[arg(long)]
         instance: String,
     },
@@ -559,6 +566,27 @@ async fn run() -> Result<()> {
                 "setup helper for {instance}: stage={} id={} result={}",
                 receipt["stage"].as_str().unwrap_or("-"),
                 receipt["id"].as_str().unwrap_or("-"),
+                receipt["result"].as_str().unwrap_or("-")
+            );
+            Ok(())
+        }
+        Command::Setup {
+            command: SetupCommand::PkiHelper { instance },
+        } => {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if unsafe { libc::geteuid() } != 0 {
+                bail!("the PKI helper runs as root from its systemd unit only");
+            }
+            let receipt = pki_helper::run(
+                &instance,
+                std::path::Path::new(apply::CONTROL_DIR),
+                std::path::Path::new("/etc/baft-tunnel"),
+                std::path::Path::new(pki_helper::RECEIPTS_DIR),
+            )?;
+            println!(
+                "PKI helper for {instance}: operation={} id={} result={}",
+                receipt["operation"].as_str().unwrap_or("-"),
+                receipt["request_id"].as_str().unwrap_or("-"),
                 receipt["result"].as_str().unwrap_or("-")
             );
             Ok(())

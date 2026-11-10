@@ -117,10 +117,14 @@ cmp -s "$KEY1" "$CRED_DIR/node-key"
 write_fake 0.3.0
 # One step: binary plus agent service and control helper for an instance (--register).
 "$INSTALL" --binary "$FAKE" --register iran --agent-listen 127.0.0.1:18085 --destdir "$STAGE" >/dev/null
-for v in start stop enable disable setup; do
+for v in start stop enable disable setup pki; do
   [[ -f "$STAGE/etc/systemd/system/baft-tunnel-control-$v@.path" && -f "$STAGE/etc/systemd/system/baft-tunnel-control-$v@.service" ]]
 done
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel setup helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-setup@.service"
+grep -qx 'ExecStart=/usr/local/bin/baft-tunnel setup pki-helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
+grep -qx 'PathExists=/run/baft-tunnel/control/%i.pki' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.path"
+grep -qx 'ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel /run/baft-tunnel/control' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
+grep -qx 'CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
 grep -qx 'ExecStart=/usr/bin/systemctl --no-block enable --now baft-tunnel@%i.service' "$STAGE/etc/systemd/system/baft-tunnel-control-enable@.service"
 AGENT_UNIT="$STAGE/etc/systemd/system/baft-tunnel-agent@.service"
 grep -qx 'User=baft-tunnel-agent' "$AGENT_UNIT" && ! grep -q '^User=baft-tunnel$' "$AGENT_UNIT"
@@ -152,4 +156,4 @@ fi
 [[ -z "$(compgen -G "$STAGE/etc/systemd/system/baft-tunnel-agent@*" || true)" ]]
 [[ ! -L "$STAGE/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@iran.path" && ! -e "$STAGE/var/lib/baft-tunnel-agent" ]]
 
-echo "BAFT_INSTALL_TEST=PASS (staged install, systemd hardening, rollback, baseline credential provisioning/replace/rollback, fail-closed credential checks, safe uninstall, explicit config purge, one-step agent registration, agent and control helper removed)"
+echo "BAFT_INSTALL_TEST=PASS (staged install, systemd hardening, rollback, baseline credential provisioning/replace/rollback, fail-closed credential checks, safe uninstall, explicit config purge, one-step agent registration, CSR helper unit install, agent and control helper removed)"

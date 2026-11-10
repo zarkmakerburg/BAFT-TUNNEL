@@ -1,6 +1,6 @@
 # ADR-0027: panel-managed offline tcp-tls certificate enrollment
 
-**Status:** Proposed for D2 implementation; not yet accepted by runtime code or LAB
+**Status:** Accepted for implementation; D2 remains OPEN / NOT VERIFIED. D2-B1/B2 have a local implementation candidate on feature/d2-panel-tcp-tls-enrollment; no Agent API, panel flow, certificate import, target-host test, or LAB acceptance yet.
 **Date:** 2026-11-10
 **Related:** Issue #149, ADR-0012, ADR-0023, ADR-0026
 
@@ -91,10 +91,10 @@ Audit only actor fingerprint, instance, operation ID, action, outcome, certifica
 
 The D2 implementation must account for these concrete seams:
 
-- src/apply.rs::Stage currently includes Init, Join, Start, Stop, and Restart; src/setup_helper.rs::HelperRequest deserializes that enum and explicitly refuses every stage except Init/Join. Reusing Stage for PKI would conflate tunnel lifecycle with credential management. Add a separate closed PkiOperation enum and versioned request/receipt types.
-- src/setup_helper.rs::run() consumes /run/baft-tunnel/control/NAME.setup, enforces the 64 KiB bound and fixed instance/config directory, and writes NAME.setup-result. The new PKI request must use a distinct suffix and receipt namespace so it cannot collide with setup or lifecycle requests.
-- systemd/control/baft-tunnel-control-setup@.service has explicit ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel /run/baft-tunnel/control, PrivateNetwork=true, and a bounded capability set. Any new PKI helper unit or shared unit extension must preserve the existing sandbox and add only the minimum required write path/capability. Do not silently broaden the existing helper's privileges.
-- scripts/install-agent-control.sh installs a fixed set of control path/service templates. A new operation needs an explicit install/uninstall lifecycle and staged-install coverage; do not add an unregistered unit that works only on developer machines.
+- src/apply.rs::Stage remains a lifecycle enum. The separate src/pki_helper.rs::PkiOperation handles only CSR create/read.
+- The setup helper continues to consume NAME.setup and write NAME.setup-result. The PKI helper uses the distinct NAME.pki / NAME.pki-result protocol and /var/lib/baft-tunnel/pki-receipts.
+- systemd/control/baft-tunnel-control-pki@.service preserves the setup helper's sandbox shape and adds only the fixed PKI receipt directory to its existing /etc/baft-tunnel, /var/lib/baft-tunnel, and control-directory write paths.
+- scripts/install-agent-control.sh registers the PKI path/service templates as a separate pki operation; scripts/test-install.sh verifies staged installation and fixed unit command/path/permissions.
 - src/agent.rs::route() has an explicit global path allowlist followed by Bearer authentication, then a separate configured-mode method/path match. setup_mode_route() has its own allowlist. D2 endpoints must be explicitly present in both allowlists with correct 401/404/405/409 behavior; no wildcard route.
 - src/setup.rs::tls_material() is called during tcp-tls setup Init and requires all four PKI files already to exist. It verifies the node key is private and validates the cert/CA/CRL material. Thus current panel pairing cannot bootstrap tcp-tls from an empty PKI directory: D2 must be a distinct pre-Init credential stage, then Init/Join can consume the validated files.
 - src/setup.rs::plan() currently maps the tcp-tls config to the fixed filenames ca.crt, ca.crl, node.crt, and node.key. The panel workflow must preserve these paths or separately migrate the runtime config contract with explicit tests.
@@ -103,8 +103,8 @@ The D2 implementation must account for these concrete seams:
 ### Revised implementation order
 
 1. D2-A (source map): complete; source paths and privilege boundaries above are recorded. This is review evidence only, not a runtime feature.
-2. D2-B1: add a distinct root-helper PKI protocol with CSR create/read only, no overwrite, request replay protection, bounded request/receipt and fixed /etc/baft-tunnel paths.
-3. D2-B2: install/uninstall the corresponding fixed systemd path/service units with least privilege and test the staged installer.
+2. D2-B1: local implementation candidate complete — separate root-helper CSR create/read protocol, no overwrite, request replay protection, bounded request/receipt, fixed paths and six focused Rust tests. Target Linux/CI evidence remains open.
+3. D2-B2: local implementation candidate complete — fixed systemd path/service templates, registration lifecycle and staged installer test. Target Linux/CI evidence remains open.
 4. D2-C: add authenticated Agent endpoints and tests for setup/configured modes, wrong methods, missing auth, invalid instance, replay, symlink and oversized request.
 5. D2-D: add strict certificate/CA/CRL import validation and failure-safe atomic activation. Before coding this slice, prove how current runtime config paths resolve and how rollback works on real systemd; do not assume directory symlink swaps are compatible with the existing fixed file paths.
 6. D2-E: add Persian/English UI and browser tests.
@@ -115,7 +115,7 @@ The D2 implementation must account for these concrete seams:
 | Slice | Work | Evidence |
 |---|---|---|
 | D2-A | Reconcile actual config credential paths, systemd ownership and fixed helper design | Reviewed source map + tests |
-| D2-B | Add fixed helper request/receipt operations for CSR create/read | Key custody, no-overwrite, replay and permission tests |
+| D2-B1/B2 | Fixed root helper CSR create/read protocol and systemd registration | Local Mac: 6 focused Rust tests, clippy, staged installer pass; exact-head CI and Linux/LAB remain open |
 | D2-C | Add Agent API routes with strict auth, body limits, setup-mode behavior and audit | Rust route tests incl. unauthenticated, malformed and oversized requests |
 | D2-D | Add certificate/CA/CRL validation and atomic versioned activation | Positive and negative OpenSSL tests, failure-injection rollback |
 | D2-E | Add Persian/English panel flow and safe CSR download/upload | Browser tests and accessibility checks |
