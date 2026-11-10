@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 
 pub const REQUEST_SUFFIX: &str = "pki";
 pub const RESULT_SUFFIX: &str = "pki-result";
-pub const RECEIPTS_DIR: &str = "/var/lib/baft-tunnel/pki-receipts";
+pub const RECEIPTS_DIR: &str = "/var/lib/baft-tunnel-control/pki-receipts";
 pub const MAX_REQUEST_BYTES: u64 = 512 * 1024;
 pub const MAX_CSR_BYTES: u64 = 16 * 1024;
 pub const MAX_CERTIFICATE_BYTES: usize = 64 * 1024;
@@ -78,6 +78,44 @@ struct StoredReceipt {
 
 fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn ensure_private_receipt_dir(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => ensure!(
+            meta.is_dir() && !meta.file_type().is_symlink(),
+            "receipt path {} is not a real directory",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir(path)
+            .with_context(|| format!("create receipt directory {}", path.display()))?,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect receipt directory {}", path.display()));
+        }
+    }
+    let meta = fs::symlink_metadata(path)?;
+    // The fixed production path is below /var/lib, whose parent is root-owned and not writable
+    // by the service account. Requiring the helper's effective UID here prevents adoption of a
+    // pre-planted directory owned by the unprivileged Agent.
+    ensure!(
+        meta.is_dir() && !meta.file_type().is_symlink(),
+        "receipt path {} changed type",
+        path.display()
+    );
+    ensure!(
+        meta.uid() == unsafe { libc::geteuid() },
+        "receipt directory {} has an unexpected owner",
+        path.display()
+    );
+    ensure!(
+        meta.mode() & 0o022 == 0,
+        "receipt directory {} is writable by group or others",
+        path.display()
+    );
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("secure receipt directory {}", path.display()))?;
+    Ok(())
 }
 
 pub(crate) fn valid_node_id(value: &str) -> bool {
@@ -1447,9 +1485,8 @@ fn run_at(
                 let request_id = req.request_id.clone();
                 let digest = sha256(&bytes);
                 let instance_dir = receipts.join(name);
-                fs::create_dir_all(&instance_dir)?;
-                fs::set_permissions(receipts, fs::Permissions::from_mode(0o700))?;
-                fs::set_permissions(&instance_dir, fs::Permissions::from_mode(0o700))?;
+                ensure_private_receipt_dir(receipts)?;
+                ensure_private_receipt_dir(&instance_dir)?;
                 let stored_path = instance_dir.join(format!("{}.json", req.request_id));
                 if stored_path.exists() {
                     match read_bounded(&stored_path, MAX_REQUEST_BYTES + MAX_CSR_BYTES + 4096)
@@ -1986,6 +2023,43 @@ mod tests {
         std::os::unix::fs::symlink(active.join("ca.crt"), active.join("node.crt")).unwrap();
         std::os::unix::fs::symlink(format!("sets/{id}"), root.join("current")).unwrap();
         assert!(active_set_dir(&config).is_err());
+        drop(tmp);
+    }
+
+    #[test]
+    fn refuses_symlinked_receipt_root_without_changing_target_permissions() {
+        let (tmp, control, config, receipts) = fixture();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&config, &receipts).unwrap();
+        put(
+            &control,
+            &request(
+                "csr-symlink-receipt",
+                PkiOperation::CreateCsr,
+                "node1",
+                "localhost",
+            ),
+        );
+        assert!(run_at("node1", &control, &config, &receipts, false).is_err());
+        assert_eq!(
+            fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert!(!config.join("node.key").exists());
+        assert!(!config.join("node.csr").exists());
+        drop(tmp);
+    }
+
+    #[test]
+    fn refuses_group_writable_receipt_root() {
+        let (tmp, _control, _config, receipts) = fixture();
+        fs::create_dir(&receipts).unwrap();
+        fs::set_permissions(&receipts, fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(ensure_private_receipt_dir(&receipts).is_err());
+        assert_eq!(
+            fs::metadata(&receipts).unwrap().permissions().mode() & 0o777,
+            0o770
+        );
         drop(tmp);
     }
 

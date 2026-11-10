@@ -181,8 +181,8 @@ import json, sys
 res = [json.loads(l)["resource"] for l in open(sys.argv[1])]
 assert "setup/init" in res and "setup/join" in res, res
 PY
-! sudo grep -rq -- "$TOKEN" /var/lib/baft-tunnel-agent/"$NAME" /var/lib/baft-tunnel/setup-receipts || die "receipts or audit contain the token"
-sudo test -f "/var/lib/baft-tunnel/setup-receipts/$NAME/pair-join-0001.json" || die "the helper kept no receipt"
+! sudo grep -rq -- "$TOKEN" /var/lib/baft-tunnel-agent/"$NAME" /var/lib/baft-tunnel-control/setup-receipts || die "receipts or audit contain the token"
+sudo test -f "/var/lib/baft-tunnel-control/setup-receipts/$NAME/pair-join-0001.json" || die "the helper kept no receipt"
 
 step "6 uninstall leaves nothing"
 kill "$ECHO_PID" 2>/dev/null || true; ECHO_PID=""

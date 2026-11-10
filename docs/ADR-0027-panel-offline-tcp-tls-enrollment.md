@@ -95,8 +95,8 @@ Audit only actor fingerprint, instance, operation ID, action, outcome, certifica
 The D2 implementation must account for these concrete seams:
 
 - src/apply.rs::Stage remains a lifecycle enum. The separate src/pki_helper.rs::PkiOperation handles CSR create/read and certificate-set installation; it is not mixed into setup lifecycle stages.
-- The setup helper continues to consume NAME.setup and write NAME.setup-result. The PKI helper uses the distinct NAME.pki / NAME.pki-result protocol and /var/lib/baft-tunnel/pki-receipts.
-- systemd/control/baft-tunnel-control-pki@.service preserves the setup helper's sandbox shape and adds only the fixed PKI receipt directory to its existing /etc/baft-tunnel, /var/lib/baft-tunnel, and control-directory write paths.
+- The setup helper continues to consume NAME.setup and write NAME.setup-result. The PKI helper uses the distinct NAME.pki / NAME.pki-result protocol and /var/lib/baft-tunnel-control/pki-receipts.
+- systemd/control/baft-tunnel-control-pki@.service preserves the setup helper's sandbox shape and adds only the fixed root-owned PKI receipt directory to its existing /etc/baft-tunnel, /var/lib/baft-tunnel, and control-directory write paths.
 - scripts/install-agent-control.sh registers the PKI path/service templates as a separate pki operation; scripts/test-install.sh verifies staged installation and fixed unit command/path/permissions.
 - src/agent.rs::route() has an explicit global path allowlist followed by Bearer authentication, then a separate configured-mode method/path match. setup_mode_route() has its own allowlist. D2 routes (POST /v1/pki/csr/create, /v1/pki/csr/read, /v1/pki/certificate/install) are explicitly present in both allowlists with tested authorization, setup/configured-mode and refusal behavior; no wildcard route.
 - src/setup.rs::tls_material() is called during tcp-tls setup Init and requires the node key plus one valid certificate/CA/CRL set. It now resolves a validated pki/current versioned set for new D2 enrollment, while retaining the legacy flat-file layout for existing installations.

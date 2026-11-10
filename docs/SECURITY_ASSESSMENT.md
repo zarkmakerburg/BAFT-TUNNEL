@@ -149,3 +149,8 @@ refuse it. Effect: Apply `start` refuses dotted names (fails closed). Fix: one r
   pinned identity.
 - Exact main `f3c8b54`: `phase1-rust` workflow_dispatch run 42550456502.
 - No LAB run, no tag, release or deploy. Open items: SA-07 (accepted), SA-09 (accepted for Preview, deferred).
+
+
+## Root-helper receipt directory isolation (PR #150 remediation)
+
+The setup and PKI root helpers keep replay receipts under `/var/lib/baft-tunnel-control/`, a root-owned sibling of the service-writable `/var/lib/baft-tunnel/` tree. The unprivileged service cannot create or replace receipt path components. Each helper rejects symlink/non-directory receipt paths, verifies ownership matches its effective UID (root in the installed helper), and enforces mode 0700 before storing per-instance receipts. Both systemd helper units explicitly allow this dedicated root-owned path; uninstall with `--purge-config --yes` removes it. Regression tests exercise symlinked receipt roots for both helpers.

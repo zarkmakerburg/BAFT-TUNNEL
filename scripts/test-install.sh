@@ -124,7 +124,8 @@ done
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel setup helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-setup@.service"
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel setup pki-helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
 grep -qx 'PathExists=/run/baft-tunnel/control/%i.pki' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.path"
-grep -qx 'ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel /run/baft-tunnel/control' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
+grep -qx 'ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
+grep -qx 'ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control' "$STAGE/etc/systemd/system/baft-tunnel-control-setup@.service"
 grep -qx 'CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
 grep -qx 'ExecStart=/usr/bin/systemctl --no-block enable --now baft-tunnel@%i.service' "$STAGE/etc/systemd/system/baft-tunnel-control-enable@.service"
 AGENT_UNIT="$STAGE/etc/systemd/system/baft-tunnel-agent@.service"
@@ -148,7 +149,7 @@ if "$UNINSTALL" --destdir "$STAGE" --purge-config >/dev/null 2>&1; then
   exit 1
 fi
 "$UNINSTALL" --destdir "$STAGE" --purge-config --yes >/dev/null
-[[ ! -e "$STAGE/etc/baft-tunnel" && ! -e "$STAGE/var/lib/baft-tunnel" ]]
+[[ ! -e "$STAGE/etc/baft-tunnel" && ! -e "$STAGE/var/lib/baft-tunnel" && ! -e "$STAGE/var/lib/baft-tunnel-control" ]]
 [[ ! -e "$DROPIN" && ! -e "$(dirname "$DROPIN")" ]]
 [[ ! -e "$STAGE/usr/local/bin/baft-tunnel" && ! -e "$STAGE/etc/systemd/system/baft-tunnel@.service" ]]
 [[ -z "$(compgen -G "$STAGE/etc/systemd/system/baft-tunnel-control-*" || true)" ]]
