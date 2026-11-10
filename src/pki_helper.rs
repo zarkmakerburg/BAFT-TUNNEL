@@ -7,8 +7,9 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -28,6 +29,15 @@ const OPENSSL: &str = "/usr/bin/openssl";
 pub enum PkiOperation {
     CreateCsr,
     ReadCsr,
+}
+
+impl PkiOperation {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateCsr => "create_csr",
+            Self::ReadCsr => "read_csr",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -59,7 +69,7 @@ fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-fn valid_node_id(value: &str) -> bool {
+pub(crate) fn valid_node_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
         && value.as_bytes()[0].is_ascii_alphanumeric()
@@ -68,7 +78,7 @@ fn valid_node_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-fn expected_server_san(value: &str) -> Result<String> {
+pub(crate) fn expected_server_san(value: &str) -> Result<String> {
     if let Ok(ip) = value.parse::<std::net::IpAddr>() {
         return Ok(format!("IP:{ip}"));
     }
@@ -515,6 +525,46 @@ fn read_csr_at(config_dir: &Path, req: &PkiRequest, enforce_fixed: bool) -> Resu
     result
 }
 
+fn read_helper_receipt(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .with_context(|| {
+            format!(
+                "open PKI helper receipt {} without following symlinks",
+                path.display()
+            )
+        })?;
+    let meta = file.metadata()?;
+    ensure!(meta.is_file(), "PKI helper receipt is not a regular file");
+    ensure!(
+        meta.len() <= limit,
+        "PKI helper receipt exceeds {limit} bytes"
+    );
+    ensure!(
+        meta.permissions().mode() & 0o7777 == 0o640,
+        "PKI helper receipt must have mode 0640"
+    );
+    if let Some((_, gid)) = crate::setup::service_ids() {
+        ensure!(
+            meta.uid() == 0 && meta.gid() == gid,
+            "PKI helper receipt is not owned by root:baft-tunnel"
+        );
+    } else if unsafe { libc::geteuid() } == 0 {
+        bail!("the baft-tunnel service identity is missing; refusing PKI helper receipt");
+    }
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(limit + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= limit,
+        "PKI helper receipt grew beyond {limit} bytes"
+    );
+    Ok(bytes)
+}
+
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let mut file = OpenOptions::new()
         .read(true)
@@ -564,10 +614,11 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: u32, group: Option<u32>) -> Res
     Ok(())
 }
 
-fn refused(request_id: Option<&str>, reason: String) -> Value {
+fn refused(request_id: Option<&str>, operation: Option<PkiOperation>, reason: String) -> Value {
     json!({
         "receipt_version": 1,
         "request_id": request_id,
+        "operation": operation,
         "result": "refused",
         "reason": reason,
         "private_key_exported": false
@@ -624,9 +675,9 @@ fn run_at(
     let bytes = read_bounded(&request_path, MAX_REQUEST_BYTES);
     let _ = fs::remove_file(&request_path);
     let (request_id, receipt) = match bytes {
-        Err(error) => (None, refused(None, format!("{error:#}"))),
+        Err(error) => (None, refused(None, None, format!("{error:#}"))),
         Ok(bytes) => match parse_request(&bytes) {
-            Err(error) => (None, refused(None, format!("{error:#}"))),
+            Err(error) => (None, refused(None, None, format!("{error:#}"))),
             Ok(req) => {
                 let request_id = req.request_id.clone();
                 let digest = sha256(&bytes);
@@ -649,6 +700,7 @@ fn run_at(
                             Some(request_id),
                             refused(
                                 Some(&req.request_id),
+                                Some(req.operation),
                                 "request ID was already used for different content".into(),
                             ),
                         ),
@@ -656,6 +708,7 @@ fn run_at(
                             Some(request_id),
                             refused(
                                 Some(&req.request_id),
+                                Some(req.operation),
                                 format!("stored receipt is invalid: {error:#}"),
                             ),
                         ),
@@ -673,7 +726,11 @@ fn run_at(
                             data["replayed"] = json!(false);
                             data
                         }
-                        Err(error) => refused(Some(&req.request_id), format!("{error:#}")),
+                        Err(error) => refused(
+                            Some(&req.request_id),
+                            Some(req.operation),
+                            format!("{error:#}"),
+                        ),
                     };
                     let stored = StoredReceipt {
                         request_digest: digest,
@@ -689,6 +746,147 @@ fn run_at(
     let _ = request_id;
     write_result(control_dir, name, &receipt)?;
     Ok(receipt)
+}
+
+/// Agent-side interface to the separate root PKI helper. The agent can write only bounded
+/// requests and read public receipts; it has no access to /etc/baft-tunnel/node.key.
+pub trait PkiHelperClient: Send + Sync {
+    /// Whether this client serves the Agent's configured PKI directory.
+    fn supports_config_dir(&self, _config_dir: &Path) -> bool {
+        true
+    }
+    fn available(&self, name: &str) -> std::result::Result<(), String>;
+    fn submit(&self, name: &str, request: &Value) -> std::result::Result<Value, String>;
+}
+
+pub struct SystemPkiClient {
+    pub control_dir: PathBuf,
+    pub unit_dir: PathBuf,
+}
+
+impl Default for SystemPkiClient {
+    fn default() -> Self {
+        Self {
+            control_dir: PathBuf::from(crate::apply::CONTROL_DIR),
+            unit_dir: PathBuf::from("/etc/systemd/system"),
+        }
+    }
+}
+
+impl PkiHelperClient for SystemPkiClient {
+    fn supports_config_dir(&self, config_dir: &Path) -> bool {
+        config_dir == Path::new("/etc/baft-tunnel")
+    }
+
+    fn available(&self, name: &str) -> std::result::Result<(), String> {
+        let service = self.unit_dir.join("baft-tunnel-control-pki@.service");
+        let path_unit = self.unit_dir.join("baft-tunnel-control-pki@.path");
+        let control_meta = fs::symlink_metadata(&self.control_dir);
+        if !control_meta.is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+            || !service.is_file()
+            || !path_unit.is_file()
+        {
+            return Err(format!(
+                "the root PKI helper is not installed; run sudo scripts/install-agent-control.sh --instance {name}"
+            ));
+        }
+        let cpath = std::ffi::CString::new(self.control_dir.as_os_str().as_encoded_bytes())
+            .map_err(|_| "control path contains a NUL byte".to_string())?;
+        // SAFETY: cpath is a valid NUL-terminated path; access(2) only checks permissions.
+        if unsafe { libc::access(cpath.as_ptr(), libc::W_OK | libc::X_OK) } != 0 {
+            return Err(format!(
+                "the agent cannot write PKI requests into {}",
+                self.control_dir.display()
+            ));
+        }
+        Ok(())
+    }
+
+    fn submit(&self, name: &str, request: &Value) -> std::result::Result<Value, String> {
+        if !crate::apply::valid_instance(name) {
+            return Err("invalid instance".into());
+        }
+        self.available(name)?;
+        let bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MAX_REQUEST_BYTES {
+            return Err(format!("PKI request exceeds {MAX_REQUEST_BYTES} bytes"));
+        }
+        let request_id = request
+            .get("request_id")
+            .and_then(Value::as_str)
+            .filter(|id| crate::apply::valid_key(id))
+            .ok_or_else(|| "PKI request has an invalid request_id".to_string())?;
+        let request_path = self.control_dir.join(format!("{name}.{REQUEST_SUFFIX}"));
+        let result_path = self.control_dir.join(format!("{name}.{RESULT_SUFFIX}"));
+        let temp_path = self
+            .control_dir
+            .join(format!(".{name}.{REQUEST_SUFFIX}.{request_id}.tmp"));
+        let _ = fs::remove_file(&result_path);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o660)
+            .open(&temp_path)
+            .map_err(|e| format!("cannot stage the PKI request: {e}"))?;
+        if let Err(error) = file
+            .set_permissions(fs::Permissions::from_mode(0o660))
+            .and_then(|()| file.write_all(&bytes))
+            .and_then(|()| file.sync_all())
+        {
+            drop(file);
+            let _ = fs::remove_file(&temp_path);
+            return Err(format!("cannot stage the PKI request: {error}"));
+        }
+        drop(file);
+        // Publish the complete, synced request in one create-if-absent operation. PathExists
+        // must never wake the root helper while the Agent is still writing a partial JSON body.
+        if let Err(error) = fs::hard_link(&temp_path, &request_path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
+                "another PKI request for this instance is still pending".to_string()
+            } else {
+                format!("cannot publish the PKI request: {error}")
+            });
+        }
+        let _ = fs::remove_file(&temp_path);
+        // The request file itself was synced before publication; directory fsync is best effort
+        // on filesystems that do not support syncing directory handles.
+        let _ = File::open(&self.control_dir).and_then(|dir| dir.sync_all());
+
+        const WAIT: Duration = Duration::from_secs(35);
+        let started = Instant::now();
+        while started.elapsed() < WAIT {
+            std::thread::sleep(Duration::from_millis(200));
+            if fs::symlink_metadata(&result_path).is_err() {
+                continue;
+            }
+            let bytes = read_helper_receipt(&result_path, MAX_CSR_BYTES * 2 + 8192)
+                .map_err(|e| format!("cannot read PKI helper receipt: {e:#}"))?;
+            let _ = fs::remove_file(&result_path);
+            return serde_json::from_slice(&bytes)
+                .map_err(|e| format!("the PKI helper receipt is not valid JSON: {e}"));
+        }
+        let _ = fs::remove_file(&request_path);
+        Err(format!(
+            "the root PKI helper did not answer within {} s; check baft-tunnel-control-pki@{name}.path",
+            WAIT.as_secs()
+        ))
+    }
+}
+
+pub fn request_document(
+    request_id: &str,
+    operation: PkiOperation,
+    node_id: &str,
+    server_name: &str,
+) -> Value {
+    json!({
+        "request_version": 1,
+        "request_id": request_id,
+        "operation": operation,
+        "node_id": node_id,
+        "server_name": server_name
+    })
 }
 
 #[cfg(test)]
@@ -739,6 +937,104 @@ mod tests {
 
     fn test_request(req: &Value) -> PkiRequest {
         serde_json::from_value(req.clone()).unwrap()
+    }
+
+    #[test]
+    fn system_pki_client_is_bound_to_the_fixed_system_pki_directory() {
+        let client = SystemPkiClient::default();
+        assert!(client.supports_config_dir(Path::new("/etc/baft-tunnel")));
+        assert!(!client.supports_config_dir(Path::new("/tmp/custom-baft")));
+    }
+
+    #[test]
+    fn system_pki_client_submits_bounded_request_and_reads_root_receipt() {
+        let (tmp, control, _config, _receipts) = fixture();
+        let units = tmp.0.join("units");
+        fs::create_dir_all(&units).unwrap();
+        fs::write(units.join("baft-tunnel-control-pki@.service"), b"unit").unwrap();
+        fs::write(units.join("baft-tunnel-control-pki@.path"), b"path").unwrap();
+        let client = SystemPkiClient {
+            control_dir: control.clone(),
+            unit_dir: units,
+        };
+        let worker_control = control.clone();
+        let worker = std::thread::spawn(move || {
+            let request_path = worker_control.join("node1.pki");
+            for _ in 0..100 {
+                if request_path.is_file() {
+                    let request_meta = fs::metadata(&request_path).unwrap();
+                    assert_eq!(request_meta.permissions().mode() & 0o777, 0o660);
+                    let request: Value =
+                        serde_json::from_slice(&fs::read(&request_path).unwrap()).unwrap();
+                    fs::remove_file(&request_path).unwrap();
+                    let receipt = json!({
+                        "receipt_version": 1,
+                        "request_id": request["request_id"],
+                        "operation": request["operation"],
+                        "result": "retrieved",
+                        "private_key_exported": false
+                    });
+                    let mut file = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o640)
+                        .open(worker_control.join("node1.pki-result"))
+                        .unwrap();
+                    file.write_all(&serde_json::to_vec(&receipt).unwrap())
+                        .unwrap();
+                    file.set_permissions(fs::Permissions::from_mode(0o640))
+                        .unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("Agent did not create its bounded PKI request");
+        });
+        let request = request_document(
+            "csr-client-01",
+            PkiOperation::ReadCsr,
+            "node1",
+            "node1.example.test",
+        );
+        let receipt = client.submit("node1", &request).unwrap();
+        worker.join().unwrap();
+        assert_eq!(receipt["request_id"], "csr-client-01");
+        assert_eq!(receipt["operation"], "read_csr");
+        assert!(!control.join("node1.pki").exists());
+    }
+
+    #[test]
+    fn agent_receipt_reader_rejects_symlinks_and_non_root_permissions() {
+        let (tmp, _control, _config, _receipts) = fixture();
+        let receipt = tmp.0.join("receipt");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o640)
+            .open(&receipt)
+            .unwrap();
+        file.write_all(br#"{"result":"created"}"#).unwrap();
+        file.set_permissions(fs::Permissions::from_mode(0o640))
+            .unwrap();
+        drop(file);
+        assert!(read_helper_receipt(&receipt, 1024).is_ok());
+        let target = tmp.0.join("receipt-target");
+        fs::write(&target, b"{}").unwrap();
+        fs::remove_file(&receipt).unwrap();
+        std::os::unix::fs::symlink(&target, &receipt).unwrap();
+        assert!(read_helper_receipt(&receipt, 1024).is_err());
+        fs::remove_file(&receipt).unwrap();
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&receipt)
+            .unwrap();
+        file.write_all(b"{}").unwrap();
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .unwrap();
+        drop(file);
+        assert!(read_helper_receipt(&receipt, 1024).is_err());
     }
 
     #[test]
@@ -874,6 +1170,30 @@ mod tests {
         assert_eq!(refused_large["result"], "refused");
         assert!(!config.join("node.key").exists());
         assert!(!config.join("node.csr").exists());
+    }
+
+    #[test]
+    fn valid_operation_refusal_keeps_request_id_and_operation_for_agent_correlation() {
+        let (_tmp, control, config, receipts) = fixture();
+        fs::write(config.join("node.key"), b"pre-existing key").unwrap();
+        let req = request(
+            "csr-refuse-01",
+            PkiOperation::CreateCsr,
+            "node1",
+            "example.test",
+        );
+        put(&control, &req);
+        let receipt = run_at("node1", &control, &config, &receipts, false).unwrap();
+        assert_eq!(receipt["result"], "refused");
+        assert_eq!(receipt["request_id"], "csr-refuse-01");
+        assert_eq!(receipt["operation"], "create_csr");
+        assert_eq!(receipt["private_key_exported"], false);
+        assert!(
+            receipt["reason"]
+                .as_str()
+                .unwrap()
+                .contains("already exists")
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # ADR-0027: panel-managed offline tcp-tls certificate enrollment
 
-**Status:** Accepted for implementation; D2 remains OPEN / NOT VERIFIED. D2-B1/B2 have a local implementation candidate on feature/d2-panel-tcp-tls-enrollment; no Agent API, panel flow, certificate import, target-host test, or LAB acceptance yet.
+**Status:** Implementation candidate in progress; D2 remains OPEN / NOT VERIFIED. D2-B1/B2 and D2-C have local implementations on feature/d2-panel-tcp-tls-enrollment; panel UI, certificate import, target-host validation, and LAB acceptance remain open.
 **Date:** 2026-11-10
 **Related:** Issue #149, ADR-0012, ADR-0023, ADR-0026
 
@@ -14,7 +14,7 @@ This decision adds a guided local-panel workflow without adding online enrollmen
 
 Source review on `main` at `98a39464d3ed3954acbf666b602c5f42154c9a29` confirms:
 
-- `setup::tls_material()` expects exactly `node.key`, `node.crt`, `ca.crt`, and `ca.crl` in the supplied setup directory; the current installed layout uses `/etc/baft-tunnel`.
+- setup::tls_material() requires node.key, node.crt, ca.crt, and ca.crl in the supplied setup directory; the current installed layout uses /etc/baft-tunnel. The additional non-secret node.csr.meta file is not consumed by runtime TLS setup.
 - The runtime config stores explicit `ca`, `crl`, `cert`, and `key` paths; credential import must not silently rewrite these fields or assume a hot reload.
 - `setup::adopt_for_service()` changes `node.key` to `baft-tunnel:baft-tunnel` while preserving 0600, and gives public PKI files group-readable permissions for the tunnel service.
 - The Agent runs as `baft-tunnel-agent`, has `/etc/baft-tunnel` read-only, and may write only its state directory plus `/run/baft-tunnel/control`.
@@ -67,11 +67,13 @@ Validation failure leaves the active credential set unchanged. Successful import
 
 ### 6. API and UI contract
 
-Proposed API routes (names provisional until implementation):
-- `POST /v1/pki/csr`: create once; conflict if key/CSR already exists.
-- `GET /v1/pki/csr`: retrieve the existing public CSR and metadata.
-- `POST /v1/pki/certificate`: bounded multipart or JSON-encoded PEM import; no arbitrary path fields.
-- `GET /v1/pki/status`: report only non-secret state, fingerprints, validity and validation status.
+Implemented local Agent API routes:
+- POST /v1/pki/csr/create: confirmed, pre-Init create; conflicts if credentials already exist or the instance is configured.
+- POST /v1/pki/csr/read: retrieve the existing public CSR and bound metadata in setup mode, or for the matching configured tcp-tls node.
+
+Still required:
+- POST /v1/pki/certificate: bounded PEM import; no arbitrary path fields.
+- GET /v1/pki/status: report only non-secret state, fingerprints, validity and validation status.
 
 Panel flow:
 1. Generate or retrieve CSR.
@@ -80,7 +82,7 @@ Panel flow:
 4. Show validation results and installed fingerprint.
 5. Clearly separate credential installation from tunnel Apply/Start.
 
-All strings are added to both Persian RTL and English locales. DOM updates continue using the existing safe DOM helpers; no `innerHTML`, inline scripts, CDN, or new frontend build chain.
+All strings are added to both Persian RTL and English locales. DOM updates continue using the existing safe DOM helpers; no innerHTML, inline scripts, CDN, or new frontend build chain.
 
 ### 7. Audit and receipts
 
@@ -95,17 +97,24 @@ The D2 implementation must account for these concrete seams:
 - The setup helper continues to consume NAME.setup and write NAME.setup-result. The PKI helper uses the distinct NAME.pki / NAME.pki-result protocol and /var/lib/baft-tunnel/pki-receipts.
 - systemd/control/baft-tunnel-control-pki@.service preserves the setup helper's sandbox shape and adds only the fixed PKI receipt directory to its existing /etc/baft-tunnel, /var/lib/baft-tunnel, and control-directory write paths.
 - scripts/install-agent-control.sh registers the PKI path/service templates as a separate pki operation; scripts/test-install.sh verifies staged installation and fixed unit command/path/permissions.
-- src/agent.rs::route() has an explicit global path allowlist followed by Bearer authentication, then a separate configured-mode method/path match. setup_mode_route() has its own allowlist. D2 endpoints must be explicitly present in both allowlists with correct 401/404/405/409 behavior; no wildcard route.
+- src/agent.rs::route() has an explicit global path allowlist followed by Bearer authentication, then a separate configured-mode method/path match. setup_mode_route() has its own allowlist. D2 CSR routes are explicitly present in both allowlists with tested 401/404/405/409 behavior; no wildcard route.
 - src/setup.rs::tls_material() is called during tcp-tls setup Init and requires all four PKI files already to exist. It verifies the node key is private and validates the cert/CA/CRL material. Thus current panel pairing cannot bootstrap tcp-tls from an empty PKI directory: D2 must be a distinct pre-Init credential stage, then Init/Join can consume the validated files.
 - src/setup.rs::plan() currently maps the tcp-tls config to the fixed filenames ca.crt, ca.crl, node.crt, and node.key. The panel workflow must preserve these paths or separately migrate the runtime config contract with explicit tests.
 - The PKI script new-node NODE_ID NODE_DIR already produces a private key and public CSR without overwriting existing material; issue-node on the offline CA checks the requested identity and SAN; verify-node verifies the issued certificate. Reuse or port these exact policies rather than creating a second, weaker PKI policy.
 
+### Current implementation snapshot (local Mac; 2026-11-10)
+
+- D2-B1/B2: root helper CSR create/read protocol, digest-bound replay receipts, fixed PKI paths, P-256/CSR validation, metadata binding, hardened systemd path/service units and staged registration are implemented locally.
+- D2-C: SystemPkiClient publishes fully written requests atomically, validates root-owned 0640 receipts, and refuses custom PKI config directories. The Agent exposes authenticated create/read routes in setup/configured modes, validates state and receipts, audits outcomes without PEM/key data, and reports helper availability in setup status/preflight.
+- Focused evidence: 16 PKI-related Rust tests pass. Clippy, formatting, diff checks and staged installer pass. Serial full suite is 167 passed / 4 unchanged host/platform baseline failures. No Linux target or LAB acceptance is claimed.
+- D2-D/E/F remain open: certificate/CA/CRL import and rollback, panel UI, exact-head CI, Linux validation and two-host LAB. tcp-tls remains unavailable in the Wizard.
+
 ### Revised implementation order
 
 1. D2-A (source map): complete; source paths and privilege boundaries above are recorded. This is review evidence only, not a runtime feature.
-2. D2-B1: local implementation candidate complete — separate root-helper CSR create/read protocol, no overwrite, request replay protection, bounded request/receipt, fixed paths and six focused Rust tests. Target Linux/CI evidence remains open.
+2. D2-B1: local implementation candidate complete — separate root-helper CSR create/read protocol, no overwrite, request replay protection, bounded request/receipt, fixed paths and nine focused helper/client tests. Target Linux/CI evidence remains open.
 3. D2-B2: local implementation candidate complete — fixed systemd path/service templates, registration lifecycle and staged installer test. Target Linux/CI evidence remains open.
-4. D2-C: add authenticated Agent endpoints and tests for setup/configured modes, wrong methods, missing auth, invalid instance, replay, symlink and oversized request.
+4. D2-C: local implementation candidate complete — authenticated create/read Agent routes, atomic client request publication, root receipt ownership checks, fixed config-dir guard, audit and negative tests. Exact-head CI and target Linux/LAB remain open.
 5. D2-D: add strict certificate/CA/CRL import validation and failure-safe atomic activation. Before coding this slice, prove how current runtime config paths resolve and how rollback works on real systemd; do not assume directory symlink swaps are compatible with the existing fixed file paths.
 6. D2-E: add Persian/English UI and browser tests.
 7. D2-F: exact-head CI, then two-host LAB. Keep tcp-tls hidden/unavailable in wizard until all D2 gates pass.
@@ -115,8 +124,8 @@ The D2 implementation must account for these concrete seams:
 | Slice | Work | Evidence |
 |---|---|---|
 | D2-A | Reconcile actual config credential paths, systemd ownership and fixed helper design | Reviewed source map + tests |
-| D2-B1/B2 | Fixed root helper CSR create/read protocol and systemd registration | Local Mac: 6 focused Rust tests, clippy, staged installer pass; exact-head CI and Linux/LAB remain open |
-| D2-C | Add Agent API routes with strict auth, body limits, setup-mode behavior and audit | Rust route tests incl. unauthenticated, malformed and oversized requests |
+| D2-B1/B2 | Fixed root helper CSR create/read protocol and systemd registration | Local Mac: 10 focused helper/client tests, clippy, staged installer pass; exact-head CI and Linux/LAB remain open |
+| D2-C | Authenticated Agent create/read routes, atomic request client, root receipt checks, setup/configured guards and audit | Local Mac: 3 focused Agent route tests and 16 PKI-related tests total; exact-head CI and Linux/LAB remain open |
 | D2-D | Add certificate/CA/CRL validation and atomic versioned activation | Positive and negative OpenSSL tests, failure-injection rollback |
 | D2-E | Add Persian/English panel flow and safe CSR download/upload | Browser tests and accessibility checks |
 | D2-F | Exact-head Rust, lint, panel and systemd CI; then two-host LAB using the candidate build | CI run and real-host LAB evidence tied to exact SHA |
@@ -130,4 +139,4 @@ The D2 implementation must account for these concrete seams:
 
 ## Acceptance blockers
 
-D2 remains **OPEN / NOT VERIFIED** until implementation, negative tests, exact-head CI, and two-host LAB evidence all pass. This ADR is a design artifact only; it is not evidence that any route, UI, helper, or credential operation exists.
+D2 remains **OPEN / NOT VERIFIED** until all implementation slices, negative tests, exact-head CI, and two-host LAB evidence pass. The current branch has local CSR helper and Agent route implementations, but no panel UI, certificate import, or accepted target-host/LAB evidence.

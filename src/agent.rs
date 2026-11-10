@@ -5,7 +5,7 @@
 //! unit. It never starts, stops or changes a tunnel except through the confirmed Apply stages.
 
 use std::{
-    io::Write,
+    io::{Read, Write},
     net::SocketAddr,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -119,6 +119,8 @@ pub struct Ctx {
     config_dir: PathBuf,
     /// Root setup helper (ADR-0026) for `init`/`join` of the bound instance. Tests use a fake.
     setup: Arc<dyn crate::setup_helper::SetupHelper + Send + Sync>,
+    /// Root PKI helper (ADR-0027) for host-local CSR create/read before tcp-tls Init.
+    pki: Arc<dyn crate::pki_helper::PkiHelperClient + Send + Sync>,
 }
 
 const SAMPLE_SECONDS: u64 = 5;
@@ -154,6 +156,7 @@ impl Ctx {
             units: Arc::new(crate::apply::SystemUnits::default()),
             config_dir: PathBuf::from("/etc/baft-tunnel"),
             setup: Arc::new(crate::setup_helper::SystemSetupHelper::default()),
+            pki: Arc::new(crate::pki_helper::SystemPkiClient::default()),
         }
     }
 
@@ -163,6 +166,15 @@ impl Ctx {
         helper: Arc<dyn crate::setup_helper::SetupHelper + Send + Sync>,
     ) -> Self {
         self.setup = helper;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_pki_helper(
+        mut self,
+        helper: Arc<dyn crate::pki_helper::PkiHelperClient + Send + Sync>,
+    ) -> Self {
+        self.pki = helper;
         self
     }
 
@@ -532,6 +544,8 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/tunnel/lifecycle"
             | "/v1/setup/bundle"
             | "/v1/setup/bundle/inspect"
+            | "/v1/pki/csr/create"
+            | "/v1/pki/csr/read"
     ) {
         return (404, json!({"error": "not found"}));
     }
@@ -561,6 +575,13 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         ("POST", "/v1/tunnel/lifecycle") => tunnel_lifecycle(ctx, body).await,
         ("GET", "/v1/setup/bundle") => own_bundle(ctx),
         ("POST", "/v1/setup/bundle/inspect") => inspect_bundle(ctx, body),
+        ("POST", "/v1/pki/csr/create") => (
+            409,
+            json!({"error": "CSR generation is a pre-Init operation; this instance is already configured"}),
+        ),
+        ("POST", "/v1/pki/csr/read") => {
+            pki_csr_action(ctx, body, crate::pki_helper::PkiOperation::ReadCsr).await
+        }
         _ => (405, json!({"error": "method not allowed"})),
     }
 }
@@ -576,6 +597,12 @@ async fn setup_mode_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (
         ("POST", "/v1/setup/apply") => setup_apply(ctx, body).await,
         ("GET", "/v1/setup/bundle") => own_bundle(ctx),
         ("POST", "/v1/setup/bundle/inspect") => inspect_bundle(ctx, body),
+        ("POST", "/v1/pki/csr/create") => {
+            pki_csr_action(ctx, body, crate::pki_helper::PkiOperation::CreateCsr).await
+        }
+        ("POST", "/v1/pki/csr/read") => {
+            pki_csr_action(ctx, body, crate::pki_helper::PkiOperation::ReadCsr).await
+        }
         (
             "GET" | "PUT" | "POST",
             "/v1/history"
@@ -606,6 +633,14 @@ fn setup_status(ctx: &Ctx) -> Value {
         "setup_helper": match ctx.setup.available(name) {
             Ok(()) => json!({"available": true}),
             Err(why) => json!({"available": false, "reason": why}),
+        },
+        "pki_helper": if !ctx.pki.supports_config_dir(dir) {
+            json!({"available": false, "reason": "the root PKI helper only serves /etc/baft-tunnel"})
+        } else {
+            match ctx.pki.available(name) {
+                Ok(()) => json!({"available": true}),
+                Err(why) => json!({"available": false, "reason": why}),
+            }
         },
         "tunnel": null,
         "warnings": [],
@@ -883,6 +918,25 @@ async fn preflight(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             "no earlier pairing in this directory".into(),
         ));
     }
+    if req.engine == crate::config::EngineKind::TcpTls && ctx.via_helper(&req) {
+        let name = req.instance.as_deref().unwrap_or_default();
+        checks.push(if !ctx.pki.supports_config_dir(dir) {
+            check(
+                "pki_helper",
+                "blocked",
+                "the root PKI helper only serves /etc/baft-tunnel; custom config directories are not supported".into(),
+            )
+        } else {
+            match ctx.pki.available(name) {
+                Ok(()) => check(
+                    "pki_helper",
+                    "pass",
+                    "the root PKI CSR helper is installed for this instance".into(),
+                ),
+                Err(why) => check("pki_helper", "blocked", why),
+            }
+        });
+    }
     if req.engine == crate::config::EngineKind::TcpTls {
         let missing: Vec<&str> = ["node.key", "node.crt", "ca.crt", "ca.crl"]
             .into_iter()
@@ -1076,6 +1130,9 @@ fn remediation(id: &str) -> &'static str {
         "directory" => "Create the setup directory or choose another one.",
         "setup_helper" => {
             "Run sudo scripts/install-agent-control.sh --instance NAME (or install.sh --register NAME) to install the root setup helper."
+        }
+        "pki_helper" => {
+            "Run sudo scripts/install-agent-control.sh --instance NAME to install the root PKI CSR helper."
         }
         "directory_writable" => {
             "Run the printed setup commands as root on this server; the panel Apply button stays disabled here."
@@ -1331,6 +1388,369 @@ async fn helper_apply(
     receipt["replayed"] = json!(false);
     crate::apply::store_receipt(receipts, &request.key, &mut receipt);
     Ok((crate::apply::result_code(&receipt), receipt))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PkiCsrBody {
+    request_id: String,
+    node_id: String,
+    server_name: String,
+    #[serde(default)]
+    confirm: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn audit_pki_csr(
+    state_dir: &Path,
+    ctx: &Ctx,
+    instance: &str,
+    node_id: &str,
+    operation: crate::pki_helper::PkiOperation,
+    digest: &str,
+    request_id: &str,
+    result: &str,
+) {
+    let _ = audit(
+        state_dir,
+        ctx,
+        AuditEvent {
+            action: "pki_csr",
+            result,
+            resource: "pki/csr".into(),
+            node: Some(node_id),
+            instance: Some(instance),
+            sha256: digest,
+            detail: operation.as_str(),
+            receipt_id: Some(request_id),
+        },
+    );
+}
+
+/// Pre-Init CSR generation and recovery. The Agent never reads node.key; it only submits a
+/// bounded public request to the fixed root PKI helper and validates the public receipt.
+async fn pki_csr_action(
+    ctx: &Ctx,
+    body: &[u8],
+    operation: crate::pki_helper::PkiOperation,
+) -> (u16, Value) {
+    const MAX_PKI_BODY_BYTES: usize = 4096;
+    if body.len() > MAX_PKI_BODY_BYTES {
+        return (413, json!({"error": "PKI request exceeds 4 KiB"}));
+    }
+    let Some(state_dir) = ctx.state_dir.as_ref() else {
+        return (
+            404,
+            json!({"error": "PKI operations are disabled; audit state is unavailable"}),
+        );
+    };
+    let Some(name) = ctx.instance.as_deref() else {
+        return (
+            409,
+            json!({"error": "PKI enrollment requires an instance-bound agent"}),
+        );
+    };
+    if !crate::apply::valid_instance(name) {
+        return (409, json!({"error": "the bound instance name is invalid"}));
+    }
+    if !ctx.pki.supports_config_dir(&ctx.config_dir) {
+        return (
+            409,
+            json!({"error": "the root PKI helper only serves /etc/baft-tunnel; custom config directories are not supported"}),
+        );
+    }
+    let req: PkiCsrBody = match serde_json::from_slice(body) {
+        Ok(req) => req,
+        Err(error) => {
+            return (
+                422,
+                json!({"error": "invalid PKI request", "detail": error.to_string()}),
+            );
+        }
+    };
+    if !crate::apply::valid_key(&req.request_id) {
+        return (
+            422,
+            json!({"error": "request_id must be 8-64 characters of A-Z a-z 0-9 - _"}),
+        );
+    }
+    if !crate::pki_helper::valid_node_id(&req.node_id) {
+        return (422, json!({"error": "node_id is invalid"}));
+    }
+    let expected_san = match crate::pki_helper::expected_server_san(&req.server_name) {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                422,
+                json!({"error": "server_name is invalid", "detail": format!("{error:#}")}),
+            );
+        }
+    };
+    if operation == crate::pki_helper::PkiOperation::CreateCsr && !req.confirm {
+        return (
+            422,
+            json!({"error": "CSR generation requires confirm: true"}),
+        );
+    }
+
+    // CSR generation is strictly before Init. Once a config exists, only read is available.
+    if let Some(config) = ctx.config.as_ref() {
+        let (local_id, engine) = match config {
+            RuntimeConfig::Serve {
+                local_id, engine, ..
+            } => (local_id.as_str(), *engine),
+            RuntimeConfig::Forward {
+                local_id, engine, ..
+            } => (local_id.as_str(), *engine),
+        };
+        if operation == crate::pki_helper::PkiOperation::CreateCsr {
+            return (
+                409,
+                json!({"error": "CSR generation is only available before Init"}),
+            );
+        }
+        if engine != crate::config::EngineKind::TcpTls || local_id != req.node_id {
+            return (
+                409,
+                json!({"error": "CSR retrieval is only available for this configured tcp-tls node"}),
+            );
+        }
+    } else {
+        if operation == crate::pki_helper::PkiOperation::CreateCsr
+            && ctx.instance_config().is_some_and(|path| path.is_file())
+        {
+            return (
+                409,
+                json!({"error": "an instance config already exists; CSR generation is pre-Init only"}),
+            );
+        }
+        let state_path = ctx.config_dir.join(crate::setup::STATE_FILE);
+        let state = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&state_path)
+        {
+            Ok(mut file) => {
+                let meta = match file.metadata() {
+                    Ok(meta) => meta,
+                    Err(error) => {
+                        return (
+                            409,
+                            json!({"error": "cannot inspect existing setup state", "detail": error.to_string()}),
+                        );
+                    }
+                };
+                if !meta.is_file() || meta.len() > 16 * 1024 {
+                    return (
+                        409,
+                        json!({"error": "existing setup state is not a safe bounded regular file"}),
+                    );
+                }
+                let mut bytes = Vec::new();
+                if let Err(error) = std::io::Read::by_ref(&mut file)
+                    .take(16 * 1024 + 1)
+                    .read_to_end(&mut bytes)
+                {
+                    return (
+                        409,
+                        json!({"error": "cannot read existing setup state", "detail": error.to_string()}),
+                    );
+                }
+                if bytes.len() > 16 * 1024 {
+                    return (409, json!({"error": "existing setup state exceeds 16 KiB"}));
+                }
+                match serde_json::from_slice::<Value>(&bytes) {
+                    Ok(state) => Some(state),
+                    Err(error) => {
+                        return (
+                            409,
+                            json!({"error": "existing setup state is invalid", "detail": error.to_string()}),
+                        );
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return (
+                    409,
+                    json!({"error": "cannot safely open existing setup state", "detail": error.to_string()}),
+                );
+            }
+        };
+        if let Some(state) = state {
+            if state["engine"].as_str() != Some("tcp-tls") {
+                return (
+                    409,
+                    json!({"error": "PKI enrollment is only valid for tcp-tls"}),
+                );
+            }
+            if state["node_id"].as_str() != Some(req.node_id.as_str()) {
+                return (
+                    409,
+                    json!({"error": "node_id does not match the existing setup state"}),
+                );
+            }
+        }
+    }
+
+    let request = crate::pki_helper::request_document(
+        &req.request_id,
+        operation,
+        &req.node_id,
+        &req.server_name,
+    );
+    let request_bytes = match serde_json::to_vec(&request) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return (
+                500,
+                json!({"error": format!("cannot encode PKI request: {error}")}),
+            );
+        }
+    };
+    let digest = hex::encode(Sha256::digest(&request_bytes));
+    let _guard = ctx.lock.lock().await;
+    if let Err(error) = ctx.pki.available(name) {
+        audit_pki_csr(
+            state_dir,
+            ctx,
+            name,
+            &req.node_id,
+            operation,
+            &digest,
+            &req.request_id,
+            "helper_unavailable",
+        );
+        return (
+            503,
+            json!({"error": "root PKI helper unavailable", "detail": error}),
+        );
+    }
+    let helper = ctx.pki.clone();
+    let instance = name.to_owned();
+    let receipt =
+        match tokio::task::spawn_blocking(move || helper.submit(&instance, &request)).await {
+            Ok(Ok(receipt)) => receipt,
+            Ok(Err(error)) => {
+                audit_pki_csr(
+                    state_dir,
+                    ctx,
+                    name,
+                    &req.node_id,
+                    operation,
+                    &digest,
+                    &req.request_id,
+                    "helper_error",
+                );
+                return (
+                    503,
+                    json!({"error": "root PKI helper failed", "detail": error}),
+                );
+            }
+            Err(error) => {
+                audit_pki_csr(
+                    state_dir,
+                    ctx,
+                    name,
+                    &req.node_id,
+                    operation,
+                    &digest,
+                    &req.request_id,
+                    "helper_task_error",
+                );
+                return (
+                    500,
+                    json!({"error": format!("PKI helper task failed: {error}")}),
+                );
+            }
+        };
+
+    let expected_operation = operation.as_str();
+    if receipt["request_id"] != json!(req.request_id)
+        || receipt["operation"] != json!(expected_operation)
+        || receipt["private_key_exported"] != json!(false)
+    {
+        audit_pki_csr(
+            state_dir,
+            ctx,
+            name,
+            &req.node_id,
+            operation,
+            &digest,
+            &req.request_id,
+            "invalid_receipt",
+        );
+        return (
+            502,
+            json!({"error": "PKI helper receipt did not match this request or violated key-custody policy"}),
+        );
+    }
+    let result = receipt["result"].as_str().unwrap_or("refused");
+    if result == "refused" {
+        audit_pki_csr(
+            state_dir,
+            ctx,
+            name,
+            &req.node_id,
+            operation,
+            &digest,
+            &req.request_id,
+            "refused",
+        );
+        return (
+            409,
+            json!({"error": "CSR operation refused", "detail": receipt["reason"], "receipt": receipt}),
+        );
+    }
+    let expected_result = match operation {
+        crate::pki_helper::PkiOperation::CreateCsr => "created",
+        crate::pki_helper::PkiOperation::ReadCsr => "retrieved",
+    };
+    let csr = receipt["csr_pem"].as_str().unwrap_or_default();
+    let fingerprint = receipt["public_key_sha256"].as_str().unwrap_or_default();
+    if result != expected_result
+        || receipt["node_id"] != json!(req.node_id)
+        || receipt["expected_server_san"] != json!(expected_san)
+        || csr.len() > crate::pki_helper::MAX_CSR_BYTES as usize
+        || !csr.starts_with("-----BEGIN CERTIFICATE REQUEST-----")
+        || !csr
+            .trim_end()
+            .ends_with("-----END CERTIFICATE REQUEST-----")
+        || fingerprint.len() != 64
+        || !fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        audit_pki_csr(
+            state_dir,
+            ctx,
+            name,
+            &req.node_id,
+            operation,
+            &digest,
+            &req.request_id,
+            "invalid_receipt",
+        );
+        return (
+            502,
+            json!({"error": "PKI helper returned an invalid CSR receipt"}),
+        );
+    }
+    let replayed = receipt["replayed"] == json!(true);
+    audit_pki_csr(
+        state_dir,
+        ctx,
+        name,
+        &req.node_id,
+        operation,
+        &digest,
+        &req.request_id,
+        if replayed { "replayed" } else { result },
+    );
+    let code = if operation == crate::pki_helper::PkiOperation::CreateCsr && !replayed {
+        201
+    } else {
+        200
+    };
+    (code, receipt)
 }
 
 #[derive(serde::Deserialize)]
@@ -3279,6 +3699,57 @@ mod tests {
         );
     }
 
+    #[derive(Default)]
+    struct PkiFake {
+        requests: std::sync::Mutex<Vec<Value>>,
+        unavailable: bool,
+        refused: bool,
+        replayed: bool,
+        wrong_request_id: bool,
+        export_private: bool,
+    }
+
+    impl crate::pki_helper::PkiHelperClient for PkiFake {
+        fn available(&self, _: &str) -> std::result::Result<(), String> {
+            if self.unavailable {
+                Err("PKI helper unavailable in test".into())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn submit(&self, _: &str, request: &Value) -> std::result::Result<Value, String> {
+            self.requests.lock().unwrap().push(request.clone());
+            let operation = request["operation"].as_str().unwrap();
+            let node_id = request["node_id"].as_str().unwrap();
+            let server_name = request["server_name"].as_str().unwrap();
+            let expected_san = crate::pki_helper::expected_server_san(server_name)
+                .map_err(|error| format!("{error:#}"))?;
+            if self.refused {
+                return Ok(json!({
+                    "receipt_version": 1,
+                    "request_id": if self.wrong_request_id { json!("wrong-request") } else { request["request_id"].clone() },
+                    "operation": operation,
+                    "result": "refused",
+                    "reason": "test refusal",
+                    "private_key_exported": false
+                }));
+            }
+            Ok(json!({
+                "receipt_version": 1,
+                "request_id": if self.wrong_request_id { json!("wrong-request") } else { request["request_id"].clone() },
+                "operation": operation,
+                "result": if operation == "create_csr" { "created" } else { "retrieved" },
+                "node_id": node_id,
+                "expected_server_san": expected_san,
+                "public_key_sha256": "a".repeat(64),
+                "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----\nZmFrZQ==\n-----END CERTIFICATE REQUEST-----",
+                "private_key_exported": self.export_private,
+                "replayed": self.replayed
+            }))
+        }
+    }
+
     /// Runs the real root helper code in-process against temporary directories.
     struct InProcessHelper {
         control: PathBuf,
@@ -3321,6 +3792,276 @@ mod tests {
             .with_units(fake, conf.clone())
             .with_setup_helper(helper);
         (ctx, conf)
+    }
+
+    #[tokio::test]
+    async fn pki_csr_routes_are_authenticated_bounded_audited_and_keep_keys_local() {
+        let base = state_dir("pki-api");
+        let (ctx, _conf) = setup_mode_ctx(&base);
+        let fake = Arc::new(PkiFake::default());
+        let ctx = ctx.with_pki_helper(fake.clone());
+        let create = json!({
+            "request_id": "csr-create-01",
+            "node_id": "abroad",
+            "server_name": "abroad.lab",
+            "confirm": true
+        });
+        let body = create.to_string();
+
+        let no_auth = "POST /v1/pki/csr/create HTTP/1.1\r\nHost: 127.0.0.1";
+        assert_eq!(route(no_auth, body.as_bytes(), &ctx).await.0, 401);
+        assert_eq!(
+            route(&get("/v1/pki/csr/create"), body.as_bytes(), &ctx)
+                .await
+                .0,
+            405
+        );
+        assert_eq!(route(&get("/v1/pki/csr/unknown"), b"", &ctx).await.0, 404);
+        assert_eq!(
+            route(&post("/v1/pki/csr/create"), &vec![b' '; 4097], &ctx)
+                .await
+                .0,
+            413
+        );
+        let no_confirm =
+            json!({"request_id":"csr-create-02","node_id":"abroad","server_name":"abroad.lab"});
+        assert_eq!(
+            route(
+                &post("/v1/pki/csr/create"),
+                no_confirm.to_string().as_bytes(),
+                &ctx
+            )
+            .await
+            .0,
+            422
+        );
+        let bad_san = json!({"request_id":"csr-create-03","node_id":"abroad","server_name":"*.lab","confirm":true});
+        assert_eq!(
+            route(
+                &post("/v1/pki/csr/create"),
+                bad_san.to_string().as_bytes(),
+                &ctx
+            )
+            .await
+            .0,
+            422
+        );
+
+        let (code, created) = route(&post("/v1/pki/csr/create"), body.as_bytes(), &ctx).await;
+        assert_eq!(code, 201, "{created}");
+        assert_eq!(created["result"], "created");
+        assert_eq!(created["private_key_exported"], false);
+        assert_eq!(created["expected_server_san"], "DNS:abroad.lab");
+        assert!(
+            created["csr_pem"]
+                .as_str()
+                .unwrap()
+                .contains("BEGIN CERTIFICATE REQUEST")
+        );
+
+        let read =
+            json!({"request_id":"csr-read-01","node_id":"abroad","server_name":"abroad.lab"});
+        let (code, retrieved) =
+            route(&post("/v1/pki/csr/read"), read.to_string().as_bytes(), &ctx).await;
+        assert_eq!(code, 200, "{retrieved}");
+        assert_eq!(retrieved["result"], "retrieved");
+        let requests = fake.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["operation"], "create_csr");
+        assert_eq!(requests[1]["operation"], "read_csr");
+        drop(requests);
+        let audit_text = std::fs::read_to_string(base.join("state").join(AUDIT_FILE)).unwrap();
+        assert!(audit_text.contains("pki_csr"));
+        assert!(!audit_text.contains("BEGIN CERTIFICATE REQUEST"));
+        assert!(!audit_text.contains("PRIVATE KEY"));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pki_csr_helper_failures_and_untrusted_receipts_are_audited() {
+        let create = json!({"request_id":"csr-create-05","node_id":"abroad","server_name":"abroad.lab","confirm":true});
+        let body = create.to_string();
+
+        let unavailable_dir = state_dir("pki-unavailable");
+        let (ctx, _) = setup_mode_ctx(&unavailable_dir);
+        let unavailable = Arc::new(PkiFake {
+            unavailable: true,
+            ..PkiFake::default()
+        });
+        let ctx = ctx.with_pki_helper(unavailable);
+        assert_eq!(
+            route(&post("/v1/pki/csr/create"), body.as_bytes(), &ctx)
+                .await
+                .0,
+            503
+        );
+        let audit =
+            std::fs::read_to_string(unavailable_dir.join("state").join(AUDIT_FILE)).unwrap();
+        assert!(audit.contains("helper_unavailable"));
+
+        let refused_dir = state_dir("pki-refused");
+        let (ctx, _) = setup_mode_ctx(&refused_dir);
+        let refused = Arc::new(PkiFake {
+            refused: true,
+            ..PkiFake::default()
+        });
+        let ctx = ctx.with_pki_helper(refused);
+        assert_eq!(
+            route(&post("/v1/pki/csr/create"), body.as_bytes(), &ctx)
+                .await
+                .0,
+            409
+        );
+        let audit = std::fs::read_to_string(refused_dir.join("state").join(AUDIT_FILE)).unwrap();
+        assert!(audit.contains(r#""result":"refused""#));
+
+        let invalid_dir = state_dir("pki-invalid-receipt");
+        let (ctx, _) = setup_mode_ctx(&invalid_dir);
+        let invalid = Arc::new(PkiFake {
+            wrong_request_id: true,
+            ..PkiFake::default()
+        });
+        let ctx = ctx.with_pki_helper(invalid);
+        assert_eq!(
+            route(&post("/v1/pki/csr/create"), body.as_bytes(), &ctx)
+                .await
+                .0,
+            502
+        );
+        let audit = std::fs::read_to_string(invalid_dir.join("state").join(AUDIT_FILE)).unwrap();
+        assert!(audit.contains("invalid_receipt"));
+
+        let export_dir = state_dir("pki-export-attempt");
+        let (ctx, _) = setup_mode_ctx(&export_dir);
+        let invalid = Arc::new(PkiFake {
+            export_private: true,
+            ..PkiFake::default()
+        });
+        let ctx = ctx.with_pki_helper(invalid);
+        assert_eq!(
+            route(&post("/v1/pki/csr/create"), body.as_bytes(), &ctx)
+                .await
+                .0,
+            502
+        );
+        let audit = std::fs::read_to_string(export_dir.join("state").join(AUDIT_FILE)).unwrap();
+        assert!(audit.contains("invalid_receipt"));
+
+        let replay_dir = state_dir("pki-replayed");
+        let (ctx, _) = setup_mode_ctx(&replay_dir);
+        let replay = Arc::new(PkiFake {
+            replayed: true,
+            ..PkiFake::default()
+        });
+        let ctx = ctx.with_pki_helper(replay);
+        assert_eq!(
+            route(&post("/v1/pki/csr/create"), body.as_bytes(), &ctx)
+                .await
+                .0,
+            200
+        );
+
+        for dir in [
+            unavailable_dir,
+            refused_dir,
+            invalid_dir,
+            export_dir,
+            replay_dir,
+        ] {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn pki_csr_setup_and_configured_modes_fail_closed_on_wrong_state() {
+        let base = state_dir("pki-api-modes");
+        let (ctx, conf) = setup_mode_ctx(&base);
+        let fake = Arc::new(PkiFake::default());
+        let ctx = ctx.with_pki_helper(fake.clone());
+        let create = json!({"request_id":"csr-create-04","node_id":"abroad","server_name":"abroad.lab","confirm":true});
+        std::fs::write(
+            conf.join(crate::setup::STATE_FILE),
+            json!({"engine":"noise-tcp","node_id":"abroad"}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            route(
+                &post("/v1/pki/csr/create"),
+                create.to_string().as_bytes(),
+                &ctx
+            )
+            .await
+            .0,
+            409
+        );
+        assert!(fake.requests.lock().unwrap().is_empty());
+        let state_path = conf.join(crate::setup::STATE_FILE);
+        std::fs::remove_file(&state_path).unwrap();
+        let victim = base.join("state-victim");
+        std::fs::write(&victim, br#"{"engine":"tcp-tls","node_id":"abroad"}"#).unwrap();
+        std::os::unix::fs::symlink(&victim, &state_path).unwrap();
+        assert_eq!(
+            route(
+                &post("/v1/pki/csr/create"),
+                create.to_string().as_bytes(),
+                &ctx
+            )
+            .await
+            .0,
+            409
+        );
+        std::fs::remove_file(&state_path).unwrap();
+        std::fs::write(&state_path, b"not-json").unwrap();
+        assert_eq!(
+            route(
+                &post("/v1/pki/csr/create"),
+                create.to_string().as_bytes(),
+                &ctx
+            )
+            .await
+            .0,
+            409
+        );
+        assert!(fake.requests.lock().unwrap().is_empty());
+
+        let missing_instance = Ctx::with_config(None, TOKEN.into(), Some(base.join("state")))
+            .with_pki_helper(fake.clone());
+        assert_eq!(
+            route(
+                &post("/v1/pki/csr/create"),
+                create.to_string().as_bytes(),
+                &missing_instance
+            )
+            .await
+            .0,
+            409
+        );
+
+        let state = state_dir("pki-configured");
+        let configured = Ctx::new(serve_config(), TOKEN.into(), Some(state.clone()))
+            .with_unit(Some("pair1".into()), None)
+            .with_pki_helper(fake.clone());
+        assert_eq!(
+            route(
+                &post("/v1/pki/csr/create"),
+                create.to_string().as_bytes(),
+                &configured
+            )
+            .await
+            .0,
+            409
+        );
+        let read =
+            json!({"request_id":"csr-read-02","node_id":"abroad","server_name":"abroad.lab"});
+        let (code, receipt) = route(
+            &post("/v1/pki/csr/read"),
+            read.to_string().as_bytes(),
+            &configured,
+        )
+        .await;
+        assert_eq!(code, 200, "{receipt}");
+        std::fs::remove_dir_all(base).unwrap();
+        std::fs::remove_dir_all(state).unwrap();
     }
 
     fn get(path: &str) -> String {
