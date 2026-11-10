@@ -16,7 +16,8 @@ Type=oneshot
 ExecStart=/usr/local/bin/baft-tunnel setup helper --instance %i
 ExecStopPost=/usr/bin/rm -f /run/baft-tunnel/control/%i.setup
 TimeoutStartSec=60s
-UMask=0027
+# Same modes as the CLI: setup sets every file mode explicitly (keys 0600, config 0640, bundle 0644).
+UMask=0022
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
