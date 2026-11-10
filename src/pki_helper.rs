@@ -2108,6 +2108,12 @@ mod tests {
                         .unwrap();
                     file.set_permissions(fs::Permissions::from_mode(0o640))
                         .unwrap();
+                    if unsafe { libc::geteuid() } == 0 {
+                        if let Some((_, gid)) = crate::setup::service_ids() {
+                            use std::os::fd::AsRawFd;
+                            assert_eq!(unsafe { libc::fchown(file.as_raw_fd(), 0, gid) }, 0);
+                        }
+                    }
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(20));
@@ -2120,10 +2126,18 @@ mod tests {
             "node1",
             "node1.example.test",
         );
-        let receipt = client.submit("node1", &request).unwrap();
+        let receipt = client.submit("node1", &request);
         worker.join().unwrap();
-        assert_eq!(receipt["request_id"], "csr-client-01");
-        assert_eq!(receipt["operation"], "read_csr");
+        if unsafe { libc::geteuid() } == 0 && crate::setup::service_ids().is_none() {
+            assert!(
+                receipt.is_err(),
+                "root must reject receipts without the service identity"
+            );
+        } else {
+            let receipt = receipt.unwrap();
+            assert_eq!(receipt["request_id"], "csr-client-01");
+            assert_eq!(receipt["operation"], "read_csr");
+        }
         assert!(!control.join("node1.pki").exists());
     }
 
@@ -2140,8 +2154,18 @@ mod tests {
         file.write_all(br#"{"result":"created"}"#).unwrap();
         file.set_permissions(fs::Permissions::from_mode(0o640))
             .unwrap();
+        if unsafe { libc::geteuid() } == 0 {
+            if let Some((_, gid)) = crate::setup::service_ids() {
+                use std::os::fd::AsRawFd;
+                assert_eq!(unsafe { libc::fchown(file.as_raw_fd(), 0, gid) }, 0);
+            }
+        }
         drop(file);
-        assert!(read_helper_receipt(&receipt, 1024).is_ok());
+        if unsafe { libc::geteuid() } == 0 && crate::setup::service_ids().is_none() {
+            assert!(read_helper_receipt(&receipt, 1024).is_err());
+        } else {
+            assert!(read_helper_receipt(&receipt, 1024).is_ok());
+        }
         let target = tmp.0.join("receipt-target");
         fs::write(&target, b"{}").unwrap();
         fs::remove_file(&receipt).unwrap();
