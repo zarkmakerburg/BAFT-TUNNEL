@@ -1,10 +1,77 @@
-# BAFT-TUNNEL Phase 1 — local TCP forwarding
+# BAFT-TUNNEL quick start
 
-> Experimental development build. Use only on loopback or disposable test hosts. Not production-ready.
->
-> **Legacy developer path.** This page builds from source and runs the binary by hand. For a server, use the installed-service path in the [Operator guide](OPERATOR_GUIDE.md) (`scripts/install.sh`, `baft-tunnel@` unit). A rewritten quickstart follows the MVP acceptance run.
+> Pre-release (Preview). Use on test hosts you can wipe. Not production-ready.
 
-## Requirements
+Two Ubuntu 22.04+ hosts (systemd 249+): **abroad** serves, **iran** forwards. Run every step as root on both hosts unless noted.
+
+## 1. Download and verify the signed package
+
+```bash
+TAG=v0.1.0-rc.6   # the release you install
+R=https://github.com/zarkmakerburg/BAFT-TUNNEL/releases/download/$TAG
+P=baft-tunnel-$TAG-linux-x86_64
+curl -fLO $R/$P.tar.gz -fLO $R/SHA256SUMS -fLO $R/SHA256SUMS.cosign.bundle
+cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+  --certificate-identity-regexp '^https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/(heads/main|tags/v[0-9][0-9A-Za-z.+-]*)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum -c --ignore-missing SHA256SUMS      # must print: $P.tar.gz: OK
+tar -xzf $P.tar.gz && cd $P
+```
+
+Without cosign, `sha256sum -c` alone only proves the download matches `SHA256SUMS`, not who signed it.
+
+## 2. Install (binary, units, menu, local agent)
+
+```bash
+sudo scripts/install.sh --binary ./baft-tunnel --register t1
+```
+
+`sudo baft-tunnel menu` (Persian/English) wraps every step below if you prefer a menu.
+
+## 3. Pair the two hosts
+
+Default engine `noise-tcp` needs no certificates. (`tcp-tls` needs the offline PKI first: `scripts/pki/baft-pki.sh`, see the [Operator guide](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/OPERATOR_GUIDE.md).)
+
+```bash
+C="--engine noise-tcp --direction direct --tunnel-id t1 --service-port 8080 --instance t1"
+# abroad:
+sudo baft-tunnel setup init $C --role serve   --node-id abroad --peer-id iran
+# iran:
+sudo baft-tunnel setup init $C --role forward --node-id iran --peer-id abroad --peer-host ABROAD_IP
+```
+
+Each prints a **Checksum**. Copy `/etc/baft-tunnel/bundle.json` to the other host, read the checksums to each other over a channel you trust, then on each host:
+
+```bash
+sudo baft-tunnel setup join --bundle PEER_BUNDLE.json --checksum PEER_CHECKSUM
+```
+
+## 4. Start and check
+
+```bash
+sudo baft-tunnel config plan --config /etc/baft-tunnel/t1.json    # review
+ssh -L 18080:127.0.0.1:18080 HOST                                 # from your PC
+sudo cat /var/lib/baft-tunnel-agent/token                         # panel token
+```
+
+Open `http://127.0.0.1:18080/`, paste the token, Tunnels → **Start**, then **Run diagnostics**. Without the panel: `sudo systemctl enable --now baft-tunnel@t1`.
+
+## 5. Day-2
+
+- Logs: `journalctl -u baft-tunnel@t1`; support report: `baft-tunnel support-bundle --config /etc/baft-tunnel/t1.json`.
+- Update: `sudo scripts/update.sh --binary ./baft-tunnel --instance t1` from a newer package; undo with `scripts/rollback.sh BACKUP_DIR`.
+- tcp-tls only: renew the CRL before it expires (`baft-pki.sh renew-crl`, `push-crl.sh`).
+- Remove: `sudo scripts/uninstall.sh --stop` (add `--purge-config --yes` to delete config and keys).
+
+Limits: no firewall automation; open the tunnel port yourself. Reverse is Preview. See [Troubleshooting](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/TROUBLESHOOTING.md).
+
+---
+
+## Appendix: developer build from source (legacy)
+
+> Builds from source and runs the binary by hand, outside systemd. For servers use the steps above.
+
+### Requirements
 
 - Linux or macOS with Rust 1.85 or newer.
 - A private CA and two leaf certificates signed by it. See the [offline PKI bootstrap](OPERATOR_GUIDE.md) for the experimental issuance workflow.
@@ -12,13 +79,13 @@
 - Provide a current CA-signed certificate revocation list (CRL) on both peers; a missing, expired, or unusable CRL fails closed. CRL updates are not hot-reloaded: distribute the updated CRL and restart both endpoint processes.
 - Exchange SHA-256 leaf-certificate fingerprints out of band.
 
-## Build
+### Build
 
 ```bash
 cargo build --release
 ```
 
-## Destination-side peer
+### Destination-side peer
 
 ```bash
 ./target/release/baft-tunnel serve \
@@ -28,7 +95,7 @@ cargo build --release
   --ca ./pki/ca.pem --crl ./pki/ca.crl --cert ./pki/abroad.pem --key ./pki/abroad-key.pem
 ```
 
-## Source-side local forwarder
+### Source-side local forwarder
 
 ```bash
 ./target/release/baft-tunnel forward \
@@ -40,7 +107,7 @@ cargo build --release
 
 Connections to `127.0.0.1:18080` are forwarded to the server's fixed configured destination. Both peers must use the same explicit `--direction` value. For Reverse mode, place `serve` on the Iran-side node and `forward` on the abroad-side node, and set `--direction reverse` on both commands. Replace every example value before use. Never publish private keys.
 
-## Safety and limitations
+### Safety and limitations
 
 - The server destination is operator-configured; a connecting peer cannot choose it.
 - The peer must pass CA validation, a current CRL check, the configured certificate pin, node-identity binding, and the configured Direct/Reverse direction authorization.
@@ -51,7 +118,7 @@ Connections to `127.0.0.1:18080` are forwarded to the server's fixed configured 
 - These commands do not install anything or change host settings. An installer exists (`scripts/install.sh`, see the Operator guide); there is no firewall automation.
 
 
-## JSON configuration workflow
+### JSON configuration workflow
 
 A sample forwarder configuration is available at `examples/forward.json`. Paths are resolved relative to the process working directory. The required `crl` field points to a current PEM CRL signed by the configured CA.
 
@@ -76,7 +143,7 @@ baft-tunnel apply --config examples/forward.json --confirm
 The apply command starts the configured tunnel process in the foreground. It does not install a service, change firewall rules, alter routes, or modify system settings. Keep private key files readable only by the service account. The example fingerprint and endpoint are placeholders and must be replaced.
 
 
-## Redacted support bundle
+### Redacted support bundle
 
 Create a diagnostic report that excludes private-key contents, certificate contents, certificate fingerprints, file paths and network endpoints:
 

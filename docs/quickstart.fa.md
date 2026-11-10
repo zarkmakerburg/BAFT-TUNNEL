@@ -1,10 +1,77 @@
-# BAFT-TUNNEL — شروع سریع فاز ۱
+# BAFT-TUNNEL — شروع سریع
 
-> نسخه آزمایشی توسعه است؛ فقط روی Loopback یا سرورهای تستِ قابل‌حذف اجرا شود. هنوز آماده استفاده عملیاتی نیست.
->
-> **مسیر قدیمی توسعه‌دهنده.** این صفحه از سورس می‌سازد و برنامه را دستی اجرا می‌کند. برای سرور، مسیر سرویس نصب‌شده در [راهنمای اپراتور](OPERATOR_GUIDE.md) را دنبال کنید (`scripts/install.sh` و سرویس `baft-tunnel@`). نسخهٔ بازنویسی‌شدهٔ این راهنما پس از آزمون پذیرش MVP منتشر می‌شود.
+> نسخهٔ پیش‌انتشار (Preview) است؛ فقط روی سرورهای تستیِ قابل‌پاک‌کردن. هنوز آمادهٔ استفادهٔ عملیاتی نیست.
 
-## پیش‌نیازها
+دو سرور Ubuntu 22.04 یا جدیدتر (systemd 249+): **خارج** سرویس می‌دهد (serve) و **ایران** فوروارد می‌کند (forward). همهٔ دستورها با root و روی هر دو سرور اجرا شوند، مگر خلافش گفته شود.
+
+## ۱. دریافت و بررسی بستهٔ امضاشده
+
+```bash
+TAG=v0.1.0-rc.6   # نسخه‌ای که نصب می‌کنید
+R=https://github.com/zarkmakerburg/BAFT-TUNNEL/releases/download/$TAG
+P=baft-tunnel-$TAG-linux-x86_64
+curl -fLO $R/$P.tar.gz -fLO $R/SHA256SUMS -fLO $R/SHA256SUMS.cosign.bundle
+cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+  --certificate-identity-regexp '^https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/(heads/main|tags/v[0-9][0-9A-Za-z.+-]*)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum -c --ignore-missing SHA256SUMS      # باید چاپ کند: $P.tar.gz: OK
+tar -xzf $P.tar.gz && cd $P
+```
+
+بدون cosign، `sha256sum -c` فقط سالم‌بودن دانلود را نشان می‌دهد، نه این‌که چه کسی آن را امضا کرده.
+
+## ۲. نصب (برنامه، سرویس‌ها، منو، ایجنت محلی)
+
+```bash
+sudo scripts/install.sh --binary ./baft-tunnel --register t1
+```
+
+اگر منو را ترجیح می‌دهید: `sudo baft-tunnel menu` (فارسی/انگلیسی) همهٔ مراحل زیر را انجام می‌دهد.
+
+## ۳. جفت‌کردن دو سرور
+
+موتور پیش‌فرض `noise-tcp` گواهی لازم ندارد. (برای `tcp-tls` اول PKI آفلاین را با `scripts/pki/baft-pki.sh` بسازید؛ [راهنمای اپراتور](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/OPERATOR_GUIDE.md).)
+
+```bash
+C="--engine noise-tcp --direction direct --tunnel-id t1 --service-port 8080 --instance t1"
+# خارج:
+sudo baft-tunnel setup init $C --role serve   --node-id abroad --peer-id iran
+# ایران:
+sudo baft-tunnel setup init $C --role forward --node-id iran --peer-id abroad --peer-host ABROAD_IP
+```
+
+هر کدام یک **Checksum** چاپ می‌کند. فایل `/etc/baft-tunnel/bundle.json` هر سرور را به سرور دیگر کپی کنید، Checksumها را از یک کانال مطمئن (تلفن یا پیام‌رسان دیگر) با هم مقایسه کنید، سپس روی هر سرور:
+
+```bash
+sudo baft-tunnel setup join --bundle PEER_BUNDLE.json --checksum PEER_CHECKSUM
+```
+
+## ۴. روشن‌کردن و بررسی
+
+```bash
+sudo baft-tunnel config plan --config /etc/baft-tunnel/t1.json    # مرور تنظیمات
+ssh -L 18080:127.0.0.1:18080 HOST                                 # از کامپیوتر خودتان
+sudo cat /var/lib/baft-tunnel-agent/token                         # توکن پنل
+```
+
+`http://127.0.0.1:18080/` را باز کنید، توکن را وارد کنید، در بخش Tunnels دکمهٔ **Start** و بعد **Run diagnostics** را بزنید. بدون پنل: `sudo systemctl enable --now baft-tunnel@t1`.
+
+## ۵. نگهداری
+
+- لاگ: `journalctl -u baft-tunnel@t1`؛ گزارش پشتیبانی: `baft-tunnel support-bundle --config /etc/baft-tunnel/t1.json`.
+- به‌روزرسانی: `sudo scripts/update.sh --binary ./baft-tunnel --instance t1` از بستهٔ جدیدتر؛ بازگشت با `scripts/rollback.sh BACKUP_DIR`.
+- فقط tcp-tls: CRL را پیش از انقضا تمدید کنید (`baft-pki.sh renew-crl` و `push-crl.sh`).
+- حذف: `sudo scripts/uninstall.sh --stop` (با `--purge-config --yes` تنظیمات و کلیدها هم پاک می‌شوند).
+
+محدودیت‌ها: فایروال خودکار تنظیم نمی‌شود؛ پورت تونل را خودتان باز کنید. Reverse در حالت Preview است. [عیب‌یابی](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/TROUBLESHOOTING.md).
+
+---
+
+## پیوست: ساخت از سورس برای توسعه‌دهنده (مسیر قدیمی)
+
+> از سورس می‌سازد و برنامه را دستی و بیرون از systemd اجرا می‌کند. برای سرور از مراحل بالا استفاده کنید.
+
+### پیش‌نیازها
 
 - Linux یا macOS و Rust نسخه 1.85 یا جدیدتر.
 - برای هر نود یک گواهی صادرشده از CA خصوصی؛ گواهی باید URI SAN دقیق `urn:baft-tunnel:node:<node-id>` داشته باشد.
@@ -12,17 +79,17 @@
 - هر دو سمت باید CRL معتبر و امضاشده توسط همان CA را داشته باشند. CRL مفقود، منقضی یا نامعتبر باعث رد اتصال می‌شود.
 - اثرانگشت SHA-256 گواهی هر نود را خارج از کانال تبادل کنید.
 
-## ساخت
+### ساخت
 
 ```bash
 cargo build --release
 ```
 
-## آماده‌سازی گواهی‌ها
+### آماده‌سازی گواهی‌ها
 
 راهنمای [صدور آفلاین گواهی‌ها](OPERATOR_GUIDE.md) را دنبال کنید. کلید خصوصی CA باید رمزگذاری‌شده و آفلاین بماند. کلید خصوصی هر نود فعلاً فایل PEM بدون رمز با مجوز دسترسی `0600` است؛ هرگز آن را از نود خارج نکنید.
 
-## اجرای Direct
+### اجرای Direct
 
 روی سرور مقصد خارج:
 
@@ -36,11 +103,11 @@ cargo build --release
 ./target/release/baft-tunnel forward   --listen 127.0.0.1:18080 --remote 203.0.113.10:9443 --server-name tunnel.abroad.example.test   --local-id node-iran --peer-id node-abroad --tunnel-id demo-tunnel --direction direct   --peer-fingerprint FINGERPRINT_ABROAD   --ca ./pki/ca.crt --crl ./pki/ca.crl --cert ./pki/iran.crt --key ./pki/iran.key
 ```
 
-## اجرای Reverse
+### اجرای Reverse
 
 برای Reverse جای دو نقش را عوض کنید: `serve` روی ایران و `forward` روی خارج اجرا شود. مقدار `--direction reverse` باید روی هر دو سمت یکسان باشد.
 
-## محدودیت‌های فعلی
+### محدودیت‌های فعلی
 
 - مقصد TCP ثابت و توسط اپراتور تعیین می‌شود؛ همتا نمی‌تواند مقصد دلخواه انتخاب کند.
 - احراز هویت TLS 1.3/mTLS، اثرانگشت، هویت SAN، جهت تونل و مجوز هر Stream جداگانه بررسی می‌شوند.

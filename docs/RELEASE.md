@@ -14,6 +14,14 @@ The workflow builds the Linux binary (Rust 1.88.0, `--locked`), writes
 `SHA256SUMS` and a CycloneDX SBOM, signs `SHA256SUMS` keylessly with cosign
 (GitHub OIDC; **no private key exists anywhere**), self-verifies, then publishes.
 
+Assets per release: the bare binary, the install package
+`baft-tunnel-TAG-linux-x86_64.tar.gz` (binary, `scripts/*.sh`, `scripts/pki/*.sh` without tests,
+`systemd/`, `QUICKSTART.en.md`/`QUICKSTART.fa.md`), the pinned BAFT engine and licences, the
+engine manifest, the SBOM, `SHA256SUMS` and its cosign bundle. Every file is listed in the signed
+`SHA256SUMS`. Before publishing, the workflow extracts the package and runs its own
+`scripts/install.sh --destdir` to prove it installs without the repository. Install steps:
+[quickstart.en.md](quickstart.en.md) / [quickstart.fa.md](quickstart.fa.md).
+
 ## Verify (users)
 
 ```
