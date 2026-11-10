@@ -98,6 +98,11 @@ on:
         required: false
         type: string
         default: '0'
+      panel_pairing:
+        description: Panel pairing stage (install --register, both nodes set up through the agent API and the root setup helper only, Start, uninstall) (0 or 1); run alone
+        required: false
+        type: string
+        default: '0'
       reboot:
         description: With agent_service=1, reboot both LAB hosts once and verify the agent and tunnel come back by themselves (0 or 1; owner approval required)
         required: false
@@ -160,6 +165,7 @@ jobs:
       LAB_CRL_PUSH: ${{ inputs.crl_push }}
       LAB_AGENT_SVC: ${{ inputs.agent_service }}
       LAB_REBOOT: ${{ inputs.reboot }}
+      LAB_PANEL_PAIRING: ${{ inputs.panel_pairing }}
       LAB_BAFT_SYSTEMD: ${{ inputs.baft_systemd }}
       LAB_ROLLOVER: ${{ inputs.rollover }}
       LAB_SETUP: ${{ inputs.setup }}
@@ -221,16 +227,16 @@ jobs:
           echo "BAFT_ENGINE_BINARY=$RUNNER_TEMP/baft-engine" >> "$GITHUB_ENV"
           echo "BAFT_ENGINE_SOURCE=signed-release:${TAG}" >> "$GITHUB_ENV"
       - name: Use this run's local build for the MVP stage (no release tag given)
-        if: ${{ (inputs.mvp == '1' || inputs.reverse_accept != '0' || inputs.ops_stage != '0' || inputs.agent_service == '1') && inputs.mvp_release == '' }}
+        if: ${{ (inputs.mvp == '1' || inputs.reverse_accept != '0' || inputs.ops_stage != '0' || inputs.agent_service == '1' || inputs.panel_pairing == '1') && inputs.mvp_release == '' }}
         run: |
           echo "MVP_BINARY=$GITHUB_WORKSPACE/target/release/baft-tunnel" >> "$GITHUB_ENV"
           echo "MVP_SOURCE=local-build:$(git rev-parse HEAD)" >> "$GITHUB_ENV"
       - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
-        if: ${{ (inputs.mvp == '1' || inputs.reverse_accept != '0' || inputs.ops_stage != '0' || inputs.agent_service == '1') && inputs.mvp_release != '' && inputs.baft_release == '' }}
+        if: ${{ (inputs.mvp == '1' || inputs.reverse_accept != '0' || inputs.ops_stage != '0' || inputs.agent_service == '1' || inputs.panel_pairing == '1') && inputs.mvp_release != '' && inputs.baft_release == '' }}
         with:
           cosign-release: v2.5.3
       - name: Fetch and verify the baft-tunnel binary from a signed release (MVP stage)
-        if: ${{ (inputs.mvp == '1' || inputs.reverse_accept != '0' || inputs.ops_stage != '0' || inputs.agent_service == '1') && inputs.mvp_release != '' }}
+        if: ${{ (inputs.mvp == '1' || inputs.reverse_accept != '0' || inputs.ops_stage != '0' || inputs.agent_service == '1' || inputs.panel_pairing == '1') && inputs.mvp_release != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.mvp_release }}
