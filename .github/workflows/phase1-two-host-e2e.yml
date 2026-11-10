@@ -117,10 +117,10 @@ on:
         type: string
         default: '0'
       ref:
-        description: The ref to test (restricted to main or the D2 enrollment candidate branch)
-        required: true
+        description: Optional ref override; empty uses the same ref that supplied this workflow (restricted to main, D2 candidate, or audited PR #151 branch)
+        required: false
         type: string
-        default: main
+        default: ''
 
 permissions:
   contents: read
@@ -137,7 +137,7 @@ jobs:
       - name: Require explicit E2E confirmation
         env:
           CONFIRM: ${{ inputs.confirm }}
-          REF: ${{ inputs.ref }}
+          REF: ${{ inputs.ref || github.ref_name }}
         run: |
           if [[ "$CONFIRM" != "RUN_PHASE1_E2E" ]]; then
             echo "Invalid confirmation. No LAB hosts were contacted." >&2
@@ -156,7 +156,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.ref_name }}
           persist-credentials: false
       - name: Resolve immutable candidate commit
         id: candidate
