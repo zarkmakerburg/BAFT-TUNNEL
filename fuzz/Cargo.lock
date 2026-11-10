@@ -164,6 +164,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-yamux",
  "x509-parser",
+ "zeroize",
 ]
 
 [[package]]

@@ -24,6 +24,8 @@ pub mod handshake;
 pub mod key_custody;
 #[path = "../../src/noise.rs"]
 pub mod noise;
+#[path = "../../src/pki_helper.rs"]
+pub mod pki_helper;
 #[path = "../../src/observe.rs"]
 pub mod observe;
 #[path = "../../src/runtime_host.rs"]
