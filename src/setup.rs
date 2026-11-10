@@ -276,7 +276,7 @@ impl Bundle {
     }
 }
 
-fn same_checksum(a: &str, b: &str) -> bool {
+pub(crate) fn same_checksum(a: &str, b: &str) -> bool {
     let norm = |x: &str| {
         x.chars()
             .filter(char::is_ascii_hexdigit)
@@ -416,7 +416,7 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
 /// The user and group that run `baft-tunnel@NAME` (created by `scripts/install.sh`).
 pub const SERVICE_USER: &str = "baft-tunnel";
 
-fn lookup_service_ids() -> Option<(u32, u32)> {
+pub(crate) fn service_ids() -> Option<(u32, u32)> {
     let name = std::ffi::CString::new(SERVICE_USER).ok()?;
     // SAFETY: getpwnam/getgrnam read static buffers; we copy the ids out immediately and the
     // CLI is single-threaded at this point.
@@ -437,7 +437,7 @@ pub fn adopt_for_service(dir: &Path, config_file: &str) -> Result<Vec<String>> {
     if unsafe { libc::geteuid() } != 0 {
         return Ok(vec![]);
     }
-    let Some((uid, gid)) = lookup_service_ids() else {
+    let Some((uid, gid)) = service_ids() else {
         bail!(
             "the service user {SERVICE_USER} does not exist; run scripts/install.sh --binary first, then repeat this step"
         );

@@ -1,0 +1,36 @@
+[Unit]
+Description=Run the requested setup init/join for baft-tunnel@%i (root setup helper, ADR-0026)
+
+[Service]
+Type=oneshot
+# Only this fixed command can run (ADR-0026). It reads and removes the request file, accepts only
+# the init or join stage for instance %i in /etc/baft-tunnel, derives every file from validated
+# parameters with the same code as `setup init/join` (never installs agent-written content),
+# refuses links and overwrites, sets the service owners and modes, and writes the receipt to
+# /run/baft-tunnel/control/%i.setup-result (root:baft-tunnel 0640). It never starts a service.
+ExecStart=/usr/local/bin/baft-tunnel setup helper --instance %i
+ExecStopPost=/usr/bin/rm -f /run/baft-tunnel/control/%i.setup
+TimeoutStartSec=60s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel /run/baft-tunnel/control
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+# Owners and modes of the files it creates; reading PKI files the operator gave to the service user.
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE

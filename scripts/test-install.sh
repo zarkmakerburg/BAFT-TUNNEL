@@ -117,9 +117,10 @@ cmp -s "$KEY1" "$CRED_DIR/node-key"
 write_fake 0.3.0
 # One step: binary plus agent service and control helper for an instance (--register).
 "$INSTALL" --binary "$FAKE" --register iran --agent-listen 127.0.0.1:18085 --destdir "$STAGE" >/dev/null
-for v in start stop enable disable; do
+for v in start stop enable disable setup; do
   [[ -f "$STAGE/etc/systemd/system/baft-tunnel-control-$v@.path" && -f "$STAGE/etc/systemd/system/baft-tunnel-control-$v@.service" ]]
 done
+grep -qx 'ExecStart=/usr/local/bin/baft-tunnel setup helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-setup@.service"
 grep -qx 'ExecStart=/usr/bin/systemctl --no-block enable --now baft-tunnel@%i.service' "$STAGE/etc/systemd/system/baft-tunnel-control-enable@.service"
 AGENT_UNIT="$STAGE/etc/systemd/system/baft-tunnel-agent@.service"
 grep -qx 'User=baft-tunnel-agent' "$AGENT_UNIT" && ! grep -q '^User=baft-tunnel$' "$AGENT_UNIT"

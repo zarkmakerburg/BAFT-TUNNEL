@@ -1,0 +1,9 @@
+[Unit]
+Description=BAFT-TUNNEL agent request to run setup init/join for instance %i (panel pairing)
+
+[Path]
+PathExists=/run/baft-tunnel/control/%i.setup
+Unit=baft-tunnel-control-setup@%i.service
+
+[Install]
+WantedBy=multi-user.target

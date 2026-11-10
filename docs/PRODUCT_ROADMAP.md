@@ -114,7 +114,7 @@ The P0 gates proved the runtime; they did not make the product usable by a non-e
 | 5 | U6 | Signed release bundle (binary + scripts + units + docs), then prerelease `rc.5` | — | release gate (O8) |
 | 6 | U7 | MVP acceptance v2 on LAB with the signed `rc.5` bundle (install → setup → lifecycle through the agent → diagnostics → integrity → backup/restore → update from previous prerelease → uninstall) | yes | — |
 | 7 | U8 | Quickstart en/fa and troubleshooting rewritten for the accepted path | — | — |
-| 8 | U4, U5b | Panel-complete pairing: root config-promote helper (ADR-0026) and bundle export/import in the panel (closes P1-8 "Add from Link") | yes | — |
+| 8 | U4, U5b | **Code done, LAB open** (ADR-0026): Panel-complete pairing: root config-promote helper (ADR-0026) and bundle export/import in the panel (closes P1-8 "Add from Link") | yes | — |
 | 9 | B1, B2 | Preflight evidence codes fully localized (P1-6); in-product "Test tunnel" integrity probe (ADR) | B2 yes | — |
 | 10 | B3–B6, S1–S10 | Read-only firewall view (P1-7), BAFT configurable (ADR-0019 phase F), history/alerts, accessibility; multi-hour soak, cross-version chain, reboot proof, fuzz depth, external review (BAFT licence review closed 2026-11-09: the owner owns BAFT) | as listed | O2, O4, O6, O7 |
 

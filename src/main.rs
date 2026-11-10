@@ -15,6 +15,7 @@ mod observe;
 mod runtime_host;
 mod session_status;
 mod setup;
+mod setup_helper;
 mod tls;
 mod tunnel;
 
@@ -234,6 +235,14 @@ enum SetupCommand {
         /// Checksum printed by `setup init` on the peer node.
         #[arg(long)]
         checksum: String,
+    },
+    /// Root setup helper (ADR-0026): the fixed command of baft-tunnel-control-setup@NAME.service.
+    /// Reads and removes /run/baft-tunnel/control/NAME.setup, runs init or join for NAME in
+    /// /etc/baft-tunnel and writes the receipt to NAME.setup-result. Not for interactive use.
+    #[command(hide = true)]
+    Helper {
+        #[arg(long)]
+        instance: String,
     },
 }
 
@@ -533,6 +542,28 @@ async fn run() -> Result<()> {
             Ok(())
         }
         Command::Setup {
+            command: SetupCommand::Helper { instance },
+        } => {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if unsafe { libc::geteuid() } != 0 {
+                bail!("the setup helper runs as root from its systemd unit only");
+            }
+            let receipt = setup_helper::run(
+                &instance,
+                std::path::Path::new(apply::CONTROL_DIR),
+                std::path::Path::new("/etc/baft-tunnel"),
+                std::path::Path::new(setup_helper::HELPER_RECEIPTS),
+            )?;
+            // Journal line without secrets: stage, key and result only.
+            println!(
+                "setup helper for {instance}: stage={} id={} result={}",
+                receipt["stage"].as_str().unwrap_or("-"),
+                receipt["id"].as_str().unwrap_or("-"),
+                receipt["result"].as_str().unwrap_or("-")
+            );
+            Ok(())
+        }
+        Command::Setup {
             command:
                 SetupCommand::Join {
                     dir,
@@ -582,10 +613,21 @@ async fn run() -> Result<()> {
                     "refusing to run the agent as root: run it as the baft-tunnel user (for example `setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups baft-tunnel agent ...`), or pass --allow-root to accept the risk"
                 );
             }
-            let config = config::load(&path)?;
-            // The agent runs as its own user and cannot read the tunnel's private key (SA-09);
-            // the tunnel unit validates the key itself and fails closed.
-            config.validate_public()?;
+            // Setup mode (ADR-0026): an installed instance without NAME.json yet still gets its
+            // agent, which then offers only the pairing routes until `setup join` writes it.
+            let config = if instance.is_some() && !path.exists() {
+                eprintln!(
+                    "{} does not exist yet: starting in setup mode (pairing routes only)",
+                    path.display()
+                );
+                None
+            } else {
+                let config = config::load(&path)?;
+                // The agent runs as its own user and cannot read the tunnel's private key (SA-09);
+                // the tunnel unit validates the key itself and fails closed.
+                config.validate_public()?;
+                Some(config)
+            };
             let token = agent::read_token(&token_file)?;
             agent::run(
                 config,

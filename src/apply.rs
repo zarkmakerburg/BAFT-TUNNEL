@@ -106,7 +106,7 @@ fn request_summary(r: &ApplyRequest) -> Value {
 }
 
 /// Digest of what the caller asked for; the bundle is hashed, never stored.
-fn request_digest(r: &ApplyRequest) -> String {
+pub fn request_digest(r: &ApplyRequest) -> String {
     let mut v = request_summary(r);
     v["bundle_sha256"] = json!(r.bundle.as_deref().map(|b| sha(b.as_bytes())));
     v["checksum"] = json!(r.checksum);
@@ -613,6 +613,25 @@ fn next_commands(r: &ApplyRequest) -> Vec<String> {
         )],
         (Stage::Join, None) => vec![format!("baft-tunnel apply --config {d}/config.json --confirm")],
         (_, _) => vec![],
+    }
+}
+
+/// The stored receipt for `key`, replayed when `digest` matches (else a 409 conflict).
+pub fn replay_key(receipts: &Path, key: &str, digest: &str) -> Option<(u16, Value)> {
+    replay(&receipts.join(format!("{key}.json")), digest)
+}
+
+/// Store a receipt produced elsewhere (the root setup helper) under the agent's receipts.
+pub fn store_receipt(receipts: &Path, key: &str, receipt: &mut Value) {
+    persist(receipts, &receipts.join(format!("{key}.json")), receipt);
+}
+
+/// HTTP status for a receipt result.
+pub fn result_code(receipt: &Value) -> u16 {
+    match receipt["result"].as_str() {
+        Some("applied") => 200,
+        Some("refused") => 409,
+        _ => 500,
     }
 }
 

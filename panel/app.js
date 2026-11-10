@@ -203,6 +203,10 @@
   BAFT.unreachable = function () {
     return h('div', { class: 'banner bad', role: 'alert' }, h('h2', { text: t('unreachable.title') }), h('p', { text: t('unreachable.body') }), h('p', { class: 'sub', text: t('unreachable.next') }));
   };
+  BAFT.setupPending = function (s) {
+    return h('div', { class: 'banner info', role: 'status' }, h('h2', { text: t('setup.pending.title') }),
+      h('p', { text: t('setup.pending.body', { inst: s.instance || '' }) }), h('a', { class: 'btn primary', href: '#/setup', text: t('nav.setup') }));
+  };
   var GLYPH = BAFT.GLYPH = { ok: '✓', warn: '!', bad: '✕', unknown: '?', info: 'i' };
   function tickFresh() { if (ui.fresh) { ui.fresh.textContent = BAFT.fetchedAt ? t('updated', { ago: BAFT.ago(BAFT.fetchedAt) }) : ''; } }
   var timer = null, renderSeq = 0;
@@ -219,15 +223,18 @@
       if (seq !== renderSeq || !BAFT.token) { return; }
       BAFT.data = data;
       var s = data.status;
-      var kind = s ? (s.listener_accepting ? 'ok' : 'bad') : 'unknown';
+      var setup = !!(s && s.setup_pending);
+      var kind = setup ? 'warn' : s ? (s.listener_accepting ? 'ok' : 'bad') : 'unknown';
       ui.badge.className = 'badge ' + kind;
       ui.badge.textContent = '';
       ui.badge.appendChild(h('span', { class: 'glyph', 'aria-hidden': 'true', text: GLYPH[kind] }));
-      ui.badge.appendChild(document.createTextNode(s ? (s.listener_accepting ? t('state.listening') : t('state.notlistening')) : t('state.unknown')));
+      ui.badge.appendChild(document.createTextNode(setup ? t('state.setup') : s ? (s.listener_accepting ? t('state.listening') : t('state.notlistening')) : t('state.unknown')));
       tickFresh();
       var foot = document.getElementById('side-foot');
       if (foot && s) { foot.textContent = 'v' + s.version; }
-      var node = s || id === 'settings' ? page.render({ data: data, h: h, t: t }) : BAFT.unreachable();
+      // Setup mode (no configuration yet): only the wizard and settings make sense.
+      var node = setup && id !== 'setup' && id !== 'settings' ? BAFT.setupPending(s)
+        : s || id === 'settings' ? page.render({ data: data, h: h, t: t }) : BAFT.unreachable();
       ui.content.dataset.page = id;
       ui.content.textContent = '';
       ui.content.appendChild(node);

@@ -3,8 +3,9 @@ Description=BAFT-TUNNEL local agent and panel for instance %i (loopback only)
 Documentation=https://github.com/zarkmakerburg/BAFT-TUNNEL
 After=network-online.target
 Wants=network-online.target
-# The agent reports on and controls exactly baft-tunnel@%i; it needs that instance's configuration.
-ConditionPathExists=/etc/baft-tunnel/%i.json
+# The agent reports on and controls exactly baft-tunnel@%i. Until /etc/baft-tunnel/%i.json exists
+# it runs in setup mode (panel pairing only, ADR-0026) and exits once the file appears, so that
+# Restart=always brings it back with the configuration loaded.
 StartLimitIntervalSec=60
 StartLimitBurst=10
 
@@ -23,7 +24,7 @@ StateDirectoryMode=0700
 WorkingDirectory=/var/lib/baft-tunnel-agent
 Environment=BAFT_AGENT_LISTEN=127.0.0.1:18080
 ExecStart=/usr/local/bin/baft-tunnel agent --config /etc/baft-tunnel/%i.json --token-file /var/lib/baft-tunnel-agent/token --state-dir /var/lib/baft-tunnel-agent/%i --instance %i --listen ${BAFT_AGENT_LISTEN}
-Restart=on-failure
+Restart=always
 RestartSec=3s
 TimeoutStopSec=10s
 UMask=0077
@@ -36,7 +37,8 @@ PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
 # Only the control request directory is writable besides the state directory. /etc/baft-tunnel
-# stays read-only: setup init/join are run by root (the panel prints the commands).
+# stays read-only: setup init/join run as root, from the CLI or through the root setup helper
+# (baft-tunnel-control-setup@%i, ADR-0026) that the panel's Apply uses.
 ReadWritePaths=-/run/baft-tunnel/control
 ProtectKernelTunables=true
 ProtectKernelModules=true

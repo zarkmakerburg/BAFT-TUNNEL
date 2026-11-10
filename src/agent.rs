@@ -96,7 +96,10 @@ pub fn parse_listen(value: &str) -> Result<SocketAddr> {
 }
 
 pub struct Ctx {
-    pub config: RuntimeConfig,
+    /// `None` in setup mode: the bound instance has no configuration yet. Only the setup routes
+    /// (and a reduced status) answer; the agent exits once the configuration appears so systemd
+    /// restarts it with the configuration loaded.
+    pub config: Option<RuntimeConfig>,
     pub token: String,
     /// Directory for `desired.json` and `audit.log`; `None` disables the desired-state routes.
     pub state_dir: Option<PathBuf>,
@@ -114,6 +117,8 @@ pub struct Ctx {
     units: Arc<dyn crate::apply::Units + Send + Sync>,
     /// Where `NAME.json` lives; lifecycle actions only manage instances here.
     config_dir: PathBuf,
+    /// Root setup helper (ADR-0026) for `init`/`join` of the bound instance. Tests use a fake.
+    setup: Arc<dyn crate::setup_helper::SetupHelper + Send + Sync>,
 }
 
 const SAMPLE_SECONDS: u64 = 5;
@@ -128,6 +133,15 @@ struct Sample {
 
 impl Ctx {
     pub fn new(config: RuntimeConfig, token: String, state_dir: Option<PathBuf>) -> Self {
+        Self::with_config(Some(config), token, state_dir)
+    }
+
+    /// `config: None` starts the agent in setup mode (see `Ctx::config`).
+    pub fn with_config(
+        config: Option<RuntimeConfig>,
+        token: String,
+        state_dir: Option<PathBuf>,
+    ) -> Self {
         Self {
             config,
             token,
@@ -139,7 +153,29 @@ impl Ctx {
             traffic: std::sync::Mutex::new(std::collections::VecDeque::new()),
             units: Arc::new(crate::apply::SystemUnits::default()),
             config_dir: PathBuf::from("/etc/baft-tunnel"),
+            setup: Arc::new(crate::setup_helper::SystemSetupHelper::default()),
         }
+    }
+
+    #[cfg(test)]
+    fn with_setup_helper(
+        mut self,
+        helper: Arc<dyn crate::setup_helper::SetupHelper + Send + Sync>,
+    ) -> Self {
+        self.setup = helper;
+        self
+    }
+
+    /// Setup stages for the bound instance go through the root helper (installed layout).
+    fn via_helper(&self, plan: &crate::setup::PlanRequest) -> bool {
+        self.instance.is_some() && plan.instance == self.instance && plan.dir == self.config_dir
+    }
+
+    /// `NAME.json` of the bound instance.
+    fn instance_config(&self) -> Option<PathBuf> {
+        self.instance
+            .as_ref()
+            .map(|n| self.config_dir.join(format!("{n}.json")))
     }
 
     #[cfg(test)]
@@ -207,7 +243,12 @@ impl Ctx {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         let start = std::time::Instant::now();
-        let up = match self.config.listen_addr().parse::<SocketAddr>() {
+        let listen = self
+            .config
+            .as_ref()
+            .map(|c| c.listen_addr().to_string())
+            .unwrap_or_default();
+        let up = match listen.parse::<SocketAddr>() {
             Ok(addr) => matches!(
                 timeout(PROBE_TIMEOUT, TcpStream::connect(addr)).await,
                 Ok(Ok(_))
@@ -226,6 +267,16 @@ async fn sampler(ctx: Arc<Ctx>) {
     let mut tick = tokio::time::interval(Duration::from_secs(SAMPLE_SECONDS));
     loop {
         tick.tick().await;
+        if ctx.config.is_none() {
+            // Setup mode: once `setup join` (panel or CLI) wrote NAME.json, exit so systemd
+            // (Restart=always) starts the agent again with the configuration loaded.
+            if ctx.instance_config().is_some_and(|p| p.is_file()) {
+                eprintln!("configuration appeared; restarting the agent to load it");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                std::process::exit(0);
+            }
+            continue;
+        }
         let sample = ctx.probe().await;
         ctx.record(sample);
         if let Some(t) = ctx
@@ -240,7 +291,7 @@ async fn sampler(ctx: Arc<Ctx>) {
 }
 
 pub async fn run(
-    config: RuntimeConfig,
+    config: Option<RuntimeConfig>,
     listen: SocketAddr,
     token: String,
     state_dir: Option<PathBuf>,
@@ -258,7 +309,10 @@ pub async fn run(
         .await
         .with_context(|| format!("cannot bind agent API on {listen}"))?;
     eprintln!("Agent API listening on {listen} (token required; never applies a config itself)");
-    let ctx = Arc::new(Ctx::new(config, token, state_dir).with_unit(instance, runtime_dir));
+    if config.is_none() && instance.is_none() {
+        bail!("setup mode (no configuration yet) needs --instance");
+    }
+    let ctx = Arc::new(Ctx::with_config(config, token, state_dir).with_unit(instance, runtime_dir));
     tokio::spawn(sampler(ctx.clone()));
     serve(listener, ctx).await
 }
@@ -476,6 +530,8 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/traffic"
             | "/v1/diagnostics"
             | "/v1/tunnel/lifecycle"
+            | "/v1/setup/bundle"
+            | "/v1/setup/bundle/inspect"
     ) {
         return (404, json!({"error": "not found"}));
     }
@@ -485,28 +541,200 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
     if !constant_time_eq(presented.as_bytes(), ctx.token.as_bytes()) {
         return (401, json!({"error": "unauthorized"}));
     }
+    let Some(config) = ctx.config.as_ref() else {
+        return setup_mode_route(method, path, body, ctx).await;
+    };
     match (method, path) {
-        ("GET", "/v1/status") => (200, status(ctx).await),
+        ("GET", "/v1/status") => (200, status(ctx, config).await),
         ("GET", "/v1/traffic") => (200, traffic(ctx)),
         ("GET", "/v1/diagnostics") => get_diagnostics(ctx),
-        ("POST", "/v1/diagnostics") => (200, run_diagnostics(ctx).await),
+        ("POST", "/v1/diagnostics") => (200, run_diagnostics(ctx, config).await),
         ("GET", "/v1/history") => (200, history(ctx)),
-        ("GET", "/v1/security") => (200, security(&ctx.config)),
+        ("GET", "/v1/security") => (200, security(config)),
         ("GET", "/v1/audit") => get_audit(ctx),
         ("GET", "/v1/engines") => (200, engines()),
         ("GET", "/v1/desired") => get_desired(ctx),
         ("PUT", "/v1/desired") => put_desired(ctx, body).await,
         ("POST", "/v1/setup/plan") => setup_plan(body),
-        ("POST", "/v1/setup/preflight") => preflight(body).await,
+        ("POST", "/v1/setup/preflight") => preflight(ctx, body).await,
         ("POST", "/v1/setup/apply") => setup_apply(ctx, body).await,
         ("POST", "/v1/tunnel/lifecycle") => tunnel_lifecycle(ctx, body).await,
+        ("GET", "/v1/setup/bundle") => own_bundle(ctx),
+        ("POST", "/v1/setup/bundle/inspect") => inspect_bundle(ctx, body),
         _ => (405, json!({"error": "method not allowed"})),
+    }
+}
+
+/// Setup mode: the instance has no configuration yet. Only what pairing needs answers.
+async fn setup_mode_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
+    match (method, path) {
+        ("GET", "/v1/status") => (200, setup_status(ctx)),
+        ("GET", "/v1/engines") => (200, engines()),
+        ("GET", "/v1/audit") => get_audit(ctx),
+        ("POST", "/v1/setup/plan") => setup_plan(body),
+        ("POST", "/v1/setup/preflight") => preflight(ctx, body).await,
+        ("POST", "/v1/setup/apply") => setup_apply(ctx, body).await,
+        ("GET", "/v1/setup/bundle") => own_bundle(ctx),
+        ("POST", "/v1/setup/bundle/inspect") => inspect_bundle(ctx, body),
+        (
+            "GET" | "PUT" | "POST",
+            "/v1/history"
+            | "/v1/security"
+            | "/v1/traffic"
+            | "/v1/diagnostics"
+            | "/v1/desired"
+            | "/v1/tunnel/lifecycle",
+        ) => (
+            409,
+            json!({"error": "setup pending: this instance has no configuration yet", "setup_pending": true}),
+        ),
+        _ => (405, json!({"error": "method not allowed"})),
+    }
+}
+
+fn setup_status(ctx: &Ctx) -> Value {
+    let dir = &ctx.config_dir;
+    let name = ctx.instance.as_deref().unwrap_or_default();
+    json!({
+        "agent": "baft-tunnel",
+        "version": env!("CARGO_PKG_VERSION"),
+        "setup_pending": true,
+        "instance": name,
+        "config_dir": dir.to_string_lossy(),
+        "listener_accepting": false,
+        "pairing": pairing_view(ctx),
+        "setup_helper": match ctx.setup.available(name) {
+            Ok(()) => json!({"available": true}),
+            Err(why) => json!({"available": false, "reason": why}),
+        },
+        "tunnel": null,
+        "warnings": [],
+    })
+}
+
+/// What exists of the local pairing (public files only): init done, own bundle present.
+fn pairing_view(ctx: &Ctx) -> Value {
+    let dir = &ctx.config_dir;
+    let state: Option<Value> = std::fs::read(dir.join(crate::setup::STATE_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    let own = read_bundle(&dir.join("bundle.json")).ok();
+    json!({
+        "initialized": state.is_some(),
+        "tunnel_id": state.as_ref().map(|s| s["tunnel_id"].clone()),
+        "node_id": state.as_ref().map(|s| s["node_id"].clone()),
+        "peer_id": state.as_ref().map(|s| s["peer_id"].clone()),
+        "role": state.as_ref().map(|s| s["role"].clone()),
+        "engine": state.as_ref().map(|s| s["engine"].clone()),
+        "own_bundle": own.is_some(),
+        "own_checksum": own.as_ref().map(|(_, b)| b.checksum()),
+        "joined": ctx.instance_config().is_some_and(|p| p.is_file()),
+    })
+}
+
+fn read_bundle(path: &Path) -> Result<(String, crate::setup::Bundle)> {
+    let meta = std::fs::symlink_metadata(path).context("no bundle")?;
+    if !meta.is_file() || meta.len() > crate::setup::BUNDLE_MAX_BYTES {
+        bail!("the bundle is not a regular file of at most 4 KiB");
+    }
+    let text = std::fs::read_to_string(path)?;
+    let bundle: crate::setup::Bundle =
+        serde_json::from_str(&text).context("the bundle is not valid")?;
+    Ok((text, bundle))
+}
+
+/// Export: this node's public pairing bundle (written by `init`) with its checksum. Public data
+/// only (ADR-0026): no key, credential or host address is in a bundle.
+fn own_bundle(ctx: &Ctx) -> (u16, Value) {
+    match read_bundle(&ctx.config_dir.join("bundle.json")) {
+        Ok((text, bundle)) => (
+            200,
+            json!({"bundle": text, "checksum": bundle.checksum(), "fields": bundle}),
+        ),
+        Err(e) => (
+            404,
+            json!({"error": "no public bundle yet; run the init stage first", "detail": format!("{e:#}")}),
+        ),
     }
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PlanBody {
+struct InspectBody {
+    bundle: String,
+    checksum: Option<String>,
+}
+
+/// Import preview: parse a peer bundle, compute its checksum, compare it with the value the
+/// operator typed (out of band) and with this node's pairing state. Changes nothing.
+fn inspect_bundle(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
+    let req: InspectBody = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(error) => {
+            return (
+                422,
+                json!({"error": "invalid request", "detail": error.to_string()}),
+            );
+        }
+    };
+    if req.bundle.len() as u64 > crate::setup::BUNDLE_MAX_BYTES {
+        return (422, json!({"error": "bundle is larger than 4 KiB"}));
+    }
+    let bundle: crate::setup::Bundle = match serde_json::from_str(&req.bundle) {
+        Ok(b) => b,
+        Err(error) => {
+            return (
+                422,
+                json!({"error": "this is not a pairing bundle", "detail": error.to_string()}),
+            );
+        }
+    };
+    let checksum = bundle.checksum();
+    let checksum_match = req
+        .checksum
+        .as_deref()
+        .map(|c| crate::setup::same_checksum(c, &checksum));
+    let state: Option<Value> = std::fs::read(ctx.config_dir.join(crate::setup::STATE_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    let mut problems: Vec<&str> = Vec::new();
+    if let Some(s) = &state {
+        let peer_role = serde_json::to_value(bundle.role).unwrap_or_default();
+        for (ok, what) in [
+            (s["engine"] == json!(bundle.engine), "engine"),
+            (s["direction"] == json!(bundle.direction), "direction"),
+            (s["tunnel_id"] == json!(bundle.tunnel_id), "tunnel_id"),
+            (
+                s["service_port"] == json!(bundle.service_port),
+                "service_port",
+            ),
+            (s["tunnel_port"] == json!(bundle.tunnel_port), "tunnel_port"),
+            (s["peer_id"] == json!(bundle.node_id), "node_id"),
+            (s["node_id"] == json!(bundle.peer_id), "peer_id"),
+            (s["role"] != peer_role, "role"),
+            (s["own_public"] != json!(bundle.public), "public"),
+        ] {
+            if !ok {
+                problems.push(what);
+            }
+        }
+    }
+    (
+        200,
+        json!({
+            "fields": bundle,
+            "checksum": checksum,
+            "checksum_match": checksum_match,
+            "matches_this_node": state.as_ref().map(|_| problems.is_empty()),
+            "mismatches": problems,
+            "changed": false,
+        }),
+    )
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PlanBody {
     engine: crate::config::EngineKind,
     role: crate::setup::Role,
     direction: crate::authorization::ConnectionDirection,
@@ -522,7 +750,7 @@ struct PlanBody {
 }
 
 impl PlanBody {
-    fn to_request(&self) -> crate::setup::PlanRequest {
+    pub(crate) fn to_request(&self) -> crate::setup::PlanRequest {
         crate::setup::PlanRequest {
             engine: self.engine,
             role: self.role,
@@ -563,7 +791,7 @@ async fn port_accepting(port: u16) -> bool {
 /// Read-only preflight of THIS host for a planned tunnel. Results are pass / warning / blocked /
 /// unknown; anything the agent cannot observe from here is `unknown`, never `pass`. Writes
 /// nothing, runs nothing, and does not contact the peer.
-async fn preflight(body: &[u8]) -> (u16, Value) {
+async fn preflight(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
     let request: PlanBody = match serde_json::from_slice(body) {
         Ok(r) => r,
         Err(error) => {
@@ -628,7 +856,20 @@ async fn preflight(body: &[u8]) -> (u16, Value) {
             "the setup directory does not exist on this host yet".into(),
         ));
     }
-    checks.push(directory_writable_check(dir));
+    if ctx.via_helper(&req) {
+        // Installed instance: root writes the files through the setup helper (ADR-0026).
+        let name = req.instance.as_deref().unwrap_or_default();
+        checks.push(match ctx.setup.available(name) {
+            Ok(()) => check(
+                "setup_helper",
+                "pass",
+                format!("the root setup helper for {name} is installed; it writes the files with the service owners"),
+            ),
+            Err(why) => check("setup_helper", "blocked", why),
+        });
+    } else {
+        checks.push(directory_writable_check(dir));
+    }
     if dir.join("pairing-state.json").exists() {
         checks.push(check(
             "existing_pairing",
@@ -833,6 +1074,9 @@ fn remediation(id: &str) -> &'static str {
             "Choose the Direct direction, or tcp-tls for the Reverse preview; Reverse is not available for this engine yet."
         }
         "directory" => "Create the setup directory or choose another one.",
+        "setup_helper" => {
+            "Run sudo scripts/install-agent-control.sh --instance NAME (or install.sh --register NAME) to install the root setup helper."
+        }
         "directory_writable" => {
             "Run the printed setup commands as root on this server; the panel Apply button stays disabled here."
         }
@@ -960,7 +1204,7 @@ async fn setup_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
     // One apply at a time per agent.
     let _guard = ctx.lock.lock().await;
     let gate = if request.stage == crate::apply::Stage::Init {
-        let (code, report) = preflight(&plan_bytes).await;
+        let (code, report) = preflight(ctx, &plan_bytes).await;
         if code != 200 {
             return (code, report);
         }
@@ -988,6 +1232,39 @@ async fn setup_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
         None
     };
     let receipts_dir = state_dir.join("receipts");
+    if let Some(name) = &ctx.instance {
+        if !request.stage.is_lifecycle() && !ctx.via_helper(&request.plan) {
+            return (
+                422,
+                json!({"error": format!("this agent sets up only instance {name} in {}", ctx.config_dir.display())}),
+            );
+        }
+    }
+    let blocked = gate.as_ref().is_some_and(|g| !g.blocked.is_empty());
+    if !request.stage.is_lifecycle() && ctx.via_helper(&request.plan) && !blocked {
+        let (code, receipt) = match helper_apply(ctx, &request, &receipts_dir).await {
+            Ok(out) => out,
+            Err((code, error)) => return (code, json!({"error": error})),
+        };
+        if receipt["replayed"] != json!(true) {
+            let stage = request.stage.as_str();
+            let _ = audit(
+                state_dir,
+                ctx,
+                AuditEvent {
+                    action: "apply",
+                    result: receipt["result"].as_str().unwrap_or("conflict"),
+                    resource: format!("setup/{stage}"),
+                    node: Some(&request.plan.node_id),
+                    instance: request.plan.instance.as_deref(),
+                    sha256: receipt["request_sha256"].as_str().unwrap_or_default(),
+                    detail: stage,
+                    receipt_id: receipt["id"].as_str(),
+                },
+            );
+        }
+        return (code, receipt);
+    }
     // Start waits for systemd; keep the async runtime free while it does.
     let (code, receipt) = match tokio::task::spawn_blocking({
         let request = request.clone();
@@ -1021,6 +1298,39 @@ async fn setup_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
         );
     }
     (code, receipt)
+}
+
+/// `init`/`join` of the bound instance through the root setup helper (ADR-0026). The agent keeps
+/// its own copy of the receipt (idempotent replay) and accepts the helper's answer only when it
+/// carries this request's key and digest.
+async fn helper_apply(
+    ctx: &Ctx,
+    request: &crate::apply::ApplyRequest,
+    receipts: &Path,
+) -> std::result::Result<(u16, Value), (u16, String)> {
+    let digest = crate::apply::request_digest(request);
+    if let Some(old) = crate::apply::replay_key(receipts, &request.key, &digest) {
+        return Ok(old);
+    }
+    let name = ctx.instance.clone().unwrap_or_default();
+    let document = crate::setup_helper::request_document(request);
+    let helper = ctx.setup.clone();
+    let mut receipt = tokio::task::spawn_blocking(move || helper.submit(&name, &document))
+        .await
+        .map_err(|e| (500, format!("setup helper task failed: {e}")))?
+        .map_err(|e| (503, e))?;
+    if receipt["id"] != json!(request.key) || receipt["request_sha256"] != json!(digest) {
+        let reason = receipt["reason"].as_str().unwrap_or("").to_string();
+        return Err((
+            502,
+            format!(
+                "the setup helper answered for another request; nothing is trusted from it. {reason}"
+            ),
+        ));
+    }
+    receipt["replayed"] = json!(false);
+    crate::apply::store_receipt(receipts, &request.key, &mut receipt);
+    Ok((crate::apply::result_code(&receipt), receipt))
 }
 
 #[derive(serde::Deserialize)]
@@ -1416,7 +1726,7 @@ fn audit(dir: &Path, ctx: &Ctx, e: AuditEvent<'_>) -> Result<()> {
         "actor": ctx.actor(),
         "action": e.action,
         "target": {
-            "node": e.node.unwrap_or(ctx.config.ids().0),
+            "node": e.node.or(ctx.config.as_ref().map(|c| c.ids().0)),
             "instance": e.instance.or(ctx.instance.as_deref()),
         },
         "resource": e.resource,
@@ -1440,8 +1750,7 @@ async fn listener_accepting(config: &RuntimeConfig) -> bool {
     }
 }
 
-async fn status(ctx: &Ctx) -> Value {
-    let config = &ctx.config;
+async fn status(ctx: &Ctx, config: &RuntimeConfig) -> Value {
     let listening = listener_accepting(config).await;
     json!({
         "agent": "baft-tunnel",
@@ -1449,7 +1758,7 @@ async fn status(ctx: &Ctx) -> Value {
         "engine": config.engine_name(),
         "config": config.support_report(),
         "listener_accepting": listening,
-        "tunnel": tunnel_status(ctx, listening).await,
+        "tunnel": tunnel_status(ctx, config, listening).await,
         "warnings": status_warnings(config),
     })
 }
@@ -1532,7 +1841,7 @@ const INTEGRITY_UNKNOWN: &str = "payload integrity is measured only by an end-to
 
 /// End-to-end tunnel state as separate evidence tiers (ADR-0024). The summary `state` is the
 /// highest tier actually observed; it never says "ready" and never implies integrity.
-async fn tunnel_status(ctx: &Ctx, listening: bool) -> Value {
+async fn tunnel_status(ctx: &Ctx, config: &RuntimeConfig, listening: bool) -> Value {
     let now = unix_now();
     let (unit, pid) = unit_view(ctx).await;
     let ev = ctx.evidence(pid);
@@ -1544,7 +1853,7 @@ async fn tunnel_status(ctx: &Ctx, listening: bool) -> Value {
         .as_ref()
         .and_then(|c| c["sampled_unix"].as_u64())
         .map(|t| now.saturating_sub(t));
-    let has_listener = !ctx.config.listen_addr().is_empty();
+    let has_listener = !config.listen_addr().is_empty();
     let session = ev.session.is_some();
     let running = unit["result"] == "active"
         || counters_age.is_some_and(|a| a <= 3 * crate::session_status::COUNTER_SECONDS)
@@ -1707,7 +2016,7 @@ fn report_next(unit: &Value, tiers: &[Value], verified: bool) -> Value {
 /// Peer-aware diagnostics (ADR-0024): TCP reachability, secure channel, identity, authorization,
 /// session and data path are separate tiers, each with its own source. A tier is `pass` only on
 /// direct evidence; otherwise it is `fail` (a recorded failure at that stage) or `unknown`.
-async fn run_diagnostics(ctx: &Ctx) -> Value {
+async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
     let now = unix_now();
     let (unit, pid) = unit_view(ctx).await;
     let ev = ctx.evidence(pid);
@@ -1722,10 +2031,10 @@ async fn run_diagnostics(ctx: &Ctx) -> Value {
     let failed = failure
         .and_then(|f| f["stage"].as_str())
         .and_then(|s| STAGES.iter().position(|o| *o == s));
-    let noise = ctx.config.engine_name() == "noise-tcp";
+    let noise = config.engine_name() == "noise-tcp";
     let mut tiers = Vec::new();
 
-    tiers.push(match (session, ctx.config.remote()) {
+    tiers.push(match (session, config.remote()) {
         (Some(_), _) => tier(
             "tcp_reachability",
             "pass",
@@ -1786,7 +2095,7 @@ async fn run_diagnostics(ctx: &Ctx) -> Value {
             match failed {
                 // An inbound handshake failure has no identified sender yet (a scanner, or this
                 // node's own peer's TCP probe, looks the same), so it is not blamed on the peer.
-                Some(f) if f == i && f == 1 && ctx.config.remote().is_none() => tier(
+                Some(f) if f == i && f == 1 && config.remote().is_none() => tier(
                     id,
                     "unknown",
                     "last_failure",
@@ -1870,7 +2179,7 @@ async fn run_diagnostics(ctx: &Ctx) -> Value {
         }
     }
     let verified = highest == "data_path";
-    let remote = ctx.config.remote().is_some();
+    let remote = config.remote().is_some();
     for t in &mut tiers {
         if let Some(n) = tier_next(
             t["id"].as_str().unwrap_or(""),
@@ -1895,7 +2204,7 @@ async fn run_diagnostics(ctx: &Ctx) -> Value {
     let report = json!({
         "diagnostics_version": 1,
         "at_unix": now,
-        "engine": ctx.config.engine_name(),
+        "engine": config.engine_name(),
         "unit": unit,
         "tiers": tiers,
         "highest_passed_tier": highest,
@@ -2968,5 +3277,192 @@ mod tests {
             report_next(&json!({"result": "active"}), &[], true)["action"],
             "none"
         );
+    }
+
+    /// Runs the real root helper code in-process against temporary directories.
+    struct InProcessHelper {
+        control: PathBuf,
+        conf: PathBuf,
+        receipts: PathBuf,
+    }
+
+    impl crate::setup_helper::SetupHelper for InProcessHelper {
+        fn available(&self, _: &str) -> std::result::Result<(), String> {
+            Ok(())
+        }
+        fn submit(&self, name: &str, request: &Value) -> std::result::Result<Value, String> {
+            std::fs::write(
+                self.control.join(format!("{name}.setup")),
+                request.to_string(),
+            )
+            .map_err(|e| e.to_string())?;
+            crate::setup_helper::run(name, &self.control, &self.conf, &self.receipts)
+                .map_err(|e| format!("{e:#}"))
+        }
+    }
+
+    fn setup_mode_ctx(base: &Path) -> (Ctx, PathBuf) {
+        let conf = base.join("etc");
+        let control = base.join("control");
+        for d in [&conf, &control, &base.join("state")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let helper = Arc::new(InProcessHelper {
+            control,
+            conf: conf.clone(),
+            receipts: base.join("helper-receipts"),
+        });
+        let fake = Arc::new(AgentFake {
+            st: std::sync::Mutex::new(crate::apply::UnitState::default()),
+            log: std::sync::Mutex::new(vec![]),
+        });
+        let ctx = Ctx::with_config(None, TOKEN.into(), Some(base.join("state")))
+            .with_unit(Some("pair1".into()), None)
+            .with_units(fake, conf.clone())
+            .with_setup_helper(helper);
+        (ctx, conf)
+    }
+
+    fn get(path: &str) -> String {
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}")
+    }
+
+    #[tokio::test]
+    async fn panel_pairing_runs_init_and_join_through_the_root_helper_in_setup_mode() {
+        let base = state_dir("pairing");
+        let (ctx, conf) = setup_mode_ctx(&base);
+        // Setup mode: reduced status, unrelated routes say so.
+        let (code, st) = route(&get("/v1/status"), b"", &ctx).await;
+        assert_eq!(code, 200);
+        assert_eq!(st["setup_pending"], true);
+        assert_eq!(st["instance"], "pair1");
+        assert_eq!(st["pairing"]["initialized"], false);
+        let (code, out) = route(&get("/v1/security"), b"", &ctx).await;
+        assert_eq!((code, out["setup_pending"].clone()), (409, json!(true)));
+        assert_eq!(route(&get("/v1/setup/bundle"), b"", &ctx).await.0, 404);
+
+        let plan = json!({"engine": "noise-tcp", "role": "serve", "direction": "direct",
+            "node_id": "abroad", "peer_id": "iran", "tunnel_id": "pairdemo", "service_port": 18180,
+            "tunnel_port": 18181, "dir": conf, "instance": "pair1"});
+        // Preflight checks the helper instead of the agent's own write access.
+        let (_, pf) = route(
+            &post("/v1/setup/preflight"),
+            plan.to_string().as_bytes(),
+            &ctx,
+        )
+        .await;
+        let ids: Vec<&str> = pf["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&"setup_helper") && !ids.contains(&"directory_writable"),
+            "{ids:?}"
+        );
+        // Another directory or instance is refused before anything runs.
+        let mut other = plan.clone();
+        other["dir"] = json!("/tmp");
+        let bad = json!({"stage": "init", "confirm": true, "idempotency_key": "pair-init-x", "plan": other});
+        assert_eq!(
+            route(&post("/v1/setup/apply"), bad.to_string().as_bytes(), &ctx)
+                .await
+                .0,
+            422
+        );
+
+        let init = json!({"stage": "init", "confirm": true, "idempotency_key": "pair-init-1", "plan": plan});
+        let (code, rc) = route(&post("/v1/setup/apply"), init.to_string().as_bytes(), &ctx).await;
+        assert_eq!(code, 200, "{rc}");
+        assert_eq!(rc["result"], "applied");
+        assert_eq!(rc["source"], "root setup helper");
+        assert_eq!(rc["receipt_stored"], true);
+        let (_, again) = route(&post("/v1/setup/apply"), init.to_string().as_bytes(), &ctx).await;
+        assert_eq!(again["replayed"], true, "same key is replayed by the agent");
+
+        // Export.
+        let (code, own) = route(&get("/v1/setup/bundle"), b"", &ctx).await;
+        assert_eq!(code, 200);
+        assert_eq!(own["checksum"], rc["pairing"]["checksum"]);
+        assert!(!own["bundle"].as_str().unwrap().contains("private"));
+        // Our own bundle is not a valid peer.
+        let ins = json!({"bundle": own["bundle"], "checksum": own["checksum"]});
+        let (_, v) = route(
+            &post("/v1/setup/bundle/inspect"),
+            ins.to_string().as_bytes(),
+            &ctx,
+        )
+        .await;
+        assert_eq!(v["checksum_match"], true);
+        assert_eq!(v["matches_this_node"], false);
+
+        // The peer prepares itself (CLI on the other host).
+        let peer = base.join("peer");
+        let peer_init = crate::setup::init(
+            &crate::setup::PlanRequest {
+                engine: crate::config::EngineKind::NoiseTcp,
+                role: crate::setup::Role::Forward,
+                direction: crate::authorization::ConnectionDirection::Direct,
+                node_id: "iran".into(),
+                peer_id: "abroad".into(),
+                tunnel_id: "pairdemo".into(),
+                service_port: 18180,
+                tunnel_port: 18181,
+                peer_host: Some("127.0.0.1".into()),
+                server_name: None,
+                dir: peer.clone(),
+                instance: None,
+            },
+            None,
+        )
+        .unwrap();
+        let peer_bundle = std::fs::read_to_string(peer.join("bundle.json")).unwrap();
+        // Import preview: wrong checksum is flagged, right one matches this node.
+        let ins = json!({"bundle": peer_bundle, "checksum": "00000000-00000000-00000000-00000000"});
+        let (_, v) = route(
+            &post("/v1/setup/bundle/inspect"),
+            ins.to_string().as_bytes(),
+            &ctx,
+        )
+        .await;
+        assert_eq!(v["checksum_match"], false);
+        let ins = json!({"bundle": peer_bundle, "checksum": peer_init.checksum});
+        let (_, v) = route(
+            &post("/v1/setup/bundle/inspect"),
+            ins.to_string().as_bytes(),
+            &ctx,
+        )
+        .await;
+        assert_eq!(
+            (v["checksum_match"].clone(), v["matches_this_node"].clone()),
+            (json!(true), json!(true)),
+            "{v}"
+        );
+        assert!(!conf.join("pair1.json").exists(), "inspect changes nothing");
+
+        // A wrong checksum at join is refused by the helper and writes no configuration.
+        let join_bad = json!({"stage": "join", "confirm": true, "idempotency_key": "pair-join-0",
+            "plan": plan, "bundle": peer_bundle, "checksum": "00000000-00000000-00000000-00000000"});
+        let (code, rc) = route(
+            &post("/v1/setup/apply"),
+            join_bad.to_string().as_bytes(),
+            &ctx,
+        )
+        .await;
+        assert_ne!(code, 200, "{rc}");
+        assert!(!conf.join("pair1.json").exists());
+
+        let join = json!({"stage": "join", "confirm": true, "idempotency_key": "pair-join-1",
+            "plan": plan, "bundle": peer_bundle, "checksum": peer_init.checksum});
+        let (code, rc) = route(&post("/v1/setup/apply"), join.to_string().as_bytes(), &ctx).await;
+        assert_eq!(code, 200, "{rc}");
+        assert!(conf.join("pair1.json").is_file());
+        let (_, st) = route(&get("/v1/status"), b"", &ctx).await;
+        assert_eq!(st["pairing"]["joined"], true);
+        let audit = std::fs::read_to_string(base.join("state").join(AUDIT_FILE)).unwrap();
+        assert!(audit.contains("setup/init") && audit.contains("setup/join"));
+        assert!(!audit.contains(TOKEN));
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -61,7 +61,7 @@
 | 5 | Traffic counters with units, interval, freshness | **Done**; history only in memory (1 h) | B5 |
 | 6 | Machine-readable Preflight evidence codes | **Partial**: check ids act as codes and remediation is localized by id, but evidence text is English (gap G8) | B1 |
 | 7 | Read-only firewall visibility | Not started | B3 |
-| 8 | Safe "Add from Link" | Not started | Folded into U5b bundle import |
+| 8 | Safe "Add from Link" | Code done (U5b): `baft-tunnel://pair?v=1&b=` link, paste or upload, checksum compare and preview | LAB run open |
 
 ### 3.3 P2 list
 
@@ -153,8 +153,8 @@ Effort: **S** = one small PR; **M** = one or two PRs, about a day with CI; **L**
 
 | ID | Work | Why | Depends | Effort | LAB | Exit evidence |
 |---|---|---|---|---|---|---|
-| U4 | Config write boundary (ADR-0026): the agent stages files in its own directory; a root helper (path unit, fixed command) validates them with the same validator as `config validate`, installs them into `/etc/baft-tunnel` with fixed owners and modes, refuses links and overwrites, and writes a result the receipt reads | F5 | U2 | M–L | Via U5b | Real-systemd CI including tamper and symlink refusals |
-| U5b | Panel pairing: Apply `init`/`join` from the panel through U4; own bundle export (copy/download with checksum); peer bundle import (paste, upload or link) with checksum compare and preview, which closes P1-8 "Add from Link"; for `tcp-tls`, CSR download and upload of the public certificate, CA and CRL (D2) | Panel integration end to end | U4, U5a | M–L | Yes | Browser QA + LAB run that sets up both nodes through the agent API only |
+| U4 | **Code done** (ADR-0026, real-systemd CI `test-panel-pairing.sh`; the helper derives files from parameters instead of copying staged files). Config write boundary: the agent stages files in its own directory; a root helper (path unit, fixed command) validates them with the same validator as `config validate`, installs them into `/etc/baft-tunnel` with fixed owners and modes, refuses links and overwrites, and writes a result the receipt reads | F5 | U2 | M–L | Via U5b | Real-systemd CI including tamper and symlink refusals |
+| U5b | **Code done except D2 and LAB** (ADR-0026, browser QA `panel-pairing.js` fa/en): Panel pairing: Apply `init`/`join` from the panel through U4; own bundle export (copy/download with checksum); peer bundle import (paste, upload or link) with checksum compare and preview, which closes P1-8 "Add from Link"; for `tcp-tls`, CSR download and upload of the public certificate, CA and CRL (D2) | Panel integration end to end | U4, U5a | M–L | Yes | Browser QA + LAB run that sets up both nodes through the agent API only |
 
 ### Tier B — P1 completion and product quality
 
