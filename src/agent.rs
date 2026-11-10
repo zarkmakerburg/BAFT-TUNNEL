@@ -3626,7 +3626,7 @@ mod tests {
         let pages = include_str!("../panel/pages.js");
         assert!(!pages.contains("meth.ready"));
         assert!(en.contains(
-            "'meth.rev.note': 'Reverse is a Preview, not Stable; readiness is not verified.'"
+            "'meth.rev.note': 'Reverse is unavailable pending independent implementation and acceptance.'"
         ));
     }
 
