@@ -180,10 +180,10 @@ PY
       cp /tmp/ca/ca.crl /workspace/signed/iran/ca.crl
       bash /pki/baft-pki.sh verify-node /tmp/ca /tmp/ca/ca.crl /workspace/signed/abroad/node.crt abroad "$D2_ABROAD_SAN" >/dev/null
       bash /pki/baft-pki.sh verify-node /tmp/ca /tmp/ca/ca.crl /workspace/signed/iran/node.crt iran "$D2_IRAN_SAN" >/dev/null
-      # The runner consumes only public certificate/CA/CRL files after the
-      # isolated CA exits; normalize bind-mount permissions for its uid.
-      find /workspace/signed -type d -exec chmod 755 {} +
-      find /workspace/signed -type f -exec chmod 644 {} +
+      # These are public enrollment artifacts only. The container may create them
+      # with a different uid; grant the ephemeral runner cleanup access as well.
+      find /workspace/signed -type d -exec chmod 777 {} +
+      find /workspace/signed -type f -exec chmod 666 {} +
       test -f /tmp/ca/ca.key
       test ! -e /workspace/ca.key
       rm -f /tmp/passphrase
@@ -278,8 +278,6 @@ for side in abroad iran; do
   if [[ "$PANEL_ENGINE" == tcp-tls ]]; then
     ssh_host "$side" "[ \"\$(stat -c '%U:%G %a' $EB/node.key)\" = 'baft-tunnel:baft-tunnel 600' ] && ! runuser -u baft-tunnel-agent -- cat $EB/node.key >/dev/null 2>&1" ||
       pp_fail "node key on $side has the wrong owner/mode or is readable by the agent user" "$side"
-    ssh_host "$side" "grep -q 'pki/current/node.crt' $EB/$(pp_inst "$side").json && grep -q 'pki/current/ca.crt' $EB/$(pp_inst "$side").json" ||
-      pp_fail "tcp-tls config on $side does not use the active versioned credential set" "$side"
   else
   ssh_host "$side" "[ \"\$(stat -c '%U:%G %a' $EB/node.noise)\" = 'baft-tunnel:baft-tunnel 600' ] && ! runuser -u baft-tunnel-agent -- cat $EB/node.noise >/dev/null 2>&1" ||
     pp_fail "node key on $side has the wrong owner/mode or is readable by the agent user" "$side"
@@ -316,6 +314,12 @@ for side in abroad iran; do
   pp_body "$LOCAL_TMP/pp-join-$side.json" join "pp-join-$side-0001" "$(pp_plan "$side")" "$LOCAL_TMP/pp-bundle-$peer.json" "${PP_CK[$peer]}"
   pp_api "$side" POST /v1/setup/apply "$LOCAL_TMP/pp-join-$side.json" > "$LOCAL_TMP/pp-join-out-$side.json"
   [[ "$(jf result < "$LOCAL_TMP/pp-join-out-$side.json")" == applied ]] || { cat "$LOCAL_TMP/pp-join-out-$side.json" >&2; pp_fail "join through the agent on $side was not applied" "$side"; }
+  if [[ "$PANEL_ENGINE" == tcp-tls ]]; then
+    ssh_host "$side" "grep -q 'pki/current/node.crt' $EB/$(pp_inst "$side").json && grep -q 'pki/current/ca.crt' $EB/$(pp_inst "$side").json" ||
+      pp_fail "tcp-tls config on $side does not use the active versioned credential set after join" "$side"
+    ssh_host "$side" "openssl verify -purpose any -CAfile $EB/pki/current/ca.crt -CRLfile $EB/pki/current/ca.crl -crl_check $EB/pki/current/node.crt >/dev/null" ||
+      pp_fail "the active local certificate on $side does not verify against its active CA/CRL" "$side"
+  fi
   ssh_host "$side" "[ \"\$(stat -c '%U:%G %a' $EB/$(pp_inst "$side").json)\" = 'root:baft-tunnel 640' ]" || pp_fail "instance config on $side has the wrong owner/mode" "$side"
 done
 
