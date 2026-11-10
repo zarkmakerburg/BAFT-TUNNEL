@@ -14,6 +14,11 @@ PANEL_ENGINE="${LAB_PANEL_ENGINE:-noise-tcp}"
 [[ "$PANEL_ENGINE" == noise-tcp || "$PANEL_ENGINE" == tcp-tls ]] || { echo "invalid LAB_PANEL_ENGINE" >&2; exit 2; }
 echo "=== PANEL PAIRING ($PANEL_ENGINE): install --register, setup mode, enrollment/init/export/inspect/join through the agent API only, Start ==="
 stop_role iran serve; stop_role abroad serve; stop_role iran forward; stop_role abroad forward; sleep 1
+# Do not let logs from earlier E2E stages (including the intentional revoked-cert test)
+# be mistaken for evidence from this panel-pairing run.
+for side in iran abroad; do
+  ssh_host "$side" "rm -f '$REMOTE_DIR/serve.log' '$REMOTE_DIR/forward.log' '$REMOTE_DIR/echo.log' '$REMOTE_DIR/echo2.log' '$REMOTE_DIR/impair.log'" || exit 1
+done
 MSVC=18094; MTP=18330; MAG=18095
 EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGS=/var/lib/baft-tunnel-agent; PKG="$REMOTE_DIR/pkg"
 SRV=ppairsrv; CLI=ppaircli
