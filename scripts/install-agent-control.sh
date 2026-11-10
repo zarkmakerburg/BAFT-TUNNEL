@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Register one instance with the local agent (ADR-0023 + amendment, SA-09):
 #   - the agent service baft-tunnel-agent@NAME (its own user baft-tunnel-agent, loopback only),
-#     started by baft-tunnel-agent@NAME.path as soon as /etc/baft-tunnel/NAME.json exists, and at boot;
+#     running from registration on (setup mode until /etc/baft-tunnel/NAME.json exists), and at boot;
 #   - the API token /var/lib/baft-tunnel-agent/token (created once, mode 0600, never printed);
 #   - the control helper: root path units that turn a request file into one fixed command for
-#     exactly baft-tunnel@NAME (start, stop, enable --now, disable --now). No polkit, no sudo.
+#     exactly baft-tunnel@NAME (start, stop, enable --now, disable --now), and the root setup
+#     helper (ADR-0026) that runs setup init/join for NAME in /etc/baft-tunnel only. No polkit, no sudo.
 #   install-agent-control.sh --instance NAME [--listen 127.0.0.1:PORT] [--destdir ROOT]
 #   install-agent-control.sh --remove --instance NAME [--destdir ROOT]
 set -Eeuo pipefail
@@ -39,7 +40,7 @@ fi
 UNIT_DIR="$ROOT_PREFIX/etc/systemd/system"
 TMPF="$ROOT_PREFIX/etc/tmpfiles.d/baft-tunnel-control.conf"
 STATE="$ROOT_PREFIX/var/lib/baft-tunnel-agent"
-VERBS=(start stop enable disable)
+VERBS=(start stop enable disable setup)
 FILES=(); for v in "${VERBS[@]}"; do FILES+=("baft-tunnel-control-$v@.path" "baft-tunnel-control-$v@.service"); done
 CTL_PATHS=(); for v in "${VERBS[@]}"; do CTL_PATHS+=("baft-tunnel-control-$v@$INSTANCE.path"); done
 AGENT_UNITS=("baft-tunnel-agent@$INSTANCE.path" "baft-tunnel-agent@$INSTANCE.service")
@@ -82,15 +83,16 @@ if [[ "$STAGING" == "0" ]]; then
   systemd-tmpfiles --create "$TMPF"
   systemctl daemon-reload
   systemctl enable --now "${CTL_PATHS[@]}"
-  # The path unit starts the agent once NAME.json exists (now or after setup join), and at boot.
-  systemctl enable "baft-tunnel-agent@$INSTANCE.service" >/dev/null 2>&1
+  # The agent starts now: in setup mode (panel pairing) until NAME.json exists, then normally.
   systemctl enable --now "baft-tunnel-agent@$INSTANCE.path"
+  systemctl enable --now "baft-tunnel-agent@$INSTANCE.service" >/dev/null 2>&1
 else
   install -d -m 0700 "$STATE"
 fi
 echo "Registered instance $INSTANCE with the local agent."
-echo "  agent:  baft-tunnel-agent@$INSTANCE (user $AGENT_USER), starts when /etc/baft-tunnel/$INSTANCE.json exists and at boot"
+echo "  agent:  baft-tunnel-agent@$INSTANCE (user $AGENT_USER), running now and at boot (setup mode until /etc/baft-tunnel/$INSTANCE.json exists)"
 echo "  panel:  http://${LISTEN:-127.0.0.1:18080}/ (loopback; from another machine: ssh -L 18080:127.0.0.1:18080 HOST)"
 echo "  token:  /var/lib/baft-tunnel-agent/token (read it as root: sudo cat ...; never share it)"
-echo "  helper: the agent can request start, stop, enable --now and disable --now of baft-tunnel@$INSTANCE only."
+echo "  helper: the agent can request start, stop, enable --now and disable --now of baft-tunnel@$INSTANCE only,"
+echo "          and setup init/join for $INSTANCE in /etc/baft-tunnel (pair from the panel: Create tunnel)."
 echo "The tunnel itself was not started."

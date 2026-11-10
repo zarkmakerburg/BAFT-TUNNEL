@@ -62,7 +62,9 @@ for u in "baft-tunnel-agent@$NAME.path" "baft-tunnel-control-enable@$NAME.path" 
   sudo systemctl is-active --quiet "$u" || die "$u is not active"
 done
 sudo systemctl is-enabled --quiet "baft-tunnel-agent@$NAME.service" || die "agent service is not enabled at boot"
-! sudo systemctl is-active --quiet "baft-tunnel-agent@$NAME.service" || die "agent started before its configuration exists"
+# Before any configuration the agent runs in setup mode (ADR-0026): pairing routes only.
+for n in $(seq 1 60); do curl -fs "http://$API/v1/health" >/dev/null 2>&1 && break; sleep 0.5; done
+sudo systemctl is-active --quiet "baft-tunnel-agent@$NAME.service" || die "agent is not running in setup mode after install"
 TOK=/var/lib/baft-tunnel-agent/token
 [[ "$(sudo stat -c '%U:%G %a' $TOK)" == "baft-tunnel-agent:baft-tunnel-agent 600" ]] || die "token owner/mode wrong"
 [[ "$(sudo stat -c '%U %a' /var/lib/baft-tunnel-agent)" == "baft-tunnel-agent 700" ]] || die "agent state dir owner/mode wrong"
@@ -87,16 +89,20 @@ sudo cat /etc/baft-tunnel/bundle.json >"$TMP/bundle-a.json"
 [[ "$(sudo stat -c '%U:%G %a' "/etc/baft-tunnel/$NAME.json")" == "root:baft-tunnel 640" ]] || die "instance config not group-readable by the service"
 if sudo -u baft-tunnel-agent cat /etc/baft-tunnel/node.noise >/dev/null 2>&1; then die "the agent user can read the tunnel key"; fi
 
-step "3 the agent starts by itself (path unit) as baft-tunnel-agent, loopback only, panel served"
-for n in $(seq 1 60); do curl -fs "http://$API/v1/health" >/dev/null 2>&1 && break; sleep 0.5; done
-curl -fs "http://$API/v1/health" >/dev/null || die "agent did not start after the configuration appeared"
+step "3 the agent reloads by itself once the configuration exists (setup mode ends), as baft-tunnel-agent, loopback only, panel served"
+TOKEN="$(sudo cat "$TOK")"
+for n in $(seq 1 60); do
+  curl -fs "http://$API/v1/status" -H "Authorization: Bearer $TOKEN" 2>/dev/null | grep -q '"tunnel"' &&
+    ! curl -fs "http://$API/v1/status" -H "Authorization: Bearer $TOKEN" 2>/dev/null | grep -q '"setup_pending"' && break
+  sleep 0.5
+done
+curl -fs "http://$API/v1/status" -H "Authorization: Bearer $TOKEN" | grep -q '"setup_pending"' && die "agent did not leave setup mode after the configuration appeared"
 [[ "$(sudo systemctl show -p User --value "baft-tunnel-agent@$NAME.service")" == baft-tunnel-agent ]] || die "agent unit user"
 apid="$(sudo systemctl show -p MainPID --value "baft-tunnel-agent@$NAME.service")"
 [[ "$(ps -o user= -p "$apid" | tr -d ' ')" == baft-tunnel-agent ]] || die "agent process does not run as baft-tunnel-agent"
 ss -ltnH | awk '{print $4}' | grep -qx "$API" || die "agent is not listening on $API"
 if ss -ltnH | awk '{print $4}' | grep -qE '^(0\.0\.0\.0|\*|\[::\]):18110$'; then die "agent listens off loopback"; fi
 curl -fs "http://$API/" | grep -qi '<html' || die "panel is not served"
-TOKEN="$(sudo cat "$TOK")"
 api() { curl -s --max-time 90 -X "$1" "http://$API$2" -H "Authorization: Bearer $TOKEN" ${3:+-d "$3"}; }
 life() { api POST /v1/tunnel/lifecycle "{\"action\":\"$1\",\"confirm\":true,\"idempotency_key\":\"$2\"}"; }
 field() { python3 -c 'import sys,json; d=json.load(sys.stdin)
@@ -185,4 +191,4 @@ left="$(sudo find /etc/systemd/system -name 'baft-tunnel*' 2>/dev/null; sudo ls 
 [[ -z "$left" ]] || { echo "$left" >&2; die "uninstall left files behind"; }
 if ss -ltnH | awk '{print $4}' | grep -qE ':(18110|18121)$'; then die "a listener survived uninstall"; fi
 
-echo "AGENT_SERVICE_LIFECYCLE=PASS (systemd $v: install.sh --register in one step, agent as baft-tunnel-agent started by its path unit once setup join wrote the config, no manual chown, token unreadable by the tunnel user, panel on loopback, Start enabled at boot and verified, Restart new PID, Stop disabled at boot, refusals, diagnostics next action Start, agent crash restarted, audit lines, uninstall left nothing)"
+echo "AGENT_SERVICE_LIFECYCLE=PASS (systemd $v: install.sh --register in one step, agent as baft-tunnel-agent in setup mode until setup join wrote the config, then reloaded by itself, no manual chown, token unreadable by the tunnel user, panel on loopback, Start enabled at boot and verified, Restart new PID, Stop disabled at boot, refusals, diagnostics next action Start, agent crash restarted, audit lines, uninstall left nothing)"

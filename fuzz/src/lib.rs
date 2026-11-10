@@ -32,6 +32,8 @@ pub mod runtime_host;
 pub mod session_status;
 #[path = "../../src/setup.rs"]
 pub mod setup;
+#[path = "../../src/setup_helper.rs"]
+pub mod setup_helper;
 #[path = "../../src/tls.rs"]
 pub mod tls;
 #[path = "../../src/tunnel.rs"]

@@ -289,6 +289,9 @@
   }
   BAFT.register({ id: 'setup', icon: 'setup', order: 4, primary: true, needs: ['engines'], refresh: false, render: function (ctx) {
     var w = BAFT.wiz = BAFT.wiz || freshWizard(conf(ctx.data));
+    var st0 = ctx.data.status || {};
+    // Setup mode (ADR-0026): this agent pairs exactly its own instance in its own directory.
+    if (st0.setup_pending && !w.prefilled) { w.inst = st0.instance || ''; w.dir = st0.config_dir || w.dir; w.prefilled = true; }
     var engines = ((ctx.data.engines || {}).engines || []);
     var root = h('div'), live = h('div', { 'aria-live': 'polite' });
     function invalidate() { w.pf = null; w.plan = null; }
@@ -447,6 +450,126 @@
         rc.next_commands ? h('div', null, h('h3', { text: t('rc.next') }), h('pre', { text: rc.next_commands.join('\n') })) : null,
         h('p', { class: 'sub', text: t('rc.nosecret') }));
     }
+    /* ---- Panel pairing (U5b): init, export own bundle, import peer bundle with checksum, join ---- */
+    function newKey(prefix) {
+      var a = new Uint8Array(12); (window.crypto || {}).getRandomValues && window.crypto.getRandomValues(a);
+      return prefix + Array.prototype.map.call(a, function (x) { return ('0' + x.toString(16)).slice(-2); }).join('');
+    }
+    function b64url(text) { return btoa(unescape(encodeURIComponent(text))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+    function pairLink(text) { return 'baft-tunnel://pair?v=1&b=' + b64url(text); }
+    /* A pasted link or raw JSON -> bundle text; the checksum never travels in the link. */
+    function bundleFromInput(text) {
+      var v = (text || '').trim(), m = /^baft-tunnel:\/\/pair\?(?:.*&)?b=([A-Za-z0-9_-]+)/.exec(v);
+      if (!m) { return v; }
+      var b = m[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (b.length % 4) { b += '='; }
+      try { return decodeURIComponent(escape(atob(b))); } catch (e) { return ''; }
+    }
+    function loadOwn() {
+      BAFT.api('GET', '/v1/setup/bundle').then(function (r) { w.own = r.status === 200 ? r.body : null; draw(); }, function () {});
+    }
+    function pollReload(tries) {
+      BAFT.api('GET', '/v1/status').then(function (r) {
+        if (r.status === 200 && r.body && !r.body.setup_pending) { w.status = r.body; w.reloading = false; draw(); return; }
+        if (tries > 0) { setTimeout(function () { pollReload(tries - 1); }, 2000); } else { w.reloading = false; draw(); }
+      }, function () { if (tries > 0) { setTimeout(function () { pollReload(tries - 1); }, 2000); } });
+    }
+    function runStage(stage, extra) {
+      w.busy = true; w.pairErr = null; draw();
+      var req = { stage: stage, confirm: true, idempotency_key: stage === 'init' ? applyKey() : (w.joinKey = w.joinKey || newKey('ui-join-')), plan: body(w) };
+      Object.keys(extra || {}).forEach(function (k) { req[k] = extra[k]; });
+      BAFT.api('POST', '/v1/setup/apply', req).then(function (r) {
+        var rc = r.body && r.body.result ? r.body : null;
+        if (!rc) { w.pairErr = (r.body && (r.body.detail || r.body.error)) || t('fail'); return; }
+        if (stage === 'init') { w.applyReceipt = rc; if (rc.result === 'applied') { loadOwn(); } }
+        else {
+          w.joinReceipt = rc;
+          if (rc.result !== 'applied') { w.joinKey = null; } else { w.reloading = true; setTimeout(function () { pollReload(15); }, 2000); }
+        }
+      }, function (e) { w.pairErr = e.message; }).then(function () { w.busy = false; draw(); });
+    }
+    function inspectPeer() {
+      var text = bundleFromInput(w.peerText);
+      w.inspect = null; w.inspectErr = null;
+      if (!text) { w.inspectErr = t('pair.badlink'); draw(); return; }
+      w.peerBundle = text; w.busy = true; draw();
+      BAFT.api('POST', '/v1/setup/bundle/inspect', { bundle: text, checksum: (w.peerCk || '').trim() || null }).then(function (r) {
+        if (r.status === 200) { w.inspect = r.body; } else { w.inspectErr = (r.body && (r.body.detail || r.body.error)) || t('fail'); }
+      }, function (e) { w.inspectErr = e.message; }).then(function () { w.busy = false; draw(); });
+    }
+    function copyText(text) {
+      if (navigator.clipboard) { navigator.clipboard.writeText(text).then(function () { BAFT.toast(t('ap.copied')); }, function () {}); }
+    }
+    function download(name, text) {
+      var a = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'application/json' })), download: name });
+      document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+    }
+    /* An applied receipt folds away (evidence on demand); a failed one stays open. */
+    function folded(rc) {
+      return rc.result === 'applied' ? h('details', null, h('summary', { text: t('rc.title') + ' · ' + t('rc.applied') }), receiptView(rc)) : receiptView(rc);
+    }
+    function pairSection(st) {
+      var pr = st.pairing || {}, helper = st.setup_helper || {};
+      var scopeOk = w.inst.trim() === (st.instance || '') && w.dir.trim() === (st.config_dir || '');
+      var initDone = pr.initialized || (w.applyReceipt && w.applyReceipt.result === 'applied');
+      if (initDone && !w.own && !w.ownLoading) { w.ownLoading = true; loadOwn(); }
+      var out = [h('p', { class: 'sub', text: t('pair.intro') })];
+      if (!helper.available) { out.push(h('p', { class: 'error', role: 'alert', text: t('pair.nohelper') + ' ' + (helper.reason || '') })); }
+      if (!scopeOk) { out.push(h('p', { class: 'fielderr', role: 'alert', text: t('pair.scope', { inst: st.instance || '—', dir: st.config_dir || '—' }) })); }
+      // a) prepare
+      var chk = h('label', null, h('input', { type: 'checkbox', checked: w.applyConfirm ? 'checked' : null, onchange: function (e) { w.applyConfirm = e.target.checked; draw(); } }), ' ', t('ap.confirm'));
+      out.push(h('h3', { text: t('pair.a') }), initDone ? h('p', null, pill('ok', t('pair.a.done'))) : h('div', null, h('div', { class: 'banner' }, h('p', { text: t('pair.a.body') })), chk,
+        h('button', { type: 'button', class: 'primary', text: t('pair.a.go'), disabled: (!w.applyConfirm || w.busy || !helper.available || !scopeOk || (w.pf && w.pf.overall === 'blocked')) ? 'disabled' : null, onclick: function () { runStage('init'); } })));
+      if (w.applyReceipt) { out.push(folded(w.applyReceipt)); }
+      // b) export
+      out.push(h('h3', { text: t('pair.b') }));
+      if (!initDone) { out.push(h('p', { class: 'muted', text: t('pair.b.wait') })); }
+      else if (!w.own) { out.push(h('p', { class: 'muted', text: t('pv.load') })); }
+      else {
+        out.push(h('p', null, t('rc.checksum') + ' ', h('strong', null, BAFT.ltr(w.own.checksum))), h('p', { class: 'sub', text: t('pair.b.oob') }),
+          h('div', { class: 'nav-row' },
+            h('button', { type: 'button', text: t('pair.b.copy'), onclick: function () { copyText(w.own.bundle); } }),
+            h('button', { type: 'button', text: t('pair.b.link'), onclick: function () { copyText(pairLink(w.own.bundle)); } }),
+            h('button', { type: 'button', text: t('pair.b.dl'), onclick: function () { download('baft-bundle-' + (st.instance || 'node') + '.json', w.own.bundle); } })),
+          h('details', null, h('summary', { text: t('pair.b.show') }), h('pre', { dir: 'ltr', text: w.own.bundle })));
+      }
+      // c) import + join
+      out.push(h('h3', { text: t('pair.c') }));
+      if (pr.joined || (w.joinReceipt && w.joinReceipt.result === 'applied')) {
+        out.push(h('p', null, pill('ok', t('pair.c.done'))), w.joinReceipt ? folded(w.joinReceipt) : null,
+          w.reloading ? h('p', { class: 'sub', role: 'status', text: t('pair.reloading') }) : null);
+        return h('div', null, out);
+      }
+      var ta = h('textarea', { rows: 5, dir: 'ltr', 'aria-label': t('pair.c.paste'), placeholder: '{"version":1,...}  /  baft-tunnel://pair?v=1&b=...', oninput: function () { w.peerText = ta.value; w.inspect = null; } });
+      ta.value = w.peerText || '';
+      var file = h('input', { type: 'file', accept: '.json,application/json', 'aria-label': t('pair.c.file'), onchange: function (e) {
+        var f = e.target.files && e.target.files[0];
+        if (!f || f.size > 4096) { w.inspectErr = t('pair.toolarge'); draw(); return; }
+        var rd = new FileReader(); rd.onload = function () { w.peerText = String(rd.result); w.inspect = null; draw(); }; rd.readAsText(f);
+      } });
+      var ck = h('input', { type: 'text', dir: 'ltr', autocomplete: 'off', value: w.peerCk || '', placeholder: 'xxxxxxxx-xxxxxxxx-xxxxxxxx-xxxxxxxx', oninput: function () { w.peerCk = ck.value; w.inspect = null; } });
+      out.push(h('p', { class: 'sub', text: t('pair.c.body') }), h('label', { class: 'field' }, h('span', { text: t('pair.c.paste') }), ta),
+        h('label', { class: 'field' }, h('span', { text: t('pair.c.file') }), file),
+        h('label', { class: 'field' }, h('span', { text: t('pair.c.ck') }), ck),
+        h('button', { type: 'button', text: t('pair.c.check'), disabled: (w.busy || !initDone) ? 'disabled' : null, onclick: inspectPeer }),
+        w.inspectErr ? h('p', { class: 'error', role: 'alert', text: w.inspectErr }) : null);
+      var v = w.inspect;
+      if (v) {
+        var f = v.fields || {};
+        var good = v.checksum_match === true && v.matches_this_node === true;
+        out.push(h('section', { class: 'card', 'aria-live': 'polite' }, h('h3', { text: t('pair.c.preview') }),
+          kv([[t('sum.tunnel'), BAFT.ltr(f.tunnel_id)], [t('pair.f.node'), BAFT.ltr(f.node_id)], [t('pair.f.peer'), BAFT.ltr(f.peer_id)],
+            [t('pair.f.role'), roleLabel(f.role, f.direction)], [t('sum.engine'), BAFT.ltr(f.engine)], [t('sum.dir'), dirLabel(f.direction)],
+            [t('pair.f.ports'), BAFT.ltr(f.service_port + ' / ' + f.tunnel_port)], [t('rc.checksum'), BAFT.ltr(v.checksum)]]),
+          h('p', null, v.checksum_match === true ? pill('ok', t('pair.ck.ok')) : v.checksum_match === false ? pill('bad', t('pair.ck.bad')) : pill('unknown', t('pair.ck.none'))),
+          v.matches_this_node === false ? h('p', { class: 'error', role: 'alert', text: t('pair.mismatch') + ' ' + (v.mismatches || []).join(', ') }) : null,
+          good ? h('div', { class: 'stack' }, h('label', null, h('input', { type: 'checkbox', checked: w.joinConfirm ? 'checked' : null, onchange: function (e) { w.joinConfirm = e.target.checked; draw(); } }), ' ', t('pair.c.confirm')),
+            h('button', { type: 'button', class: 'primary', text: t('pair.c.go'), disabled: (!w.joinConfirm || w.busy) ? 'disabled' : null,
+              onclick: function () { runStage('join', { bundle: w.peerBundle, checksum: (w.peerCk || '').trim() }); } })) : null));
+      }
+      if (w.joinReceipt) { out.push(folded(w.joinReceipt)); }
+      return h('div', null, out);
+    }
     function stepApply() {
       var cmds = w.plan ? w.plan.commands.join('\n') : '';
       var copy = h('button', { type: 'button', text: t('ap.copy'), onclick: function () {
@@ -472,14 +595,19 @@
         }, function () { diagBtn.disabled = false; diagOut.textContent = t('diag.failed'); });
       } });
       var bound = tn && tn.tiers && tn.tiers.unit && !(tn.tiers.unit.result === 'unknown' && tn.tiers.unit.reason);
+      var st = w.status || ctx.data.status || {};
+      // Panel pairing while the agent is in setup mode; it stays visible after join until reload.
+      var pairing = !!(st.setup_pending || w.joinReceipt || w.applyReceipt && ctx.data.status && ctx.data.status.setup_pending);
       return h('div', null, h('h2', { text: t('fin.title') }), h('p', { class: 'sub', text: t('fin.intro') }),
         h('ol', { class: 'stack fin' },
-          h('li', null, h('h3', { text: t('fin.s1') }), h('p', { text: t('ap.run.root') }), h('pre', { dir: 'ltr', text: cmds || '—' }), copy,
+          pairing ? h('li', null, h('h3', { text: t('pair.title') }), pairSection(st), w.pairErr ? h('p', { class: 'error', role: 'alert', text: w.pairErr }) : null,
+            h('details', null, h('summary', { text: t('pair.alt') }), h('p', { text: t('ap.run.root') }), h('pre', { dir: 'ltr', text: cmds || '—' }), copy)) : null,
+          pairing ? null : h('li', null, h('h3', { text: t('fin.s1') }), h('p', { text: t('ap.run.root') }), h('pre', { dir: 'ltr', text: cmds || '—' }), copy,
             h('p', { class: 'sub', text: t('fin.s1.peer') }),
             h('details', null, h('summary', { text: t('fin.agentapply') }), h('div', { class: 'banner' }, h('p', { text: t('ap.body') })),
               chk, go, w.applyErr ? h('p', { class: 'error', role: 'alert', text: w.applyErr }) : null, w.applyReceipt ? receiptView(w.applyReceipt) : null)),
           h('li', null, h('h3', { text: t('fin.s2') }),
-            bound ? lifecycle(tn) : h('div', null, h('p', { class: 'sub', text: t('fin.s2.wait') }), h('pre', { dir: 'ltr', text: 'sudo scripts/install.sh --register ' + (w.inst.trim() || 'NAME') })),
+            bound ? lifecycle(tn) : st.setup_pending ? h('p', { class: 'sub', text: t('pair.s2.wait') }) : h('div', null, h('p', { class: 'sub', text: t('fin.s2.wait') }), h('pre', { dir: 'ltr', text: 'sudo scripts/install.sh --register ' + (w.inst.trim() || 'NAME') })),
             recheck),
           h('li', null, h('h3', { text: t('fin.s3') }), h('p', { class: 'sub', text: t('diag.note') }), diagBtn, diagOut)));
     }

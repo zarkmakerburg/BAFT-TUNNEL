@@ -2,7 +2,8 @@
 Description=Start the BAFT-TUNNEL agent for instance %i once its configuration exists
 
 [Path]
-# setup join (or the operator) writes /etc/baft-tunnel/%i.json; the agent then starts by itself.
+# The agent normally runs from registration on (setup mode first); this path unit only brings it
+# back when /etc/baft-tunnel/%i.json exists and the agent is not running.
 PathExists=/etc/baft-tunnel/%i.json
 Unit=baft-tunnel-agent@%i.service
 

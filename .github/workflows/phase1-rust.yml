@@ -86,3 +86,7 @@ jobs:
         run: |
           bash -n scripts/pki/test-agent-service-lifecycle.sh
           timeout 600 bash scripts/pki/test-agent-service-lifecycle.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"
+      - name: Validate panel pairing on real systemd (setup mode, root setup helper, export/import with checksum, tamper refusals, Start)
+        run: |
+          bash -n scripts/pki/test-panel-pairing.sh
+          timeout 600 bash scripts/pki/test-panel-pairing.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"

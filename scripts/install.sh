@@ -38,9 +38,10 @@ creates its own key with `baft-tunnel setup init` and needs neither.
 --register NAME (one step for an installed instance): also installs the local
 agent service baft-tunnel-agent@NAME under its own user baft-tunnel-agent, its
 API token, and the root control helper for baft-tunnel@NAME
-(scripts/install-agent-control.sh). The agent starts by itself once
-/etc/baft-tunnel/NAME.json exists (after `setup join --instance NAME`) and at
-boot; the panel then starts, stops and restarts the tunnel.
+(scripts/install-agent-control.sh), including the root setup helper. The agent
+runs at once and at boot: in setup mode until /etc/baft-tunnel/NAME.json exists
+(pair from the panel, or `setup init/join --instance NAME` as root), then it
+reloads by itself; the panel then starts, stops and restarts the tunnel.
 
 Credential modes (the private key never goes into JSON, environment, or args):
   baseline   Default. systemd 247+ (Ubuntu 22.04 / systemd 249 supported).
