@@ -81,4 +81,5 @@ fi
 if "$SCRIPT" --register t1 --agent-listen 0.0.0.0:18080 >/dev/null 2>&1; then
   echo 'non-loopback agent listen address was accepted' >&2; exit 1
 fi
+python3 "$ROOT/scripts/test-quick-install-failures.py"
 echo QUICK_INSTALL_TEST=PASS
