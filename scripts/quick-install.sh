@@ -67,7 +67,7 @@ fi
 
 [[ "$(uname -s)" == "Linux" ]] || die "only Linux hosts are supported"
 case "$(uname -m)" in x86_64|amd64) ;; *) die "this release currently supports Linux x86_64 only" ;; esac
-for tool in curl python3 tar sha256sum dpkg-deb find awk grep sed mktemp chmod rm; do
+for tool in curl python3 tar sha256sum dpkg-deb awk grep sed mktemp chmod rm; do
   command -v "$tool" >/dev/null 2>&1 || die "missing required command: $tool"
 done
 if (( VERIFY_ONLY == 0 )); then
@@ -133,8 +133,10 @@ printf '%s  %s\n' "$COSIGN_SHA256" "$TMP/$COSIGN_DEB" | sha256sum --check --stat
   die "the pinned Cosign package failed its SHA-256 check"
 mkdir "$TMP/cosign-root"
 dpkg-deb -x "$TMP/$COSIGN_DEB" "$TMP/cosign-root"
-COSIGN_BIN="$(find "$TMP/cosign-root" -type f -name cosign -perm -u+x -print -quit)"
-[[ -n "$COSIGN_BIN" ]] || die "the verified Cosign package contains no executable"
+# The Debian package ships /usr/bin/cosign as an absolute symlink to this file;
+# invoking the symlink from the temporary extraction root would escape that root.
+COSIGN_BIN="$TMP/cosign-root/usr/bin/cosign-linux-amd64"
+[[ -x "$COSIGN_BIN" ]] || die "the verified Cosign package contains no executable at the pinned package path"
 
 curl -fsSL --retry 3 "$BASE/$ARCHIVE" -o "$TMP/$ARCHIVE"
 curl -fsSL --retry 3 "$BASE/SHA256SUMS" -o "$TMP/SHA256SUMS"

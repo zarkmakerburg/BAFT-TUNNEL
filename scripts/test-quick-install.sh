@@ -12,6 +12,7 @@ grep -Fq '7a6b86904016cc271e854aee54ca5b8ec5bd7fe28369e8775025c7ece029e2a4' "$SC
 grep -Fq 'verify-blob "$TMP/SHA256SUMS"' "$SCRIPT"
 grep -Fq 'sha256sum --ignore-missing --check SHA256SUMS' "$SCRIPT"
 grep -Fq 'awk -v archive="$ARCHIVE"' "$SCRIPT"
+grep -Fq 'COSIGN_BIN="$TMP/cosign-root/usr/bin/cosign-linux-amd64"' "$SCRIPT"
 grep -Fq 'tarfile' "$SCRIPT"
 grep -Fq 'bash "$PKG/scripts/install.sh" --binary "$PKG/baft-tunnel" --register "$INSTANCE"' "$SCRIPT"
 if "$SCRIPT" --tag '../main' --register test >/dev/null 2>&1; then
