@@ -273,10 +273,10 @@ jobs:
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$d" \
             --pattern SHA256SUMS --pattern SHA256SUMS.cosign.bundle --pattern "baft-engine-${TAG}-linux-amd64"
           cosign verify-blob "$d/SHA256SUMS" --bundle "$d/SHA256SUMS.cosign.bundle" \
-            --certificate-identity-regexp "^${ID}@refs/(heads/main|tags/v[0-9][0-9A-Za-z.+-]*)$" \
+            --certificate-identity-regexp "^${ID}@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           (cd "$d" && sha256sum -c --ignore-missing SHA256SUMS | grep -q "baft-engine-${TAG}-linux-amd64: OK")
-          # Negative controls: another repository's workflow, or a non-main/non-tag ref, must not verify.
+          # Negative controls: another repository's workflow, a feature branch, or main, must not verify.
           if cosign verify-blob "$d/SHA256SUMS" --bundle "$d/SHA256SUMS.cosign.bundle" \
             --certificate-identity-regexp "^https://github.com/other-owner/other-repo/.github/workflows/release.yml@refs/heads/main$" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
@@ -285,6 +285,10 @@ jobs:
             --certificate-identity-regexp "^${ID}@refs/heads/some-feature-branch$" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
             echo "::error::signature verified under a feature-branch ref"; exit 1; fi
+          if cosign verify-blob "$d/SHA256SUMS" --bundle "$d/SHA256SUMS.cosign.bundle" \
+            --certificate-identity-regexp "^${ID}@refs/heads/main$" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
+            echo "::error::signature verified under a branch identity"; exit 1; fi
           echo "COSIGN_IDENTITY_NEGATIVES=PASS"
           want="$(python3 -c 'import json;m=json.load(open("release/engine-manifest.json"));print([e for e in m["engines"] if e["id"]=="baft"][0]["artifact_sha256"])')"
           have="$(sha256sum "$d/baft-engine-${TAG}-linux-amd64" | cut -d' ' -f1)"
@@ -314,7 +318,7 @@ jobs:
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$d" \
             --pattern SHA256SUMS --pattern SHA256SUMS.cosign.bundle --pattern "baft-tunnel-${TAG}-linux-x86_64"
           cosign verify-blob "$d/SHA256SUMS" --bundle "$d/SHA256SUMS.cosign.bundle" \
-            --certificate-identity-regexp "^${ID}@refs/(heads/main|tags/v[0-9][0-9A-Za-z.+-]*)$" \
+            --certificate-identity-regexp "^${ID}@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           (cd "$d" && sha256sum -c --ignore-missing SHA256SUMS | grep -q "baft-tunnel-${TAG}-linux-x86_64: OK")
           install -m 755 "$d/baft-tunnel-${TAG}-linux-x86_64" "$RUNNER_TEMP/baft-tunnel-mvp"

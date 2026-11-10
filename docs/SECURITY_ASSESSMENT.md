@@ -57,15 +57,15 @@ uses that path; `-` tolerates its absence). Residual risk: SA-09.
 
 ### SA-03 (Medium): release signature binding
 
-Evidence: `docs/RELEASE.md`, `release.yml` self-verify and the LAB workflow verify with
-`--certificate-identity-regexp '^…/release.yml@'`, which accepts a signature from the workflow on
-any branch or tag. Separately, `workflow_dispatch` input `ref` checks out any branch or commit while
-the signing certificate still says `refs/heads/main`, so the signature does not bind to reviewed
-code.
-Fix: verification pins the identity to `release.yml@refs/heads/main` or `@refs/tags/v*`; the
-workflow refuses to build a commit that is not contained in `origin/main`. All four existing
-releases were dispatched from `main` (runs 42394963062, 42505948827, 42527359063, 42533087739), so
-they still verify.
+Evidence: the original workflow accepted both `refs/heads/main` and version tags, and its
+`workflow_dispatch` input could check out a different ref while the signing certificate still
+identified `refs/heads/main`. That identity did not prove that the signed artifact came from the
+version tag being installed.
+Remediation in PR #151: release workflow runs only from an existing semantic-version tag, verifies
+the tag commit is contained in `origin/main`, and self-verifies the bundle against that exact
+version-tag identity. The installer and Phase 1 workflow reject `refs/heads/main`, feature branches,
+and foreign repositories. Existing releases signed from `refs/heads/main` are intentionally not
+accepted by the hardened installer; publish a new version tag after this remediation is merged.
 
 ### SA-04 (Low): DNS rebinding
 

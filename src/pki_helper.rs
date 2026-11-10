@@ -16,6 +16,11 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use x509_parser::{
+    oid_registry::{OID_EC_P256, OID_KEY_TYPE_EC_PUBLIC_KEY},
+    prelude::FromDer,
+    x509::SubjectPublicKeyInfo,
+};
 
 pub const REQUEST_SUFFIX: &str = "pki";
 pub const RESULT_SUFFIX: &str = "pki-result";
@@ -268,24 +273,23 @@ fn public_key_fingerprint_from_key(key: &Path) -> Result<String> {
 }
 
 pub(crate) fn is_p256_subject_public_key_info(der: &[u8]) -> bool {
-    // OpenSSL normally encodes the named-curve OID. LibreSSL may encode the same P-256
-    // parameters explicitly; in that case verify the complete defining parameters.
-    const P256_OID: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-    if der.windows(P256_OID.len()).any(|window| window == P256_OID) {
-        return true;
+    let Ok((remaining, spki)) = SubjectPublicKeyInfo::from_der(der) else {
+        return false;
+    };
+    if !remaining.is_empty() || spki.algorithm.algorithm != OID_KEY_TYPE_EC_PUBLIC_KEY {
+        return false;
     }
-    const EXPLICIT_P256: [&str; 6] = [
-        "022100ffffffff00000001000000000000000000000000ffffffffffffffffffffffff",
-        "0420ffffffff00000001000000000000000000000000fffffffffffffffffffffffc",
-        "04205ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b",
-        "0441046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-        "022100ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551",
-        "020101",
-    ];
-    EXPLICIT_P256.iter().all(|hex_value| {
-        hex::decode(hex_value)
-            .is_ok_and(|marker| der.windows(marker.len()).any(|window| window == marker))
-    })
+    let Some(parameters) = spki.algorithm.parameters.as_ref() else {
+        return false;
+    };
+    // OBJECT IDENTIFIER is universal tag 6. `Any::as_oid` alone is permissive and
+    // can reinterpret an explicit-parameter SEQUENCE as an OID; check the tag first.
+    if parameters.header.tag().0 != 6
+        || parameters.class() != x509_parser::der_parser::asn1_rs::Class::Universal
+    {
+        return false;
+    }
+    parameters.as_oid().is_ok_and(|curve| curve == OID_EC_P256) && spki.parsed().is_ok()
 }
 
 fn validate_csr(csr: &Path, node_id: &str, key: &Path, scratch: &Path) -> Result<String> {
@@ -1152,6 +1156,8 @@ fn create_csr_at(config_dir: &Path, req: &PkiRequest, enforce_fixed: bool) -> Re
             "prime256v1",
             "-genkey",
             "-noout",
+            "-param_enc",
+            "named_curve",
             "-out",
             staged_key.to_str().context("non-UTF8 staged key path")?,
         ];
@@ -1363,10 +1369,8 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
 
 fn write_atomic(path: &Path, bytes: &[u8], mode: u32, group: Option<u32>) -> Result<()> {
     let parent = path.parent().context("file has no parent directory")?;
-    let tmp = parent.join(format!(
-        ".{}.tmp",
-        path.file_name().unwrap().to_string_lossy()
-    ));
+    let file_name = path.file_name().context("file path has no name")?;
+    let tmp = parent.join(format!(".{}.tmp", file_name.to_string_lossy()));
     match fs::remove_file(&tmp) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1477,7 +1481,7 @@ fn run_at(
     let request_path = control_dir.join(format!("{name}.{REQUEST_SUFFIX}"));
     let bytes = read_bounded(&request_path, MAX_REQUEST_BYTES);
     let _ = fs::remove_file(&request_path);
-    let (request_id, receipt) = match bytes {
+    let (_, receipt) = match bytes {
         Err(error) => (None, refused(None, None, format!("{error:#}"))),
         Ok(bytes) => match parse_request(&bytes) {
             Err(error) => (None, refused(None, None, format!("{error:#}"))),
@@ -1548,7 +1552,6 @@ fn run_at(
             }
         },
     };
-    let _ = request_id;
     write_result(control_dir, name, &receipt)?;
     Ok(receipt)
 }
@@ -1765,6 +1768,100 @@ mod tests {
 
     fn test_request(req: &Value) -> PkiRequest {
         serde_json::from_value(req.clone()).unwrap()
+    }
+
+    #[test]
+    fn parses_complete_named_curve_spki_and_rejects_oid_decoys_and_trailing_der() {
+        let (tmp, _, _, _) = fixture();
+        let key = tmp.0.join("p256.pem");
+        let output = Command::new(OPENSSL)
+            .args([
+                "ecparam",
+                "-name",
+                "prime256v1",
+                "-genkey",
+                "-noout",
+                "-param_enc",
+                "named_curve",
+                "-out",
+            ])
+            .arg(&key)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let public = Command::new(OPENSSL)
+            .args(["pkey", "-in"])
+            .arg(&key)
+            .args(["-pubout", "-outform", "DER"])
+            .output()
+            .unwrap();
+        assert!(public.status.success());
+        assert!(is_p256_subject_public_key_info(&public.stdout));
+
+        let p384_key = tmp.0.join("p384.pem");
+        let p384 = Command::new(OPENSSL)
+            .args([
+                "ecparam",
+                "-name",
+                "secp384r1",
+                "-genkey",
+                "-noout",
+                "-param_enc",
+                "named_curve",
+                "-out",
+            ])
+            .arg(&p384_key)
+            .output()
+            .unwrap();
+        assert!(p384.status.success());
+        let p384_public = Command::new(OPENSSL)
+            .args(["pkey", "-in"])
+            .arg(&p384_key)
+            .args(["-pubout", "-outform", "DER"])
+            .output()
+            .unwrap();
+        assert!(p384_public.status.success());
+        assert!(!is_p256_subject_public_key_info(&p384_public.stdout));
+
+        // Explicit EC parameters are rejected; CSR/key generation below explicitly requests
+        // named-curve encoding so supported OpenSSL/LibreSSL variants emit the same SPKI form.
+        let explicit_key = tmp.0.join("p256-explicit.pem");
+        let explicit = Command::new(OPENSSL)
+            .args([
+                "ecparam",
+                "-name",
+                "prime256v1",
+                "-genkey",
+                "-noout",
+                "-param_enc",
+                "explicit",
+                "-out",
+            ])
+            .arg(&explicit_key)
+            .output()
+            .unwrap();
+        assert!(explicit.status.success());
+        let explicit_public = Command::new(OPENSSL)
+            .args(["pkey", "-in"])
+            .arg(&explicit_key)
+            .args(["-pubout", "-outform", "DER"])
+            .output()
+            .unwrap();
+        assert!(explicit_public.status.success());
+        assert!(!is_p256_subject_public_key_info(&explicit_public.stdout));
+
+        let mut trailing = public.stdout.clone();
+        trailing.push(0);
+        assert!(!is_p256_subject_public_key_info(&trailing));
+        let oid_decoy = [
+            0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
+        ];
+        assert!(!is_p256_subject_public_key_info(&oid_decoy));
+        assert!(!is_p256_subject_public_key_info(&[0x30, 0x01, 0x00]));
     }
 
     #[test]

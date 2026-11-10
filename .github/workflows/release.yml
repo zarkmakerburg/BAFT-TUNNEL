@@ -1,22 +1,9 @@
 name: release
-# One input to run: gh workflow run release.yml            (pre-release)
-#                   gh workflow run release.yml -f stable=true
-# Tags matching v* also trigger it (tag with "-" => pre-release).
+# Publish only from an existing version tag. For a manual run, select the version tag
+# in the GitHub Actions "Run workflow" ref selector.
 on:
   workflow_dispatch:
     inputs:
-      stable:
-        description: "Publish as stable (default: pre-release)"
-        type: boolean
-        default: false
-      ref:
-        description: "Branch/commit to build"
-        type: string
-        default: main
-      tag:
-        description: "Optional tag name (default: v<Cargo version>[-rc.N])"
-        type: string
-        default: ""
       notes:
         description: "Optional release notes (default: auto-generated)"
         type: string
@@ -41,38 +28,27 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+          ref: ${{ github.ref }}
           persist-credentials: false
           fetch-depth: 0
-      - name: Refuse commits that are not on main (signature must bind to reviewed code)
+      - name: Require a version tag on reviewed main history
         run: |
           set -euo pipefail
+          [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+            || { echo "::error::release workflow must run from a version tag; branch identities are not accepted"; exit 1; }
           git fetch --no-tags origin main
           git merge-base --is-ancestor HEAD FETCH_HEAD \
             || { echo "::error::$(git rev-parse HEAD) is not contained in main; release only reviewed commits"; exit 1; }
       - name: Resolve version and channel
         id: v
         env:
-          EVENT: ${{ github.event_name }}
-          STABLE: ${{ inputs.stable }}
-          TAG_IN: ${{ inputs.tag }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          test -f Cargo.toml || { echo "::error::Cargo.toml not found on this ref (is the Rust code merged?)"; exit 1; }
-          ver="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
-          if [ "$EVENT" = "push" ]; then
-            tag="$REF_NAME"
-            case "$tag" in *-*) pre=true ;; *) pre=false ;; esac
-          elif [ -n "$TAG_IN" ]; then
-            tag="$TAG_IN"
-            if [ "$STABLE" = "true" ]; then pre=false; else pre=true; fi
-          elif [ "$STABLE" = "true" ]; then
-            tag="v${ver}"; pre=false
-          else
-            tag="v${ver}-rc.${GITHUB_RUN_NUMBER}"; pre=true
-          fi
+          test -f Cargo.toml || { echo "::error::Cargo.toml not found on this ref"; exit 1; }
+          tag="$REF_NAME"
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::invalid release tag"; exit 1; }
+          case "$tag" in *-*) pre=true ;; *) pre=false ;; esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
       - name: Install pinned Rust toolchain
@@ -159,7 +135,7 @@ jobs:
           ID: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml
         run: |
           cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
-            --certificate-identity-regexp "^${ID}@refs/(heads/main|tags/v[0-9][0-9A-Za-z.+-]*)$" \
+            --certificate-identity-regexp "^${ID}@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           sha256sum -c SHA256SUMS
       - name: Publish GitHub Release
