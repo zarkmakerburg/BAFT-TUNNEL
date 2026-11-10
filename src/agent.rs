@@ -1500,6 +1500,8 @@ async fn pki_certificate_action(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
     };
     let digest = hex::encode(Sha256::digest(&request_bytes));
     let operation = crate::pki_helper::PkiOperation::InstallCertificate;
+    // Serialize credential installation with other state-changing agent operations.
+    let _guard = ctx.lock.lock().await;
     let receipt = match ctx.pki.submit(name, &request) {
         Ok(receipt) => receipt,
         Err(error) => {
