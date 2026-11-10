@@ -1,5 +1,10 @@
 [Unit]
 Description=Run the requested setup init/join for baft-tunnel@%i (root setup helper, ADR-0026)
+# Each request is one short run. The default start limit (5 in 10 s) let a burst of refused
+# requests put the unit, and with it the path unit, into a failed state until reset; allow
+# bursts while still bounding a request loop.
+StartLimitIntervalSec=10s
+StartLimitBurst=60
 
 [Service]
 Type=oneshot
