@@ -47,4 +47,4 @@ started at all, so the panel could not help before the configuration existed.
   exactly like the CLI and that never overwrites. Accepted with SA-09; revisit with the dedicated control group.
 - Evidence: unit tests (`setup_helper`, agent pairing through the in-process helper), `scripts/pki/test-panel-pairing.sh`
   on real systemd in CI (tamper, symlink, oversize and scope refusals, planted result link), `scripts/panel-qa/panel-pairing.js`
-  (fa/en). A two-host LAB run that sets up both nodes through the agent API only is still open.
+  (fa/en). Two-host LAB run that sets up both nodes through the agent API only: run 42779915532 PASS (main `4887a72`, 2026-11-10).
