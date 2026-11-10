@@ -10,6 +10,18 @@ The tcp-tls engine already has an offline PKI workflow in `scripts/pki/baft-pki.
 
 This decision adds a guided local-panel workflow without adding online enrollment or moving the CA private key online.
 
+## Verified current implementation baseline
+
+Source review on `main` at `98a39464d3ed3954acbf666b602c5f42154c9a29` confirms:
+
+- `setup::tls_material()` expects exactly `node.key`, `node.crt`, `ca.crt`, and `ca.crl` in the supplied setup directory; the current installed layout uses `/etc/baft-tunnel`.
+- The runtime config stores explicit `ca`, `crl`, `cert`, and `key` paths; credential import must not silently rewrite these fields or assume a hot reload.
+- `setup::adopt_for_service()` changes `node.key` to `baft-tunnel:baft-tunnel` while preserving 0600, and gives public PKI files group-readable permissions for the tunnel service.
+- The Agent runs as `baft-tunnel-agent`, has `/etc/baft-tunnel` read-only, and may write only its state directory plus `/run/baft-tunnel/control`.
+- The existing root setup helper is a fixed systemd path-unit command, accepts only init/join today, and is sandboxed with write access to `/etc/baft-tunnel` and the control directory.
+
+**Implication:** the first implementation must preserve the existing flat PKI filenames and single-node credential set under `/etc/baft-tunnel`. Do not introduce a per-instance PKI subdirectory or multi-instance credential isolation without a separate migration/architecture decision. Extend the existing helper using a closed operation enum and bounded request/receipt protocol; do not grant the Agent direct write access to `/etc/baft-tunnel`. The helper must create private key files with final `baft-tunnel:baft-tunnel` ownership and 0600 mode, and public files with the existing group-readable policy.
+
 ## Decision
 
 ### 1. Trust and privilege boundaries
@@ -23,7 +35,7 @@ This decision adds a guided local-panel workflow without adding online enrollmen
 
 - Generate an EC P-256 key on the target node using OpenSSL through a fixed helper operation (no shell interpolation).
 - Bind the CSR subject CN to the instance's configured node ID. The helper must independently validate the node ID and generated CSR.
-- Store the private key under a fixed per-instance PKI directory with restrictive ownership and mode (target tunnel service identity, private key 0600; directory 0700). Never overwrite an existing key or CSR. A second generation request returns a conflict and requires an explicit, separately designed rotation workflow.
+- Store the private key under the existing fixed `/etc/baft-tunnel` PKI layout with restrictive ownership and mode (target tunnel service identity, private key 0600; do not create a parallel directory). Never overwrite an existing key or CSR. A second generation request returns a conflict and requires an explicit, separately designed rotation workflow.
 - Return only the PEM CSR, a SHA-256 public-key fingerprint, node ID, expected DNS/IP SAN and a non-secret operation receipt.
 - Persist the CSR alongside the key so an interrupted panel session can retrieve the same CSR. CSR retrieval is read-only and never returns key bytes.
 
