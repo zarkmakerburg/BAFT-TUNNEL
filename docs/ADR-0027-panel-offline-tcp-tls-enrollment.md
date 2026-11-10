@@ -1,6 +1,6 @@
 # ADR-0027: panel-managed offline tcp-tls certificate enrollment
 
-**Status:** Implementation candidate in progress; D2 remains OPEN / NOT VERIFIED. D2-B1/B2 and D2-C have local implementations on feature/d2-panel-tcp-tls-enrollment; panel UI, certificate import, target-host validation, and LAB acceptance remain open.
+**Status:** D2-B1/B2/C/D/E implementation candidate on feature/d2-panel-tcp-tls-enrollment; local Rust and browser evidence is recorded below. D2-F (exact-head Linux CI and two-host LAB) remains OPEN / NOT VERIFIED. No merge, release or production deployment.
 **Date:** 2026-11-10
 **Related:** Issue #149, ADR-0012, ADR-0023, ADR-0026
 
@@ -20,7 +20,7 @@ Source review on `main` at `98a39464d3ed3954acbf666b602c5f42154c9a29` confirms:
 - The Agent runs as `baft-tunnel-agent`, has `/etc/baft-tunnel` read-only, and may write only its state directory plus `/run/baft-tunnel/control`.
 - The existing root setup helper is a fixed systemd path-unit command, accepts only init/join today, and is sandboxed with write access to `/etc/baft-tunnel` and the control directory.
 
-**Implication:** the first implementation must preserve the existing flat PKI filenames and single-node credential set under `/etc/baft-tunnel`. Do not introduce a per-instance PKI subdirectory or multi-instance credential isolation without a separate migration/architecture decision. Extend the existing helper using a closed operation enum and bounded request/receipt protocol; do not grant the Agent direct write access to `/etc/baft-tunnel`. The helper must create private key files with final `baft-tunnel:baft-tunnel` ownership and 0600 mode, and public files with the existing group-readable policy.
+**Implementation amendment (D2-D):** existing installations keep and continue to use the legacy flat node.crt, ca.crt, ca.crl, and node.key paths. New panel-managed enrollment keeps node.key at the fixed /etc/baft-tunnel/node.key path, but stores each immutable public credential set under /etc/baft-tunnel/pki/sets/<sha256>/ and switches /etc/baft-tunnel/pki/current atomically. New tcp-tls config points at pki/current/{node.crt,ca.crt,ca.crl}; legacy configs are not rewritten. This narrowly extends the original flat-file contract because three separate flat-file replacements cannot be made atomic as one credential set. It does not create per-instance PKI directories or multi-instance credential isolation. The root helper still uses a closed operation enum and bounded request/receipt protocol; the Agent never gets write access to /etc/baft-tunnel. node.key remains baft-tunnel:baft-tunnel, mode 0600; versioned public files are root-owned, group-readable and not group/world writable.
 
 ## Decision
 
@@ -63,7 +63,7 @@ Validation failure leaves the active credential set unchanged. Successful import
 - Importing credentials is not the same as applying or starting a tunnel. The panel must show the installed fingerprint and an explicit next step.
 - Existing configuration paths and runtime reload semantics must be inspected before wiring activation. If the current tcp-tls config pins CA/CRL/certificate/key paths directly, implementation must preserve compatibility and use a reviewed atomic path strategy; do not silently rewrite active config or restart services.
 - The existing private key must remain unreadable to the Agent. The tunnel service remains the only runtime consumer.
-- Do not expose tcp-tls as wizard-ready until both nodes have valid credentials and all preflight/capability contracts accurately represent the lifecycle.
+- Keep tcp-tls Init gated until this node has a valid installed credential set. The peer credential and identity are checked during Join/pairing; the UI must not label two-node service readiness as accepted before D2-F.
 
 ### 6. API and UI contract
 
@@ -71,16 +71,17 @@ Implemented local Agent API routes:
 - POST /v1/pki/csr/create: confirmed, pre-Init create; conflicts if credentials already exist or the instance is configured.
 - POST /v1/pki/csr/read: retrieve the existing public CSR and bound metadata in setup mode, or for the matching configured tcp-tls node.
 
-Still required:
-- POST /v1/pki/certificate: bounded PEM import; no arbitrary path fields.
-- GET /v1/pki/status: report only non-secret state, fingerprints, validity and validation status.
+Implemented locally:
+- POST /v1/pki/certificate/install: bounded PEM import; no arbitrary path fields. The root helper validates the set, stores it under a content-addressed version, and atomically switches the pki/current pointer.
+- The upload response contains only the active-set digest, certificate fingerprint/expiry, CRL remaining lifetime, and explicit service_restarted: false.
+- A separate GET /v1/pki/status endpoint is deferred: after a panel reload, the operator can recover the same CSR and safely re-upload the same certificate set; the helper recognizes an identical active set idempotently. No status endpoint is required to gate Init in this slice.
 
 Panel flow:
-1. Generate or retrieve CSR.
-2. Download/copy CSR and show the exact offline CA signing command.
-3. Upload leaf certificate, CA certificate and CRL.
-4. Show validation results and installed fingerprint.
-5. Clearly separate credential installation from tunnel Apply/Start.
+1. Enter this node's own DNS/IP certificate identity separately from the peer's certificate name.
+2. Generate or retrieve CSR; show the public-key fingerprint and offer copy/download. The private key stays on the host.
+3. Show the exact baft-pki.sh issue-node CA_DIR NODE_ID CSR_FILE OUTPUT_DIR SERVER_NAME command for the offline CA.
+4. Accept only three public files (leaf certificate, CA certificate and CRL); reject private-key PEMs and oversized/wrong-type files in the browser, then revalidate everything in the root helper.
+5. Show the installed certificate fingerprint, validity and CRL lifetime. Keep Init disabled until the upload receipt confirms a valid set. Upload never restarts the service.
 
 All strings are added to both Persian RTL and English locales. DOM updates continue using the existing safe DOM helpers; no innerHTML, inline scripts, CDN, or new frontend build chain.
 
@@ -93,50 +94,51 @@ Audit only actor fingerprint, instance, operation ID, action, outcome, certifica
 
 The D2 implementation must account for these concrete seams:
 
-- src/apply.rs::Stage remains a lifecycle enum. The separate src/pki_helper.rs::PkiOperation handles only CSR create/read.
+- src/apply.rs::Stage remains a lifecycle enum. The separate src/pki_helper.rs::PkiOperation handles CSR create/read and certificate-set installation; it is not mixed into setup lifecycle stages.
 - The setup helper continues to consume NAME.setup and write NAME.setup-result. The PKI helper uses the distinct NAME.pki / NAME.pki-result protocol and /var/lib/baft-tunnel/pki-receipts.
 - systemd/control/baft-tunnel-control-pki@.service preserves the setup helper's sandbox shape and adds only the fixed PKI receipt directory to its existing /etc/baft-tunnel, /var/lib/baft-tunnel, and control-directory write paths.
 - scripts/install-agent-control.sh registers the PKI path/service templates as a separate pki operation; scripts/test-install.sh verifies staged installation and fixed unit command/path/permissions.
-- src/agent.rs::route() has an explicit global path allowlist followed by Bearer authentication, then a separate configured-mode method/path match. setup_mode_route() has its own allowlist. D2 CSR routes are explicitly present in both allowlists with tested 401/404/405/409 behavior; no wildcard route.
-- src/setup.rs::tls_material() is called during tcp-tls setup Init and requires all four PKI files already to exist. It verifies the node key is private and validates the cert/CA/CRL material. Thus current panel pairing cannot bootstrap tcp-tls from an empty PKI directory: D2 must be a distinct pre-Init credential stage, then Init/Join can consume the validated files.
-- src/setup.rs::plan() currently maps the tcp-tls config to the fixed filenames ca.crt, ca.crl, node.crt, and node.key. The panel workflow must preserve these paths or separately migrate the runtime config contract with explicit tests.
+- src/agent.rs::route() has an explicit global path allowlist followed by Bearer authentication, then a separate configured-mode method/path match. setup_mode_route() has its own allowlist. D2 routes (POST /v1/pki/csr/create, /v1/pki/csr/read, /v1/pki/certificate/install) are explicitly present in both allowlists with tested authorization, setup/configured-mode and refusal behavior; no wildcard route.
+- src/setup.rs::tls_material() is called during tcp-tls setup Init and requires the node key plus one valid certificate/CA/CRL set. It now resolves a validated pki/current versioned set for new D2 enrollment, while retaining the legacy flat-file layout for existing installations.
+- src/setup.rs::plan() points new D2 configs at pki/current/ca.crt, pki/current/ca.crl, pki/current/node.crt, and the unchanged flat node.key. Existing flat configurations are not silently rewritten. A focused setup test verifies versioned path selection without flat-file migration.
 - The PKI script new-node NODE_ID NODE_DIR already produces a private key and public CSR without overwriting existing material; issue-node on the offline CA checks the requested identity and SAN; verify-node verifies the issued certificate. Reuse or port these exact policies rather than creating a second, weaker PKI policy.
 
 ### Current implementation snapshot (local Mac; 2026-11-10)
 
-- D2-B1/B2: root helper CSR create/read protocol, digest-bound replay receipts, fixed PKI paths, P-256/CSR validation, metadata binding, hardened systemd path/service units and staged registration are implemented locally.
-- D2-C: SystemPkiClient publishes fully written requests atomically, validates root-owned 0640 receipts, and refuses custom PKI config directories. The Agent exposes authenticated create/read routes in setup/configured modes, validates state and receipts, audits outcomes without PEM/key data, and reports helper availability in setup status/preflight.
-- Focused evidence: 16 PKI-related Rust tests pass. Clippy, formatting, diff checks and staged installer pass. Serial full suite is 167 passed / 4 unchanged host/platform baseline failures. No Linux target or LAB acceptance is claimed.
-- D2-D/E/F remain open: certificate/CA/CRL import and rollback, panel UI, exact-head CI, Linux validation and two-host LAB. tcp-tls remains unavailable in the Wizard.
+- D2-B1/B2: separate root-helper CSR create/read protocol, digest-bound replay receipts, fixed systemd path/service units, and staged registration.
+- D2-C: atomic SystemPkiClient requests, root-owned receipts, fixed config-dir guard, authenticated Agent routes, setup/configured-mode restrictions and secret-free audit.
+- D2-D: strict PEM/identity/key/CA/EKU/KeyUsage/SAN/CRL validation; same-CA monotonic CRL updates; immutable content-addressed sets; protected directory/file ownership and modes; atomic pointer publication and rollback; no automatic restart; legacy PKCS#8 P-256 key normalization.
+- D2-E: Persian/English Wizard UI for local SAN entry, CSR create/recovery/copy/download, offline CA instructions, three public PEM uploads, private-key rejection, install receipt and Init gating. Preflight treats a pristine node or a node with a complete pending CSR as an enrollment warning, but continues to block partial credential state. Browser QA uses mocked API responses and does not claim real root-helper/LAB behavior.
+- Local evidence: focused certificate-install and active-set tests pass; the Persian/English Playwright flow passes 34 assertions including private-key file rejection and Init gating. Exact-head Linux CI and real-host LAB are still required. The prior serial full-suite host/platform baseline failures remain separate and must be rechecked on Linux.
+- D2-F remains open. No Stable release or production readiness is claimed.
 
 ### Revised implementation order
 
 1. D2-A (source map): complete; source paths and privilege boundaries above are recorded. This is review evidence only, not a runtime feature.
-2. D2-B1: local implementation candidate complete — separate root-helper CSR create/read protocol, no overwrite, request replay protection, bounded request/receipt, fixed paths and nine focused helper/client tests. Target Linux/CI evidence remains open.
-3. D2-B2: local implementation candidate complete — fixed systemd path/service templates, registration lifecycle and staged installer test. Target Linux/CI evidence remains open.
-4. D2-C: local implementation candidate complete — authenticated create/read Agent routes, atomic client request publication, root receipt ownership checks, fixed config-dir guard, audit and negative tests. Exact-head CI and target Linux/LAB remain open.
-5. D2-D: add strict certificate/CA/CRL import validation and failure-safe atomic activation. Before coding this slice, prove how current runtime config paths resolve and how rollback works on real systemd; do not assume directory symlink swaps are compatible with the existing fixed file paths.
-6. D2-E: add Persian/English UI and browser tests.
-7. D2-F: exact-head CI, then two-host LAB. Keep tcp-tls hidden/unavailable in wizard until all D2 gates pass.
+2. D2-B1/B2: local implementation candidate complete; target Linux/CI evidence remains open.
+3. D2-C: local implementation candidate complete; exact-head CI and target Linux/LAB remain open.
+4. D2-D: strict certificate/CA/CRL validation, immutable versioned sets and failure-safe atomic activation; legacy flat configs remain supported.
+5. D2-E: Persian/English panel enrollment, CSR recovery/download and public certificate upload; Init is gated on a successful install receipt.
+6. D2-F: exact-head CI, Linux/systemd acceptance and two-host LAB using the candidate SHA. Keep the stable-release gate closed until all evidence passes.
 
 ## Required implementation slices
 
 | Slice | Work | Evidence |
 |---|---|---|
 | D2-A | Reconcile actual config credential paths, systemd ownership and fixed helper design | Reviewed source map + tests |
-| D2-B1/B2 | Fixed root helper CSR create/read protocol and systemd registration | Local Mac: 10 focused helper/client tests, clippy, staged installer pass; exact-head CI and Linux/LAB remain open |
-| D2-C | Authenticated Agent create/read routes, atomic request client, root receipt checks, setup/configured guards and audit | Local Mac: 3 focused Agent route tests and 16 PKI-related tests total; exact-head CI and Linux/LAB remain open |
-| D2-D | Add certificate/CA/CRL validation and atomic versioned activation | Positive and negative OpenSSL tests, failure-injection rollback |
-| D2-E | Add Persian/English panel flow and safe CSR download/upload | Browser tests and accessibility checks |
-| D2-F | Exact-head Rust, lint, panel and systemd CI; then two-host LAB using the candidate build | CI run and real-host LAB evidence tied to exact SHA |
+| D2-B1/B2 | Fixed root helper CSR create/read protocol and systemd registration | Local Mac implementation; exact-head CI and Linux/LAB remain open |
+| D2-C | Authenticated Agent create/read routes, atomic request client, root receipt checks, setup/configured guards and audit | Local Mac implementation; exact-head CI and Linux/LAB remain open |
+| D2-D | Strict certificate/CA/CRL validation, immutable versioned sets, protected metadata and atomic activation | Positive/negative OpenSSL tests, monotonic CRL test, active-pointer preservation, no-restart API receipt |
+| D2-E | Persian/English panel flow, CSR recovery/download and public certificate upload | Playwright browser test, key-file rejection, Init gate, no browser errors |
+| D2-F | Exact-head Rust, lint, panel and systemd CI; then two-host LAB | CI run and real-host LAB evidence tied to exact SHA |
 
 ## Explicit non-goals
 
 - Online enrollment, CA signing from the panel, remote panel access, multi-user RBAC, automatic CA/pin rollover, or production deployment.
 - Exporting, displaying, logging, or transmitting node private keys.
 - Replacing active credentials or restarting services as a side effect of certificate upload.
-- Enabling tcp-tls in capabilities/wizard before the full credential lifecycle is implemented and accepted.
+- Claiming stable two-node tcp-tls readiness or enabling Reverse before the complete credential lifecycle and D2-F acceptance.
 
 ## Acceptance blockers
 
-D2 remains **OPEN / NOT VERIFIED** until all implementation slices, negative tests, exact-head CI, and two-host LAB evidence pass. The current branch has local CSR helper and Agent route implementations, but no panel UI, certificate import, or accepted target-host/LAB evidence.
+D2 remains **OPEN / NOT VERIFIED** until exact-head CI, Linux/systemd validation, and two-host LAB evidence pass. D2-B1/B2/C/D/E are local implementation candidates; no target-host/LAB acceptance, merge, release or production deployment is claimed.

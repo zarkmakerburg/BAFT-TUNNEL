@@ -28,7 +28,7 @@ use crate::config::RuntimeConfig;
 
 const MIN_TOKEN_LEN: usize = 32;
 const MAX_REQUEST_BYTES: usize = 8 * 1024;
-const MAX_BODY_BYTES: usize = 64 * 1024;
+const MAX_BODY_BYTES: usize = 512 * 1024;
 const DESIRED_FILE: &str = "desired.json";
 const AUDIT_FILE: &str = "audit.log";
 /// Previous generation after rotation (SA-08). Only one is kept.
@@ -546,6 +546,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/setup/bundle/inspect"
             | "/v1/pki/csr/create"
             | "/v1/pki/csr/read"
+            | "/v1/pki/certificate/install"
     ) {
         return (404, json!({"error": "not found"}));
     }
@@ -582,6 +583,10 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         ("POST", "/v1/pki/csr/read") => {
             pki_csr_action(ctx, body, crate::pki_helper::PkiOperation::ReadCsr).await
         }
+        ("POST", "/v1/pki/certificate/install") => (
+            409,
+            json!({"error": "certificate import is a pre-Init operation; this instance is already configured"}),
+        ),
         _ => (405, json!({"error": "method not allowed"})),
     }
 }
@@ -603,6 +608,7 @@ async fn setup_mode_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (
         ("POST", "/v1/pki/csr/read") => {
             pki_csr_action(ctx, body, crate::pki_helper::PkiOperation::ReadCsr).await
         }
+        ("POST", "/v1/pki/certificate/install") => pki_certificate_action(ctx, body).await,
         (
             "GET" | "PUT" | "POST",
             "/v1/history"
@@ -938,18 +944,55 @@ async fn preflight(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
         });
     }
     if req.engine == crate::config::EngineKind::TcpTls {
-        let missing: Vec<&str> = ["node.key", "node.crt", "ca.crt", "ca.crl"]
-            .into_iter()
-            .filter(|n| !dir.join(n).is_file())
-            .collect();
-        if missing.is_empty() {
-            checks.push(check("pki_files", "pass", "certificate, key, CA and CRL files are present (validity is checked by setup init)".into()));
-        } else {
-            checks.push(check(
+        match crate::pki_helper::active_set_dir(dir) {
+            Err(error) => checks.push(check(
                 "pki_files",
                 "blocked",
-                format!("missing: {}", missing.join(", ")),
-            ));
+                format!("active credential set is invalid: {error:#}"),
+            )),
+            Ok(active_set) => {
+                let material_dir = active_set.as_deref().unwrap_or(dir);
+                let mut missing: Vec<&str> = ["node.key"]
+                    .into_iter()
+                    .filter(|name| !dir.join(name).is_file())
+                    .collect();
+                for name in ["node.crt", "ca.crt", "ca.crl"] {
+                    if !material_dir.join(name).is_file() {
+                        missing.push(name);
+                    }
+                }
+                if missing.is_empty() {
+                    checks.push(check("pki_files", "pass", "certificate, key, CA and CRL files are present (validity is checked by setup init)".into()));
+                } else {
+                    let no_certificate_material = ["node.crt", "ca.crt", "ca.crl"]
+                        .into_iter()
+                        .all(|name| !dir.join(name).exists() && !material_dir.join(name).exists());
+                    let pristine = no_certificate_material
+                        && !dir.join("node.key").exists()
+                        && !dir.join("node.csr").exists()
+                        && !dir.join("node.csr.meta").exists();
+                    let csr_pending = no_certificate_material
+                        && ["node.key", "node.csr", "node.csr.meta"]
+                            .into_iter()
+                            .all(|name| dir.join(name).is_file());
+                    if pristine || csr_pending {
+                        checks.push(check(
+                            "pki_files",
+                            "warning",
+                            "certificate set is not installed yet; create or recover this node's CSR and import the signed certificate, CA and CRL in the panel before Init".into(),
+                        ));
+                    } else {
+                        checks.push(check(
+                            "pki_files",
+                            "blocked",
+                            format!(
+                                "partial or incomplete credentials; missing: {}",
+                                missing.join(", ")
+                            ),
+                        ));
+                    }
+                }
+            }
         }
     } else if dir.join("node.noise").exists() {
         checks.push(check(
@@ -1140,7 +1183,9 @@ fn remediation(id: &str) -> &'static str {
         "existing_pairing" => {
             "Choose another directory or instance; setup never overwrites a pairing."
         }
-        "pki_files" => "Provide the certificate, key, CA and CRL files in the setup directory.",
+        "pki_files" => {
+            "Complete the panel TLS certificate step: create or recover the CSR, obtain an offline CA signature, and import the node certificate, CA and CRL before Init."
+        }
         "node_key" => "Choose another directory; setup never overwrites a node key.",
         "service_port" => "Start the local service, or pick a free port.",
         "tunnel_port" => "Check whether a tunnel already runs on this port, or pick another port.",
@@ -1360,6 +1405,201 @@ async fn setup_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
 /// `init`/`join` of the bound instance through the root setup helper (ADR-0026). The agent keeps
 /// its own copy of the receipt (idempotent replay) and accepts the helper's answer only when it
 /// carries this request's key and digest.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PkiCertificateBody {
+    request_id: String,
+    node_id: String,
+    server_name: String,
+    confirm: bool,
+    certificate_pem: String,
+    ca_pem: String,
+    crl_pem: String,
+}
+
+/// Installs only a fully validated public credential set. The root helper stages an immutable
+/// version and atomically switches one symlink; this endpoint never restarts or applies a tunnel.
+async fn pki_certificate_action(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
+    const MAX_CERTIFICATE_BODY_BYTES: usize = crate::pki_helper::MAX_REQUEST_BYTES as usize;
+    if body.len() > MAX_CERTIFICATE_BODY_BYTES {
+        return (
+            413,
+            json!({"error": "certificate upload exceeds the bounded request size"}),
+        );
+    }
+    let Some(state_dir) = ctx.state_dir.as_ref() else {
+        return (
+            404,
+            json!({"error": "PKI operations are disabled; audit state is unavailable"}),
+        );
+    };
+    let Some(name) = ctx.instance.as_deref() else {
+        return (
+            409,
+            json!({"error": "PKI enrollment requires an instance-bound agent"}),
+        );
+    };
+    if !crate::apply::valid_instance(name) || !ctx.pki.supports_config_dir(&ctx.config_dir) {
+        return (
+            409,
+            json!({"error": "PKI helper is not bound to the fixed system config directory"}),
+        );
+    }
+    let req: PkiCertificateBody = match serde_json::from_slice(body) {
+        Ok(req) => req,
+        Err(error) => {
+            return (
+                422,
+                json!({"error": "invalid certificate upload request", "detail": error.to_string()}),
+            );
+        }
+    };
+    if !req.confirm {
+        return (
+            409,
+            json!({"error": "explicit certificate installation confirmation is required"}),
+        );
+    }
+    if !crate::apply::valid_key(&req.request_id)
+        || !crate::pki_helper::valid_node_id(&req.node_id)
+        || crate::pki_helper::expected_server_san(&req.server_name).is_err()
+    {
+        return (
+            422,
+            json!({"error": "request ID, node identity or DNS/IP server name is invalid"}),
+        );
+    }
+    if req.certificate_pem.is_empty()
+        || req.certificate_pem.len() > crate::pki_helper::MAX_CERTIFICATE_BYTES
+        || req.ca_pem.is_empty()
+        || req.ca_pem.len() > crate::pki_helper::MAX_CA_BYTES
+        || req.crl_pem.is_empty()
+        || req.crl_pem.len() > crate::pki_helper::MAX_CRL_BYTES
+    {
+        return (
+            413,
+            json!({"error": "certificate, CA or CRL PEM is empty or exceeds its individual size limit"}),
+        );
+    }
+    let request = crate::pki_helper::certificate_request_document(
+        &req.request_id,
+        &req.node_id,
+        &req.server_name,
+        &req.certificate_pem,
+        &req.ca_pem,
+        &req.crl_pem,
+    );
+    let request_bytes = match serde_json::to_vec(&request) {
+        Ok(bytes) if bytes.len() as u64 <= crate::pki_helper::MAX_REQUEST_BYTES => bytes,
+        _ => {
+            return (
+                413,
+                json!({"error": "encoded certificate upload exceeds the root helper request limit"}),
+            );
+        }
+    };
+    let digest = hex::encode(Sha256::digest(&request_bytes));
+    let operation = crate::pki_helper::PkiOperation::InstallCertificate;
+    let receipt = match ctx.pki.submit(name, &request) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            audit_pki_csr(
+                state_dir,
+                ctx,
+                name,
+                &req.node_id,
+                operation,
+                &digest,
+                &req.request_id,
+                "helper_error",
+            );
+            return (
+                503,
+                json!({"error": "root PKI helper did not complete certificate installation", "detail": error}),
+            );
+        }
+    };
+    let result = receipt["result"].as_str().unwrap_or_default();
+    if result != "installed" {
+        audit_pki_csr(
+            state_dir,
+            ctx,
+            name,
+            &req.node_id,
+            operation,
+            &digest,
+            &req.request_id,
+            "refused",
+        );
+        return (
+            409,
+            json!({"error": "certificate set was refused; the active credential set was not changed", "detail": receipt["reason"], "receipt": receipt}),
+        );
+    }
+    let set_id = receipt["active_set"].as_str().unwrap_or_default();
+    let fingerprint = receipt["certificate_sha256"].as_str().unwrap_or_default();
+    let not_after = receipt["certificate_not_after"]
+        .as_i64()
+        .unwrap_or_default();
+    let crl_remaining = receipt["crl_seconds_remaining"]
+        .as_i64()
+        .unwrap_or_default();
+    if receipt["receipt_version"] != json!(1)
+        || receipt["request_id"] != json!(req.request_id)
+        || receipt["operation"] != json!("install_certificate")
+        || receipt["node_id"] != json!(req.node_id)
+        || receipt["private_key_exported"] != json!(false)
+        || set_id.len() != 64
+        || !set_id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || fingerprint.len() != 64
+        || !fingerprint
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || not_after <= 0
+        || crl_remaining < 24 * 3600
+    {
+        audit_pki_csr(
+            state_dir,
+            ctx,
+            name,
+            &req.node_id,
+            operation,
+            &digest,
+            &req.request_id,
+            "invalid_receipt",
+        );
+        return (
+            502,
+            json!({"error": "root PKI helper returned an invalid certificate installation receipt"}),
+        );
+    }
+    audit_pki_csr(
+        state_dir,
+        ctx,
+        name,
+        &req.node_id,
+        operation,
+        &digest,
+        &req.request_id,
+        "installed",
+    );
+    (
+        200,
+        json!({
+            "result": "installed",
+            "node_id": req.node_id,
+            "certificate_sha256": fingerprint,
+            "certificate_not_after": not_after,
+            "crl_seconds_remaining": crl_remaining,
+            "active_set": set_id,
+            "service_restarted": false,
+            "private_key_exported": false
+        }),
+    )
+}
+
 async fn helper_apply(
     ctx: &Ctx,
     request: &crate::apply::ApplyRequest,
@@ -1705,6 +1945,7 @@ async fn pki_csr_action(
     let expected_result = match operation {
         crate::pki_helper::PkiOperation::CreateCsr => "created",
         crate::pki_helper::PkiOperation::ReadCsr => "retrieved",
+        crate::pki_helper::PkiOperation::InstallCertificate => "installed",
     };
     let csr = receipt["csr_pem"].as_str().unwrap_or_default();
     let fingerprint = receipt["public_key_sha256"].as_str().unwrap_or_default();
@@ -3009,7 +3250,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preflight_blocks_missing_pki_and_invalid_plans() {
+    async fn preflight_warns_for_missing_pki_and_blocks_invalid_plans() {
         let dir = std::env::temp_dir().join(format!("baft-pf-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let body = json!({
@@ -3020,8 +3261,20 @@ mod tests {
         .to_string();
         let (_, out) = call(None, "POST", "/v1/setup/preflight", Some(TOKEN), &body).await;
         let v: Value = serde_json::from_str(&out[out.find('{').unwrap()..]).unwrap();
-        assert_eq!(v["overall"], "blocked", "{out}");
-        assert!(out.contains("missing: node.key, node.crt, ca.crt, ca.crl"));
+        assert_ne!(v["overall"], "blocked", "{out}");
+        let pki = v["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["id"] == "pki_files")
+            .unwrap();
+        assert_eq!(pki["result"], "warning", "{out}");
+        assert!(
+            pki["evidence"]
+                .as_str()
+                .unwrap()
+                .contains("not installed yet")
+        );
         let bad = body.replace("node-b", "node-a");
         let (code, out) = call(None, "POST", "/v1/setup/preflight", Some(TOKEN), &bad).await;
         assert_eq!(code, 200);
@@ -3151,6 +3404,54 @@ mod tests {
         let (code, again) = call(Some(&state), "POST", "/v1/setup/apply", Some(TOKEN), &ok).await;
         assert_eq!(code, 200);
         assert!(again.contains("\"replayed\":true"));
+    }
+
+    #[tokio::test]
+    async fn tcp_tls_preflight_allows_empty_or_csr_pending_credentials_for_panel_enrollment() {
+        let empty = state_dir("pki-preflight-empty");
+        let body = plan_body(&empty.to_string_lossy()).replace("noise-tcp", "tcp-tls");
+        let (code, out) = call(None, "POST", "/v1/setup/preflight", Some(TOKEN), &body).await;
+        assert_eq!(code, 200, "{out}");
+        let value: Value = serde_json::from_str(&out[out.find('{').unwrap()..]).unwrap();
+        let pki = value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["id"] == "pki_files")
+            .unwrap();
+        assert_eq!(pki["result"], "warning", "{out}");
+
+        // A generated CSR plus its metadata is a valid pending enrollment state after reload.
+        for name in ["node.key", "node.csr", "node.csr.meta"] {
+            std::fs::write(empty.join(name), b"test-placeholder").unwrap();
+        }
+        let (code, out) = call(None, "POST", "/v1/setup/preflight", Some(TOKEN), &body).await;
+        assert_eq!(code, 200, "{out}");
+        let value: Value = serde_json::from_str(&out[out.find('{').unwrap()..]).unwrap();
+        let pki = value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["id"] == "pki_files")
+            .unwrap();
+        assert_eq!(pki["result"], "warning", "{out}");
+    }
+
+    #[tokio::test]
+    async fn tcp_tls_preflight_still_blocks_partial_or_invalid_credentials() {
+        let dir = state_dir("pki-preflight-partial");
+        std::fs::write(dir.join("node.key"), b"partial-key").unwrap();
+        let body = plan_body(&dir.to_string_lossy()).replace("noise-tcp", "tcp-tls");
+        let (code, out) = call(None, "POST", "/v1/setup/preflight", Some(TOKEN), &body).await;
+        assert_eq!(code, 200, "{out}");
+        let value: Value = serde_json::from_str(&out[out.find('{').unwrap()..]).unwrap();
+        let pki = value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["id"] == "pki_files")
+            .unwrap();
+        assert_eq!(pki["result"], "blocked", "{out}");
     }
 
     #[tokio::test]
@@ -3735,6 +4036,20 @@ mod tests {
                     "private_key_exported": false
                 }));
             }
+            if operation == "install_certificate" {
+                return Ok(json!({
+                    "receipt_version": 1,
+                    "request_id": if self.wrong_request_id { json!("wrong-request") } else { request["request_id"].clone() },
+                    "operation": operation,
+                    "result": "installed",
+                    "node_id": node_id,
+                    "certificate_sha256": "b".repeat(64),
+                    "certificate_not_after": 1_800_000_000i64,
+                    "crl_seconds_remaining": 7 * 24 * 3600,
+                    "active_set": "c".repeat(64),
+                    "private_key_exported": self.export_private
+                }));
+            }
             Ok(json!({
                 "receipt_version": 1,
                 "request_id": if self.wrong_request_id { json!("wrong-request") } else { request["request_id"].clone() },
@@ -3743,7 +4058,7 @@ mod tests {
                 "node_id": node_id,
                 "expected_server_san": expected_san,
                 "public_key_sha256": "a".repeat(64),
-                "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----\nZmFrZQ==\n-----END CERTIFICATE REQUEST-----",
+                "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----\\nZmFrZQ==\\n-----END CERTIFICATE REQUEST-----",
                 "private_key_exported": self.export_private,
                 "replayed": self.replayed
             }))
@@ -3792,6 +4107,77 @@ mod tests {
             .with_units(fake, conf.clone())
             .with_setup_helper(helper);
         (ctx, conf)
+    }
+
+    #[tokio::test]
+    async fn pki_certificate_upload_is_confirmed_bounded_audited_and_never_restarts_service() {
+        let base = state_dir("pki-certificate-api");
+        let (ctx, _conf) = setup_mode_ctx(&base);
+        let fake = Arc::new(PkiFake::default());
+        let ctx = ctx.with_pki_helper(fake.clone());
+        let request = json!({
+            "request_id": "cert-upload-01",
+            "node_id": "abroad",
+            "server_name": "abroad.lab",
+            "confirm": true,
+            "certificate_pem": "-----BEGIN CERTIFICATE-----\\nZmFrZQ==\\n-----END CERTIFICATE-----",
+            "ca_pem": "-----BEGIN CERTIFICATE-----\\nQ0E=\\n-----END CERTIFICATE-----",
+            "crl_pem": "-----BEGIN X509 CRL-----\\nQ1JM\\n-----END X509 CRL-----"
+        });
+        let body = request.to_string();
+        let (status, installed) =
+            route(&post("/v1/pki/certificate/install"), body.as_bytes(), &ctx).await;
+        assert_eq!(status, 200, "{installed}");
+        assert_eq!(installed["result"], "installed");
+        assert_eq!(installed["service_restarted"], false);
+        assert_eq!(installed["private_key_exported"], false);
+        assert_eq!(installed["certificate_sha256"], "b".repeat(64));
+        {
+            let requests = fake.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0]["operation"], "install_certificate");
+            assert!(
+                requests[0]["certificate_pem"]
+                    .as_str()
+                    .unwrap()
+                    .contains("BEGIN CERTIFICATE")
+            );
+            assert!(!requests[0].to_string().contains("PRIVATE KEY"));
+        }
+
+        let no_confirm = json!({
+            "request_id": "cert-upload-02",
+            "node_id": "abroad",
+            "server_name": "abroad.lab",
+            "confirm": false,
+            "certificate_pem": "x",
+            "ca_pem": "y",
+            "crl_pem": "z"
+        });
+        assert_eq!(
+            route(
+                &post("/v1/pki/certificate/install"),
+                no_confirm.to_string().as_bytes(),
+                &ctx
+            )
+            .await
+            .0,
+            409
+        );
+        assert_eq!(
+            route(
+                &post("/v1/pki/certificate/install"),
+                &vec![b' '; crate::pki_helper::MAX_REQUEST_BYTES as usize + 1],
+                &ctx
+            )
+            .await
+            .0,
+            413
+        );
+        let audit_text = std::fs::read_to_string(base.join("state").join(AUDIT_FILE)).unwrap();
+        assert!(audit_text.contains("install_certificate"));
+        assert!(!audit_text.contains("BEGIN CERTIFICATE"));
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[tokio::test]

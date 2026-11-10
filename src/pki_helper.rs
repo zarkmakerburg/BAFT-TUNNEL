@@ -20,8 +20,11 @@ use sha2::{Digest, Sha256};
 pub const REQUEST_SUFFIX: &str = "pki";
 pub const RESULT_SUFFIX: &str = "pki-result";
 pub const RECEIPTS_DIR: &str = "/var/lib/baft-tunnel/pki-receipts";
-pub const MAX_REQUEST_BYTES: u64 = 16 * 1024;
+pub const MAX_REQUEST_BYTES: u64 = 512 * 1024;
 pub const MAX_CSR_BYTES: u64 = 16 * 1024;
+pub const MAX_CERTIFICATE_BYTES: usize = 64 * 1024;
+pub const MAX_CA_BYTES: usize = 64 * 1024;
+pub const MAX_CRL_BYTES: usize = 256 * 1024;
 const OPENSSL: &str = "/usr/bin/openssl";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -29,6 +32,7 @@ const OPENSSL: &str = "/usr/bin/openssl";
 pub enum PkiOperation {
     CreateCsr,
     ReadCsr,
+    InstallCertificate,
 }
 
 impl PkiOperation {
@@ -36,6 +40,7 @@ impl PkiOperation {
         match self {
             Self::CreateCsr => "create_csr",
             Self::ReadCsr => "read_csr",
+            Self::InstallCertificate => "install_certificate",
         }
     }
 }
@@ -48,6 +53,12 @@ struct PkiRequest {
     operation: PkiOperation,
     node_id: String,
     server_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    certificate_pem: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ca_pem: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    crl_pem: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -108,7 +119,12 @@ fn run_openssl(args: &[&std::ffi::OsStr]) -> Result<Output> {
         .with_context(|| format!("start fixed OpenSSL executable {OPENSSL}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("OpenSSL operation failed: {}", stderr.trim());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        bail!(
+            "OpenSSL operation failed: {} {}",
+            stderr.trim(),
+            stdout.trim()
+        );
     }
     Ok(output)
 }
@@ -213,7 +229,7 @@ fn public_key_fingerprint_from_key(key: &Path) -> Result<String> {
     Ok(sha256(&public_key_der_from_key(key)?))
 }
 
-fn is_p256_subject_public_key_info(der: &[u8]) -> bool {
+pub(crate) fn is_p256_subject_public_key_info(der: &[u8]) -> bool {
     // OpenSSL normally encodes the named-curve OID. LibreSSL may encode the same P-256
     // parameters explicitly; in that case verify the complete defining parameters.
     const P256_OID: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
@@ -330,6 +346,708 @@ fn apply_service_ownership(key: &Path, csr: &Path) -> Result<()> {
     Ok(())
 }
 
+fn validate_pki_directory_metadata(path: &Path, meta: &fs::Metadata, fixed: bool) -> Result<()> {
+    ensure!(meta.is_dir(), "{} is not a directory", path.display());
+    ensure!(
+        meta.permissions().mode() & 0o022 == 0,
+        "{} must not be group/world writable",
+        path.display()
+    );
+    if fixed {
+        let (_, service_gid) = crate::setup::service_ids()
+            .context("baft-tunnel service group is required for fixed PKI ownership")?;
+        ensure!(
+            meta.uid() == 0 && meta.gid() == service_gid,
+            "{} must be owned by root:baft-tunnel",
+            path.display()
+        );
+        ensure!(
+            meta.permissions().mode() & 0o7777 == 0o750,
+            "{} must have mode 0750",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_pki_file_metadata(path: &Path, meta: &fs::Metadata, fixed: bool) -> Result<()> {
+    ensure!(meta.is_file(), "{} is not a regular file", path.display());
+    ensure!(
+        meta.permissions().mode() & 0o022 == 0,
+        "{} must not be group/world writable",
+        path.display()
+    );
+    if fixed {
+        let (_, service_gid) = crate::setup::service_ids()
+            .context("baft-tunnel service group is required for fixed PKI ownership")?;
+        ensure!(
+            meta.uid() == 0 && meta.gid() == service_gid,
+            "{} must be owned by root:baft-tunnel",
+            path.display()
+        );
+        ensure!(
+            meta.permissions().mode() & 0o7777 == 0o644,
+            "{} must have mode 0644",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Resolve the active immutable credential set through the single atomic pki/current pointer.
+/// Legacy installations without a pki/ directory continue to use the original flat filenames.
+pub(crate) fn active_set_dir(config_dir: &Path) -> Result<Option<PathBuf>> {
+    let root = config_dir.join("pki");
+    let root_meta = match fs::symlink_metadata(&root) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("inspect PKI version directory"),
+    };
+    ensure!(
+        root_meta.is_dir() && !root_meta.file_type().is_symlink(),
+        "PKI version root must be a real directory"
+    );
+    validate_pki_directory_metadata(
+        &root,
+        &root_meta,
+        config_dir == Path::new("/etc/baft-tunnel"),
+    )?;
+    let sets = root.join("sets");
+    let sets_meta = fs::symlink_metadata(&sets).context("inspect PKI version sets directory")?;
+    ensure!(
+        sets_meta.is_dir() && !sets_meta.file_type().is_symlink(),
+        "PKI version sets must be a real directory"
+    );
+    validate_pki_directory_metadata(
+        &sets,
+        &sets_meta,
+        config_dir == Path::new("/etc/baft-tunnel"),
+    )?;
+    let current = root.join("current");
+    let current_meta = match fs::symlink_metadata(&current) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("inspect active PKI version pointer"),
+    };
+    ensure!(
+        current_meta.file_type().is_symlink(),
+        "active PKI version pointer must be a symlink"
+    );
+    if config_dir == Path::new("/etc/baft-tunnel") {
+        ensure!(
+            current_meta.uid() == 0,
+            "active PKI version pointer must be owned by root"
+        );
+    }
+    let target = fs::read_link(&current).context("read active PKI version pointer")?;
+    let components: Vec<_> = target.components().collect();
+    ensure!(
+        components.len() == 2
+            && components[0].as_os_str() == "sets"
+            && components[1]
+                .as_os_str()
+                .to_str()
+                .is_some_and(|id| id.len() == 64
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())),
+        "active PKI version pointer must target sets/<lowercase-sha256>"
+    );
+    let active = root.join(&target);
+    let active_meta = fs::symlink_metadata(&active).context("inspect active PKI version set")?;
+    ensure!(
+        active_meta.is_dir() && !active_meta.file_type().is_symlink(),
+        "active PKI version must be a real directory"
+    );
+    validate_pki_directory_metadata(
+        &active,
+        &active_meta,
+        config_dir == Path::new("/etc/baft-tunnel"),
+    )?;
+    let canonical_sets = sets.canonicalize()?;
+    let canonical_active = active.canonicalize()?;
+    ensure!(
+        canonical_active.parent() == Some(canonical_sets.as_path()),
+        "active PKI version escapes the fixed sets directory"
+    );
+    for name in ["node.crt", "ca.crt", "ca.crl"] {
+        let path = active.join(name);
+        let meta = fs::symlink_metadata(&path)
+            .with_context(|| format!("inspect active PKI material {}", path.display()))?;
+        ensure!(
+            !meta.file_type().is_symlink(),
+            "{} must not be a symlink",
+            path.display()
+        );
+        validate_pki_file_metadata(&path, &meta, config_dir == Path::new("/etc/baft-tunnel"))?;
+    }
+    let cert = read_regular(
+        &active.join("node.crt"),
+        MAX_CERTIFICATE_BYTES as u64,
+        false,
+    )?;
+    let ca = read_regular(&active.join("ca.crt"), MAX_CA_BYTES as u64, false)?;
+    let crl = read_regular(&active.join("ca.crl"), MAX_CRL_BYTES as u64, false)?;
+    ensure!(
+        version_set_id(&cert, &ca, &crl) == components[1].as_os_str().to_str().unwrap_or_default(),
+        "active PKI set digest does not match its certificate material"
+    );
+    Ok(Some(active))
+}
+
+pub(crate) fn version_set_id(cert: &[u8], ca: &[u8], crl: &[u8]) -> String {
+    let mut content = Vec::with_capacity(cert.len() + ca.len() + crl.len() + 3);
+    content.extend_from_slice(cert);
+    content.push(0);
+    content.extend_from_slice(ca);
+    content.push(0);
+    content.extend_from_slice(crl);
+    sha256(&content)
+}
+
+fn strict_pem_block_count(bytes: &[u8], label: &str, begin: &str, end: &str) -> Result<()> {
+    let text = std::str::from_utf8(bytes).with_context(|| format!("{label} is not UTF-8 PEM"))?;
+    let mut rest = text.trim();
+    let mut count = 0usize;
+    while !rest.is_empty() {
+        ensure!(
+            rest.starts_with(begin),
+            "{label} contains data outside PEM blocks"
+        );
+        let end_at = rest
+            .find(end)
+            .context(format!("{label} has an unterminated PEM block"))?;
+        let after = end_at + end.len();
+        count += 1;
+        rest = rest[after..].trim();
+    }
+    ensure!(count == 1, "{label} must contain exactly one PEM block");
+    Ok(())
+}
+
+fn crl_number(path: &Path) -> Result<u64> {
+    let args = [
+        "crl",
+        "-in",
+        path.to_str().context("non-UTF8 CRL path")?,
+        "-noout",
+        "-crlnumber",
+    ];
+    let output = run_openssl(&openssl_args(&args))?;
+    let value = String::from_utf8(output.stdout)?;
+    let number = value
+        .trim()
+        .strip_prefix("crlNumber=")
+        .context("CRL Number extension is missing or malformed")?;
+    if let Some(hex) = number.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16).context("CRL Number is outside supported range")
+    } else {
+        number
+            .parse::<u64>()
+            .context("CRL Number is outside supported range")
+    }
+}
+
+fn validate_leaf_policy(
+    cert_der: &[u8],
+    node_id: &str,
+    expected_server_san: &str,
+) -> Result<(String, String, i64)> {
+    use x509_parser::extensions::GeneralName;
+    let (remaining, cert) = x509_parser::parse_x509_certificate(cert_der)
+        .map_err(|error| anyhow::anyhow!("parse leaf X.509 certificate: {error}"))?;
+    ensure!(
+        remaining.is_empty(),
+        "leaf certificate contains trailing DER data"
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs() as i64;
+    ensure!(
+        cert.validity().not_before.timestamp() <= now
+            && cert.validity().not_after.timestamp() > now,
+        "leaf certificate is not currently valid"
+    );
+    let common_names: Vec<_> = cert.subject().iter_common_name().collect();
+    ensure!(
+        common_names.len() == 1 && common_names[0].as_str().is_ok_and(|name| name == node_id),
+        "leaf certificate CN must exactly match the configured node ID"
+    );
+    let basic = cert
+        .basic_constraints()?
+        .context("leaf certificate lacks basicConstraints")?;
+    ensure!(!basic.value.ca, "leaf certificate must not be a CA");
+    let usage = cert
+        .key_usage()?
+        .context("leaf certificate lacks keyUsage")?;
+    ensure!(
+        usage.value.flags == 1,
+        "leaf certificate keyUsage must be exactly digitalSignature"
+    );
+    let eku = cert
+        .extended_key_usage()?
+        .context("leaf certificate lacks extendedKeyUsage")?;
+    ensure!(
+        eku.value.server_auth
+            && eku.value.client_auth
+            && !eku.value.any
+            && !eku.value.code_signing
+            && !eku.value.email_protection
+            && !eku.value.time_stamping
+            && !eku.value.ocsp_signing
+            && eku.value.other.is_empty(),
+        "leaf certificate EKU must contain exactly serverAuth and clientAuth"
+    );
+    let san = cert
+        .subject_alternative_name()?
+        .context("leaf certificate lacks subjectAltName")?;
+    let expected_uri = format!("urn:baft-tunnel:node:{node_id}");
+    let mut uri_count = 0usize;
+    let mut server_count = 0usize;
+    for name in &san.value.general_names {
+        match name {
+            GeneralName::URI(uri) if *uri == expected_uri => uri_count += 1,
+            GeneralName::DNSName(dns) if expected_server_san.strip_prefix("DNS:") == Some(*dns) => {
+                server_count += 1;
+            }
+            GeneralName::IPAddress(bytes) => {
+                let expected_ip = expected_server_san.strip_prefix("IP:");
+                let actual = match bytes.len() {
+                    4 => Some(std::net::IpAddr::from([
+                        bytes[0], bytes[1], bytes[2], bytes[3],
+                    ])),
+                    16 => {
+                        let mut octets = [0u8; 16];
+                        octets.copy_from_slice(bytes);
+                        Some(std::net::IpAddr::from(octets))
+                    }
+                    _ => None,
+                };
+                if expected_ip
+                    .is_some_and(|ip| actual.is_some_and(|actual| ip == actual.to_string()))
+                {
+                    server_count += 1;
+                } else {
+                    bail!("leaf certificate contains an unexpected IP SAN");
+                }
+            }
+            _ => bail!("leaf certificate contains an unexpected SAN entry"),
+        }
+    }
+    ensure!(
+        uri_count == 1,
+        "leaf certificate must contain exactly one matching BAFT node URI SAN"
+    );
+    ensure!(
+        server_count == 1,
+        "leaf certificate must contain exactly one configured DNS/IP SAN"
+    );
+    let pin = sha256(cert_der);
+    let public_key_fingerprint = sha256(cert.public_key().raw);
+    Ok((
+        pin,
+        public_key_fingerprint,
+        cert.validity().not_after.timestamp(),
+    ))
+}
+
+fn install_certificate_at(
+    config_dir: &Path,
+    req: &PkiRequest,
+    enforce_fixed: bool,
+) -> Result<Value> {
+    ensure_directory(config_dir, enforce_fixed)?;
+    let lock_path = config_dir.join(".pki-install.lock");
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&lock_path)
+        .context("open PKI installation lock without following symlinks")?;
+    let lock_meta = lock.metadata()?;
+    ensure!(
+        lock_meta.is_file(),
+        "PKI installation lock is not a regular file"
+    );
+    ensure!(
+        lock_meta.permissions().mode() & 0o7777 == 0o600,
+        "PKI installation lock must have mode 0600"
+    );
+    if config_dir == Path::new("/etc/baft-tunnel") {
+        ensure!(
+            lock_meta.uid() == 0 && lock_meta.gid() == 0,
+            "PKI installation lock must be owned by root:root"
+        );
+    }
+    // SAFETY: flock only operates on the valid, open lock descriptor.
+    ensure!(
+        unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX) } == 0,
+        "cannot acquire PKI installation lock"
+    );
+    let key = config_dir.join("node.key");
+    let metadata_path = config_dir.join("node.csr.meta");
+    let _ = read_csr_at(config_dir, req, enforce_fixed).context(
+        "validate the original CSR and local private-key custody before certificate import",
+    )?;
+    let metadata_bytes = read_public_file(&metadata_path, 4096)?;
+    let metadata: CsrMetadata =
+        serde_json::from_slice(&metadata_bytes).context("stored CSR metadata is invalid")?;
+    ensure!(
+        metadata.metadata_version == 1,
+        "unsupported CSR metadata version"
+    );
+    ensure!(
+        metadata.node_id == req.node_id,
+        "certificate node ID does not match CSR metadata"
+    );
+    let expected_san = expected_server_san(&req.server_name)?;
+    ensure!(
+        metadata.expected_server_san == expected_san,
+        "certificate DNS/IP identity does not match the original CSR enrollment"
+    );
+
+    let cert_bytes = req
+        .certificate_pem
+        .as_deref()
+        .context("certificate PEM is missing")?
+        .as_bytes();
+    let ca_bytes = req
+        .ca_pem
+        .as_deref()
+        .context("CA PEM is missing")?
+        .as_bytes();
+    let crl_bytes = req
+        .crl_pem
+        .as_deref()
+        .context("CRL PEM is missing")?
+        .as_bytes();
+    ensure!(
+        cert_bytes.len() <= MAX_CERTIFICATE_BYTES,
+        "leaf certificate exceeds size limit"
+    );
+    ensure!(
+        ca_bytes.len() <= MAX_CA_BYTES,
+        "CA certificate exceeds size limit"
+    );
+    ensure!(crl_bytes.len() <= MAX_CRL_BYTES, "CRL exceeds size limit");
+    strict_pem_block_count(
+        cert_bytes,
+        "leaf certificate",
+        "-----BEGIN CERTIFICATE-----",
+        "-----END CERTIFICATE-----",
+    )?;
+    strict_pem_block_count(
+        ca_bytes,
+        "CA certificate",
+        "-----BEGIN CERTIFICATE-----",
+        "-----END CERTIFICATE-----",
+    )?;
+    strict_pem_block_count(
+        crl_bytes,
+        "CRL",
+        "-----BEGIN X509 CRL-----",
+        "-----END X509 CRL-----",
+    )?;
+
+    let pki_root = config_dir.join("pki");
+    if !pki_root.exists() {
+        fs::create_dir(&pki_root).context("create fixed PKI version root")?;
+        fs::set_permissions(&pki_root, fs::Permissions::from_mode(0o750))?;
+        if let Some((_, gid)) = crate::setup::service_ids() {
+            chown_file(&pki_root, 0, gid)?;
+        }
+    }
+    let root_meta = fs::symlink_metadata(&pki_root)?;
+    ensure!(
+        root_meta.is_dir() && !root_meta.file_type().is_symlink(),
+        "PKI version root must be a real directory"
+    );
+    let sets = pki_root.join("sets");
+    if !sets.exists() {
+        fs::create_dir(&sets).context("create PKI version sets directory")?;
+        fs::set_permissions(&sets, fs::Permissions::from_mode(0o750))?;
+        if let Some((_, gid)) = crate::setup::service_ids() {
+            chown_file(&sets, 0, gid)?;
+        }
+    }
+    let sets_meta = fs::symlink_metadata(&sets)?;
+    ensure!(
+        sets_meta.is_dir() && !sets_meta.file_type().is_symlink(),
+        "PKI version sets must be a real directory"
+    );
+
+    let scratch = config_dir.join(format!(".pki-import-{}", req.request_id));
+    fs::create_dir(&scratch).context("create private certificate validation directory")?;
+    fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700))?;
+    let result = (|| -> Result<Value> {
+        let cert_path = scratch.join("node.crt");
+        let ca_path = scratch.join("ca.crt");
+        let crl_path = scratch.join("ca.crl");
+        fs::write(&cert_path, cert_bytes)?;
+        fs::write(&ca_path, ca_bytes)?;
+        fs::write(&crl_path, crl_bytes)?;
+        for path in [&cert_path, &ca_path, &crl_path] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+            File::open(path)?.sync_all()?;
+        }
+
+        // The CSR key and returned leaf must have identical P-256 SubjectPublicKeyInfo.
+        let key_fingerprint = public_key_fingerprint_from_key(&key)?;
+        ensure!(
+            key_fingerprint == metadata.public_key_sha256,
+            "local private key no longer matches the original CSR metadata"
+        );
+        let der_path = scratch.join("node.der");
+        let der_args = [
+            "x509",
+            "-in",
+            cert_path.to_str().context("non-UTF8 certificate path")?,
+            "-outform",
+            "DER",
+            "-out",
+            der_path.to_str().context("non-UTF8 certificate DER path")?,
+        ];
+        run_openssl(&openssl_args(&der_args))?;
+        let cert_der = read_regular(&der_path, MAX_CERTIFICATE_BYTES as u64, false)?;
+        let (fingerprint, cert_key_fingerprint, not_after) =
+            validate_leaf_policy(&cert_der, &req.node_id, &expected_san)?;
+        ensure!(
+            cert_key_fingerprint == key_fingerprint,
+            "leaf certificate public key does not match the local private key"
+        );
+
+        // Reuse the tunnel WebPKI validators for both serverAuth and clientAuth. This
+        // validates the trust chain, current validity, CRL signature and revocation status.
+        crate::tls::verify_local_certificate(&ca_path, &crl_path, &cert_path, &expected_san)
+            .context(
+                "certificate chain, EKU, CRL signature, validity or revocation check failed",
+            )?;
+        let crl_remaining = crate::tls::crl_seconds_remaining(&crl_path)?;
+        ensure!(
+            crl_remaining >= 24 * 3600,
+            "CRL has under 24 hours remaining or is expired"
+        );
+
+        let ca_der_path = scratch.join("ca.der");
+        let ca_der_args = [
+            "x509",
+            "-in",
+            ca_path.to_str().context("non-UTF8 CA path")?,
+            "-outform",
+            "DER",
+            "-out",
+            ca_der_path.to_str().context("non-UTF8 CA DER path")?,
+        ];
+        run_openssl(&openssl_args(&ca_der_args))?;
+        let ca_der = read_regular(&ca_der_path, MAX_CA_BYTES as u64, false)?;
+        let (_, ca_cert) = x509_parser::parse_x509_certificate(&ca_der)
+            .map_err(|error| anyhow::anyhow!("parse CA certificate: {error}"))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
+        ensure!(
+            ca_cert.validity().not_before.timestamp() <= now
+                && ca_cert.validity().not_after.timestamp() > now,
+            "uploaded CA certificate is not currently valid"
+        );
+        let ca_basic = ca_cert
+            .basic_constraints()?
+            .context("CA certificate lacks basicConstraints")?;
+        ensure!(ca_basic.value.ca, "uploaded CA certificate is not a CA");
+        let ca_usage = ca_cert
+            .key_usage()?
+            .context("CA certificate lacks keyUsage")?;
+        ensure!(
+            ca_usage.value.key_cert_sign() && ca_usage.value.crl_sign(),
+            "CA keyUsage must include keyCertSign and cRLSign"
+        );
+
+        let set_id = version_set_id(cert_bytes, ca_bytes, crl_bytes);
+        let old_set = active_set_dir(config_dir)?;
+        let already_active = old_set
+            .as_ref()
+            .is_some_and(|path| path.file_name().is_some_and(|name| name == set_id.as_str()));
+        if let Some(old_set) = old_set.as_ref().filter(|_| !already_active) {
+            let old_ca = scratch.join("old-ca.crt");
+            fs::copy(old_set.join("ca.crt"), &old_ca)?;
+            let old_ca_fp = run_openssl(&openssl_args(&[
+                "x509",
+                "-in",
+                old_ca.to_str().context("non-UTF8 old CA path")?,
+                "-noout",
+                "-fingerprint",
+                "-sha256",
+            ]))?;
+            let new_ca_fp = run_openssl(&openssl_args(&[
+                "x509",
+                "-in",
+                ca_path.to_str().context("non-UTF8 CA path")?,
+                "-noout",
+                "-fingerprint",
+                "-sha256",
+            ]))?;
+            ensure!(
+                old_ca_fp.stdout == new_ca_fp.stdout,
+                "automatic CA replacement/rollover is not supported by this enrollment operation"
+            );
+            let old_crl = scratch.join("old-ca.crl");
+            fs::copy(old_set.join("ca.crl"), &old_crl)?;
+            ensure!(
+                crl_number(&crl_path)? > crl_number(&old_crl)?,
+                "candidate CRL number must be greater than the currently active CRL number"
+            );
+        }
+
+        let final_set = sets.join(&set_id);
+        if final_set.exists() {
+            let final_meta = fs::symlink_metadata(&final_set)?;
+            ensure!(
+                final_meta.is_dir() && !final_meta.file_type().is_symlink(),
+                "existing PKI set path is not a real directory"
+            );
+            validate_pki_directory_metadata(
+                &final_set,
+                &final_meta,
+                config_dir == Path::new("/etc/baft-tunnel"),
+            )?;
+            for name in ["node.crt", "ca.crt", "ca.crl"] {
+                let path = final_set.join(name);
+                let meta = fs::symlink_metadata(&path)
+                    .with_context(|| format!("inspect existing PKI material {}", path.display()))?;
+                ensure!(
+                    !meta.file_type().is_symlink(),
+                    "{} must not be a symlink",
+                    path.display()
+                );
+                validate_pki_file_metadata(
+                    &path,
+                    &meta,
+                    config_dir == Path::new("/etc/baft-tunnel"),
+                )?;
+            }
+            ensure!(
+                fs::read(final_set.join("node.crt"))? == cert_bytes
+                    && fs::read(final_set.join("ca.crt"))? == ca_bytes
+                    && fs::read(final_set.join("ca.crl"))? == crl_bytes,
+                "existing content-addressed PKI set does not match its digest"
+            );
+        } else {
+            let staging = sets.join(format!(".staging-{}", req.request_id));
+            fs::create_dir(&staging).context("create versioned PKI staging directory")?;
+            fs::set_permissions(&staging, fs::Permissions::from_mode(0o750))?;
+            let stage_result = (|| -> Result<()> {
+                for (name, bytes) in [
+                    ("node.crt", cert_bytes),
+                    ("ca.crt", ca_bytes),
+                    ("ca.crl", crl_bytes),
+                ] {
+                    let path = staging.join(name);
+                    let mut file = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o644)
+                        .open(&path)?;
+                    file.write_all(bytes)?;
+                    file.sync_all()?;
+                    drop(file);
+                    if let Some((_, gid)) = crate::setup::service_ids() {
+                        chown_file(&path, 0, gid)?;
+                    }
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o644))?;
+                }
+                if let Some((_, gid)) = crate::setup::service_ids() {
+                    chown_file(&staging, 0, gid)?;
+                }
+                File::open(&staging)?.sync_all()?;
+                fs::rename(&staging, &final_set)?;
+                File::open(&sets)?.sync_all()?;
+                Ok(())
+            })();
+            if stage_result.is_err() {
+                let _ = fs::remove_dir_all(&staging);
+            }
+            stage_result?;
+        }
+        // Recheck the published content-addressed directory and each public file before the
+        // active pointer can refer to them. This also covers interrupted earlier staging runs.
+        let final_meta =
+            fs::symlink_metadata(&final_set).context("inspect completed PKI certificate set")?;
+        ensure!(
+            final_meta.is_dir() && !final_meta.file_type().is_symlink(),
+            "completed PKI certificate set must be a real directory"
+        );
+        validate_pki_directory_metadata(
+            &final_set,
+            &final_meta,
+            config_dir == Path::new("/etc/baft-tunnel"),
+        )?;
+        for name in ["node.crt", "ca.crt", "ca.crl"] {
+            let path = final_set.join(name);
+            let meta = fs::symlink_metadata(&path)
+                .with_context(|| format!("inspect completed PKI material {}", path.display()))?;
+            ensure!(
+                !meta.file_type().is_symlink(),
+                "{} must not be a symlink",
+                path.display()
+            );
+            validate_pki_file_metadata(&path, &meta, config_dir == Path::new("/etc/baft-tunnel"))?;
+        }
+
+        // One symlink rename switches all three public files together. The previous active
+        // pointer is retained and restored if the directory sync after publication fails.
+        if already_active {
+            return Ok(json!({
+                "result": "installed",
+                "node_id": req.node_id,
+                "certificate_sha256": fingerprint,
+                "certificate_not_after": not_after,
+                "ca_count": 1,
+                "crl_seconds_remaining": crl_remaining,
+                "active_set": set_id,
+                "private_key_exported": false
+            }));
+        }
+        let current = pki_root.join("current");
+        let previous = if fs::symlink_metadata(&current).is_ok() {
+            Some(fs::read_link(&current).context("read previous active PKI pointer")?)
+        } else {
+            None
+        };
+        let temporary = pki_root.join(format!(".current-{}", req.request_id));
+        let _ = fs::remove_file(&temporary);
+        std::os::unix::fs::symlink(format!("sets/{set_id}"), &temporary)?;
+        fs::rename(&temporary, &current)
+            .context("atomically publish active PKI version pointer")?;
+        if let Err(error) = File::open(&pki_root).and_then(|dir| dir.sync_all()) {
+            if let Some(old) = previous {
+                let rollback = pki_root.join(format!(".rollback-{}", req.request_id));
+                let _ = fs::remove_file(&rollback);
+                if std::os::unix::fs::symlink(old, &rollback).is_ok() {
+                    let _ = fs::rename(&rollback, &current);
+                }
+            } else {
+                let _ = fs::remove_file(&current);
+            }
+            let _ = File::open(&pki_root).and_then(|dir| dir.sync_all());
+            return Err(error).context("sync active PKI pointer; previous active set restored");
+        }
+        Ok(json!({
+            "result": "installed",
+            "node_id": req.node_id,
+            "certificate_sha256": fingerprint,
+            "certificate_not_after": not_after,
+            "ca_count": 1,
+            "crl_seconds_remaining": crl_remaining,
+            "active_set": set_id,
+            "private_key_exported": false
+        }))
+    })();
+    let _ = fs::remove_dir_all(&scratch);
+    result
+}
+
 fn ensure_directory(config_dir: &Path, enforce_fixed: bool) -> Result<()> {
     let meta = fs::symlink_metadata(config_dir)
         .with_context(|| format!("inspect fixed PKI directory {}", config_dir.display()))?;
@@ -348,6 +1066,10 @@ fn ensure_directory(config_dir: &Path, enforce_fixed: bool) -> Result<()> {
 
 fn create_csr_at(config_dir: &Path, req: &PkiRequest, enforce_fixed: bool) -> Result<Value> {
     ensure_directory(config_dir, enforce_fixed)?;
+    ensure!(
+        active_set_dir(config_dir)?.is_none(),
+        "an active certificate set already exists; CSR generation never replaces credentials"
+    );
     let key = config_dir.join("node.key");
     let csr = config_dir.join("node.csr");
     let metadata_path = config_dir.join("node.csr.meta");
@@ -369,12 +1091,14 @@ fn create_csr_at(config_dir: &Path, req: &PkiRequest, enforce_fixed: bool) -> Re
     let mut installed_csr = false;
     let mut installed_metadata = false;
     let result = (|| -> Result<Value> {
+        // SEC1 PEM is intentionally used here: rustls-ring accepts EC SEC1 keys directly,
+        // while OpenSSL's default PKCS#8 output omits the public-key field ring needs.
         let gen_args = [
-            "genpkey",
-            "-algorithm",
-            "EC",
-            "-pkeyopt",
-            "ec_paramgen_curve:P-256",
+            "ecparam",
+            "-name",
+            "prime256v1",
+            "-genkey",
+            "-noout",
             "-out",
             staged_key.to_str().context("non-UTF8 staged key path")?,
         ];
@@ -634,6 +1358,32 @@ fn parse_request(bytes: &[u8]) -> Result<PkiRequest> {
     );
     ensure!(valid_node_id(&req.node_id), "invalid node ID");
     expected_server_san(&req.server_name)?;
+    match req.operation {
+        PkiOperation::InstallCertificate => {
+            let cert = req
+                .certificate_pem
+                .as_deref()
+                .context("certificate PEM is missing")?;
+            let ca = req.ca_pem.as_deref().context("CA PEM is missing")?;
+            let crl = req.crl_pem.as_deref().context("CRL PEM is missing")?;
+            ensure!(
+                !cert.is_empty() && cert.len() <= MAX_CERTIFICATE_BYTES,
+                "certificate PEM is empty or oversized"
+            );
+            ensure!(
+                !ca.is_empty() && ca.len() <= MAX_CA_BYTES,
+                "CA PEM is empty or oversized"
+            );
+            ensure!(
+                !crl.is_empty() && crl.len() <= MAX_CRL_BYTES,
+                "CRL PEM is empty or oversized"
+            );
+        }
+        _ => ensure!(
+            req.certificate_pem.is_none() && req.ca_pem.is_none() && req.crl_pem.is_none(),
+            "certificate material is not accepted for CSR operations"
+        ),
+    }
     Ok(req)
 }
 
@@ -717,6 +1467,9 @@ fn run_at(
                     let operation_result = match req.operation {
                         PkiOperation::CreateCsr => create_csr_at(config_dir, &req, enforce_fixed),
                         PkiOperation::ReadCsr => read_csr_at(config_dir, &req, enforce_fixed),
+                        PkiOperation::InstallCertificate => {
+                            install_certificate_at(config_dir, &req, enforce_fixed)
+                        }
                     };
                     let receipt = match operation_result {
                         Ok(mut data) => {
@@ -885,7 +1638,30 @@ pub fn request_document(
         "request_id": request_id,
         "operation": operation,
         "node_id": node_id,
-        "server_name": server_name
+        "server_name": server_name,
+        "certificate_pem": null,
+        "ca_pem": null,
+        "crl_pem": null
+    })
+}
+
+pub fn certificate_request_document(
+    request_id: &str,
+    node_id: &str,
+    server_name: &str,
+    certificate_pem: &str,
+    ca_pem: &str,
+    crl_pem: &str,
+) -> Value {
+    json!({
+        "request_version": 1,
+        "request_id": request_id,
+        "operation": PkiOperation::InstallCertificate,
+        "node_id": node_id,
+        "server_name": server_name,
+        "certificate_pem": certificate_pem,
+        "ca_pem": ca_pem,
+        "crl_pem": crl_pem
     })
 }
 
@@ -937,6 +1713,245 @@ mod tests {
 
     fn test_request(req: &Value) -> PkiRequest {
         serde_json::from_value(req.clone()).unwrap()
+    }
+
+    #[test]
+    fn installs_only_a_valid_offline_certificate_set_and_switches_one_pointer() {
+        let (tmp, control, config, receipts) = fixture();
+        let create = request(
+            "csr-install-01",
+            PkiOperation::CreateCsr,
+            "node1",
+            "localhost",
+        );
+        let created = create_csr_at(&config, &test_request(&create), false).unwrap();
+        assert_eq!(created["result"], "created");
+
+        let ca = crate::tls::tests::make_ca(&tmp.0, "install-ca");
+        let ca_dir = ca.ca_pem.parent().unwrap();
+        let ext = tmp.0.join("node-ext.cnf");
+        fs::write(
+            &ext,
+            "[node_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=URI:urn:baft-tunnel:node:node1,DNS:localhost\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n",
+        )
+        .unwrap();
+        let cert = tmp.0.join("issued-node.crt");
+        let status = Command::new("openssl")
+            .args(["ca", "-batch", "-notext", "-config"])
+            .arg(ca_dir.join("openssl.cnf"))
+            .arg("-extfile")
+            .arg(&ext)
+            .args(["-extensions", "node_ext", "-days", "90", "-in"])
+            .arg(config.join("node.csr"))
+            .arg("-out")
+            .arg(&cert)
+            .status()
+            .unwrap();
+        assert!(status.success(), "offline CA must issue the matching CSR");
+        let crl = tmp.0.join("fresh.crl");
+        let status = Command::new("openssl")
+            .args(["ca", "-gencrl", "-batch", "-config"])
+            .arg(ca_dir.join("openssl.cnf"))
+            .arg("-out")
+            .arg(&crl)
+            .status()
+            .unwrap();
+        assert!(status.success(), "offline CA must issue a fresh CRL");
+
+        let cert_pem = fs::read_to_string(&cert).unwrap();
+        let ca_pem = fs::read_to_string(&ca.ca_pem).unwrap();
+        let crl_pem = fs::read_to_string(&crl).unwrap();
+        let request = certificate_request_document(
+            "cert-install-01",
+            "node1",
+            "localhost",
+            &cert_pem,
+            &ca_pem,
+            &crl_pem,
+        );
+        put(&control, &request);
+        let receipt = run_at("node1", &control, &config, &receipts, false).unwrap();
+        assert_eq!(receipt["result"], "installed", "{receipt:?}");
+        assert_eq!(receipt["operation"], "install_certificate");
+        assert_eq!(receipt["private_key_exported"], false);
+        assert_eq!(receipt["service_restarted"], Value::Null);
+        let active = active_set_dir(&config).unwrap().unwrap();
+        assert_eq!(
+            active.file_name().unwrap(),
+            receipt["active_set"].as_str().unwrap()
+        );
+        let runtime_check = crate::tls::server_config(
+            &active.join("ca.crt"),
+            &active.join("ca.crl"),
+            &active.join("node.crt"),
+            &config.join("node.key"),
+        );
+        assert!(
+            runtime_check.is_ok(),
+            "runtime TLS config: {:?}",
+            runtime_check.err()
+        );
+        assert!(control.join("node1.pki-result").is_file());
+
+        // A fresh request ID with identical bytes is idempotent and does not advance/rewrite
+        // the active credential pointer or demand a higher CRL number.
+        let retry = certificate_request_document(
+            "cert-install-retry-01",
+            "node1",
+            "localhost",
+            &cert_pem,
+            &ca_pem,
+            &crl_pem,
+        );
+        put(&control, &retry);
+        let replay = run_at("node1", &control, &config, &receipts, false).unwrap();
+        assert_eq!(replay["result"], "installed");
+        assert_eq!(replay["active_set"], receipt["active_set"]);
+        assert_eq!(active_set_dir(&config).unwrap(), Some(active.clone()));
+
+        // A newer CRL from the same CA can atomically replace the complete active set.
+        let ca_dir = ca.ca_pem.parent().unwrap();
+        let newer_crl = tmp.0.join("newer.crl");
+        let status = Command::new("openssl")
+            .args(["ca", "-gencrl", "-batch", "-config"])
+            .arg(ca_dir.join("openssl.cnf"))
+            .arg("-out")
+            .arg(&newer_crl)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let newer_crl_pem = fs::read_to_string(&newer_crl).unwrap();
+        let newer_request = certificate_request_document(
+            "cert-install-newer-crl",
+            "node1",
+            "localhost",
+            &cert_pem,
+            &ca_pem,
+            &newer_crl_pem,
+        );
+        put(&control, &newer_request);
+        let newer = run_at("node1", &control, &config, &receipts, false).unwrap();
+        assert_eq!(newer["result"], "installed", "{newer:?}");
+        assert_ne!(newer["active_set"], receipt["active_set"]);
+        let new_active = active_set_dir(&config).unwrap().unwrap();
+
+        // Replaying the older CRL cannot roll back the active revocation state.
+        let stale_request = certificate_request_document(
+            "cert-install-stale-crl",
+            "node1",
+            "localhost",
+            &cert_pem,
+            &ca_pem,
+            &crl_pem,
+        );
+        put(&control, &stale_request);
+        let stale = run_at("node1", &control, &config, &receipts, false).unwrap();
+        assert_eq!(stale["result"], "refused");
+        assert_eq!(active_set_dir(&config).unwrap(), Some(new_active));
+    }
+
+    #[test]
+    fn rejects_wrong_certificate_identity_without_changing_active_pointer() {
+        let (tmp, control, config, receipts) = fixture();
+        let create = request(
+            "csr-install-02",
+            PkiOperation::CreateCsr,
+            "node1",
+            "localhost",
+        );
+        create_csr_at(&config, &test_request(&create), false).unwrap();
+        let ca = crate::tls::tests::make_ca(&tmp.0, "wrong-ca");
+        let ca_dir = ca.ca_pem.parent().unwrap();
+        let ext = tmp.0.join("wrong-ext.cnf");
+        fs::write(
+            &ext,
+            "[node_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=URI:urn:baft-tunnel:node:other-node,DNS:localhost\n",
+        ).unwrap();
+        let cert = tmp.0.join("wrong-node.crt");
+        let status = Command::new("openssl")
+            .args(["ca", "-batch", "-notext", "-config"])
+            .arg(ca_dir.join("openssl.cnf"))
+            .arg("-extfile")
+            .arg(&ext)
+            .args(["-extensions", "node_ext", "-days", "90", "-in"])
+            .arg(config.join("node.csr"))
+            .arg("-out")
+            .arg(&cert)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let request = certificate_request_document(
+            "cert-install-02",
+            "node1",
+            "localhost",
+            &fs::read_to_string(cert).unwrap(),
+            &fs::read_to_string(ca.ca_pem).unwrap(),
+            &fs::read_to_string(ca.crl_pem).unwrap(),
+        );
+        put(&control, &request);
+        let receipt = run_at("node1", &control, &config, &receipts, false).unwrap();
+        assert_eq!(receipt["result"], "refused");
+        assert!(active_set_dir(&config).unwrap().is_none());
+    }
+
+    #[test]
+    fn active_pki_set_requires_a_fixed_digest_pointer_and_regular_material() {
+        let (tmp, _control, config, _receipts) = fixture();
+        assert!(active_set_dir(&config).unwrap().is_none());
+        let root = config.join("pki");
+        let sets = root.join("sets");
+        let cert = b"public test certificate";
+        let ca = b"public test CA";
+        let crl = b"public test CRL";
+        let id = version_set_id(cert, ca, crl);
+        let active = sets.join(&id);
+        fs::create_dir_all(&active).unwrap();
+        fs::write(active.join("node.crt"), cert).unwrap();
+        fs::write(active.join("ca.crt"), ca).unwrap();
+        fs::write(active.join("ca.crl"), crl).unwrap();
+        std::os::unix::fs::symlink(format!("sets/{id}"), root.join("current")).unwrap();
+        assert_eq!(active_set_dir(&config).unwrap(), Some(active.clone()));
+
+        // The active set must remain immutable to the service group and other local users.
+        fs::set_permissions(active.join("node.crt"), fs::Permissions::from_mode(0o664)).unwrap();
+        assert!(
+            active_set_dir(&config).is_err(),
+            "group-writable certificate must be refused"
+        );
+        fs::set_permissions(active.join("node.crt"), fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&active, fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(
+            active_set_dir(&config).is_err(),
+            "group-writable active set must be refused"
+        );
+        fs::set_permissions(&active, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&sets, fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(
+            active_set_dir(&config).is_err(),
+            "group-writable sets directory must be refused"
+        );
+        fs::set_permissions(&sets, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(
+            active_set_dir(&config).is_err(),
+            "group-writable PKI root must be refused"
+        );
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+
+        fs::remove_file(root.join("current")).unwrap();
+        std::os::unix::fs::symlink("../outside", root.join("current")).unwrap();
+        assert!(active_set_dir(&config).is_err());
+        fs::remove_file(root.join("current")).unwrap();
+        std::os::unix::fs::symlink(format!("sets/{}", "A".repeat(64)), root.join("current"))
+            .unwrap();
+        assert!(active_set_dir(&config).is_err());
+
+        fs::remove_file(root.join("current")).unwrap();
+        fs::remove_file(active.join("node.crt")).unwrap();
+        std::os::unix::fs::symlink(active.join("ca.crt"), active.join("node.crt")).unwrap();
+        std::os::unix::fs::symlink(format!("sets/{id}"), root.join("current")).unwrap();
+        assert!(active_set_dir(&config).is_err());
+        drop(tmp);
     }
 
     #[test]

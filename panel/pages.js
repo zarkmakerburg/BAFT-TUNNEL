@@ -277,7 +277,7 @@
     return s;
   }
   function freshWizard(c) {
-    return { step: 0, direction: null, role: 'forward', engine: 'tcp-tls', node: c.local_identity || '', peerId: '', tunnel: '', port: '', peerHost: '', serverName: '',
+    return { step: 0, direction: null, role: 'forward', engine: 'tcp-tls', node: c.local_identity || '', peerId: '', tunnel: '', port: '', peerHost: '', serverName: '', localServerName: '',
       tport: '8443', dir: '/etc/baft-tunnel', inst: '', pf: null, plan: null, busy: false, errors: {} };
   }
   function body(w) {
@@ -297,8 +297,14 @@
     function invalidate() { w.pf = null; w.plan = null; }
     function field(key, label, opts) {
       opts = opts || {};
-      var input = h('input', { value: w[key], type: opts.type || 'text', autocomplete: 'off', inputmode: opts.inputmode, 'aria-invalid': w.errors[key] ? 'true' : null,
-        'aria-describedby': w.errors[key] ? 'e-' + key : null, oninput: function () { w[key] = input.value; invalidate(); } });
+      var input = h('input', { name: key, value: w[key], type: opts.type || 'text', autocomplete: 'off', inputmode: opts.inputmode, 'aria-invalid': w.errors[key] ? 'true' : null,
+        'aria-describedby': w.errors[key] ? 'e-' + key : null, oninput: function () {
+          w[key] = input.value; invalidate();
+          if (key === 'node' || key === 'localServerName') {
+            w.csrReceipt = null; w.csrPem = ''; w.pkiReceipt = null;
+            w.certificatePem = ''; w.caPem = ''; w.crlPem = ''; w.pkiConfirm = false;
+          }
+        } });
       if (opts.ltr !== false) { input.setAttribute('dir', 'ltr'); }
       return h('label', { class: 'field' }, h('span', { text: label }), input, w.errors[key] ? h('div', { class: 'fielderr', id: 'e-' + key, text: w.errors[key] }) : null);
     }
@@ -318,6 +324,7 @@
           if (!w.peerHost.trim()) { e.peerHost = t('err.required'); }
           if (w.engine === 'tcp-tls' && !w.serverName.trim()) { e.serverName = t('err.required'); }
         }
+        if (w.engine === 'tcp-tls' && !w.localServerName.trim()) { e.localServerName = t('err.required'); }
       }
       w.errors = e;
       return !Object.keys(e).length;
@@ -365,7 +372,8 @@
           choice('role', 'serve', !fwd, t(rev ? 'srv.rev.serve' : 'srv.serve'), rev ? t('srv.rev.serve.d') : '', function (v) { w.role = v; invalidate(); draw(); })),
         h('div', { class: 'form-grid' }, field('node', t('f.node')), field('peerId', t('f.peerid')), field('tunnel', t('f.tunnel')), field('port', t(rev && !fwd ? 'f.port.ingress' : 'f.port'), { type: 'number', inputmode: 'numeric' }),
           fwd ? field('peerHost', t('f.peerhost'), { inputmode: 'decimal' }) : null,
-          fwd && w.engine === 'tcp-tls' ? field('serverName', t('f.servername')) : null),
+          fwd && w.engine === 'tcp-tls' ? field('serverName', t('f.servername')) : null,
+          w.engine === 'tcp-tls' ? h('div', null, field('localServerName', t('f.localserver')), h('p', { class: 'sub', text: t('f.localserver.help') })) : null),
         h('details', null, h('summary', { text: t('adv') }), h('div', { class: 'form-grid' }, field('tport', t('f.tport'), { type: 'number', inputmode: 'numeric' }), field('dir', t('f.dir')), field('inst', t('f.inst')))));
     }
     function stepMethod() {
@@ -382,7 +390,8 @@
     function stepPreflight() {
       var pf = w.pf;
       var list = pf ? h('ul', { class: 'pf' }, pf.checks.map(function (c) {
-        var ev = c.result === 'unknown' && BAFT_I18N.en['pfu.' + c.id] ? t('pfu.' + c.id) : c.evidence;
+        var ev = c.result === 'unknown' && BAFT_I18N.en['pfu.' + c.id] ? t('pfu.' + c.id)
+          : c.id === 'pki_files' && c.result === 'warning' && BAFT_I18N.en['pfe.pki_files'] ? t('pfe.pki_files') : c.evidence;
         var fix = c.result !== 'pass' && c.remediation ? (BAFT_I18N.en['pfr.' + c.id] ? t('pfr.' + c.id) : c.remediation) : null;
         return h('li', null, h('strong', { text: t('pfc.' + c.id) === 'pfc.' + c.id ? c.id : t('pfc.' + c.id) }),
           h('span', { class: 'muted', text: ' · ' + t(c.scope === 'peer' ? 'pf.scope.peer' : 'pf.scope.local') + ' ' }),
@@ -508,18 +517,119 @@
     function folded(rc) {
       return rc.result === 'applied' ? h('details', null, h('summary', { text: t('rc.title') + ' · ' + t('rc.applied') }), receiptView(rc)) : receiptView(rc);
     }
+    function pkiEnrollmentSection() {
+      var out = [h('p', { class: 'sub', text: t('pki.intro') })];
+      var identityReady = !!(w.node.trim() && w.localServerName.trim());
+      if (!identityReady) {
+        out.push(h('p', { class: 'fielderr', role: 'alert', text: t('pki.identityRequired') }));
+        return h('div', null, out);
+      }
+      if (w.pkiError) { out.push(h('p', { class: 'error', role: 'alert', text: w.pkiError })); }
+      if (!w.csrPem) {
+        out.push(h('div', { class: 'nav-row' },
+          h('button', { type: 'button', class: 'primary', disabled: w.pkiBusy ? true : null, text: w.pkiBusy ? t('pki.working') : t('pki.create'), onclick: function () { requestCsr('create'); } }),
+          h('button', { type: 'button', disabled: w.pkiBusy ? true : null, text: t('pki.recover'), onclick: function () { requestCsr('read'); } })));
+        return h('div', null, out);
+      }
+      out.push(kv([
+        [t('pki.node'), BAFT.ltr(w.node.trim())],
+        [t('pki.san'), BAFT.ltr(w.csrReceipt && w.csrReceipt.expected_server_san || w.localServerName.trim())],
+        [t('pki.keyFingerprint'), BAFT.ltr(w.csrReceipt && w.csrReceipt.public_key_sha256 || '—')]
+      ]));
+      out.push(h('label', { class: 'field' }, h('span', { text: t('pki.csr') }),
+        h('textarea', { rows: 5, readonly: true, dir: 'ltr', 'aria-label': t('pki.csr') }, w.csrPem)));
+      out.push(h('div', { class: 'nav-row' },
+        h('button', { type: 'button', text: t('pki.copy'), onclick: function () { copyText(w.csrPem); } }),
+        h('button', { type: 'button', text: t('pki.download'), onclick: function () {
+          var a = h('a', { href: URL.createObjectURL(new Blob([w.csrPem], { type: 'application/pkcs10' })), download: w.node.trim() + '.csr' });
+          document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+        } })));
+      out.push(h('h4', { text: t('pki.offlineTitle') }), h('p', { class: 'sub', text: t('pki.offlineBody') }),
+        h('pre', { dir: 'ltr', text: 'scripts/pki/baft-pki.sh issue-node CA_DIR ' + w.node.trim() + ' CSR_FILE OUTPUT_DIR ' + w.localServerName.trim() }));
+      out.push(h('h4', { text: t('pki.uploadTitle') }), h('p', { class: 'sub', text: t('pki.uploadBody') }));
+      function pemInput(key, label, marker, maxBytes) {
+        var input = h('input', { type: 'file', accept: '.pem,.crt,.cer,.crl,application/x-pem-file,text/plain', 'aria-label': label, onchange: function (e) {
+          var file = e.target.files && e.target.files[0];
+          w[key] = '';
+          if (!file) { draw(); return; }
+          if (file.size <= 0 || file.size > maxBytes) { w.pkiError = t('pki.fileSize'); draw(); return; }
+          var reader = new FileReader();
+          reader.onload = function () {
+            var pem = String(reader.result || '').trim();
+            var value = pem + '\n';
+            var begin = marker[0], end = marker[1];
+            if (pem.indexOf('PRIVATE KEY') >= 0 || pem.indexOf(begin) !== 0 || !pem.endsWith(end)
+              || (pem.match(/-----BEGIN /g) || []).length !== 1 || (pem.match(/-----END /g) || []).length !== 1) {
+              w.pkiError = t('pki.badPem'); w[key] = '';
+            } else { w.pkiError = null; w[key] = value; }
+            draw();
+          };
+          reader.onerror = function () { w.pkiError = t('pki.fileRead'); draw(); };
+          reader.readAsText(file);
+        } });
+        return h('label', { class: 'field pki-upload' }, h('span', { text: label }), input,
+          w[key] ? h('span', { class: 'sub', text: t('pki.fileLoaded') }) : null);
+      }
+      out.push(pemInput('certificatePem', t('pki.leaf'), ['-----BEGIN CERTIFICATE-----', '-----END CERTIFICATE-----'], 64 * 1024));
+      out.push(pemInput('caPem', t('pki.ca'), ['-----BEGIN CERTIFICATE-----', '-----END CERTIFICATE-----'], 64 * 1024));
+      out.push(pemInput('crlPem', t('pki.crl'), ['-----BEGIN X509 CRL-----', '-----END X509 CRL-----'], 256 * 1024));
+      out.push(h('label', { class: 'sub pki-confirm' }, h('input', { type: 'checkbox', checked: w.pkiConfirm ? true : null, onchange: function (e) { w.pkiConfirm = e.target.checked; draw(); } }), ' ', t('pki.confirm')));
+      out.push(h('button', { type: 'button', class: 'primary', disabled: (!w.certificatePem || !w.caPem || !w.crlPem || !w.pkiConfirm || w.pkiBusy) ? true : null,
+        text: w.pkiBusy ? t('pki.working') : t('pki.install'), onclick: installPki }));
+      if (w.pkiReceipt && w.pkiReceipt.result === 'installed') {
+        out.push(h('div', { class: 'banner info', role: 'status' }, h('strong', { text: t('pki.installed') }),
+          h('p', { text: t('pki.fingerprint') + ': ' + (w.pkiReceipt.certificate_sha256 || '') }),
+          h('p', { text: t('pki.validUntil') + ': ' + (w.pkiReceipt.certificate_not_after ? new Date(w.pkiReceipt.certificate_not_after * 1000).toISOString() : '—') }),
+          h('p', { text: t('pki.crlRemaining') + ': ' + (w.pkiReceipt.crl_seconds_remaining || 0) + 's' }),
+          h('p', { text: t('pki.noRestart') })));
+      }
+      return h('div', null, out);
+    }
+    function requestCsr(operation) {
+      w.pkiBusy = true; w.pkiError = null; draw();
+      var req = { request_id: newKey('ui-csr-'), node_id: w.node.trim(), server_name: w.localServerName.trim() };
+      if (operation === 'create') { req.confirm = true; }
+      BAFT.api('POST', '/v1/pki/csr/' + operation, req).then(function (r) {
+        if ((r.status !== 200 && r.status !== 201) || !r.body || !r.body.csr_pem
+          || r.body.node_id !== w.node.trim() || r.body.private_key_exported !== false
+          || !r.body.expected_server_san || !r.body.public_key_sha256 || r.body.public_key_sha256.length !== 64) {
+          w.pkiError = (r.body && (r.body.detail || r.body.error)) || t('pki.invalidCsrReceipt'); return;
+        }
+        w.csrReceipt = r.body; w.csrPem = r.body.csr_pem;
+      }, function (e) { w.pkiError = e.message; }).then(function () { w.pkiBusy = false; draw(); });
+    }
+    function installPki() {
+      w.pkiBusy = true; w.pkiError = null; draw();
+      var req = {
+        request_id: newKey('ui-cert-'), node_id: w.node.trim(), server_name: w.localServerName.trim(), confirm: true,
+        certificate_pem: w.certificatePem, ca_pem: w.caPem, crl_pem: w.crlPem
+      };
+      BAFT.api('POST', '/v1/pki/certificate/install', req).then(function (r) {
+        if (r.status !== 200 || !r.body || r.body.result !== 'installed' || r.body.private_key_exported !== false || r.body.service_restarted !== false) {
+          w.pkiError = (r.body && (r.body.detail || r.body.error)) || t('fail'); w.pkiReceipt = null; return;
+        }
+        w.pkiReceipt = r.body;
+      }, function (e) { w.pkiError = e.message; }).then(function () { w.pkiBusy = false; draw(); });
+    }
+
     function pairSection(st) {
       var pr = st.pairing || {}, helper = st.setup_helper || {};
       var scopeOk = w.inst.trim() === (st.instance || '') && w.dir.trim() === (st.config_dir || '');
       var initDone = pr.initialized || (w.applyReceipt && w.applyReceipt.result === 'applied');
+      var pkiRequired = w.engine === 'tcp-tls';
+      var pkiReady = !pkiRequired || (w.pkiReceipt && w.pkiReceipt.result === 'installed');
       if (initDone && !w.own && !w.ownLoading) { w.ownLoading = true; loadOwn(); }
       var out = [h('p', { class: 'sub', text: t('pair.intro') })];
+      if (pkiRequired && !initDone) {
+        out.push(h('h3', { text: t('pki.title') }), pkiEnrollmentSection());
+        if (!pkiReady) { out.push(h('p', { class: 'fielderr', role: 'status', text: t('pki.mustInstall') })); }
+      }
       if (!helper.available) { out.push(h('p', { class: 'error', role: 'alert', text: t('pair.nohelper') + ' ' + (helper.reason || '') })); }
       if (!scopeOk) { out.push(h('p', { class: 'fielderr', role: 'alert', text: t('pair.scope', { inst: st.instance || '—', dir: st.config_dir || '—' }) })); }
       // a) prepare
-      var chk = h('label', null, h('input', { type: 'checkbox', checked: w.applyConfirm ? 'checked' : null, onchange: function (e) { w.applyConfirm = e.target.checked; draw(); } }), ' ', t('ap.confirm'));
+      var chk = h('label', { class: 'pair-a-confirm' }, h('input', { type: 'checkbox', checked: w.applyConfirm ? 'checked' : null, onchange: function (e) { w.applyConfirm = e.target.checked; draw(); } }), ' ', t('ap.confirm'));
       out.push(h('h3', { text: t('pair.a') }), initDone ? h('p', null, pill('ok', t('pair.a.done'))) : h('div', null, h('div', { class: 'banner' }, h('p', { text: t('pair.a.body') })), chk,
-        h('button', { type: 'button', class: 'primary', text: t('pair.a.go'), disabled: (!w.applyConfirm || w.busy || !helper.available || !scopeOk || (w.pf && w.pf.overall === 'blocked')) ? 'disabled' : null, onclick: function () { runStage('init'); } })));
+        h('button', { type: 'button', class: 'primary', text: t('pair.a.go'), disabled: (!w.applyConfirm || w.busy || !helper.available || !scopeOk || !pkiReady || (w.pf && w.pf.overall === 'blocked')) ? 'disabled' : null, onclick: function () { runStage('init'); } })));
       if (w.applyReceipt) { out.push(folded(w.applyReceipt)); }
       // b) export
       out.push(h('h3', { text: t('pair.b') }));

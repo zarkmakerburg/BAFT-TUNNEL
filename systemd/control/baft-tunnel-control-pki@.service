@@ -1,12 +1,13 @@
 [Unit]
-Description=Run bounded CSR enrollment for baft-tunnel@%i (root PKI helper, ADR-0027)
+Description=Run bounded PKI enrollment and certificate import for baft-tunnel@%i (root helper, ADR-0027)
 StartLimitIntervalSec=10s
 StartLimitBurst=60
 
 [Service]
 Type=oneshot
-# Fixed command and closed operations only: create/read CSR for this instance. The private key
-# stays under /etc/baft-tunnel with baft-tunnel ownership and mode 0600; only CSR is returned.
+# Fixed command and closed operations only: create/read CSR and validate/install the signed public
+# certificate, CA and CRL for this instance. The node private key stays under /etc/baft-tunnel
+# with baft-tunnel ownership and mode 0600; no private-key bytes are returned.
 ExecStart=/usr/local/bin/baft-tunnel setup pki-helper --instance %i
 ExecStopPost=/usr/bin/rm -f /run/baft-tunnel/control/%i.pki
 TimeoutStartSec=30s

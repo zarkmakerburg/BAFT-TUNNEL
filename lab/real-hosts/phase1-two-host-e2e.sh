@@ -52,9 +52,12 @@ if (( AGENT_SVC == 1 )); then
   [[ "$MVP" == 0 && "$REVERSE_ACCEPT" == 0 && "$OPS_SOAK" == 0 ]] || { echo "LAB_AGENT_SVC is a separate run from LAB_MVP, LAB_REVERSE_ACCEPT and LAB_OPS" >&2; exit 2; }
 fi
 PANEL_PAIRING="${LAB_PANEL_PAIRING:-0}"
+PANEL_ENGINE="${LAB_PANEL_ENGINE:-noise-tcp}"
 [[ "$PANEL_PAIRING" == 0 || "$PANEL_PAIRING" == 1 ]] || { echo "LAB_PANEL_PAIRING must be 0 or 1" >&2; exit 2; }
+[[ "$PANEL_ENGINE" == noise-tcp || "$PANEL_ENGINE" == tcp-tls ]] || { echo "LAB_PANEL_ENGINE must be noise-tcp or tcp-tls" >&2; exit 2; }
 if (( PANEL_PAIRING == 1 )); then
   [[ -x "$MVP_BINARY_PATH" ]] || { echo "LAB_PANEL_PAIRING needs MVP_BINARY" >&2; exit 2; }
+  command -v docker >/dev/null 2>&1 || [[ "$PANEL_ENGINE" != tcp-tls ]] || { echo "tcp-tls panel enrollment LAB needs Docker for the network-isolated offline CA" >&2; exit 2; }
   [[ "$MVP" == 0 && "$REVERSE_ACCEPT" == 0 && "$OPS_SOAK" == 0 && "$AGENT_SVC" == 0 ]] || { echo "LAB_PANEL_PAIRING is a separate run from LAB_MVP, LAB_REVERSE_ACCEPT, LAB_OPS and LAB_AGENT_SVC" >&2; exit 2; }
 fi
 [[ "$REVERSE_R3" =~ ^[0-9]+$ ]] && (( REVERSE_R3 <= 3600 )) || { echo "LAB_REVERSE_R3 must be 0-3600 (Reverse R3 soak seconds; 0 = off)" >&2; exit 2; }
@@ -1123,4 +1126,4 @@ if (( PANEL_PAIRING == 1 )); then
   . "$(dirname "${BASH_SOURCE[0]}")/panel-pairing-stage.sh"
 fi
 
-echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE reverse_r3=$REVERSE_R3 mvp=$MVP agent_svc=$AGENT_SVC reboot=$AGENT_REBOOT panel_pairing=$PANEL_PAIRING (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
+echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE reverse_r3=$REVERSE_R3 mvp=$MVP agent_svc=$AGENT_SVC reboot=$AGENT_REBOOT panel_pairing=$PANEL_PAIRING panel_engine=$PANEL_ENGINE (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"

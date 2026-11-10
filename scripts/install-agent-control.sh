@@ -5,7 +5,7 @@
 #   - the API token /var/lib/baft-tunnel-agent/token (created once, mode 0600, never printed);
 #   - the control helper: root path units that turn a request file into one fixed command for
 #     exactly baft-tunnel@NAME (start, stop, enable --now, disable --now), and the root setup
-#     helper (ADR-0026) that runs setup init/join and bounded CSR create/read (ADR-0027) for NAME
+#     helper (ADR-0026) that runs setup init/join and bounded PKI CSR/import operations (ADR-0027) for NAME
 #     in /etc/baft-tunnel only. No polkit, no sudo.
 #   install-agent-control.sh --instance NAME [--listen 127.0.0.1:PORT] [--destdir ROOT]
 #   install-agent-control.sh --remove --instance NAME [--destdir ROOT]
@@ -95,5 +95,5 @@ echo "  agent:  baft-tunnel-agent@$INSTANCE (user $AGENT_USER), running now and 
 echo "  panel:  http://${LISTEN:-127.0.0.1:18080}/ (loopback; from another machine: ssh -L 18080:127.0.0.1:18080 HOST)"
 echo "  token:  /var/lib/baft-tunnel-agent/token (read it as root: sudo cat ...; never share it)"
 echo "  helper: the agent can request start, stop, enable --now and disable --now of baft-tunnel@$INSTANCE only,"
-echo "          setup init/join and bounded CSR create/read for $INSTANCE in /etc/baft-tunnel (panel enrollment)."
+echo "          setup init/join and bounded PKI CSR/certificate import for $INSTANCE in /etc/baft-tunnel (panel enrollment)."
 echo "The tunnel itself was not started."

@@ -1,5 +1,5 @@
 [Unit]
-Description=BAFT-TUNNEL agent CSR enrollment request for instance %i
+Description=BAFT-TUNNEL agent PKI operation request for instance %i
 
 [Path]
 PathExists=/run/baft-tunnel/control/%i.pki
