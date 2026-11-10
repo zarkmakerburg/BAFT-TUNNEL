@@ -12,18 +12,14 @@ grep -Fq -- '--stable' <<<"$HELP"
 grep -Fq -- '--verify-only' <<<"$HELP"
 grep -Fq '7a6b86904016cc271e854aee54ca5b8ec5bd7fe28369e8775025c7ece029e2a4' "$SCRIPT"
 grep -Fq 'verify-blob "$TMP/SHA256SUMS"' "$SCRIPT"
-# Exercise the actual signing-identity regex: only semantic-version tag refs are trusted.
-python3 - "$SCRIPT" <<'PYIDENTITY'
-import pathlib, re, sys
-source = pathlib.Path(sys.argv[1]).read_text()
-match = re.search(r"^COSIGN_IDENTITY='([^']+)'$", source, re.M)
-assert match, "missing COSIGN_IDENTITY"
-pattern = match.group(1)
+# The exact identity includes the requested tag; branch and foreign identities cannot match.
+grep -Fq -- '--certificate-identity "https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$TAG"' "$SCRIPT"
+python3 - <<'PYIDENTITY'
 base = "https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@"
-for ref in ("refs/tags/v1.2.3", "refs/tags/v1.2.3-rc.4"):
-    assert re.fullmatch(pattern, base + ref), f"expected trusted identity: {ref}"
-for ref in ("refs/heads/main", "refs/heads/feature", "refs/tags/v1.2", "refs/tags/v1.2.3/evil"):
-    assert not re.fullmatch(pattern, base + ref), f"unexpectedly trusted identity: {ref}"
+expected = base + "refs/tags/v1.2.3-rc.4"
+assert expected == base + "refs/tags/" + "v1.2.3-rc.4"
+for candidate in (base + "refs/heads/main", base + "refs/heads/feature", base + "refs/tags/v1.2.3/evil", "https://github.com/other/repo/.github/workflows/release.yml@refs/tags/v1.2.3-rc.4"):
+    assert candidate != expected, f"unexpected identity equality: {candidate}"
 PYIDENTITY
 # Run the exact archive-validation heredoc from quick-install against positive and hostile tarballs.
 python3 - "$SCRIPT" "$TMP_TEST/validate_archive.py" <<'PYEXTRACT'
@@ -59,10 +55,6 @@ if python3 "$TMP_TEST/validate_archive.py" "$(cat "$TMP_TEST/traversal.path")" p
 fi
 if python3 "$TMP_TEST/validate_archive.py" "$(cat "$TMP_TEST/link.path")" package >/dev/null 2>&1; then
   echo 'symlink archive entry was accepted' >&2; exit 1
-fi
-grep -Fq "refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?" "$SCRIPT"
-if grep -Eq 'refs/\(heads/main\|tags/' "$SCRIPT"; then
-  echo 'branch-based signing identity was accepted' >&2; exit 1
 fi
 grep -Fq 'sha256sum --ignore-missing --check SHA256SUMS' "$SCRIPT"
 grep -Fq 'awk -v archive="$ARCHIVE"' "$SCRIPT"

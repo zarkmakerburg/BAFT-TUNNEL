@@ -135,7 +135,7 @@ jobs:
           ID: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml
         run: |
           cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
-            --certificate-identity-regexp "^${ID}@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$" \
+            --certificate-identity "${ID}@${GITHUB_REF}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           sha256sum -c SHA256SUMS
       - name: Publish GitHub Release

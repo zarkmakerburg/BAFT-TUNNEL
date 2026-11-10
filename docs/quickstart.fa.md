@@ -15,18 +15,18 @@
 ## ۱. دریافت و بررسی بستهٔ امضاشده
 
 ```bash
-TAG=v0.1.0-rc.6   # نسخه‌ای که نصب می‌کنید
+TAG=vX.Y.Z   # نسخه‌ای که پس از اعمال سیاست امضای Tag منتشر شده است
 R=https://github.com/zarkmakerburg/BAFT-TUNNEL/releases/download/$TAG
 P=baft-tunnel-$TAG-linux-x86_64
 curl -fLO $R/$P.tar.gz -fLO $R/SHA256SUMS -fLO $R/SHA256SUMS.cosign.bundle
 cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
-  --certificate-identity-regexp '^https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' \
+  --certificate-identity "https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/tags/$TAG" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 sha256sum -c --ignore-missing SHA256SUMS      # باید چاپ کند: $P.tar.gz: OK
 tar -xzf $P.tar.gz && cd $P
 ```
 
-بدون cosign، `sha256sum -c` فقط سالم‌بودن دانلود را نشان می‌دهد، نه این‌که چه کسی آن را امضا کرده.
+نسخه‌های قدیمی که با هویت `refs/heads/main` امضا شده‌اند عمداً پذیرفته نمی‌شوند. بدون cosign، `sha256sum -c` فقط سالم‌بودن دانلود را نشان می‌دهد، نه این‌که چه کسی آن را امضا کرده.
 
 ## ۲. نصب (برنامه، سرویس‌ها، منو، ایجنت محلی)
 

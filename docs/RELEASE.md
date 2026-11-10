@@ -28,9 +28,12 @@ engine manifest, the SBOM, `SHA256SUMS` and its cosign bundle. Every file is lis
 
 ## Verify (users)
 
+Set `TAG` to the version being installed, then run:
+
 ```
+TAG=vX.Y.Z
 cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
-  --certificate-identity-regexp '^https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' \
+  --certificate-identity "https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/tags/$TAG" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 sha256sum -c --ignore-missing SHA256SUMS
 ```
