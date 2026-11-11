@@ -63,9 +63,9 @@ OP_NEW_SHA="$(sha256sum "$LOCAL_TMP/baft-tunnel-op-new" | awk '{print $1}')"
 for side in iran abroad; do
   copy_to_host "$side" "$LOCAL_TMP/op-pkg.tgz" "$LOCAL_TMP/baft-tunnel-ra" "$LOCAL_TMP/baft-tunnel-op-upgrade" "$LOCAL_TMP/baft-tunnel-op-new" "$LOCAL_TMP/baft-tunnel-op-bad"
   ssh_host "$side" "set -e; mkdir -p '$PKG'; tar -xzf '$REMOTE_DIR/op-pkg.tgz' -C '$PKG';
-    [ \"$(sha256sum '$REMOTE_DIR/baft-tunnel-ra' | cut -d' ' -f1)\" = '$OP_INITIAL_SHA' ];
+    [ \"\$(sha256sum '$REMOTE_DIR/baft-tunnel-ra' | cut -d' ' -f1)\" = '$OP_INITIAL_SHA' ];
     bash '$PKG/scripts/install.sh' --binary '$REMOTE_DIR/baft-tunnel-ra' >/dev/null;
-    [ \"$(sha256sum $UB | cut -d' ' -f1)\" = '$OP_INITIAL_SHA' ]"
+    [ \"\$(sha256sum $UB | cut -d' ' -f1)\" = '$OP_INITIAL_SHA' ]"
 done
 
 echo "--- offline PKI (runner plays the offline CA) ---"

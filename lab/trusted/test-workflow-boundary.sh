@@ -88,4 +88,15 @@ grep -F 'OP_INITIAL_SHA' "$ops" >/dev/null
 grep -F 'OP_CROSS_VERSION=1' "$ops" >/dev/null
 grep -F 'cross_version_update=${OP_CROSS_VERSION}' "$ops" >/dev/null
 grep -F 'prepare-ops-package.sh' "$ops" >/dev/null
+# Hash checks inside the remote install command must execute on the LAB host, not the runner.
+python3 - "$ops" <<'PYOPS'
+import sys
+lines = open(sys.argv[1], encoding='utf-8').read().splitlines()
+start = next(i for i, x in enumerate(lines) if 'ssh_host "$side" "set -e; mkdir -p' in x)
+hash_lines = [x for x in lines[start + 1:start + 4] if 'sha256sum' in x]
+assert len(hash_lines) == 2, hash_lines
+for line in hash_lines:
+    assert line.count('$(sha256sum') == 1, line
+    assert line.count(r'\$(sha256sum') == 1, line
+PYOPS
 echo 'Trusted Phase 1 workflow boundary tests: PASS'
