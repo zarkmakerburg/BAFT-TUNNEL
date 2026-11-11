@@ -150,3 +150,8 @@ jobs:
           if [ -n "$NOTES" ]; then flags+=(--notes "$NOTES"); else flags+=(--generate-notes); fi
           [ "$PRE" = "true" ] && flags+=(--prerelease)
           gh release create "$TAG" dist/* "${flags[@]}"
+      - name: Verify the published release through the public quick installer
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/quick-install.sh --verify-only --tag "$TAG"
