@@ -35,10 +35,10 @@ jobs:
         run: cargo +1.88.0 install cargo-codspeed --version 6.0.0 --locked
 
       - name: Build instrumented protocol benchmarks
-        run: cargo +1.88.0 codspeed build --mode simulation --bench protocol_handshake
+        run: cargo +1.88.0 codspeed build -m simulation --locked --bench protocol_handshake
 
       - name: Measure and upload to CodSpeed
         uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
         with:
           mode: simulation
-          run: cargo +1.88.0 codspeed run --bench protocol_handshake
+          run: cargo +1.88.0 codspeed run -m simulation --bench protocol_handshake
