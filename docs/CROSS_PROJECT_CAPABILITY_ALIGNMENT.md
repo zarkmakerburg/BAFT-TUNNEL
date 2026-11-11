@@ -138,7 +138,7 @@ Current limitations:
 - Tunnel view does not verify the authenticated peer/data path and does not provide full remote lifecycle actions.
 - Traffic counters / throughput are not exposed by the API; do not invent chart values.
 - No firewall inspection or firewall mutation.
-- Audit records do not yet provide complete actor and target semantics.
+- Audit v2 records actor, target and resource semantics (PR #109); structured evidence localization is tracked separately in B1.
 - Structured Preflight/Diagnostics evidence codes + typed params and fa/en localization are implemented in B1; exact-head CI passed on `cc37f48`. U8 is merged in PR #165; B1 is being synchronized onto the post-U8 main baseline before merge.
 - Physical-phone UX and formal accessibility audits are not recorded as complete.
 
