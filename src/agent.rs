@@ -3932,7 +3932,8 @@ mod tests {
         );
         assert_eq!(d["highest_passed_tier"], "secure_channel");
         assert_eq!(d["tiers"][2]["code"], "diag.identity.fail");
-        assert_eq!(d["next_action"]["code"], "diag.next.identity.fail");
+        assert_eq!(d["tiers"][2]["next_code"], "diag.next.identity.fail");
+        assert_eq!(d["next_action"]["code"], "diag.next.check"); // Unit state is Unknown, so the unit-level action takes precedence.
         // An anonymous handshake failure on the listening node is not blamed on the peer.
         std::fs::write(
             run.join("last_failure.json"),
