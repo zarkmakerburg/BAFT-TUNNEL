@@ -52,16 +52,18 @@ user_for() { [[ "$1" == iran ]] && printf '%s' "$IRAN_USER" || printf '%s' "$ABR
 port_for() { [[ "$1" == iran ]] && printf '%s' "$IRAN_PORT" || printf '%s' "$ABROAD_PORT"; }
 ssh_host() {
   local side="$1" command="$2"
+  local host; host="$(host_for "$side")"; [[ "$host" == *:* ]] && host="[$host]"
   ssh -i "$SSH_KEY" -p "$(port_for "$side")" -o BatchMode=yes -o IdentitiesOnly=yes \
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" \
     -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 \
-    -o LogLevel=ERROR "$(user_for "$side")@$(host_for "$side")" "$command"
+    -o LogLevel=ERROR "$(user_for "$side")@$host" "$command"
 }
 copy_to_host() {
   local side="$1"; shift
+  local host; host="$(host_for "$side")"; [[ "$host" == *:* ]] && host="[$host]"
   scp -i "$SSH_KEY" -P "$(port_for "$side")" -o BatchMode=yes -o IdentitiesOnly=yes \
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" \
-    -o ConnectTimeout=12 -o LogLevel=ERROR "$@" "$(user_for "$side")@$(host_for "$side"):$REMOTE_DIR/"
+    -o ConnectTimeout=12 -o LogLevel=ERROR "$@" "$(user_for "$side")@$host:$REMOTE_DIR/"
 }
 cleanup() {
   local rc=$?
@@ -122,6 +124,8 @@ done
 openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.crl" >/dev/null 2>&1
 IRAN_PIN="$(openssl x509 -in "$LOCAL_TMP/iran.crt" -outform DER | sha256sum | awk '{print $1}')"
 ABROAD_PIN="$(openssl x509 -in "$LOCAL_TMP/abroad.crt" -outform DER | sha256sum | awk '{print $1}')"
+ABROAD_DIAL_HOST="$LAB_ABROAD_HOST"
+[[ "$ABROAD_DIAL_HOST" == *:* ]] && ABROAD_DIAL_HOST="[$ABROAD_DIAL_HOST]"
 
 cat > "$LOCAL_TMP/echo.py" <<'PY'
 import socket, threading
@@ -165,7 +169,7 @@ done
 ssh_host abroad "nohup runuser -u nobody -- sh -c 'echo \$\$ > \"$REMOTE_DIR/echo.pid\"; exec timeout --signal=TERM --kill-after=5s 180s python3 \"$REMOTE_DIR/echo.py\"' > '$REMOTE_DIR/echo.log' 2>&1 < /dev/null &"
 sleep 1
 ssh_host abroad "nohup runuser -u nobody -- sh -c 'echo \$\$ > \"$REMOTE_DIR/serve.pid\"; exec timeout --signal=TERM --kill-after=5s 180s \"$REMOTE_DIR/baft-tunnel\" serve --listen \"0.0.0.0:$E2E_PORT\" --target \"127.0.0.1:$ECHO_PORT\" --local-id abroad --peer-id iran --tunnel-id trusted-lab --direction direct --peer-fingerprint \"$IRAN_PIN\" --ca \"$REMOTE_DIR/ca.crt\" --crl \"$REMOTE_DIR/ca.crl\" --cert \"$REMOTE_DIR/abroad.crt\" --key \"$REMOTE_DIR/abroad.key\" --max-streams 8' > '$REMOTE_DIR/serve.log' 2>&1 < /dev/null &"
-ssh_host iran "nohup runuser -u nobody -- sh -c 'echo \$\$ > \"$REMOTE_DIR/forward.pid\"; exec timeout --signal=TERM --kill-after=5s 180s \"$REMOTE_DIR/baft-tunnel\" forward --listen \"127.0.0.1:$LOCAL_PORT\" --remote \"$LAB_ABROAD_HOST:$E2E_PORT\" --server-name abroad.lab --local-id iran --peer-id abroad --tunnel-id trusted-lab --direction direct --peer-fingerprint \"$ABROAD_PIN\" --ca \"$REMOTE_DIR/ca.crt\" --crl \"$REMOTE_DIR/ca.crl\" --cert \"$REMOTE_DIR/iran.crt\" --key \"$REMOTE_DIR/iran.key\" --max-streams 8' > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null &"
+ssh_host iran "nohup runuser -u nobody -- sh -c 'echo \$\$ > \"$REMOTE_DIR/forward.pid\"; exec timeout --signal=TERM --kill-after=5s 180s \"$REMOTE_DIR/baft-tunnel\" forward --listen \"127.0.0.1:$LOCAL_PORT\" --remote \"$ABROAD_DIAL_HOST:$E2E_PORT\" --server-name abroad.lab --local-id iran --peer-id abroad --tunnel-id trusted-lab --direction direct --peer-fingerprint \"$ABROAD_PIN\" --ca \"$REMOTE_DIR/ca.crt\" --crl \"$REMOTE_DIR/ca.crl\" --cert \"$REMOTE_DIR/iran.crt\" --key \"$REMOTE_DIR/iran.key\" --max-streams 8' > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null &"
 sleep 2
 ssh_host iran "python3 '$REMOTE_DIR/probe.py' 65536"
 ssh_host iran "python3 '$REMOTE_DIR/probe.py' 2097289"
