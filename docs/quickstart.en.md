@@ -11,7 +11,7 @@
 
 ## 1. Download and verify the signed release
 
-On each host, download the package and signed checksum files from the same release:
+On each host, download the package and signed checksum files from the same release. You need curl, cosign, sha256sum and tar installed:
 
 ```bash
 TAG=v0.1.0-rc.7
