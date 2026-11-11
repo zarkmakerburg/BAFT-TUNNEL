@@ -121,6 +121,11 @@ on:
         required: false
         type: string
         default: ''
+      validation_only:
+        description: Run candidate validation (format, Rust tests, Clippy, installer, panel and offline CA) without contacting LAB hosts or using LAB SSH secrets
+        required: false
+        type: string
+        default: '0'
 
 permissions:
   contents: read
@@ -193,6 +198,7 @@ jobs:
         run: bash scripts/pki/test-offline-ca-container.sh
 
   two-host-e2e:
+    if: ${{ inputs.validation_only != '1' }}
     needs: [validate-confirmation, validate-d2-candidate]
     runs-on: ubuntu-22.04
     environment: baft-tunnel-lab
