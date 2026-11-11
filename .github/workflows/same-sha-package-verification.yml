@@ -73,5 +73,20 @@ jobs:
           cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
             --certificate-identity "${ID}@${GITHUB_REF}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          # Negative controls prove the artifact is not accepted under another repository,
+          # workflow identity, or branch ref. A successful negative verification is a failure.
+          if cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity "https://github.com/other-owner/other-repo/.github/workflows/same-sha-package-verification.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
+            echo "::error::signature verified under a foreign repository identity"; exit 1; fi
+          if cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity "${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
+            echo "::error::signature verified under another workflow identity"; exit 1; fi
+          if cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity "${ID}@refs/heads/main" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
+            echo "::error::signature verified under a main-branch identity"; exit 1; fi
+          echo "COSIGN_IDENTITY_NEGATIVES=PASS" | tee -a "$GITHUB_STEP_SUMMARY"
           sha256sum --check SHA256SUMS
           echo "SAME_SHA_PACKAGE_SIGNATURE=PASS ($CANDIDATE_SHA; no release or deployment)" | tee -a "$GITHUB_STEP_SUMMARY"
