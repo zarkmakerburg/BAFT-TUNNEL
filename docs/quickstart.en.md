@@ -40,30 +40,35 @@ sudo scripts/install.sh --binary ./baft-tunnel --register t1
 sudo baft-tunnel menu
 ```
 
-This installs the binary, systemd units, local Agent and bilingual menu; it does **not** start the tunnel. Choose English or Persian in the menu. The supported Ubuntu 22.04 baseline uses systemd LoadCredential= for service-scoped key delivery; this is not encryption at rest.
+This installs the binary, systemd units, local Agent and bilingual menu; it does **not** start the tunnel. The supported Ubuntu 22.04 baseline uses systemd LoadCredential= for service-scoped key delivery; this is not encryption at rest. Open the panel through an SSH tunnel as shown in Step 5. **Important:** the menu's standalone “Pair the two nodes” helper currently creates noise-tcp (Experimental); do not use that menu pairing shortcut for the supported tcp-tls path. Use the panel Wizard below.
 
-## 3. Prepare offline TLS material
+## 3. Enroll tcp-tls credentials through the panel
 
-The CA private key must stay on a separate offline administration machine. Generate each node key and CSR on that node, issue its certificate on the offline CA, and return only that node's private key plus its public certificate, CA certificate and current CRL. Never copy the CA private key to either server.
+On each host, open the local panel over SSH (Step 5) and use the Wizard's certificate/PKI section:
 
-Follow **Phase 1 offline certificate bootstrap** in the [Operator Guide](OPERATOR_GUIDE.md) for the exact new-node, issue-node, verify-node and file-permission steps. Use each host's real node ID and the DNS name/IP the peer will use. The certificate must bind the exact node ID and peer-facing DNS/IP SAN. Keep the node private key mode 0600; keep CA material offline.
+1. Enter this node's own DNS/IP certificate identity separately from the peer's certificate name.
+2. Choose **Generate CSR**. The private key is created on the node and never leaves it. Copy/download only the public CSR and its displayed metadata.
+3. On a separate offline CA machine, issue the certificate with the documented `scripts/pki/baft-pki.sh issue-node` procedure. The CA private key never goes to either server. Use the exact node ID and DNS/IP SAN requested by the panel; do not add wildcard or extra identity SANs.
+4. Return only the leaf certificate, CA certificate and current CRL to the matching node, then upload those three public files in the panel. The root helper validates that the leaf matches the locally held key, the CA/CRL are valid, the certificate identity and SAN are exact, and the certificate is not revoked. Upload does not restart the service.
+5. Wait for the panel's successful install receipt before continuing. If validation fails, the previous active credential set remains unchanged.
 
-## 4. Pair the nodes (Direct)
+The CA key stays offline. Do not upload a private key, CA database or passphrase. See [Operator Guide](OPERATOR_GUIDE.md) for offline CA issuance, certificate renewal, CRL renewal and push details. This is offline/manual signing, not online enrollment.
 
-On each host, in sudo baft-tunnel menu, choose **Pair the two nodes**:
+## 4. Pair the nodes with the Wizard (Direct)
 
-1. Select tcp-tls, **Direct**, and this host's role.
-2. Use serve on the host with the reachable tunnel listener (normally abroad); use forward on the other host.
-3. Enter the same tunnel ID, service port and tunnel port on both nodes. On the forward node, enter the serve host's reachable IP/DNS name.
-4. Run init on each node. Exchange the generated public pairing bundles; do not exchange private keys.
-5. Compare the printed checksums over a separate trusted channel (for example, a phone call). On each node, complete join using the other node's bundle and the checksum read from the other side.
-6. Review the configuration plan before proceeding.
+On each host, open **Wizard** in the local panel:
 
-A bundle is not a secret, but its checksum must be compared out of band to detect substitution. Never accept a mismatch. Do not overwrite an existing instance; choose a new name or deliberately resolve the existing installation first.
+1. Select **tcp-tls**, **Direct**, and this host's role. Use serve on the host with the reachable tunnel listener (normally abroad), and forward on the other host.
+2. Enter matching tunnel ID, service port and tunnel port on both nodes. On the forward node, enter the serve host's reachable IP/DNS name.
+3. Follow the displayed Init step on each node. Exchange only the generated public pairing bundles; never exchange private keys.
+4. Compare the displayed checksums over a separate trusted channel (for example, a phone call). Complete Join on each node using the peer's bundle and the checksum read from the other side.
+5. Review the plan and the peer identity before Apply. Apply is a separate explicit action.
+
+A bundle is not a secret, but its checksum must be compared out of band to detect substitution. Never accept a mismatch. Setup refuses to overwrite an existing instance; resolve the existing installation deliberately before retrying.
 
 ## 5. Start and verify
 
-On both nodes, choose **Tunnel → Start** in the menu. Start enables the instance at boot; Stop disables it at boot; Restart restarts it. Confirm the action when prompted.
+On both nodes, choose **Start** from the panel after both pairing steps have succeeded. Start enables the instance at boot; Stop disables it at boot; Restart restarts it. Confirm the action when prompted. The bilingual menu also provides these service lifecycle and maintenance actions.
 
 For the local panel, create an SSH tunnel from your workstation:
 
