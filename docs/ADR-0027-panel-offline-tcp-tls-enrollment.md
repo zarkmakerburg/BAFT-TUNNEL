@@ -103,14 +103,14 @@ The D2 implementation must account for these concrete seams:
 - src/setup.rs::plan() points new D2 configs at pki/current/ca.crt, pki/current/ca.crl, pki/current/node.crt, and the unchanged flat node.key. Existing flat configurations are not silently rewritten. A focused setup test verifies versioned path selection without flat-file migration.
 - The PKI script new-node NODE_ID NODE_DIR already produces a private key and public CSR without overwriting existing material; issue-node on the offline CA checks the requested identity and SAN; verify-node verifies the issued certificate. Reuse or port these exact policies rather than creating a second, weaker PKI policy.
 
-### Current implementation snapshot (local Mac; 2026-11-10)
+### Historical implementation snapshot (local Mac; 2026-11-10; superseded by accepted status above and addendum below)
 
 - D2-B1/B2: separate root-helper CSR create/read protocol, digest-bound replay receipts, fixed systemd path/service units, and staged registration.
 - D2-C: atomic SystemPkiClient requests, root-owned receipts, fixed config-dir guard, authenticated Agent routes, setup/configured-mode restrictions and secret-free audit.
 - D2-D: strict PEM/identity/key/CA/EKU/KeyUsage/SAN/CRL validation; same-CA monotonic CRL updates; immutable content-addressed sets; protected directory/file ownership and modes; atomic pointer publication and rollback; no automatic restart; legacy PKCS#8 P-256 key normalization.
 - D2-E: Persian/English Wizard UI for local SAN entry, CSR create/recovery/copy/download, offline CA instructions, three public PEM uploads, private-key rejection, install receipt and Init gating. Preflight treats a pristine node, an installer-created empty pki root (without sets/current), or a node with a complete pending CSR as an enrollment warning; a current pointer without its sets directory and any partial credential state remain blocked. Browser QA uses mocked API responses and does not claim real root-helper/LAB behavior.
 - Local evidence: focused certificate-install and active-set tests pass; the Persian/English Playwright flow passes 34 assertions including private-key file rejection and Init gating. Exact-head Linux CI and real-host LAB are still required. The prior serial full-suite host/platform baseline failures remain separate and must be rechecked on Linux.
-- D2-F remains open. No Stable release or production readiness is claimed.
+- D2-F was open at this historical implementation snapshot; it is now closed by PR #150 and LAB run 42996224181 (see acceptance addendum). No Stable release or production readiness is claimed.
 
 ### Revised implementation order
 
@@ -119,7 +119,7 @@ The D2 implementation must account for these concrete seams:
 3. D2-C: local implementation candidate complete; exact-head CI and target Linux/LAB remain open.
 4. D2-D: strict certificate/CA/CRL validation, immutable versioned sets and failure-safe atomic activation; legacy flat configs remain supported.
 5. D2-E: Persian/English panel enrollment, CSR recovery/download and public certificate upload; Init is gated on a successful install receipt.
-6. D2-F: exact-head CI, Linux/systemd acceptance and two-host LAB using the candidate SHA. Keep the stable-release gate closed until all evidence passes.
+6. D2-F: **completed** by merged PR #150 and trusted two-host RC.7 repeat [run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181). Stable-release and production gates remain separate.
 
 ## Required implementation slices
 
@@ -141,7 +141,7 @@ The D2 implementation must account for these concrete seams:
 
 ## Acceptance blockers
 
-D2 remains **OPEN / NOT VERIFIED** until exact-head CI, Linux/systemd validation, and two-host LAB evidence pass. D2-B1/B2/C/D/E are local implementation candidates; no target-host/LAB acceptance, merge, release or production deployment is claimed.
+At the time this historical slice table was authored, D2 remained OPEN / NOT VERIFIED. D2-B1/B2/C/D/E subsequently merged in PR #150 and D2-F passed the trusted two-host repeat [run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181), as recorded in the current status and acceptance addendum. No Stable release or production deployment is claimed.
 
 
 ## 2026-11-11 acceptance addendum
