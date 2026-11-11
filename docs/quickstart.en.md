@@ -1,5 +1,7 @@
 # BAFT-TUNNEL quick start
 
+> **Legacy guide — pending U8 reconciliation.** Its steps have not yet been reconciled line-by-line with the running signed-RC.7 U7 acceptance. For the current supported installed-service procedure, use the [Operator guide](OPERATOR_GUIDE.md); this file will be rewritten after U7 evidence is final.
+
 > Pre-release (Preview). Use on test hosts you can wipe. Not production-ready.
 
 Two Ubuntu 22.04+ hosts (systemd 249+): **abroad** serves, **iran** forwards. Run every step as root on both hosts unless noted.
@@ -38,7 +40,7 @@ sudo scripts/install.sh --binary ./baft-tunnel --register t1
 
 ## 3. Pair the two hosts
 
-Default engine `noise-tcp` needs no certificates. (`tcp-tls` needs the offline PKI first: `scripts/pki/baft-pki.sh`, see the [Operator guide](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/OPERATOR_GUIDE.md).)
+This legacy example explicitly selects `noise-tcp`, which is Experimental and Direct-only; it is not the default or the supported engine. For the supported `tcp-tls` path and its offline PKI prerequisites, follow the [Operator guide](OPERATOR_GUIDE.md).
 
 ```bash
 C="--engine noise-tcp --direction direct --tunnel-id t1 --service-port 8080 --instance t1"
