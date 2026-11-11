@@ -390,10 +390,11 @@ for side in iran abroad; do
     if [[ " ${PP_USERS_BEFORE[*]} " != *" $side:$u "* ]]; then ssh_host "$side" "! id $u >/dev/null 2>&1" || { echo "user $u was left on $side" >&2; exit 1; }; fi
   done
   pp_snapshot "$side" > "$LOCAL_TMP/pp-after-$side.txt"
-  if ! diff "$LOCAL_TMP/pp-before-$side.txt" "$LOCAL_TMP/pp-after-$side.txt" > "$LOCAL_TMP/pp-diff-$side.txt"; then
+  if ! diff -U3 "$LOCAL_TMP/pp-before-$side.txt" "$LOCAL_TMP/pp-after-$side.txt" > "$LOCAL_TMP/pp-diff-$side.txt"; then
     # Printed with addresses masked and capped: the run log is public and the host's firewall is not ours to publish.
     echo "--- host state changed on $side during the stage ($(grep -c '^[<>]' "$LOCAL_TMP/pp-diff-$side.txt") lines; addresses masked) ---"
-    grep '^[<>]' "$LOCAL_TMP/pp-diff-$side.txt" | sed -E 's/[0-9]{1,3}(\.[0-9]{1,3}){3}(\/[0-9]+)?/<ip>/g; s/[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,7}(\/[0-9]+)?/<ip6>/g' | head -n 30
+    # Keep table/set/chain context so external dynamic-set changes can be attributed, but never print host IPs.
+    sed -E 's/[0-9]{1,3}(\.[0-9]{1,3}){3}(\/[0-9]+)?/<ip>/g; s/[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,7}(\/[0-9]+)?/<ip6>/g' "$LOCAL_TMP/pp-diff-$side.txt" | head -n 80
     grep -E '^[<>]' "$LOCAL_TMP/pp-diff-$side.txt" | grep -qiE "baft|(:| |dport |sport )($MSVC|$MTP|$MAG)\b" &&
       { echo "BAFT-related firewall rules or units changed on $side" >&2; exit 1; }
     ! diff <(sed -n '/^# units/,$p' "$LOCAL_TMP/pp-before-$side.txt") <(sed -n '/^# units/,$p' "$LOCAL_TMP/pp-after-$side.txt") >/dev/null &&
