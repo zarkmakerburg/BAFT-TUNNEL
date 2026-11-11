@@ -103,7 +103,9 @@ jobs:
       - name: Install pinned Playwright
         run: 'npm install --prefix "$RUNNER_TEMP/baft-panel-qa" --no-save --no-audit --no-fund playwright@1.56.1'
       - name: Install Chromium
-        run: '"$RUNNER_TEMP/baft-panel-qa/node_modules/.bin/playwright" install --with-deps chromium'
+        # GitHub-hosted Ubuntu runners provide the OS libraries; avoid apt network
+        # dependency resolution here and install only the pinned Playwright browser.
+        run: '"$RUNNER_TEMP/baft-panel-qa/node_modules/.bin/playwright" install chromium'
       - name: Check panel JavaScript and real-host LAB script syntax
         run: |
           node --check panel/pages.js
