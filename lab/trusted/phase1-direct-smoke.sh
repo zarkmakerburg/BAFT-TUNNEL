@@ -44,6 +44,8 @@ install -m 600 /dev/null "$SSH_KEY"
 printf '%s\n' "$LAB_SSH_PRIVATE_KEY" > "$SSH_KEY"
 printf '%s\n' "$LAB_SSH_KNOWN_HOSTS" > "$KNOWN_HOSTS"
 chmod 600 "$KNOWN_HOSTS"
+# Do not pass raw credentials to ssh/scp child processes; they use only the protected key file.
+unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS
 
 host_for() { [[ "$1" == iran ]] && printf '%s' "$LAB_IRAN_HOST" || printf '%s' "$LAB_ABROAD_HOST"; }
 user_for() { [[ "$1" == iran ]] && printf '%s' "$IRAN_USER" || printf '%s' "$ABROAD_USER"; }

@@ -7,6 +7,7 @@ mkdir -p "$tmp/bin"
 cat > "$tmp/bin/ssh" <<'MOCK'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+[[ -z "${LAB_SSH_PRIVATE_KEY+x}" && -z "${LAB_SSH_KNOWN_HOSTS+x}" ]] || { echo 'raw SSH credentials leaked to ssh child' >&2; exit 90; }
 while (($#)); do
   case "$1" in
     -i|-p) (($# >= 2)) || exit 91; shift 2 ;;
@@ -25,6 +26,7 @@ MOCK
 cat > "$tmp/bin/scp" <<'MOCK'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+[[ -z "${LAB_SSH_PRIVATE_KEY+x}" && -z "${LAB_SSH_KNOWN_HOSTS+x}" ]] || { echo 'raw SSH credentials leaked to scp child' >&2; exit 90; }
 while (($#)); do
   case "$1" in
     -i|-P) (($# >= 2)) || exit 94; shift 2 ;;
