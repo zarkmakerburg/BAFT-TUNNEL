@@ -59,6 +59,11 @@ grep -F '51c0f53cb3cc71f977ca721fd19b40ceb5a13c46' "$u7" >/dev/null
 grep -F 'scripts/quick-install.sh' "$u7" >/dev/null
 grep -F -- '--verify-only --tag v0.1.0-rc.7' "$u7" >/dev/null
 grep -F 'cosign verify-blob' "$u7" >/dev/null
+grep -F 'gh run view 42695064225' "$u7" >/dev/null
+grep -F 'ff868a75aa39bbe92339fd4475c6764975feabb1' "$u7" >/dev/null
+grep -F 'refs/heads/main' "$u7" >/dev/null
+grep -F 'event == "workflow_dispatch"' "$u7" >/dev/null
+grep -F 'conclusion == "success"' "$u7" >/dev/null
 grep -F 'MVP_PKG:' "$u7" >/dev/null
 grep -F 'MVP_INITIAL_BINARY:' "$u7" >/dev/null
 grep -F 'test-systemd-baseline-lifecycle.sh' "$u7" >/dev/null
