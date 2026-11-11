@@ -49,7 +49,7 @@
 | Servers page is not a Fleet | Open, post-MVP | L2 |
 | No live throughput counters | **Done** (in-memory history 1 h) | PR #109 `/v1/traffic`, panel PR #120; persistence B5 |
 | No read-only firewall inspection | Open | B3 |
-| Audit actor/target; machine-readable evidence codes | Audit **done**; evidence codes **partial** | PR #109; B1 |
+| Audit actor/target; machine-readable evidence codes | Audit **done**; evidence codes implemented and exact-head CI passed; post-U8 sync merge pending | PR #109; B1 |
 | No billing in core | By design | — |
 | No production release | Open | Prereleases only: `v0.1.0-phase1-pre`, `rc.2`, `rc.3` (superseded), `rc.4` |
 
