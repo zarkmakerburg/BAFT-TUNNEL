@@ -3505,6 +3505,20 @@ mod tests {
             .find(|c| c["id"] == "direction_support")
             .unwrap();
         assert_eq!(c["result"], "blocked", "{out}");
+        assert!(
+            !c["remediation"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Reverse preview"),
+            "tcp-tls Reverse preflight must not advertise a preview: {c}"
+        );
+        assert!(
+            c["remediation"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Direct"),
+            "tcp-tls Reverse preflight should direct the operator to Direct: {c}"
+        );
     }
 
     fn plan_body(dir: &str) -> String {
