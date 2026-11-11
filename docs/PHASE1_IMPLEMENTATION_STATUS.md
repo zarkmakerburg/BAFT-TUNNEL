@@ -409,7 +409,7 @@ PR #109 merged as main `4852ecf`. What the agent (`--instance NAME`) now serves:
 | Exact-SHA CI, main `4852ecf` | phase1-rust run 42545957126: success |
 | Real-host LAB, main `4852ecf` (local build, binary sha256 `6160c9be…d5e4`) | phase1-two-host-e2e run 42545941726, mvp=1: PASS. Both hosts `p1_evidence=1`: traffic from_peer = to_peer = 2,162,825 bytes (64 KiB + 2 MiB sent), all tiers pass up to data_path, integrity unknown, state `carrying_traffic` with the correct peer id, audit with actor and no token. After revocation the dialing node reports `secure_channel: fail` (`p1_revoked_tier=secure_channel`). Cleanup: uninstall proven, listeners/units unchanged, no BAFT firewall rules; unrelated nft address-set drift on abroad (as in P0-5) |
 
-Open at this historical snapshot: remote Job receipts (need the P1-1 enrollment ADR); counter history beyond the agent's one-hour memory; Preflight evidence codes, read-only firewall inspection and "Add from Link" (P1 items 6 to 8). B1 structured localized evidence was implemented later and is recorded below.
+Open at this historical snapshot: remote Job receipts (need the P1-1 enrollment ADR); counter history beyond the agent's one-hour memory; read-only firewall inspection and "Add from Link" (P1 items 7 to 8). B1 structured localized evidence was implemented and its exact-head CI passed later (recorded below).
 
 ## 2026-11-11 — Current main acceptance addendum (U1 + D2)
 
