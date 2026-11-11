@@ -31,6 +31,8 @@ grep -F "if: \${{ github.ref == 'refs/heads/main' }}" "$d2" >/dev/null
 grep -F 'ref: ${{ github.sha }}' "$d2" >/dev/null
 grep -F 'git merge-base --is-ancestor "$actual" "$GITHUB_SHA"' "$d2" >/dev/null
 grep -F 'git diff --name-only "$actual" "$GITHUB_SHA"' "$d2" >/dev/null
+grep -F 'lab/real-hosts/panel-pairing-stage\.sh' "$d2" >/dev/null
+grep -F 'scripts/pki/test-panel-tls-lab-stage\.sh' "$d2" >/dev/null
 grep -F 'bash lab/real-hosts/phase1-two-host-e2e.sh' "$d2" >/dev/null
 grep -F 'LAB_PANEL_PAIRING=1 LAB_PANEL_ENGINE=tcp-tls' "$d2" >/dev/null
 grep -F 'unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS' "$d2" >/dev/null
