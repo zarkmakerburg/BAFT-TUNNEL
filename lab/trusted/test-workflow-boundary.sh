@@ -69,6 +69,8 @@ grep -F 'MVP_INITIAL_BINARY:' "$u7" >/dev/null
 grep -F 'test-systemd-baseline-lifecycle.sh' "$u7" >/dev/null
 grep -F "LAB_OPS: '3600'" "$u7" >/dev/null
 grep -F 'bash lab/real-hosts/phase1-two-host-e2e.sh' "$u7" >/dev/null
+# U7 supplies the independently verified RC.7 binary as MVP_BINARY; the real-host harness must use it as its default executable.
+grep -F 'BINARY="${BAFT_TUNNEL_BINARY:-${MVP_BINARY:-target/release/baft-tunnel}}"' "$root/lab/real-hosts/phase1-two-host-e2e.sh" >/dev/null
 grep -F 'environment: baft-tunnel-lab' "$u7" >/dev/null
 grep -F 'group: baft-tunnel-trusted-lab-hosts' "$trusted" >/dev/null
 grep -F 'group: baft-tunnel-trusted-lab-hosts' "$d2" >/dev/null
