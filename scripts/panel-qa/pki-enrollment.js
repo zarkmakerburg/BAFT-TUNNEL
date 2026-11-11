@@ -78,6 +78,9 @@ function serve() {
 
       await page.goto(base + '/#/setup');
       await page.waitForSelector('.shell');
+      const reverseDirection = page.locator('input[type="radio"][name="direction"][value="reverse"]');
+      ok(lang + ' keeps Reverse direction behaviorally disabled when the engine catalog offers Direct only',
+        await reverseDirection.count() === 1 && await reverseDirection.isDisabled());
       const next = () => page.locator('.nav-row button.primary');
       await page.locator('.choice').first().click(); // Direct
       await next().click(); // Servers
