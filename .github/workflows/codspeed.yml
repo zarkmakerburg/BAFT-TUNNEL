@@ -1,0 +1,44 @@
+name: CodSpeed
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: codspeed-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  protocol-benchmarks:
+    name: Protocol performance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Install pinned CodSpeed Cargo CLI
+        run: cargo +1.88.0 install cargo-codspeed --version 6.0.0 --locked
+
+      - name: Build instrumented protocol benchmarks
+        run: cargo +1.88.0 codspeed build --mode simulation --bench protocol_handshake
+
+      - name: Measure and upload to CodSpeed
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
+        with:
+          mode: simulation
+          run: cargo +1.88.0 codspeed run --bench protocol_handshake

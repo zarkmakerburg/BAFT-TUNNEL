@@ -27,3 +27,8 @@ x509-parser = "=0.16.0"
 
 [dev-dependencies]
 rcgen = "=0.14.4"
+criterion = { package = "codspeed-criterion-compat", version = "=6.0.0" }
+
+[[bench]]
+name = "protocol_handshake"
+harness = false
