@@ -139,7 +139,7 @@ Current limitations:
 - Traffic counters / throughput are not exposed by the API; do not invent chart values.
 - No firewall inspection or firewall mutation.
 - Audit v2 records actor, target and resource semantics (PR #109); structured evidence localization is tracked separately in B1.
-- Structured Preflight/Diagnostics evidence codes + typed params and fa/en localization are implemented in B1; exact-head CI passed on `cc37f48`. U8 is merged in PR #165; B1 is being synchronized onto the post-U8 main baseline before merge.
+- Structured Preflight/Diagnostics evidence codes + typed params and fa/en localization are implemented in B1; exact-head CI passed on `cc37f48`. U8 is merged in PR #165; B1 is synchronized in PR #168 and all exact-head CI groups passed on `5f37a7a`; merge is pending.
 - Physical-phone UX and formal accessibility audits are not recorded as complete.
 
 A separate BCC-style Connection Test is **not yet equivalent to an authenticated end-to-end diagnostic**. The current Preflight TCP probe must not be relabelled as a successful tunnel/data-path test. “Add from Link” is also not verified as an existing BAFT-TUNNEL workflow; treat it as a later feature request requiring an explicit safe link schema and validation.
@@ -259,7 +259,7 @@ Do not expose buttons for “Deploy best”, Direct/Reverse selection, firewall 
 3. End-to-end tunnel status and last-verified time.
 4. Audit actor/target/resource fields and durable remote Job receipts.
 5. Real traffic/throughput counters (bytes, rate, sampling interval, units and freshness).
-6. Structured Preflight/Diagnostics evidence codes + typed params and Persian/English localization (implementation and exact-head CI passed; merge sync after U8 is in progress).
+6. Structured Preflight/Diagnostics evidence codes + typed params and Persian/English localization (implementation and exact-head CI passed in PR #168; merge is pending).
 7. Read-only Firewall inspection, with explicit Unknown where unavailable.
 8. “Add from Link” only after a versioned import schema, checksum, strict validation, secret redaction and preview are designed.
 
