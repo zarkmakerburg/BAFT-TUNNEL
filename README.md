@@ -27,33 +27,31 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 
 ## Project status
 
-<sub>Updated: 9 November 2026 · evidence tied to `main` · plan in [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
+<sub>Updated: 11 November 2026 · source baseline: `main` `1219f547` · roadmap: [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
 
-<blockquote>
-**Active development — pre-release, not production-ready**
+> **Active development — signed pre-release `v0.1.0-rc.7`; not production-ready.** The trusted U7 acceptance workflow is currently running against `main` `1219f547` ([run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428)); its two-host result is not yet known.
 
-- **Direct** (`tcp-tls`) is the supported mode. It passed the two-host LAB (Iran and abroad hosts, Ubuntu 22.04 / systemd 249) with 64 KiB and 2 MiB integrity checks, recovery, revocation, a 3600 s soak, real TCP packet loss (nftables) and installed-product operations acceptance (backup/restore, same-version update/rollback).
-- **Reverse** for `tcp-tls` is a **Preview**: it passed dedicated two-host LAB runs including breadth (R3) and operations acceptance. `noise-tcp` Reverse is implemented but unproven and not offered.
-- The **BAFT engine** (pinned Go binary, separate process) is a **Preview, Direct only**. The Wizard shows it but cannot configure it yet.
-- **Apply → Verify → Receipt** covers `setup init`, `setup join` and `start` (ADR-0022/0023); `start` ran on real hosts (P0-5). Stop/restart and start at boot are not implemented. On an installed host the agent cannot write `/etc/baft-tunnel`, so Preflight blocks the panel Apply button and the printed commands are run as root.
-- Still open: multi-hour soak, online enrollment, agent service unit, boot persistence, signed operator scripts. A P0+P1 security assessment was performed ([SECURITY_ASSESSMENT.md](docs/SECURITY_ASSESSMENT.md)); a full independent pre-stable review has not.
-</blockquote>
+- **`tcp-tls` Direct:** supported pre-release path with real two-host integrity, recovery, revocation, operations, and bounded soak/loss evidence.
+- **`tcp-tls` Reverse:** real outbound-only data path with recovery and impairment evidence; remains **Preview**, not Stable.
+- **`noise-tcp`:** Experimental Direct only. Reverse is not accepted or offered.
+- **BAFT engine:** separate, pinned Go process; **Preview, Direct only**. It is visible in the catalogue but guided setup cannot yet configure it.
+- **Panel PKI (D2):** panel → local Agent → root helper → isolated offline CA → certificate/CA/CRL import → pairing → Start passed the trusted two-host repeat ([run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181)). This is Direct evidence and does not imply Stable readiness.
+- **CRL renewal/push (U1):** a 30-day CRL was renewed offline, pushed and activated on both LAB nodes, and tunnel recovery/integrity passed ([run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521), product-code SHA `8be7437`, an ancestor of current main).
+- Apply receipts report observed effects; `ready` remains **Unknown** by design. The panel and Agent are local to each host; there is no central Fleet or online enrollment service.
+- Stable release and production deployment have not occurred. The owner paused the independent pre-stable security review; it must not be restarted without a new instruction. LAB soak is capped at one hour.
 
 | Area | Current state |
 |---|---|
-| Architecture and threat model | Defined |
-| Rust TCP transport (`tcp-tls`) | Stable for Direct (pre-release) |
-| Direct | Real two-host LAB evidence: `tcp-tls` Stable, `noise-tcp` Experimental |
-| Reverse (tcp-tls) | **Preview.** Two-host LAB PASS, R3 breadth and operations acceptance passed |
-| Reverse (Noise) | Implemented in the core, **unproven** (no two-host LAB); not offered |
-| BAFT engine | **Preview, Direct only.** LAB PASS under hardened systemd 249 units; shown in the Wizard but not configurable there yet (ADR-0019 phase F) |
-| Apply → Verify → Receipt | `init`, `join`, `start` through the agent; no stop/restart, not enabled at boot |
-| Mutual TLS and peer identity | Implemented with negative tests |
-| Offline PKI and CRL revocation | Offline CA tool with `renew-crl`; CRL push helper; manual workflow |
-| Installer and systemd unit | Implemented; Ubuntu 22.04 / systemd 249 baseline passes CI and LAB |
-| Web panel and guided wizard | Status, diagnostics, traffic counters, audit and the setup Wizard; it cannot yet finish setup on an installed host |
-| Online enrollment / control plane | Not started |
-| Production release | Not available; signed prereleases only |
+| Runtime | Rust, Tokio, rustls TLS 1.3, Yamux; fixed destinations and bounded sessions/streams |
+| Supported baseline | Ubuntu 22.04 LTS / systemd 249 |
+| Direct `tcp-tls` | Supported pre-release; real two-host evidence |
+| Reverse `tcp-tls` | Preview; outbound-only data path, not Stable |
+| `noise-tcp` | Experimental Direct only |
+| BAFT engine | Separate pinned process; Preview Direct only; not configurable in Wizard |
+| PKI | Offline CA, certificate issuance/revocation, multi-CA/CRL overlap, operator CRL renewal and SSH push |
+| Agent / panel | Per-host loopback Agent and dependency-free static JavaScript panel; Persian RTL and English LTR |
+| Control plane / Fleet | Not implemented; online enrollment is deferred |
+| Release | Signed prereleases only; no stable release |
 
 Project record: [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
@@ -70,7 +68,7 @@ Security is part of the transport design, not an optional add-on.
 - No forwarded-payload logging.
 - Least-privilege service execution and hardened systemd defaults.
 
-The current node private keys are unencrypted PEM files. Offline CA issuance and CRL distribution are manual. Encrypted key custody, online enrollment, automated revocation distribution and further adversarial testing remain open work. A P0+P1 security assessment found no Critical or High issue; a full independent pre-stable review has not been performed. This project does not claim to be undetectable or to provide censorship-proof connectivity.
+On the Ubuntu 22.04 / systemd 249 baseline, the node key source is a root-only PEM file delivered to the service with `LoadCredential=`; this is service-scoped access, not encryption at rest. `LoadCredentialEncrypted=` is an opt-in path for systemd 250+ and is not required by the baseline. Offline CA issuance, 30-day CRL renewal and operator-initiated SSH push/activation are implemented and have two-host evidence; distribution is not centrally automated. Online enrollment and central control-plane work remain deferred. A P0+P1 security assessment found no Critical or High issue; the full independent pre-stable review is paused by the owner and has not been performed. This project does not claim to be undetectable or to provide censorship-proof connectivity.
 
 ## Technology
 
@@ -95,10 +93,13 @@ All runs used the configured Iran and abroad LAB hosts with temporary files and 
 |---|---|---|
 | [42506805986](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42506805986) (Reverse, `tcp-tls`) | `2d8cd5e` | PASS: outbound-only service node, 64 KiB and 2 MiB integrity (SHA-256 matched), reconnect after restarting either node, busy port refused, wrong identity refused, wrong pin refused, revoked certificate refused, recovery after refusals; Direct and revocation checks also passed |
 | [42504156305](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42504156305) (BAFT engine) | `2d8cd5e` | PASS: Direct and BAFT's own reverse path with 2 MiB integrity, unauthorized identity, wrong pin, revoked client and revoked listener refused, bad binary hash refused to start, hardened systemd 249 units (`NoNewPrivileges`, `MemoryDenyWriteExecute`), listener-unit recovery and engine SIGKILL recovery |
+| [42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181) (trusted D2 PKI repeat) | immutable signed RC.7 candidate | PASS: installed Agent + panel, offline CA ceremony, CSR/certificate/CA/CRL import, pairing, Start and tunnel checks; `host_drift=none` |
+| [42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) (U1 CRL renewal/push) | `8be7437` (ancestor of current main) | PASS: offline 30-day CRL renewal, SSH push and activation on both nodes, CRL number `0x1002→0x1003`, 2 MiB recovery/integrity, short and replayed CRLs refused |
+| [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) (trusted U7 integrated MVP acceptance) | `1219f547` | **IN PROGRESS / NOT VERIFIED:** release-tag and release-asset checks passed; the two-host acceptance job has not completed. Do not count this as a PASS yet. |
 
 Earlier "Reverse" LAB results (before 8 November 2026) tested a label only, not a reverse data path, and are **not** evidence for the current Reverse implementation (see [ADR-0021](docs/ADR-0021-connection-topology-and-reverse.md)).
 
-These are bounded LAB results, not a production-readiness certification or a long-duration reliability claim. Multi-hour soak and `noise-tcp` Reverse are untested.
+These are bounded LAB results, not a production-readiness certification or a long-duration reliability claim. The project does not require a multi-hour soak; any soak is capped at 60 minutes. `noise-tcp` Reverse is untested and unavailable.
 
 ## Engineering principles
 
@@ -111,16 +112,7 @@ These are bounded LAB results, not a production-readiness certification or a lon
 
 ## Roadmap
 
-| Stage | Focus |
-|---|---|
-| Phase 0 | Architecture, threat model, repository and LAB foundation |
-| **Phase 1 — active** | Rust transport, identity, authorization, CLI, PKI, installer, security testing |
-| Phase 2 | Enrollment, control plane, agent reconciliation, signed desired state |
-| Phase 3 | Web dashboard, setup wizard, monitoring and alerts |
-| Phase 4 | Optional QUIC, path selection, failover and additional transports |
-| Phase 5 | Hardening, independent security review, operational readiness and release |
-
-A phase is complete only when its acceptance evidence is reviewed. A roadmap item is not a shipped feature.
+The authoritative phase model and delivery order are maintained in [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md). Current work is completing the signed RC.7 MVP acceptance (U7), then reconciling the operator guides (U8). Later Fleet/control-plane and additional transport work remains gated; do not infer that a planned item is shipped from this README.
 
 ## Repository guide
 

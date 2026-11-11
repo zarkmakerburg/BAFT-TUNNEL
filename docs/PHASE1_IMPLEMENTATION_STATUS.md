@@ -419,3 +419,10 @@ Current repository baseline: `main` `b2c8ab5020754cad15485371a1f062de4092229f`.
 - **D2 panel-managed TLS PKI — merged and trusted repeat PASS:** PR [#150](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/150), merge commit `e5a7451f259be7df14187a58db5fe1c29c51a81b`. Trusted repeat [run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181) used immutable RC.7 product candidate `51c0f53cb3cc71b2f...`, built without LAB credentials. On both Ubuntu 22.04 hosts, panel→Agent→root helper→isolated offline CA→certificate/CA/CRL import→pairing→Start passed; private node keys remained local and unreadable by Agent; CA private key remained in network-isolated runner tmpfs; checksum tampering and revoked peers were refused; 64 KiB and 2,097,289-byte payload integrity passed; listener-restart recovery and cleanup passed. Run result `PHASE1_TWO_HOST_E2E=PASS`, `PANEL_PAIRING_RESULT engine=tcp-tls`, `baft_fw_rules=0`, `host_drift=none`.
 - **Drift qualification:** the earlier nftables set delta from run 42989166468 was not reproduced in run 42996224181. Its external owner/source remains unidentified; preserve S10 as a separate environmental follow-up. Do not claim attribution or use this as proof of universal firewall neutrality.
 - Scope: D2 evidence is Direct only; no soak, impairment, rollover, reboot or Reverse coverage in this repeat. No Stable release or production deployment is implied.
+
+
+## 2026-11-11 — U7 harness correction on current main
+
+- Current main advanced to `1219f547e6d9c2fe9605385f37a7d5dd8dab2995` through PR #162. The change corrects the two remote installation checksum commands to execute on the LAB hosts; it does not change the product runtime.
+- Trusted U7 run [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) is tied to this main SHA. `validate-release-tags` and `verify-release-assets` completed successfully. `two-host-u7-lab` is still in progress; no two-host acceptance result is claimed yet.
+- This addendum preserves the prior evidence and does not close or reopen product acceptance gates by itself.

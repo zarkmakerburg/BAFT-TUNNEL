@@ -1,61 +1,53 @@
 # BAFT-TUNNEL Architecture
 
-**Status:** Phase 1 security-first multi-path baseline; see ADR-0010.
+**Verified implementation snapshot:** 11 November 2026, `main` `1219f547`. This document describes the implemented local product, not the aspirational multi-node architecture. See [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md) and the ADRs for gated future work.
 
 ## Product boundary
 
-BAFT-TUNNEL is an independent Linux server-to-server TCP/UDP forwarding platform. It supports Direct and Reverse connection establishment, with Relay as a later topology option. Inbound reachability at both endpoints is never assumed. The product is not a subscription panel; its API is intended for integration with third-party panels.
+BAFT-TUNNEL is an owner-controlled Linux server-to-server tunnel product. The GitHub repository is publicly viewable, but no licence is granted. The core is Rust. The product is not a customer, subscription, reseller, or billing panel. Third-party integrations may use a future stable API, but a central control plane/Fleet is not currently implemented.
 
-No BAFT implementation, history, keys, production configuration, CI secrets, or deployment assets are imported.
+The BAFT main engine is an optional, separately pinned Go process under ADR-0019. It is not Rust code copied into this repository and is not the default engine.
 
-## Components
+## Implemented components
 
-- **Node agent:** maintains authenticated transport sessions, listeners, forwarding sockets, health probes, and reconciliation.
-- **Panel/API:** enrollment, node identity, desired state, policy, audit, and operator UI.
-- **CLI:** diagnostics, enrollment, plan/apply, backup/restore, and support bundle.
-- **Connection manager:** evaluates authorized Direct/Reverse/Relay paths and selects a healthy authenticated route.
-- **Transport adapters:** versioned, replaceable TCP and later QUIC data-plane implementations.
-- **Web UI:** plain JavaScript with no build step, served by the agent; Persian-first RTL with English support.
+- **Tunnel runtime:** Rust CLI and runtime; Tokio async execution; rustls TLS 1.3 mutual authentication for `tcp-tls`; Yamux multiplexing; bounded framing, sessions, streams, queues and deadlines.
+- **Engines:** `tcp-tls` is the supported pre-release engine. Direct has two-host evidence; Reverse is a real outbound-only path but remains Preview. `noise-tcp` is Experimental Direct only. The BAFT engine is a separate pinned process and Preview Direct only; guided setup cannot yet configure it.
+- **Local Agent:** a per-host loopback HTTP API, installed as a dedicated systemd service. It exposes local status, diagnostics, desired-state validation, lifecycle operations, audit, traffic and PKI pairing operations. It is not a central controller and does not manage a remote fleet.
+- **Panel:** dependency-free static HTML/CSS/JavaScript served by the local Agent; Persian RTL and English LTR. There is no React/Vite build chain.
+- **CLI and setup:** install, setup plan/init/join, config validation, Apply lifecycle, backup/restore, update/rollback, support bundle and PKI helpers.
+- **Persistence:** local files and JSON state; no central database or shared cloud state.
 
-The core engine, agent, API and CLI are Rust; the installer and PKI helpers are shell scripts. Tokio is the async runtime; rustls is used for TLS 1.3 transport. The agent API is a small loopback HTTP server on Tokio (no web framework). State is kept in JSON files; there is no database. `noise-tcp` (Noise IK over TCP) is an Experimental engine, Direct only.
+## Connection topology
 
-## Connectivity modes
+- **Direct:** the forward node dials the peer's reachable listener and exposes a local ingress.
+- **Reverse (`tcp-tls` Preview):** the service-side node initiates the outbound carrier; the public-side node owns the user ingress and forwards logical streams back through the established authenticated connection. It is not merely a label in the hello frame.
 
-- **Direct:** either peer may initiate TCP to the other peer's reachable listener.
-- **Reverse:** a peer behind NAT/firewall initiates outbound TCP to a reachable peer/hub; reverse logical streams use that established connection.
-- **Relay:** a separately authorized intermediary forwards opaque end-to-end protected traffic when a direct path cannot be established.
+Topology selection does not change cryptographic policy. `noise-tcp` Reverse is not accepted and must remain unavailable. Relay and automatic path selection are future work, not implemented capabilities.
 
-These are connection/topology modes, not cryptographic protocols. Direct and Reverse share the same secure TCP transport adapter; only dial/listen orchestration differs. Relay must not terminate end-to-end tunnel encryption.
+## Trust and data plane
 
-Path selection must use authenticated connection establishment and bounded bidirectional health checks, not ICMP alone. Auto-selection must never weaken cryptographic policy or silently downgrade transport security.
+For `tcp-tls`, both peers use TLS 1.3 mutual authentication. Peer validation binds the certificate chain, issuing-CA CRL, configured SHA-256 peer pin(s), and the expected URI SAN node identity. CRL status fails closed when missing, malformed, expired, or unverifiable. During a controlled CA rollover, the trust bundle may contain multiple CA certificates with one CRL per CA, and the peer may accept up to two distinct pins. The offline CA private key remains outside the nodes; CRL push is an operator-initiated SSH workflow.
 
-## Phase 1 data plane: TCP + TLS 1.3 mutual authentication
+After TLS authentication, a bounded versioned stream-open authorization frame binds the tunnel ID, direction and allowed capability before the fixed local destination is connected. A remote peer cannot choose an arbitrary destination or cause DNS resolution. TLS 1.3 early data is disabled. No plaintext or legacy-TLS fallback exists.
 
-The Phase 1 production data plane uses TCP protected by TLS 1.3 with mutual authentication for both Direct and Reverse modes. Per-node certificate identity is bound to the enrolled logical node and explicit tunnel authorization. Authentication is not authorization. Trust-anchor constraints, rotation, revocation, and safe enrollment are required.
+`noise-tcp` uses a separate Noise IK engine and pinned static peer keys; it is Experimental and does not inherit the `tcp-tls` acceptance claims. The BAFT engine is supervised as a separate process and launched only from its hash-verified Engine Store.
 
-Use bounded Yamux logical streams over the authenticated TLS stream. Bound sessions, streams, queues, frame sizes, handshake duration, and memory. A pool of independent TCP sessions may reduce the impact of per-session head-of-line blocking but does not eliminate TCP head-of-line blocking within a session. Pool width and buffering must be measured.
+## Agent authorization and receipts
 
-TLS 1.3 0-RTT is disabled for forwarded tunnel data and non-idempotent/control operations unless a separately reviewed replay-safe design proves it safe. No plaintext or legacy TLS fallback is permitted.
+The Agent binds to loopback and authenticates local API requests with a token. Privileged host mutations are delegated to fixed root-owned helpers with constrained inputs. Apply operations validate the desired action, use idempotency and rollback where implemented, and record secret-free receipts/audit events. The Agent's local status is not a central desired-state controller. Missing or stale evidence is `unknown`; an observed session or heartbeat alone never means `ready`. Apply receipts keep `ready` Unknown by design.
 
-## Later transport: QUIC
+## Host and key custody baseline
 
-QUIC over UDP with TLS 1.3 and native QUIC streams is a later optional adapter. UDP availability must never be assumed; TCP remains an independent path. Do not put Yamux on top of QUIC. Direct and Reverse may use QUIC when policy and authenticated reachability permit it. Evaluate migration, congestion control, anti-amplification, resource limits, and real network compatibility before enabling it by default.
+The supported baseline is Ubuntu 22.04 LTS with systemd 249. Node private keys are provisioned with root-only source permissions and delivered to the tunnel service using `LoadCredential=`. This protects access through service-scoped delivery but is not encryption at rest. `LoadCredentialEncrypted=` is optional on systemd 250+ and is not required or available on the baseline LAB hosts. No TPM-backed signing claim is made.
 
-ECH (RFC 9849) is an optional TLS privacy enhancement where DNS and server deployment support it. It is not a transport and does not hide destination IP, timing, volume, or all traffic characteristics. No traffic invisibility or censorship-resistance guarantee is made.
+The installed Agent and tunnel runtime run as separate unprivileged service identities. The panel/API is local to each host. The current product does not expose an online CA signer, online enrollment endpoint, central inventory, remote Jobs, Fleet or multi-tenant control plane.
 
-## Identity and control plane
+## Operations and evidence
 
-The proposed enrollment and issuer trust boundary is specified in [ADR-0014](ADR-0014-online-enrollment-and-control-plane.md). It remains proposed: do not expose an online enrollment endpoint or place CA signing keys in the API process until its issuer, operator-authentication, persistence, and security-review gates are closed.
+The installer, service lifecycle, PKI helpers, CRL update/rollback, backup/restore and guarded update paths have unit, CI and selected two-host LAB evidence. Evidence is always tied to its exact SHA and run. A hosted CI test, local test, simulation and real two-host LAB are different evidence classes. The current signed RC.7 U7 integrated acceptance is tracked separately; its outcome must not be assumed before the run completes.
 
+No firewall mutation is performed by the product. Unknown firewall state remains Unknown. Active forwarded TCP streams are closed on carrier loss or service shutdown; they are not transparently migrated or resumed.
 
-Each node has a long-term logical identity and separately managed transport credentials. Enrollment tokens are single-use, short-lived, and narrowly scoped. The control plane binds the enrolled node identity to its certificate identity and supports rotation/revocation. Claimed node IDs alone are never authentication. Desired state is versioned and signed. Agents verify scope, signature, generation, and expiry; compute a deterministic plan; apply idempotently after authorization; and return a receipt. Statuses distinguish desired, planned, applying, applied, degraded, failed, and unknown. Stale telemetry is always unknown, never healthy.
+## Deferred work and phase boundary
 
-## Privacy, reliability, and safety
-
-Minimize identity and metadata in application messages, logs, metrics, and support bundles. No payload logging. Audit records describe actor, action, target, plan hash, result, and time, not forwarded traffic. Secrets stay outside logs, metrics, and support bundles.
-
-Use bounded reconnect backoff with jitter, graceful drain, path health based on fresh measurements, and failover for new streams. A failed TCP session terminates its active logical streams unless an explicit resumable application protocol is implemented; do not claim transparent migration of established TCP streams. Sysctl/network tuning is opt-in and must restore only values changed by the product.
-
-## Phase boundary
-
-Phase 1 implementation is owner-approved. TCP/TLS 1.3 mTLS Direct and Reverse, node identity/authorization, key lifecycle, conformance tests, installer, and security review gates are required before production readiness. QUIC, ECH evaluation, Relay, and Noise comparison remain later work. No merge, release, or deployment is implied.
+Central enrollment/Fleet, signed remote desired state, remote Jobs, multiple tunnels per host, additional transports (QUIC/UDP, WebSocket, Relay), automatic failover, and a full pre-stable independent security review are deferred. The owner has paused the independent review; do not initiate it without renewed authorization. Do not describe these planned capabilities as implemented. No stable release or production deployment is authorized by this architecture document.
