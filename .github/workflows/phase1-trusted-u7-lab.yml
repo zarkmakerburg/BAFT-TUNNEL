@@ -89,19 +89,27 @@ jobs:
           "$RUNNER_TEMP/u7/rc7/extract/baft-tunnel-v0.1.0-rc.7-linux-x86_64/baft-tunnel" --version
           # Also exercise the public one-line installer verification path for this exact tag.
           bash "$GITHUB_WORKSPACE/scripts/quick-install.sh" --verify-only --tag v0.1.0-rc.7
-      - name: Verify the previous RC.5 runtime binary using its exact tag identity
+      - name: Verify the historical RC.5 release run, signature, checksum, and runtime binary
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/u7/rc5"
+          # RC.5 predates tag-bound release signing. Its successful release.yml dispatch
+          # is pinned to the exact immutable RC.5 commit and is the source of the main-ref certificate.
+          release_run="$(gh run view 42695064225 --repo zarkmakerburg/BAFT-TUNNEL --json headSha,headBranch,event,status,conclusion)"
+          jq -e '
+            .headSha == "ff868a75aa39bbe92339fd4475c6764975feabb1" and
+            .headBranch == "main" and .event == "workflow_dispatch" and
+            .status == "completed" and .conclusion == "success"
+          ' <<<"$release_run" >/dev/null
           gh release download v0.1.0-rc.5 --repo zarkmakerburg/BAFT-TUNNEL \
             --pattern 'baft-tunnel-v0.1.0-rc.5-linux-x86_64' \
             --pattern 'SHA256SUMS' --pattern 'SHA256SUMS.cosign.bundle' \
             --dir "$RUNNER_TEMP/u7/rc5"
           cosign verify-blob "$RUNNER_TEMP/u7/rc5/SHA256SUMS" \
             --bundle "$RUNNER_TEMP/u7/rc5/SHA256SUMS.cosign.bundle" \
-            --certificate-identity 'https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/tags/v0.1.0-rc.5' \
+            --certificate-identity 'https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/heads/main' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           (cd "$RUNNER_TEMP/u7/rc5" && sha256sum --ignore-missing --check SHA256SUMS)
           chmod 0755 "$RUNNER_TEMP/u7/rc5/baft-tunnel-v0.1.0-rc.5-linux-x86_64"
