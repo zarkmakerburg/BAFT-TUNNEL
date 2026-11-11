@@ -1,6 +1,6 @@
 # Panel: decision-to-implementation traceability (HQ Issue #2, binding comment 6720757885)
 
-Baseline: `main` at `650e955` (after PR #61); starting point of this work was `15c9784` plus the unmerged dashboard draft. Architecture is unchanged: the dependency-free panel served by the agent (PR #52). No framework, no build step, no new dependency.
+Historical baseline: `main` at `650e955` (after PR #61). This file records the original panel traceability work; the current status corrections below supersede stale Before/After statements. Current panel remains dependency-free static HTML/CSS/JavaScript served by the local Agent; no React/Vite build step.
 
 State column: I = implemented, P = partial, M = missing (backend gap, hidden or explained in the UI), NA = not applicable to the MVP. "Before" is the state of the panel at the baseline.
 
@@ -10,14 +10,14 @@ State column: I = implemented, P = partial, M = missing (backend gap, hidden or 
 | 2 | Dashboard hierarchy: summary cards, health/activity, warnings, empty state (5A) | `pages.js` overview | M | I | Screenshots desktop/mobile; first-run banner when nothing is stored | Servers count is "this node" only (no inventory) | P1 |
 | 3 | Navigation: persistent sidebar, active state, title, language control; mobile tab bar (4, 5A/B) | `app.js`, `panel.css` | P | I | Browser: `aria-current`, sidebar side flips with language; mobile tab bar + More | Firewall and Traffic pages omitted from navigation on purpose (no capability) | P1 |
 | 4 | Servers: identity, role, state, freshness, version, capabilities, trust, diagnostics (5D) | `pages.js` servers; `/v1/status,/v1/security,/v1/engines` | M | P | Resource cards for this node and its peer; unknown fields use the dashed Unknown pill | No enrolled-server inventory and no remote server state in the backend (gap G1) | P1 |
-| 5 | Tunnels: name, direction, endpoints, engine, state, last verified, metrics, actions (5E) | `pages.js` tunnels | P (table) | P | Resource card; reflows on mobile | Last verified, peer connection: Unknown unless an Apply start receipt observed an authorized session (stage `authorized_session`); data path stays Unknown (gap G2). Lifecycle actions: none exist in the API, shown as an explanation, no buttons | P1 |
+| 5 | Tunnels: name, direction, endpoints, engine, state, last verified, metrics, actions (5E) | `pages.js` tunnels | P (table) | P | Resource card; reflows on mobile | End-to-end tunnel state, peer identity and last verified time are now exposed by diagnostics/status (G2 closed by PR #109 and panel PR #120). Integrity remains Unknown in product status; lifecycle actions are now available through the local Agent API (see ADR-0023/0024) | P1 |
 | 6 | Direct/Reverse first, plain-language, small topology diagram (1.7, 5C) | `pages.js` wizard step 1 | M | I | Browser: direction required before continuing | Diagram is generic; initiator semantics are not claimed (ADR-0011: direction is a mutually agreed label) | P1 |
 | 7 | Wizard steps, one decision per step, Back/Next, inline validation, state kept, summary (5C, 6) | `pages.js` wizard | P (single form) | I | Browser: required-field errors, port range, same-id check, choices kept on Back, summary card | None | P1 |
 | 8 | Preflight Pass/Warning/Blocked/Unknown with evidence; unknown never Pass; block on Blocked (5C, 6) | `src/agent.rs` `preflight`, `POST /v1/setup/preflight` | M | P (structured codes + fa/en localization in draft PR #164) | Preflight checks now carry stable `code` + `params`; evidence and remediation have bilingual keys; 103-code × fa/en contract and bilingual Playwright assertions are added. CI pending on current head. | U7/U8 gate before acceptance; remote checks still need a peer-contact capability (gap G3) | P0 |
-| 9 | Explicit Apply, verify, receipt only with a real authorized path (1.4, 6) | wizard step 6, `POST /v1/setup/apply`, `src/apply.rs` | M (local stages) | I | Unit tests in `apply.rs` and `agent.rs` (gate refusal, idempotent replay, rollback of only created files, join verification, no secret in receipt); browser: Apply is disabled until the confirm box is ticked; live agent run produced a verified receipt | Apply covers only `setup init`/`join`: no service start, no firewall, no peer contact (see receipt `not_done`) | P0 |
-| 10 | Activity: timestamp, actor, operation, target, result, receipt; real filters; no secrets (5F) | `pages.js` activity, `/v1/audit` | P | P | Result filter on real records; hash as receipt; cards on mobile | Audit records have no actor or target field (gap G5) | P1 |
+| 9 | Explicit Apply, verify, receipt only with a real authorized path (1.4, 6) | wizard step 6, `POST /v1/setup/apply`, `src/apply.rs` | M (local stages) | I (implemented lifecycle; readiness remains conservative) | Unit tests in `apply.rs` and `agent.rs`; systemd control-helper tests; trusted D2 LAB Start and U7 integrated acceptance pending | Local Agent lifecycle includes init/join/start/stop/restart and boot persistence with receipts; remote fleet actions and firewall mutation are not implemented; `ready` remains Unknown | P0 |
+| 10 | Activity: timestamp, actor, operation, target, result, receipt; real filters; no secrets (5F) | `pages.js` activity, `/v1/audit` | P | P | Result filter on real records; hash as receipt; cards on mobile | Audit v2 records actor fingerprint, target, resource and receipt reference (G5 closed by PR #109) | P1 |
 | 11 | Agent page: version, capabilities, freshness, diagnostics, no secrets (4.5) | `pages.js` agent, `/v1/health` | M | I | Live health check with measured latency; "updated N s ago" in top bar | No enrollment flow exists | P1 |
-| 12 | Firewall and traffic visibility only if real (4.6, 4.7) | none | NA | NA | Traffic card says counters are not exposed; no chart, no number | Runtime counters and firewall inspection (gaps G6, G7) | P2 |
+| 12 | Firewall and traffic visibility only if real (4.6, 4.7) | `/v1/traffic`; firewall capability unavailable | NA | P (traffic implemented; firewall unavailable) | Traffic counters are exposed through `/v1/traffic` and rendered in the panel (G6 closed by PR #109 and PR #120); no firewall inspection or mutation is claimed (G7) | P2 |
 | 13 | Persian RTL / English LTR, switch updates everything, isolated technical values (7) | `i18n.js`, `BAFT.ltr` | P | P (B1 implementation in draft PR #164) | Existing browser language flows plus new code-based Preflight evidence and port interpolation assertions in English and Persian; RTL evidence rendering corrected. | CI and U7/U8 gate pending; formal accessibility audit and physical phone test remain open | P0 |
 | 14 | Desktop and mobile; tables to cards; no overflow; touch targets (1.8, 5B) | `panel.css` | P | I | Browser: 7 pages at 1280 px and 390 px in both languages, no horizontal overflow; 44 px targets | Not tested on a physical phone | P0 |
 | 15 | Accessibility and security: focus, labels, non-colour status, CSP, no innerHTML (7, 9) | all | P | I | Skip link and `aria-current`; every status has glyph + word; unit test: every asset has no `innerHTML`/`eval`; browser: 0 CSP violations | No formal accessibility audit | P0 |
@@ -26,14 +26,14 @@ State column: I = implemented, P = partial, M = missing (backend gap, hidden or 
 ## Gaps recorded for the backend (not faked in the UI)
 
 - G1 Enrolled-server inventory and per-server remote state.
-- G2 (closed by PR #109, panel PR #120) End-to-end tunnel verification (peer connection, last verified time).
-- G3 Preflight checks that need the peer: reachability, identity, port ownership on the peer.
-- G4 (init/join closed by ADR-0022; start closed by ADR-0023, P0-1/P0-5) Authorized apply API with idempotency, verification, rollback and a durable receipt. Still open: stop/restart and start at boot.
-- G5 (closed by PR #109) Actor and target fields in the audit log.
-- G6 (closed by PR #109, panel PR #120) Runtime traffic and throughput counters exposed through the API.
+- G2 **Closed** by PR #109 and panel PR #120: end-to-end tunnel diagnostics/status, peer identity and last-verified timestamp are exposed. The product does not promote this to `ready`; integrity remains Unknown unless separately measured.
+- G3 Preflight does not yet provide a complete remote-peer evidence contract (peer-side identity/port ownership and authoritative remote state). Peer-aware diagnostics exist under ADR-0024, but they are not equivalent to remote fleet inventory.
+- G4 **Closed for implemented lifecycle**: init/join, start/stop/restart and boot persistence are implemented through the local Agent/control helper; receipts remain secret-free and `ready` remains Unknown by design.
+- G5 **Closed** by PR #109: audit v2 includes actor fingerprint, target, resource and receipt reference.
+- G6 **Closed** by PR #109 and panel PR #120: runtime traffic/throughput counters are exposed through the API and shown in the panel.
 - G7 Read-only firewall inspection.
 - G8 Structured Preflight/Diagnostics evidence codes + params and fa/en localization are implemented in draft PR #164; CI and U7/U8 acceptance remain pending.
-- G9 The BAFT engine is not offered anywhere in the panel; it stays hidden until its runtime and acceptance gates pass.
+- G9 **Partly closed**: BAFT is visible as Preview, Direct only; guided setup cannot yet configure it (B4 remains open).
 
 ## Changed files
 
@@ -42,7 +42,7 @@ State column: I = implemented, P = partial, M = missing (backend gap, hidden or 
 - `panel/*`: `index.html`, `panel.css` (tokens and components), `i18n.js`, `app.js` (shell, API client, freshness), `charts.js`, `pages.js` (page registry; add a page with `BAFT.register`), `boot.js`. The old `panel/panel.js` is removed.
 - `scripts/panel-qa/*.js`: browser checks (not part of CI; run against a local agent).
 
-## Test evidence (local and browser; CI and LAB are listed in the PR)
+## Test evidence (historical baseline; newer evidence is linked in the current roadmap and HQ board)
 
 - Local: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (100 tests pass), `cargo check` of the fuzz crate.
 - Browser (headless Chromium, local agent with a real noise-tcp tunnel listening and a stored desired state): `scripts/panel-qa/browser-flows.js` 76 PASS 0 FAIL (desktop and mobile, fa and en, all pages, wizard flow, blocked preflight, no Apply control, no unexpected HTTP errors); `scripts/panel-qa/language-theme-unknown.js` 10 PASS 0 FAIL (default dark RTL, language switch, theme switch, skip link focus, status failure shows Unknown, no CSP violation).
@@ -50,9 +50,18 @@ State column: I = implemented, P = partial, M = missing (backend gap, hidden or 
 - Real-host LAB for the panel and preflight endpoint: PASS. Run 42490325790 on main `28df6f4` (setup=1): `AGENT_RESULT ... panel_served=1 wizard_plan_ok=1 preflight_ok=1`, `PHASE1_TWO_HOST_E2E=PASS` (two real hosts, temporary /tmp processes only). Covers the local checks and the read-only contract (`applied:false`, unknown stays unknown); the peer reachability probe (#71) and the capability contract (#70 covers `/v1/engines`, not yet asserted in LAB) are local/CI evidence only. Physical phone test and formal accessibility audit: NOT RUN. Earlier attempts 42483230203, 42487952538, 42488204011 failed because concurrent LAB runs from another thread collided on the shared hosts (port in use / stale cleanup), not because of the code.
 
 
+## 2026-11-11 status reconciliation
+
+- This matrix began at `650e955`; the original browser evidence and historical Before/After observations above are preserved, not represented as current-head test results.
+- Current main is `1219f547e6d9c2fe9605385f37a7d5dd8dab2995`. The local Agent lifecycle now includes start/stop/restart and boot persistence; audit v2 and traffic counters are implemented. `ready` remains Unknown by design.
+- The trusted D2 panel/PKI two-host repeat passed on the immutable RC.7 candidate (run [42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181)).
+- The trusted U7 integrated acceptance run [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) has passed release-tag and asset verification; its two-host job is still running. U7 is NOT VERIFIED until that job completes successfully.
+- Remaining product gaps in this matrix are remote fleet inventory (G1), complete remote preflight contract (G3), read-only firewall visibility (G7), localized machine-readable preflight evidence (G8), and BAFT guided configuration (G9/B4). Formal accessibility audit and physical-phone testing have not been run.
+
+
 ## 2026-11-11 B1 implementation addendum (draft PR #164)
 
 - Preflight checks now include a stable `code` and object-valued `params`; Diagnostics tiers include stable codes, params, localized source labels, next-step codes and next-step params. Existing English `evidence`/`text` fields remain for API compatibility.
 - The panel resolves every Preflight/Diagnostics evidence code, source, remediation and next action through the Persian/English dictionaries. Persian evidence and next-step strings render RTL; English technical values remain isolated LTR.
 - Translation contract: [103 codes × fa/en](../scripts/panel-qa/evidence-localization.js). Browser acceptance in `scripts/panel-qa/pki-enrollment.js` asserts localized certificate evidence and structured port interpolation in both languages.
-- Draft PR [#164](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/164), current head `dc2245270266ac12ff2fe20eaefdff06fa09f159`. Six focused Rust tests pass locally; Linux-only diagnostics status integration and full CI are pending. B1 remains **not accepted** until CI and U7/U8 gates pass.
+- Draft PR [#164](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/164), current head `aafad39c2cc8f6d069f2379cbb2f08483dd0a8a3`. Six focused Rust tests pass locally; Linux-only diagnostics status integration and full CI are pending. B1 remains **not accepted** until CI and U7/U8 gates pass.

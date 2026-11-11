@@ -5,7 +5,7 @@
 ## وضعیت در 2026-11-11
 
 - **Baseline بررسی‌شده:** `main` در SHA `a58dd88078a7db3426e105122acf811da5f83974` (PR #163؛ اصلاح مستندات/وضعیت، بدون تغییر Runtime).
-- **U7:** اجرای trusted [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) روی SHA والد `1219f547`؛ بررسی Tag و Asset موفق، تست دو‌سروره هنوز در حال اجرا و NOT VERIFIED.
+- **U7:** اجرای trusted [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) روی SHA والد `1219f547`؛ اعتبارسنجی Tag و Asset موفق، Job دو‌سروره هنوز در حال اجرا و نتیجهٔ پذیرش NOT VERIFIED.
 - **B1:** پیاده‌سازی کد و ترجمه در Draft PR [#164](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/164)؛ CI در حال اجرا و Merge تا عبور U7/U8 متوقف است.
 - **وضعیت محصول:** توسعه فعال / Pre-release؛ **آماده Production نیست**. نسخهٔ امضاشدهٔ `v0.1.0-rc.7` منتشر شده؛ Release پایدار یا Deploy عملیاتی انجام نشده است.
 - **گیت‌های P0:** هر پنج گیت با SHA و شناسه اجرا بسته شده‌اند؛ شواهد کامل در [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2) و [Roadmap](PRODUCT_ROADMAP.md).
