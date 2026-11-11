@@ -15,18 +15,18 @@ This selects the newest published release (including Preview while the project h
 ## 1. Download and verify the signed package
 
 ```bash
-TAG=v0.1.0-rc.6   # the release you install
+TAG=vX.Y.Z   # a post-hardening release signed from its version tag
 R=https://github.com/zarkmakerburg/BAFT-TUNNEL/releases/download/$TAG
 P=baft-tunnel-$TAG-linux-x86_64
 curl -fLO $R/$P.tar.gz -fLO $R/SHA256SUMS -fLO $R/SHA256SUMS.cosign.bundle
 cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
-  --certificate-identity-regexp '^https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/(heads/main|tags/v[0-9][0-9A-Za-z.+-]*)$' \
+  --certificate-identity "https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/tags/$TAG" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 sha256sum -c --ignore-missing SHA256SUMS      # must print: $P.tar.gz: OK
 tar -xzf $P.tar.gz && cd $P
 ```
 
-Without cosign, `sha256sum -c` alone only proves the download matches `SHA256SUMS`, not who signed it.
+Use a release published after the tag-only signing policy was introduced. Legacy releases signed from `refs/heads/main` are intentionally rejected. Without cosign, `sha256sum -c` alone only proves the download matches `SHA256SUMS`, not who signed it.
 
 ## 2. Install (binary, units, menu, local agent)
 

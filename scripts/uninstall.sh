@@ -88,7 +88,7 @@ if [[ "$PURGE" == "1" ]]; then
     fi
   done
   shopt -u nullglob
-  rm -rf "$ROOT_PREFIX/etc/baft-tunnel" "$ROOT_PREFIX/var/lib/baft-tunnel" "$ROOT_PREFIX/var/lib/baft-tunnel-agent"
+  rm -rf "$ROOT_PREFIX/etc/baft-tunnel" "$ROOT_PREFIX/var/lib/baft-tunnel" "$ROOT_PREFIX/var/lib/baft-tunnel-control" "$ROOT_PREFIX/var/lib/baft-tunnel-agent"
 fi
 if [[ "$STAGING" == "0" ]]; then systemctl daemon-reload; fi
 echo "Removed binary and systemd template. Service account was retained."

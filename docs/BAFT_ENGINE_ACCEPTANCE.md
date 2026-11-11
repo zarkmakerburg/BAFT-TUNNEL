@@ -8,7 +8,7 @@ Rule: BAFT stays hidden from `/v1/engines`, Wizard and preflight until every **R
 
 | # | Criterion | Required | Evidence source |
 |---|-----------|----------|-----------------|
-| A1 | Release artifact verified: `SHA256SUMS` cosign signature verifies for `release.yml@refs/heads/main` or `@refs/tags/v*` (SA-03 identity restriction); a foreign-repository identity and a feature-branch ref are **rejected**; engine digest equals `release/engine-manifest.json` pin | yes | LAB workflow step `COSIGN_IDENTITY_NEGATIVES=PASS` |
+| A1 | Release artifact verified: `SHA256SUMS` cosign signature verifies only for `release.yml@refs/tags/vX.Y.Z[-...]` (SA-03); identities from `refs/heads/main`, feature branches, and foreign repositories are **rejected**; engine digest equals `release/engine-manifest.json` pin | yes | LAB workflow step `COSIGN_IDENTITY_NEGATIVES=PASS` |
 | A2 | Engine build is reproducible and licence package present (AGPL-3.0 source link, third-party licences) | yes | `baft-engine-conformance` job `BAFT_REPRODUCIBLE=PASS` |
 | A3 | Config rendered by Rust validates in the real BAFT binary (golden configs) | yes | `baft-engine-conformance` job `golden` |
 | A4 | Install path: Store install, verify, hardened systemd 249 launch on Ubuntu 22.04 (real LAB hosts) | yes | `BAFT_SYSTEMD_RESULT`, `BAFT_STORE_ROLLBACK_RESULT` |

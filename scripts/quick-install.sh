@@ -8,7 +8,6 @@ REPO="zarkmakerburg/BAFT-TUNNEL"
 API="https://api.github.com/repos/$REPO"
 COSIGN_VERSION="v2.5.3"
 COSIGN_SHA256="7a6b86904016cc271e854aee54ca5b8ec5bd7fe28369e8775025c7ece029e2a4"
-COSIGN_IDENTITY='^https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/(heads/main|tags/v[0-9][0-9A-Za-z.+-]*)$'
 INSTANCE=""
 AGENT_LISTEN=""
 TAG=""
@@ -158,7 +157,7 @@ awk -v archive="$ARCHIVE" '$2 == archive && length($1) == 64 && $1 !~ /[^0-9a-f]
   die "the signed checksum manifest does not contain exactly the requested release archive"
 
 "$COSIGN_BIN" verify-blob "$TMP/SHA256SUMS" --bundle "$TMP/SHA256SUMS.cosign.bundle" \
-  --certificate-identity-regexp "$COSIGN_IDENTITY" \
+  --certificate-identity "https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$TAG" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 (
   cd "$TMP"

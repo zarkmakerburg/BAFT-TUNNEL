@@ -1,0 +1,92 @@
+name: Same-SHA package and signature verification
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-and-verify:
+    # Do not issue an OIDC signing identity to code submitted from a fork.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      ID: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/same-sha-package-verification.yml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert the exact candidate commit
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse --verify HEAD^{commit})"
+          [[ "$actual" == "$CANDIDATE_SHA" ]]
+          echo "Candidate SHA: $actual" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build release binary from the candidate SHA
+        run: cargo +1.88.0 build --locked --release
+      - name: Stage the release package without publishing
+        env:
+          TAG: ci-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          name="baft-tunnel-${TAG}-linux-x86_64"
+          root="$RUNNER_TEMP/pkg/$name"
+          mkdir -p "$root/scripts/pki"
+          install -m 0755 target/release/baft-tunnel "$root/baft-tunnel"
+          for f in scripts/*.sh scripts/pki/*.sh; do
+            case "$(basename "$f")" in test-*|test.sh|apply-branch-protection.sh|build-baft-engine.sh|baft-validate-golden.sh) continue ;; esac
+            install -m 0755 "$f" "$root/$f"
+          done
+          cp -R systemd "$root/systemd"
+          install -m 0644 docs/quickstart.en.md "$root/QUICKSTART.en.md"
+          install -m 0644 docs/quickstart.fa.md "$root/QUICKSTART.fa.md"
+          chmod -R u=rwX,go=rX "$root"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$RUNNER_TEMP/${name}.tar.gz" -C "$RUNNER_TEMP/pkg" "$name"
+          check="$RUNNER_TEMP/pkg-check"; mkdir -p "$check"
+          tar -xzf "$RUNNER_TEMP/${name}.tar.gz" -C "$check"
+          bash "$check/$name/scripts/install.sh" --binary "$check/$name/baft-tunnel" \
+            --destdir "$check/root" --systemd-version 249 >/dev/null
+          cmp "$check/root/usr/local/bin/baft-tunnel" target/release/baft-tunnel
+          echo "Package staged and install-smoked from $CANDIDATE_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+          cd "$RUNNER_TEMP"
+          sha256sum "${name}.tar.gz" > SHA256SUMS
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+        with:
+          cosign-release: v2.5.3
+      - name: Sign and verify the candidate package (no release publication)
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
+          cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity "${ID}@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          # Negative controls prove the artifact is not accepted under another repository,
+          # workflow identity, or branch ref. A successful negative verification is a failure.
+          if cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity "https://github.com/other-owner/other-repo/.github/workflows/same-sha-package-verification.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
+            echo "::error::signature verified under a foreign repository identity"; exit 1; fi
+          if cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity "${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
+            echo "::error::signature verified under another workflow identity"; exit 1; fi
+          if cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity "${ID}@refs/heads/main" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
+            echo "::error::signature verified under a main-branch identity"; exit 1; fi
+          echo "COSIGN_IDENTITY_NEGATIVES=PASS" | tee -a "$GITHUB_STEP_SUMMARY"
+          sha256sum --check SHA256SUMS
+          echo "SAME_SHA_PACKAGE_SIGNATURE=PASS ($CANDIDATE_SHA; no release or deployment)" | tee -a "$GITHUB_STEP_SUMMARY"

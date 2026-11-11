@@ -16,10 +16,15 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use x509_parser::{
+    oid_registry::{OID_EC_P256, OID_KEY_TYPE_EC_PUBLIC_KEY},
+    prelude::FromDer,
+    x509::SubjectPublicKeyInfo,
+};
 
 pub const REQUEST_SUFFIX: &str = "pki";
 pub const RESULT_SUFFIX: &str = "pki-result";
-pub const RECEIPTS_DIR: &str = "/var/lib/baft-tunnel/pki-receipts";
+pub const RECEIPTS_DIR: &str = "/var/lib/baft-tunnel-control/pki-receipts";
 pub const MAX_REQUEST_BYTES: u64 = 512 * 1024;
 pub const MAX_CSR_BYTES: u64 = 16 * 1024;
 pub const MAX_CERTIFICATE_BYTES: usize = 64 * 1024;
@@ -78,6 +83,44 @@ struct StoredReceipt {
 
 fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn ensure_private_receipt_dir(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => ensure!(
+            meta.is_dir() && !meta.file_type().is_symlink(),
+            "receipt path {} is not a real directory",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir(path)
+            .with_context(|| format!("create receipt directory {}", path.display()))?,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect receipt directory {}", path.display()));
+        }
+    }
+    let meta = fs::symlink_metadata(path)?;
+    // The fixed production path is below /var/lib, whose parent is root-owned and not writable
+    // by the service account. Requiring the helper's effective UID here prevents adoption of a
+    // pre-planted directory owned by the unprivileged Agent.
+    ensure!(
+        meta.is_dir() && !meta.file_type().is_symlink(),
+        "receipt path {} changed type",
+        path.display()
+    );
+    ensure!(
+        meta.uid() == unsafe { libc::geteuid() },
+        "receipt directory {} has an unexpected owner",
+        path.display()
+    );
+    ensure!(
+        meta.mode() & 0o022 == 0,
+        "receipt directory {} is writable by group or others",
+        path.display()
+    );
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("secure receipt directory {}", path.display()))?;
+    Ok(())
 }
 
 pub(crate) fn valid_node_id(value: &str) -> bool {
@@ -230,24 +273,23 @@ fn public_key_fingerprint_from_key(key: &Path) -> Result<String> {
 }
 
 pub(crate) fn is_p256_subject_public_key_info(der: &[u8]) -> bool {
-    // OpenSSL normally encodes the named-curve OID. LibreSSL may encode the same P-256
-    // parameters explicitly; in that case verify the complete defining parameters.
-    const P256_OID: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-    if der.windows(P256_OID.len()).any(|window| window == P256_OID) {
-        return true;
+    let Ok((remaining, spki)) = SubjectPublicKeyInfo::from_der(der) else {
+        return false;
+    };
+    if !remaining.is_empty() || spki.algorithm.algorithm != OID_KEY_TYPE_EC_PUBLIC_KEY {
+        return false;
     }
-    const EXPLICIT_P256: [&str; 6] = [
-        "022100ffffffff00000001000000000000000000000000ffffffffffffffffffffffff",
-        "0420ffffffff00000001000000000000000000000000fffffffffffffffffffffffc",
-        "04205ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b",
-        "0441046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-        "022100ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551",
-        "020101",
-    ];
-    EXPLICIT_P256.iter().all(|hex_value| {
-        hex::decode(hex_value)
-            .is_ok_and(|marker| der.windows(marker.len()).any(|window| window == marker))
-    })
+    let Some(parameters) = spki.algorithm.parameters.as_ref() else {
+        return false;
+    };
+    // OBJECT IDENTIFIER is universal tag 6. `Any::as_oid` alone is permissive and
+    // can reinterpret an explicit-parameter SEQUENCE as an OID; check the tag first.
+    if parameters.header.tag().0 != 6
+        || parameters.class() != x509_parser::der_parser::asn1_rs::Class::Universal
+    {
+        return false;
+    }
+    parameters.as_oid().is_ok_and(|curve| curve == OID_EC_P256) && spki.parsed().is_ok()
 }
 
 fn validate_csr(csr: &Path, node_id: &str, key: &Path, scratch: &Path) -> Result<String> {
@@ -857,8 +899,12 @@ fn install_certificate_at(
         ];
         run_openssl(&openssl_args(&ca_der_args))?;
         let ca_der = read_regular(&ca_der_path, MAX_CA_BYTES as u64, false)?;
-        let (_, ca_cert) = x509_parser::parse_x509_certificate(&ca_der)
+        let (remaining, ca_cert) = x509_parser::parse_x509_certificate(&ca_der)
             .map_err(|error| anyhow::anyhow!("parse CA certificate: {error}"))?;
+        ensure!(
+            remaining.is_empty(),
+            "uploaded CA certificate contains trailing DER data"
+        );
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs() as i64;
@@ -1063,6 +1109,24 @@ fn install_certificate_at(
     result
 }
 
+fn validate_fixed_directory_metadata(
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    service_gid: u32,
+) -> Result<()> {
+    ensure!(uid == 0, "fixed PKI directory must be owned by root");
+    ensure!(
+        gid == service_gid,
+        "fixed PKI directory must belong to the baft-tunnel service group"
+    );
+    ensure!(
+        mode & 0o777 == 0o750,
+        "fixed PKI directory must have mode 0750"
+    );
+    Ok(())
+}
+
 fn ensure_directory(config_dir: &Path, enforce_fixed: bool) -> Result<()> {
     let meta = fs::symlink_metadata(config_dir)
         .with_context(|| format!("inspect fixed PKI directory {}", config_dir.display()))?;
@@ -1075,6 +1139,9 @@ fn ensure_directory(config_dir: &Path, enforce_fixed: bool) -> Result<()> {
             config_dir == Path::new("/etc/baft-tunnel"),
             "PKI helper only serves /etc/baft-tunnel"
         );
+        let (_, service_gid) =
+            crate::setup::service_ids().context("baft-tunnel service account is unavailable")?;
+        validate_fixed_directory_metadata(meta.uid(), meta.gid(), meta.mode(), service_gid)?;
     }
     Ok(())
 }
@@ -1114,6 +1181,8 @@ fn create_csr_at(config_dir: &Path, req: &PkiRequest, enforce_fixed: bool) -> Re
             "prime256v1",
             "-genkey",
             "-noout",
+            "-param_enc",
+            "named_curve",
             "-out",
             staged_key.to_str().context("non-UTF8 staged key path")?,
         ];
@@ -1325,10 +1394,8 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
 
 fn write_atomic(path: &Path, bytes: &[u8], mode: u32, group: Option<u32>) -> Result<()> {
     let parent = path.parent().context("file has no parent directory")?;
-    let tmp = parent.join(format!(
-        ".{}.tmp",
-        path.file_name().unwrap().to_string_lossy()
-    ));
+    let file_name = path.file_name().context("file path has no name")?;
+    let tmp = parent.join(format!(".{}.tmp", file_name.to_string_lossy()));
     match fs::remove_file(&tmp) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1439,7 +1506,7 @@ fn run_at(
     let request_path = control_dir.join(format!("{name}.{REQUEST_SUFFIX}"));
     let bytes = read_bounded(&request_path, MAX_REQUEST_BYTES);
     let _ = fs::remove_file(&request_path);
-    let (request_id, receipt) = match bytes {
+    let (_, receipt) = match bytes {
         Err(error) => (None, refused(None, None, format!("{error:#}"))),
         Ok(bytes) => match parse_request(&bytes) {
             Err(error) => (None, refused(None, None, format!("{error:#}"))),
@@ -1447,71 +1514,82 @@ fn run_at(
                 let request_id = req.request_id.clone();
                 let digest = sha256(&bytes);
                 let instance_dir = receipts.join(name);
-                fs::create_dir_all(&instance_dir)?;
-                fs::set_permissions(receipts, fs::Permissions::from_mode(0o700))?;
-                fs::set_permissions(&instance_dir, fs::Permissions::from_mode(0o700))?;
-                let stored_path = instance_dir.join(format!("{}.json", req.request_id));
-                if stored_path.exists() {
-                    match read_bounded(&stored_path, MAX_REQUEST_BYTES + MAX_CSR_BYTES + 4096)
-                        .and_then(|raw| {
-                            serde_json::from_slice::<StoredReceipt>(&raw).map_err(Into::into)
-                        }) {
-                        Ok(stored) if stored.request_digest == digest => {
-                            let mut replay = stored.receipt;
-                            replay["replayed"] = json!(true);
-                            (Some(request_id), replay)
-                        }
-                        Ok(_) => (
-                            Some(request_id),
-                            refused(
-                                Some(&req.request_id),
-                                Some(req.operation),
-                                "request ID was already used for different content".into(),
-                            ),
-                        ),
-                        Err(error) => (
-                            Some(request_id),
-                            refused(
-                                Some(&req.request_id),
-                                Some(req.operation),
-                                format!("stored receipt is invalid: {error:#}"),
-                            ),
-                        ),
-                    }
-                } else {
-                    let operation_result = match req.operation {
-                        PkiOperation::CreateCsr => create_csr_at(config_dir, &req, enforce_fixed),
-                        PkiOperation::ReadCsr => read_csr_at(config_dir, &req, enforce_fixed),
-                        PkiOperation::InstallCertificate => {
-                            install_certificate_at(config_dir, &req, enforce_fixed)
-                        }
-                    };
-                    let receipt = match operation_result {
-                        Ok(mut data) => {
-                            data["receipt_version"] = json!(1);
-                            data["request_id"] = json!(req.request_id);
-                            data["operation"] = json!(req.operation);
-                            data["replayed"] = json!(false);
-                            data
-                        }
-                        Err(error) => refused(
+                let receipt_dirs = ensure_private_receipt_dir(receipts)
+                    .and_then(|()| ensure_private_receipt_dir(&instance_dir));
+                if let Err(error) = receipt_dirs {
+                    (
+                        Some(request_id),
+                        refused(
                             Some(&req.request_id),
                             Some(req.operation),
-                            format!("{error:#}"),
+                            format!("cannot prepare the root-owned receipt directory: {error:#}"),
                         ),
-                    };
-                    let stored = StoredReceipt {
-                        request_digest: digest,
-                        receipt: receipt.clone(),
-                    };
-                    let stored_bytes = serde_json::to_vec(&stored)?;
-                    write_atomic(&stored_path, &stored_bytes, 0o600, None)?;
-                    (Some(request_id), receipt)
+                    )
+                } else {
+                    let stored_path = instance_dir.join(format!("{}.json", req.request_id));
+                    if stored_path.exists() {
+                        match read_bounded(&stored_path, MAX_REQUEST_BYTES + MAX_CSR_BYTES + 4096)
+                            .and_then(|raw| {
+                                serde_json::from_slice::<StoredReceipt>(&raw).map_err(Into::into)
+                            }) {
+                            Ok(stored) if stored.request_digest == digest => {
+                                let mut replay = stored.receipt;
+                                replay["replayed"] = json!(true);
+                                (Some(request_id), replay)
+                            }
+                            Ok(_) => (
+                                Some(request_id),
+                                refused(
+                                    Some(&req.request_id),
+                                    Some(req.operation),
+                                    "request ID was already used for different content".into(),
+                                ),
+                            ),
+                            Err(error) => (
+                                Some(request_id),
+                                refused(
+                                    Some(&req.request_id),
+                                    Some(req.operation),
+                                    format!("stored receipt is invalid: {error:#}"),
+                                ),
+                            ),
+                        }
+                    } else {
+                        let operation_result = match req.operation {
+                            PkiOperation::CreateCsr => {
+                                create_csr_at(config_dir, &req, enforce_fixed)
+                            }
+                            PkiOperation::ReadCsr => read_csr_at(config_dir, &req, enforce_fixed),
+                            PkiOperation::InstallCertificate => {
+                                install_certificate_at(config_dir, &req, enforce_fixed)
+                            }
+                        };
+                        let receipt = match operation_result {
+                            Ok(mut data) => {
+                                data["receipt_version"] = json!(1);
+                                data["request_id"] = json!(req.request_id);
+                                data["operation"] = json!(req.operation);
+                                data["replayed"] = json!(false);
+                                data
+                            }
+                            Err(error) => refused(
+                                Some(&req.request_id),
+                                Some(req.operation),
+                                format!("{error:#}"),
+                            ),
+                        };
+                        let stored = StoredReceipt {
+                            request_digest: digest,
+                            receipt: receipt.clone(),
+                        };
+                        let stored_bytes = serde_json::to_vec(&stored)?;
+                        write_atomic(&stored_path, &stored_bytes, 0o600, None)?;
+                        (Some(request_id), receipt)
+                    }
                 }
             }
         },
     };
-    let _ = request_id;
     write_result(control_dir, name, &receipt)?;
     Ok(receipt)
 }
@@ -1621,7 +1699,7 @@ impl PkiHelperClient for SystemPkiClient {
         // on filesystems that do not support syncing directory handles.
         let _ = File::open(&self.control_dir).and_then(|dir| dir.sync_all());
 
-        const WAIT: Duration = Duration::from_secs(35);
+        const WAIT: Duration = Duration::from_secs(65);
         let started = Instant::now();
         while started.elapsed() < WAIT {
             std::thread::sleep(Duration::from_millis(200));
@@ -1728,6 +1806,100 @@ mod tests {
 
     fn test_request(req: &Value) -> PkiRequest {
         serde_json::from_value(req.clone()).unwrap()
+    }
+
+    #[test]
+    fn parses_complete_named_curve_spki_and_rejects_oid_decoys_and_trailing_der() {
+        let (tmp, _, _, _) = fixture();
+        let key = tmp.0.join("p256.pem");
+        let output = Command::new(OPENSSL)
+            .args([
+                "ecparam",
+                "-name",
+                "prime256v1",
+                "-genkey",
+                "-noout",
+                "-param_enc",
+                "named_curve",
+                "-out",
+            ])
+            .arg(&key)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let public = Command::new(OPENSSL)
+            .args(["pkey", "-in"])
+            .arg(&key)
+            .args(["-pubout", "-outform", "DER"])
+            .output()
+            .unwrap();
+        assert!(public.status.success());
+        assert!(is_p256_subject_public_key_info(&public.stdout));
+
+        let p384_key = tmp.0.join("p384.pem");
+        let p384 = Command::new(OPENSSL)
+            .args([
+                "ecparam",
+                "-name",
+                "secp384r1",
+                "-genkey",
+                "-noout",
+                "-param_enc",
+                "named_curve",
+                "-out",
+            ])
+            .arg(&p384_key)
+            .output()
+            .unwrap();
+        assert!(p384.status.success());
+        let p384_public = Command::new(OPENSSL)
+            .args(["pkey", "-in"])
+            .arg(&p384_key)
+            .args(["-pubout", "-outform", "DER"])
+            .output()
+            .unwrap();
+        assert!(p384_public.status.success());
+        assert!(!is_p256_subject_public_key_info(&p384_public.stdout));
+
+        // Explicit EC parameters are rejected; CSR/key generation below explicitly requests
+        // named-curve encoding so supported OpenSSL/LibreSSL variants emit the same SPKI form.
+        let explicit_key = tmp.0.join("p256-explicit.pem");
+        let explicit = Command::new(OPENSSL)
+            .args([
+                "ecparam",
+                "-name",
+                "prime256v1",
+                "-genkey",
+                "-noout",
+                "-param_enc",
+                "explicit",
+                "-out",
+            ])
+            .arg(&explicit_key)
+            .output()
+            .unwrap();
+        assert!(explicit.status.success());
+        let explicit_public = Command::new(OPENSSL)
+            .args(["pkey", "-in"])
+            .arg(&explicit_key)
+            .args(["-pubout", "-outform", "DER"])
+            .output()
+            .unwrap();
+        assert!(explicit_public.status.success());
+        assert!(!is_p256_subject_public_key_info(&explicit_public.stdout));
+
+        let mut trailing = public.stdout.clone();
+        trailing.push(0);
+        assert!(!is_p256_subject_public_key_info(&trailing));
+        let oid_decoy = [
+            0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
+        ];
+        assert!(!is_p256_subject_public_key_info(&oid_decoy));
+        assert!(!is_p256_subject_public_key_info(&[0x30, 0x01, 0x00]));
     }
 
     #[test]
@@ -1990,6 +2162,90 @@ mod tests {
     }
 
     #[test]
+    fn refuses_symlinked_receipt_root_without_changing_target_permissions() {
+        let (tmp, control, config, receipts) = fixture();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&config, &receipts).unwrap();
+        put(
+            &control,
+            &request(
+                "csr-symlink-receipt",
+                PkiOperation::CreateCsr,
+                "node1",
+                "localhost",
+            ),
+        );
+        let receipt = run_at("node1", &control, &config, &receipts, false).unwrap();
+        assert_eq!(receipt["result"], "refused", "{receipt}");
+        assert!(
+            receipt["reason"]
+                .as_str()
+                .unwrap()
+                .contains("receipt directory")
+        );
+        assert!(control.join("node1.pki-result").exists());
+        assert_eq!(
+            fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert!(!config.join("node.key").exists());
+        assert!(!config.join("node.csr").exists());
+        drop(tmp);
+    }
+
+    #[test]
+    fn receipt_parent_failure_returns_refused_result_without_waiting_for_timeout() {
+        let (_tmp, control, config, receipts) = fixture();
+        put(
+            &control,
+            &request(
+                "csr-parent-missing",
+                PkiOperation::CreateCsr,
+                "node1",
+                "localhost",
+            ),
+        );
+        let missing_parent = receipts.join("missing").join("pki-receipts");
+        let receipt = run_at("node1", &control, &config, &missing_parent, false).unwrap();
+        assert_eq!(receipt["result"], "refused", "{receipt}");
+        assert!(
+            receipt["reason"]
+                .as_str()
+                .unwrap()
+                .contains("cannot prepare the root-owned receipt directory"),
+            "{receipt}"
+        );
+        let result: Value =
+            serde_json::from_slice(&fs::read(control.join("node1.pki-result")).unwrap()).unwrap();
+        assert_eq!(result["result"], "refused");
+        assert_eq!(result["request_id"], "csr-parent-missing");
+        assert!(!config.join("node.key").exists());
+        assert!(!config.join("node.csr").exists());
+    }
+
+    #[test]
+    fn refuses_group_writable_receipt_root() {
+        let (tmp, _control, _config, receipts) = fixture();
+        fs::create_dir(&receipts).unwrap();
+        fs::set_permissions(&receipts, fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(ensure_private_receipt_dir(&receipts).is_err());
+        assert_eq!(
+            fs::metadata(&receipts).unwrap().permissions().mode() & 0o777,
+            0o770
+        );
+        drop(tmp);
+    }
+
+    #[test]
+    fn fixed_pki_directory_requires_root_service_group_and_0750() {
+        assert!(validate_fixed_directory_metadata(0, 42, 0o40750, 42).is_ok());
+        assert!(validate_fixed_directory_metadata(1000, 42, 0o40750, 42).is_err());
+        assert!(validate_fixed_directory_metadata(0, 1000, 0o40750, 42).is_err());
+        assert!(validate_fixed_directory_metadata(0, 42, 0o40770, 42).is_err());
+        assert!(validate_fixed_directory_metadata(0, 42, 0o40755, 42).is_err());
+    }
+
+    #[test]
     fn system_pki_client_is_bound_to_the_fixed_system_pki_directory() {
         let client = SystemPkiClient::default();
         assert!(client.supports_config_dir(Path::new("/etc/baft-tunnel")));
@@ -2034,6 +2290,12 @@ mod tests {
                         .unwrap();
                     file.set_permissions(fs::Permissions::from_mode(0o640))
                         .unwrap();
+                    if unsafe { libc::geteuid() } == 0 {
+                        if let Some((_, gid)) = crate::setup::service_ids() {
+                            use std::os::fd::AsRawFd;
+                            assert_eq!(unsafe { libc::fchown(file.as_raw_fd(), 0, gid) }, 0);
+                        }
+                    }
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(20));
@@ -2046,10 +2308,18 @@ mod tests {
             "node1",
             "node1.example.test",
         );
-        let receipt = client.submit("node1", &request).unwrap();
+        let receipt = client.submit("node1", &request);
         worker.join().unwrap();
-        assert_eq!(receipt["request_id"], "csr-client-01");
-        assert_eq!(receipt["operation"], "read_csr");
+        if unsafe { libc::geteuid() } == 0 && crate::setup::service_ids().is_none() {
+            assert!(
+                receipt.is_err(),
+                "root must reject receipts without the service identity"
+            );
+        } else {
+            let receipt = receipt.unwrap();
+            assert_eq!(receipt["request_id"], "csr-client-01");
+            assert_eq!(receipt["operation"], "read_csr");
+        }
         assert!(!control.join("node1.pki").exists());
     }
 
@@ -2066,8 +2336,18 @@ mod tests {
         file.write_all(br#"{"result":"created"}"#).unwrap();
         file.set_permissions(fs::Permissions::from_mode(0o640))
             .unwrap();
+        if unsafe { libc::geteuid() } == 0 {
+            if let Some((_, gid)) = crate::setup::service_ids() {
+                use std::os::fd::AsRawFd;
+                assert_eq!(unsafe { libc::fchown(file.as_raw_fd(), 0, gid) }, 0);
+            }
+        }
         drop(file);
-        assert!(read_helper_receipt(&receipt, 1024).is_ok());
+        if unsafe { libc::geteuid() } == 0 && crate::setup::service_ids().is_none() {
+            assert!(read_helper_receipt(&receipt, 1024).is_err());
+        } else {
+            assert!(read_helper_receipt(&receipt, 1024).is_ok());
+        }
         let target = tmp.0.join("receipt-target");
         fs::write(&target, b"{}").unwrap();
         fs::remove_file(&receipt).unwrap();

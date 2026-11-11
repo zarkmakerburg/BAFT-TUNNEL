@@ -1168,7 +1168,7 @@ fn remediation(id: &str) -> &'static str {
     match id {
         "planner" => "Fix the highlighted setting; the same rule applies on the command line.",
         "direction_support" => {
-            "Choose the Direct direction, or tcp-tls for the Reverse preview; Reverse is not available for this engine yet."
+            "Choose the Direct direction. Reverse is unavailable until its implementation passes independent acceptance."
         }
         "directory" => "Create the setup directory or choose another one.",
         "setup_helper" => {
@@ -1500,9 +1500,16 @@ async fn pki_certificate_action(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
     };
     let digest = hex::encode(Sha256::digest(&request_bytes));
     let operation = crate::pki_helper::PkiOperation::InstallCertificate;
-    let receipt = match ctx.pki.submit(name, &request) {
-        Ok(receipt) => receipt,
-        Err(error) => {
+    // Serialize credential installation with other state-changing agent operations, but
+    // keep the blocking helper wait off the async runtime worker (the helper may take 65 s).
+    let _guard = ctx.lock.lock().await;
+    let helper = ctx.pki.clone();
+    let instance = name.to_owned();
+    let receipt = match tokio::task::spawn_blocking(move || helper.submit(&instance, &request))
+        .await
+    {
+        Ok(Ok(receipt)) => receipt,
+        Ok(Err(error)) => {
             audit_pki_csr(
                 state_dir,
                 ctx,
@@ -1516,6 +1523,22 @@ async fn pki_certificate_action(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             return (
                 503,
                 json!({"error": "root PKI helper did not complete certificate installation", "detail": error}),
+            );
+        }
+        Err(error) => {
+            audit_pki_csr(
+                state_dir,
+                ctx,
+                name,
+                &req.node_id,
+                operation,
+                &digest,
+                &req.request_id,
+                "helper_task_error",
+            );
+            return (
+                500,
+                json!({"error": format!("PKI helper task failed: {error}")}),
             );
         }
     };
@@ -3344,6 +3367,20 @@ mod tests {
             .unwrap();
         assert_eq!(c["result"], "blocked");
         assert_eq!(c["code"], "pf.direction_support.blocked");
+        assert!(
+            !c["remediation"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Reverse preview"),
+            "blocked Reverse preflight must not advertise a preview: {c}"
+        );
+        assert!(
+            c["remediation"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Direct"),
+            "blocked Reverse preflight should direct the operator to Direct: {c}"
+        );
     }
 
     fn apply_body(dir: &str, key: &str, confirm: bool, direction: &str) -> String {
@@ -3455,7 +3492,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preflight_accepts_tcp_tls_reverse_as_a_preview_direction() {
+    async fn preflight_blocks_tcp_tls_reverse_until_independent_acceptance() {
         let body = plan_body("/nonexistent-baft-dir")
             .replace("\"direct\"", "\"reverse\"")
             .replace("noise-tcp", "tcp-tls");
@@ -3467,7 +3504,21 @@ mod tests {
             .iter()
             .find(|c| c["id"] == "direction_support")
             .unwrap();
-        assert_eq!(c["result"], "pass", "{out}");
+        assert_eq!(c["result"], "blocked", "{out}");
+        assert!(
+            !c["remediation"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Reverse preview"),
+            "tcp-tls Reverse preflight must not advertise a preview: {c}"
+        );
+        assert!(
+            c["remediation"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Direct"),
+            "tcp-tls Reverse preflight should direct the operator to Direct: {c}"
+        );
     }
 
     fn plan_body(dir: &str) -> String {
@@ -3626,7 +3677,7 @@ mod tests {
         let pages = include_str!("../panel/pages.js");
         assert!(!pages.contains("meth.ready"));
         assert!(en.contains(
-            "'meth.rev.note': 'Reverse is a Preview, not Stable; readiness is not verified.'"
+            "'meth.rev.note': 'Reverse is unavailable pending independent implementation and acceptance.'"
         ));
     }
 
