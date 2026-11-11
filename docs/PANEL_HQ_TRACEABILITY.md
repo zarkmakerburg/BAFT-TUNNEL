@@ -32,7 +32,7 @@ State column: I = implemented, P = partial, M = missing (backend gap, hidden or 
 - G5 **Closed** by PR #109: audit v2 includes actor fingerprint, target, resource and receipt reference.
 - G6 **Closed** by PR #109 and panel PR #120: runtime traffic/throughput counters are exposed through the API and shown in the panel.
 - G7 Read-only firewall inspection.
-- G8 Structured Preflight/Diagnostics evidence codes + typed params and Persian/English localization: implemented in B1; all exact-head CI groups passed in PR #168 at `5f37a7a`; merge is pending.
+- G8 Structured Preflight/Diagnostics evidence codes + typed params and Persian/English localization: implemented in B1; all exact-head CI groups passed in PR #168 at `1272dcac72d553b653ef7eb4f8f72047528c3291`; merge is pending.
 - G9 **Partly closed**: BAFT is visible as Preview, Direct only; guided setup cannot yet configure it (B4 remains open).
 
 ## Changed files
