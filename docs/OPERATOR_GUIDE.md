@@ -1,5 +1,15 @@
 # Operator Guide
 
+> **Current operator path (2026-11-11):** The signed RC.7 Direct workflow passed trusted two-host U7 acceptance in [run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428). For the supported end-user sequence, start with the [English quick start](quickstart.en.md) or [Persian quick start](quickstart.fa.md). This guide is the detailed reference for offline PKI, CRL operations, credentials, backup/update and recovery. Historical/developer-only sections are explicitly identified below; do not combine them with the installed Agent/menu workflow.
+
+## U7-verified operating boundary
+
+- Baseline: Ubuntu 22.04 / systemd 249, signed prerelease RC.7, x86_64.
+- Accepted path: `tcp-tls` + Direct; serve on the reachable node, forward on the connecting node.
+- Both hosts completed install, guided setup, Apply start, 64 KiB/2 MiB hash checks, diagnostics/status/traffic/audit, RC.5→RC.7 update, a 3600-second soak (264 rounds, zero failed probes, no restarts), process recovery, backup/restore, guarded update/rollback, certificate revocation refusal, uninstall and cleanup.
+- `ready` remains Unknown by design. Ordinary product Diagnostics keeps `integrity` Unknown; LAB hash checks are separate evidence.
+- U7 did not accept Reverse, Noise, BAFT, Stable or production deployment. The product does not modify firewall rules. A six-line unrelated address-set drift on the abroad LAB host remains open as S10.
+
 ## Interactive menu (Persian / English)
 
 `sudo scripts/install.sh` with no arguments on a terminal, or `sudo baft-tunnel menu` after an
@@ -97,9 +107,9 @@ The application supports a key_credential JSON source. This mode must be paired 
 
 If encrypted delivery is selected but the host, encrypted credential file, credential ID, or service-manager delivery is unavailable, startup must fail. Do not fall back to a plaintext key path or LoadCredential=. Systemd's selected host and/or TPM2 key binds the credential to the host OS and/or TPM device; this is not a claim of TPM non-exportable signing. The Rustls TLS stack still consumes the decrypted key in process memory. The Ubuntu 22.04 baseline uses standard LoadCredential=; the optional encrypted mode is not required for baseline support.
 
-## Remaining operator workflow
+## Remaining operator work and limits
 
-Before production use, this guide still needs tunnel plans, apply receipts, key rotation, backups, restore drills, monitoring, incident response, upgrade/rollback, and safe uninstall. The current real-host LAB uses temporary processes and files under `/tmp`; it does not install BAFT-TUNNEL as a persistent service.
+The accepted U7 run now proves the installed Agent/service lifecycle, Apply start, diagnostics, backup/restore, guarded update/rollback, revocation refusal, uninstall and cleanup on the two shared Ubuntu 22.04 LAB hosts. This does not complete Stable readiness. Still open: full CA/pin rollover on real hosts, firewall-drift attribution (S10), formal accessibility and physical-phone validation, bounded hardening, and the owner's currently paused independent pre-stable review. No soak longer than 3600 seconds is planned.
 
 
 ## Controlled service shutdown
@@ -159,7 +169,9 @@ Peers refuse every connection once the CRL has expired (both TLS roles fail clos
 
 Status: the CA bundle, per-CA CRLs, dual pins, bundle activation and the push helper are implemented and unit/mock tested; the full sequence has not yet been run on the real LAB hosts.
 
-## Guided setup (P3-001)
+> **Historical/developer workflow — not the supported installed-service quick start.** It describes the earlier manual setup/init/join/apply flow and should not be combined with the registered Agent/menu path above.
+
+## Guided setup (P3-001) — historical manual flow
 
 Two hosts, no hand-written JSON. On each host, the commands are `setup init` and `setup join`; a third, `setup plan`, previews without writing anything.
 
@@ -175,7 +187,9 @@ The bundle holds only public material (Noise public key or certificate pin, ids,
 ## Installed agent service and tunnel lifecycle (U2, U3)
 One step per host, as root: `sudo scripts/install.sh --binary ./baft-tunnel --register NAME` installs the binary, the tunnel template, the agent service `baft-tunnel-agent@NAME` (its own user `baft-tunnel-agent`, loopback `127.0.0.1:18080`; change with `--agent-listen 127.0.0.1:PORT`), the API token `/var/lib/baft-tunnel-agent/token` and the control helper. Then `sudo baft-tunnel setup init ... --instance NAME` and `sudo baft-tunnel setup join ...`: run as root they hand `node.noise`/`node.key` to `baft-tunnel:baft-tunnel` (mode 0600) and make `NAME.json`, the pairing state and the public PKI files group `baft-tunnel` readable, so no `chown`/`chgrp` is needed. The agent starts by itself as soon as `NAME.json` exists, and after every reboot. Open the panel (`ssh -L 18080:127.0.0.1:18080 HOST`, token: `sudo cat /var/lib/baft-tunnel-agent/token`), Tunnels: **Start** starts the tunnel and enables it at boot, **Stop** stops it and disables it at boot, **Restart** restarts it; each asks for confirmation, is verified and leaves a receipt (never "ready"). **Run diagnostics** shows each tier and one next action. `scripts/uninstall.sh --stop` also removes the agent units. The manual `setpriv` commands below remain for development.
 
-## Local status API (read-only, P3-002 A1)
+> **Historical/developer note.** The following manually launched Agent example predates the registered per-instance Agent service. For current operation, use the installed Agent and menu described above.
+
+## Local status API (read-only, P3-002 A1) — historical manual flow
 ```
 install -d -o baft-tunnel -g baft-tunnel -m 0700 /var/lib/baft-tunnel/agent
 AS="setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups"
@@ -193,7 +207,9 @@ Operations evidence (ADR-0024): start the agent with `--instance NAME` to report
 
 Automation only: `BAFT_PKI_PASSFILE=/path/to/file` makes `baft-pki.sh` read the CA passphrase from a file instead of prompting (used by the LAB stage with an ephemeral CA). Operators should leave it unset.
 
-## Local panel and wizard (P4-001)
+> **Historical implementation note.** The panel now exposes the installed tunnel lifecycle and diagnostics; follow the current quick starts rather than this earlier description.
+
+## Local panel and wizard (P4-001) — historical note
 Start the agent as above and open `http://127.0.0.1:18080/` (from another machine use an SSH tunnel: `ssh -L 18080:127.0.0.1:18080 host`). Paste the token from the token file. The panel shows status and the stored desired state; the wizard (engine, direct/reverse, role, one service port) prints the exact `setup init`, `setup join` and `apply` commands for that host. The panel never creates keys or starts a tunnel itself.
 
 ## Upgrade and rollback
@@ -203,5 +219,7 @@ Start the agent as above and open `http://127.0.0.1:18080/` (from another machin
 4. To roll back: `scripts/rollback.sh BACKUP_DIR`, then restart the instance. Rollback restores the previous binary and unit only; it does not start or restart anything itself.
 The CI job `ubuntu-2204-baseline` runs exactly this sequence from the previous pre-release on Ubuntu 22.04 / systemd 249.
 
-## Guided setup as an installed service (`--instance`)
+> **Superseded manual ownership instructions.** The current registered Agent and root-helper workflow owns the installed-service setup. Do not run the manual chown/chgrp sequence below as an additional step; use the current menu/quick-start path.
+
+## Guided setup as an installed service (`--instance`) — superseded
 `setup init ... --instance NAME` writes `NAME.json` (the file `baft-tunnel@NAME` reads) instead of `config.json`. With the default `--dir /etc/baft-tunnel` the sequence per host is: `scripts/install.sh --binary ./baft-tunnel`, `baft-tunnel setup init ... --instance NAME`, `baft-tunnel setup join ...`, `chown baft-tunnel:baft-tunnel /etc/baft-tunnel/node.noise` (or `node.key` for tcp-tls), `chgrp baft-tunnel /etc/baft-tunnel/NAME.json` (setup writes it root:root 0640 and the unit reads it as `baft-tunnel`), then start: `systemctl enable --now baft-tunnel@NAME`, or Apply `start` through the local agent after `scripts/install-agent-control.sh --instance NAME`. `scripts/uninstall.sh` also removes the control helper units, its tmpfiles entry and `/run/baft-tunnel/control`. The key stays mode 0600 and is owned by the service user; the wizard prints these commands when an instance name is given. This path uses a key file, not `LoadCredential=`; credential delivery for setup-generated keys is a later step.
