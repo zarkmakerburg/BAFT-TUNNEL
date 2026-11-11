@@ -1,0 +1,105 @@
+name: Phase 1 trusted two-host LAB (Direct smoke)
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact current head SHA of audit/pr150-remediation-2026-11-10
+        required: true
+        type: string
+      confirm:
+        description: Type RUN_TRUSTED_PHASE1_LAB to authorize the isolated Direct smoke test
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-trusted-phase1-lab
+  cancel-in-progress: false
+
+jobs:
+  validate-candidate:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      candidate_sha: ${{ steps.candidate.outputs.sha }}
+    steps:
+      - name: Require explicit approval and immutable SHA
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          REQUESTED_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == RUN_TRUSTED_PHASE1_LAB ]] || { echo 'Explicit confirmation is required' >&2; exit 2; }
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate_sha must be a full 40-character commit SHA' >&2; exit 2; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: audit/pr150-remediation-2026-11-10
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin candidate to the reviewed branch head
+        id: candidate
+        env:
+          REQUESTED_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse --verify HEAD^{commit})"
+          [[ "$actual" == "$REQUESTED_SHA" ]] || { echo "Requested SHA is not the current reviewed branch head: $actual" >&2; exit 2; }
+          echo "sha=$actual" >> "$GITHUB_OUTPUT"
+          echo "CANDIDATE_SHA=$actual" >> "$GITHUB_STEP_SUMMARY"
+
+  build-candidate:
+    needs: validate-candidate
+    # Build against the oldest supported LAB baseline to avoid newer glibc requirements.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ needs.validate-candidate.outputs.candidate_sha }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build candidate binary without LAB credentials
+        run: cargo +1.88.0 build --locked --release
+      - name: Upload candidate binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4.6.2
+        with:
+          name: baft-tunnel-candidate-${{ needs.validate-candidate.outputs.candidate_sha }}
+          path: target/release/baft-tunnel
+          if-no-files-found: error
+          retention-days: 1
+
+  two-host-lab:
+    needs: [validate-candidate, build-candidate]
+    runs-on: ubuntu-22.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 25
+    steps:
+      # This checkout is the trusted main-branch workflow revision, never the candidate.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download the candidate binary artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # actions/download-artifact v4.3.0
+        with:
+          name: baft-tunnel-candidate-${{ needs.validate-candidate.outputs.candidate_sha }}
+          path: ${{ runner.temp }}/baft-tunnel-candidate
+      - name: Run trusted, bounded Direct LAB orchestration
+        env:
+          LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+          LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
+          LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          LAB_SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+          LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+          LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+          LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+          LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+          CANDIDATE_SHA: ${{ needs.validate-candidate.outputs.candidate_sha }}
+          CANDIDATE_BINARY: ${{ runner.temp }}/baft-tunnel-candidate/baft-tunnel
+        run: bash lab/trusted/phase1-direct-smoke.sh

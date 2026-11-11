@@ -22,7 +22,7 @@ jobs:
       - name: Validate Bash scripts
         run: |
           set -eu
-          for script in lab/scripts/integration-netem.sh lab/scripts/test-clear-netem.sh lab/real-hosts/*.sh scripts/pki/*.sh scripts/install.sh scripts/rollback.sh scripts/uninstall.sh scripts/test-install.sh scripts/backup.sh scripts/restore.sh scripts/update.sh scripts/test-backup-update.sh scripts/menu.sh scripts/test-menu.sh; do
+          for script in lab/scripts/integration-netem.sh lab/scripts/test-clear-netem.sh lab/real-hosts/*.sh lab/trusted/*.sh scripts/pki/*.sh scripts/install.sh scripts/rollback.sh scripts/uninstall.sh scripts/test-install.sh scripts/backup.sh scripts/restore.sh scripts/update.sh scripts/test-backup-update.sh scripts/menu.sh scripts/test-menu.sh; do
             bash -n "$script"
           done
       - name: ShellCheck the interactive menu and the scripts it changes
@@ -45,6 +45,10 @@ jobs:
         run: bash lab/real-hosts/test-preflight-matrix.sh
       - name: Test Phase 1 two-host E2E orchestration (mock SSH/SCP only)
         run: bash lab/real-hosts/test-phase1-two-host-e2e.sh
+      - name: Test trusted Phase 1 LAB orchestration (mock SSH/SCP only)
+        run: bash lab/trusted/test-phase1-direct-smoke.sh
+      - name: Test trusted Phase 1 workflow secret boundary
+        run: sh lab/trusted/test-workflow-boundary.sh
       - name: Test offline PKI lifecycle (temporary CA only)
         run: bash scripts/pki/test.sh
       - name: Test guarded CRL update validation (temporary CAs only)
