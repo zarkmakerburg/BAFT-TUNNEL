@@ -4,8 +4,9 @@
 
 ## وضعیت در 2026-11-11
 
-- **Baseline بررسی‌شده:** `main` در SHA `a58dd88078a7db3426e105122acf811da5f83974` (ادغام مستندات PR #163؛ U7 روی والد محصول `1219f547` اجرا شد).
+- **Baseline بررسی‌شده:** `main` در SHA `52a2825254f8254386f71af7220c7cb244200fc2` (ادغام U8 مستندات PR #165؛ U7 روی والد محصول `1219f547` اجرا شد).
 - **U7:** PASS — هر سه Job در اجرای trusted [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) موفق شدند؛ تست واقعی دو‌سروره روی RC.7 امضاشده تکمیل شد.
+- **U8:** PASS — [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165) با CI کامل ادغام شد؛ راهنمای فارسی/انگلیسی و مسیر واقعی tcp-tls از Wizard مستند شدند.
 - **وضعیت محصول:** توسعه فعال / Pre-release؛ **آماده Production نیست**. نسخهٔ امضاشدهٔ `v0.1.0-rc.7` منتشر شده؛ Release پایدار یا Deploy عملیاتی انجام نشده است.
 - **گیت‌های P0:** هر پنج گیت با SHA و شناسه اجرا بسته شده‌اند؛ شواهد کامل در [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2) و [Roadmap](PRODUCT_ROADMAP.md).
   - **P0-1** (PR #88، helper سیستم‌دی): PR #88 ادغام شده؛ تست واقعی systemd 249 در اجرای 42523536944 (SHA `22e94f1`).
@@ -23,13 +24,13 @@
 
 موارد قبلی این بخش (Diagnostics و وضعیت End-to-End و شمارنده و Audit، ارزیابی امنیتی، Backup/Update، پذیرش Reverse و BAFT) انجام شده‌اند. ترتیب جدید (ارزیابی 2026-11-09؛ جزئیات در [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md)):
 
-۱. **Q1/Q3/Q4:** انجام شده‌اند؛ Q2 در همین مسیر با PR مستندات U8 در حال تکمیل است.
+۱. **Q1/Q2/Q3/Q4:** انجام شده‌اند؛ U8 در PR #165 ادغام شد.
 ۲. **U1:** انجام شده؛ اجرای [42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) تمدید CRL سی‌روزه، Push روی هر دو میزبان، افزایش شماره CRL و بازیابی تونل را ثابت کرد.
 ۳. **D2 / U5b:** انجام شده؛ PR #150 ادغام و اجرای تکراری trusted LAB شمارهٔ 42996224181 موفق شد.
 ۴. **U2/U3/U5a/U4/U6:** پیاده‌سازی شده‌اند؛ شواهد و جزئیات در Roadmap.
 ۵. **U7:** با اجرای [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) پذیرفته شد؛ Soak دقیقاً ۳۶۰۰ ثانیه، ۲۶۴ دور و صفر Probe ناموفق بود. Backup/Restore، Update/Rollback، Revocation، Uninstall و پاک‌سازی نیز موفق شدند.
-۶. **U8:** در [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165)؛ بازنویسی Quickstart فارسی/انگلیسی و رفع تناقض‌های راهنمای اپراتور مطابق مسیر پذیرفته‌شده؛ CI و بازبینی نهایی در انتظار است.
-۷. **B1:** کدهای ساختاریافته و ترجمه در Draft PR #164؛ دو Assertion اشتباه تست به Commit `cc37f48` اصلاح شدند و CI دقیقاً روی همان Head در حال اجراست. Merge بعد از پذیرش U8 و CI کامل.
+۶. **U8:** تکمیل و ادغام شد؛ [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165)، Commit ادغام `52a2825`؛ تمام CIها PASS.
+۷. **B1:** کدهای ساختاریافته و ترجمه در [PR #164](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/164)؛ تمام CIها روی Commit `cc37f48` PASS شدند. شاخه در حال همگام‌سازی با main پس از U8 است؛ پس از CI مجدد ادغام می‌شود.
 ۸. **B2–B6:** پس از U8 و طبق Roadmap؛ بدون افزودن پروتکل یا Fleet قبل از تکمیل این گیت‌ها.
 
 **موارد باز:** منشأ Drift شش‌خطی Address Set روی میزبان خارج در U7 (S10؛ هیچ قانون BAFT-TUNNEL وجود نداشت)، آزمون پنل روی گوشی واقعی، B1–B6 و گیت‌های انتشار. بازبینی امنیتی مستقل فعلاً به درخواست مالک متوقف است. Soak بیش از یک ساعت برنامه‌ریزی نمی‌شود. (بررسی حقوقی AGPL موتور BAFT حذف شد: BAFT متعلق به مالک است و استفاده از آن به‌صورت باینری جدا طبق ADR-0019 مجاز است؛ تأیید مالک 2026-11-09.)
