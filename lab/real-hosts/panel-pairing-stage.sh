@@ -373,8 +373,8 @@ import json, sys
 res = [json.loads(l)['resource'] for l in open(sys.argv[1])]
 assert 'setup/init' in res and 'setup/join' in res, res
 PY
-    test -f /var/lib/baft-tunnel/setup-receipts/$inst/pp-join-$side-0001.json &&
-    ! grep -rqs -- \"\$(cat $AGS/token)\" $AGS/$inst /var/lib/baft-tunnel/setup-receipts && ! grep -rqs 'PRIVATE KEY' $AGS/$inst" ||
+    test -f /var/lib/baft-tunnel-control/setup-receipts/$inst/pp-join-$side-0001.json &&
+    ! grep -rqs -- \"\$(cat $AGS/token)\" $AGS/$inst /var/lib/baft-tunnel-control/setup-receipts && ! grep -rqs 'PRIVATE KEY' $AGS/$inst" ||
     pp_fail "audit, helper receipt or secret check failed on $side" "$side"
 done
 LOCAL_PORT="$OLD_LOCAL_PORT"; stop_role abroad echo2
