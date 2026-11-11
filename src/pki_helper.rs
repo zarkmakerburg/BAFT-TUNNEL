@@ -899,8 +899,12 @@ fn install_certificate_at(
         ];
         run_openssl(&openssl_args(&ca_der_args))?;
         let ca_der = read_regular(&ca_der_path, MAX_CA_BYTES as u64, false)?;
-        let (_, ca_cert) = x509_parser::parse_x509_certificate(&ca_der)
+        let (remaining, ca_cert) = x509_parser::parse_x509_certificate(&ca_der)
             .map_err(|error| anyhow::anyhow!("parse CA certificate: {error}"))?;
+        ensure!(
+            remaining.is_empty(),
+            "uploaded CA certificate contains trailing DER data"
+        );
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs() as i64;
@@ -1105,6 +1109,24 @@ fn install_certificate_at(
     result
 }
 
+fn validate_fixed_directory_metadata(
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    service_gid: u32,
+) -> Result<()> {
+    ensure!(uid == 0, "fixed PKI directory must be owned by root");
+    ensure!(
+        gid == service_gid,
+        "fixed PKI directory must belong to the baft-tunnel service group"
+    );
+    ensure!(
+        mode & 0o777 == 0o750,
+        "fixed PKI directory must have mode 0750"
+    );
+    Ok(())
+}
+
 fn ensure_directory(config_dir: &Path, enforce_fixed: bool) -> Result<()> {
     let meta = fs::symlink_metadata(config_dir)
         .with_context(|| format!("inspect fixed PKI directory {}", config_dir.display()))?;
@@ -1117,6 +1139,9 @@ fn ensure_directory(config_dir: &Path, enforce_fixed: bool) -> Result<()> {
             config_dir == Path::new("/etc/baft-tunnel"),
             "PKI helper only serves /etc/baft-tunnel"
         );
+        let (_, service_gid) =
+            crate::setup::service_ids().context("baft-tunnel service account is unavailable")?;
+        validate_fixed_directory_metadata(meta.uid(), meta.gid(), meta.mode(), service_gid)?;
     }
     Ok(())
 }
@@ -2209,6 +2234,15 @@ mod tests {
             0o770
         );
         drop(tmp);
+    }
+
+    #[test]
+    fn fixed_pki_directory_requires_root_service_group_and_0750() {
+        assert!(validate_fixed_directory_metadata(0, 42, 0o40750, 42).is_ok());
+        assert!(validate_fixed_directory_metadata(1000, 42, 0o40750, 42).is_err());
+        assert!(validate_fixed_directory_metadata(0, 1000, 0o40750, 42).is_err());
+        assert!(validate_fixed_directory_metadata(0, 42, 0o40770, 42).is_err());
+        assert!(validate_fixed_directory_metadata(0, 42, 0o40755, 42).is_err());
     }
 
     #[test]
