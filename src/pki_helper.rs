@@ -1489,65 +1489,78 @@ fn run_at(
                 let request_id = req.request_id.clone();
                 let digest = sha256(&bytes);
                 let instance_dir = receipts.join(name);
-                ensure_private_receipt_dir(receipts)?;
-                ensure_private_receipt_dir(&instance_dir)?;
-                let stored_path = instance_dir.join(format!("{}.json", req.request_id));
-                if stored_path.exists() {
-                    match read_bounded(&stored_path, MAX_REQUEST_BYTES + MAX_CSR_BYTES + 4096)
-                        .and_then(|raw| {
-                            serde_json::from_slice::<StoredReceipt>(&raw).map_err(Into::into)
-                        }) {
-                        Ok(stored) if stored.request_digest == digest => {
-                            let mut replay = stored.receipt;
-                            replay["replayed"] = json!(true);
-                            (Some(request_id), replay)
-                        }
-                        Ok(_) => (
-                            Some(request_id),
-                            refused(
-                                Some(&req.request_id),
-                                Some(req.operation),
-                                "request ID was already used for different content".into(),
-                            ),
-                        ),
-                        Err(error) => (
-                            Some(request_id),
-                            refused(
-                                Some(&req.request_id),
-                                Some(req.operation),
-                                format!("stored receipt is invalid: {error:#}"),
-                            ),
-                        ),
-                    }
-                } else {
-                    let operation_result = match req.operation {
-                        PkiOperation::CreateCsr => create_csr_at(config_dir, &req, enforce_fixed),
-                        PkiOperation::ReadCsr => read_csr_at(config_dir, &req, enforce_fixed),
-                        PkiOperation::InstallCertificate => {
-                            install_certificate_at(config_dir, &req, enforce_fixed)
-                        }
-                    };
-                    let receipt = match operation_result {
-                        Ok(mut data) => {
-                            data["receipt_version"] = json!(1);
-                            data["request_id"] = json!(req.request_id);
-                            data["operation"] = json!(req.operation);
-                            data["replayed"] = json!(false);
-                            data
-                        }
-                        Err(error) => refused(
+                let receipt_dirs = ensure_private_receipt_dir(receipts)
+                    .and_then(|()| ensure_private_receipt_dir(&instance_dir));
+                if let Err(error) = receipt_dirs {
+                    (
+                        Some(request_id),
+                        refused(
                             Some(&req.request_id),
                             Some(req.operation),
-                            format!("{error:#}"),
+                            format!("cannot prepare the root-owned receipt directory: {error:#}"),
                         ),
-                    };
-                    let stored = StoredReceipt {
-                        request_digest: digest,
-                        receipt: receipt.clone(),
-                    };
-                    let stored_bytes = serde_json::to_vec(&stored)?;
-                    write_atomic(&stored_path, &stored_bytes, 0o600, None)?;
-                    (Some(request_id), receipt)
+                    )
+                } else {
+                    let stored_path = instance_dir.join(format!("{}.json", req.request_id));
+                    if stored_path.exists() {
+                        match read_bounded(&stored_path, MAX_REQUEST_BYTES + MAX_CSR_BYTES + 4096)
+                            .and_then(|raw| {
+                                serde_json::from_slice::<StoredReceipt>(&raw).map_err(Into::into)
+                            }) {
+                            Ok(stored) if stored.request_digest == digest => {
+                                let mut replay = stored.receipt;
+                                replay["replayed"] = json!(true);
+                                (Some(request_id), replay)
+                            }
+                            Ok(_) => (
+                                Some(request_id),
+                                refused(
+                                    Some(&req.request_id),
+                                    Some(req.operation),
+                                    "request ID was already used for different content".into(),
+                                ),
+                            ),
+                            Err(error) => (
+                                Some(request_id),
+                                refused(
+                                    Some(&req.request_id),
+                                    Some(req.operation),
+                                    format!("stored receipt is invalid: {error:#}"),
+                                ),
+                            ),
+                        }
+                    } else {
+                        let operation_result = match req.operation {
+                            PkiOperation::CreateCsr => {
+                                create_csr_at(config_dir, &req, enforce_fixed)
+                            }
+                            PkiOperation::ReadCsr => read_csr_at(config_dir, &req, enforce_fixed),
+                            PkiOperation::InstallCertificate => {
+                                install_certificate_at(config_dir, &req, enforce_fixed)
+                            }
+                        };
+                        let receipt = match operation_result {
+                            Ok(mut data) => {
+                                data["receipt_version"] = json!(1);
+                                data["request_id"] = json!(req.request_id);
+                                data["operation"] = json!(req.operation);
+                                data["replayed"] = json!(false);
+                                data
+                            }
+                            Err(error) => refused(
+                                Some(&req.request_id),
+                                Some(req.operation),
+                                format!("{error:#}"),
+                            ),
+                        };
+                        let stored = StoredReceipt {
+                            request_digest: digest,
+                            receipt: receipt.clone(),
+                        };
+                        let stored_bytes = serde_json::to_vec(&stored)?;
+                        write_atomic(&stored_path, &stored_bytes, 0o600, None)?;
+                        (Some(request_id), receipt)
+                    }
                 }
             }
         },
@@ -2137,7 +2150,15 @@ mod tests {
                 "localhost",
             ),
         );
-        assert!(run_at("node1", &control, &config, &receipts, false).is_err());
+        let receipt = run_at("node1", &control, &config, &receipts, false).unwrap();
+        assert_eq!(receipt["result"], "refused", "{receipt}");
+        assert!(
+            receipt["reason"]
+                .as_str()
+                .unwrap()
+                .contains("receipt directory")
+        );
+        assert!(control.join("node1.pki-result").exists());
         assert_eq!(
             fs::metadata(&config).unwrap().permissions().mode() & 0o777,
             0o755
@@ -2145,6 +2166,36 @@ mod tests {
         assert!(!config.join("node.key").exists());
         assert!(!config.join("node.csr").exists());
         drop(tmp);
+    }
+
+    #[test]
+    fn receipt_parent_failure_returns_refused_result_without_waiting_for_timeout() {
+        let (_tmp, control, config, receipts) = fixture();
+        put(
+            &control,
+            &request(
+                "csr-parent-missing",
+                PkiOperation::CreateCsr,
+                "node1",
+                "localhost",
+            ),
+        );
+        let missing_parent = receipts.join("missing").join("pki-receipts");
+        let receipt = run_at("node1", &control, &config, &missing_parent, false).unwrap();
+        assert_eq!(receipt["result"], "refused", "{receipt}");
+        assert!(
+            receipt["reason"]
+                .as_str()
+                .unwrap()
+                .contains("cannot prepare the root-owned receipt directory"),
+            "{receipt}"
+        );
+        let result: Value =
+            serde_json::from_slice(&fs::read(control.join("node1.pki-result")).unwrap()).unwrap();
+        assert_eq!(result["result"], "refused");
+        assert_eq!(result["request_id"], "csr-parent-missing");
+        assert!(!config.join("node.key").exists());
+        assert!(!config.join("node.csr").exists());
     }
 
     #[test]

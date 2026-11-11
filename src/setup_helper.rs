@@ -223,18 +223,26 @@ pub fn run(name: &str, control_dir: &Path, config_dir: &Path, receipts: &Path) -
         }
         Ok(req) => {
             let instance_receipts = receipts.join(name);
-            ensure_private_receipt_dir(receipts)?;
-            ensure_private_receipt_dir(&instance_receipts)?;
-            let (_, mut receipt) = apply::run(&req, &instance_receipts, None);
-            receipt["source"] = json!("root setup helper");
-            if receipt["result"] == "applied" && receipt["replayed"] != json!(true) {
-                let config_file = crate::setup::config_file_name(Some(name))?;
-                match crate::setup::adopt_for_service(config_dir, &config_file) {
-                    Ok(lines) => receipt["ownership"] = json!(lines),
-                    Err(e) => receipt["ownership_error"] = json!(format!("{e:#}")),
+            match ensure_private_receipt_dir(receipts)
+                .and_then(|()| ensure_private_receipt_dir(&instance_receipts))
+            {
+                Err(error) => refused(
+                    Some(&req.key),
+                    format!("cannot prepare the root-owned receipt directory: {error:#}"),
+                ),
+                Ok(()) => {
+                    let (_, mut receipt) = apply::run(&req, &instance_receipts, None);
+                    receipt["source"] = json!("root setup helper");
+                    if receipt["result"] == "applied" && receipt["replayed"] != json!(true) {
+                        let config_file = crate::setup::config_file_name(Some(name))?;
+                        match crate::setup::adopt_for_service(config_dir, &config_file) {
+                            Ok(lines) => receipt["ownership"] = json!(lines),
+                            Err(e) => receipt["ownership_error"] = json!(format!("{e:#}")),
+                        }
+                    }
+                    receipt
                 }
             }
-            receipt
         }
     };
     write_result(control_dir, name, &receipt)?;
@@ -385,6 +393,33 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o640);
+    }
+
+    #[test]
+    fn receipt_parent_failure_returns_refused_result_without_waiting_for_timeout() {
+        let (_t, control, conf, receipts) = setup();
+        put(
+            &control,
+            &json!({"stage": "init", "key": "helper-key-parent", "plan": plan_json(&conf, "inst1")}),
+        );
+        // The parent of the configured receipt root does not exist. The helper must still
+        // publish a bounded refusal through the separate control result channel.
+        let missing_parent = receipts.join("missing").join("setup-receipts");
+        let out = run("inst1", &control, &conf, &missing_parent).unwrap();
+        assert_eq!(out["result"], "refused", "{out}");
+        assert!(
+            out["reason"]
+                .as_str()
+                .unwrap()
+                .contains("cannot prepare the root-owned receipt directory"),
+            "{out}"
+        );
+        let result: Value =
+            serde_json::from_slice(&std::fs::read(control.join("inst1.setup-result")).unwrap())
+                .unwrap();
+        assert_eq!(result["result"], "refused");
+        assert_eq!(result["id"], "helper-key-parent");
+        assert_eq!(std::fs::read_dir(&conf).unwrap().count(), 0);
     }
 
     #[test]
