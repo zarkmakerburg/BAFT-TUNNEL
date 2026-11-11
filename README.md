@@ -95,7 +95,7 @@ All runs used the configured Iran and abroad LAB hosts with temporary files and 
 | [42504156305](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42504156305) (BAFT engine) | `2d8cd5e` | PASS: Direct and BAFT's own reverse path with 2 MiB integrity, unauthorized identity, wrong pin, revoked client and revoked listener refused, bad binary hash refused to start, hardened systemd 249 units (`NoNewPrivileges`, `MemoryDenyWriteExecute`), listener-unit recovery and engine SIGKILL recovery |
 | [42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181) (trusted D2 PKI repeat) | immutable signed RC.7 candidate | PASS: installed Agent + panel, offline CA ceremony, CSR/certificate/CA/CRL import, pairing, Start and tunnel checks; `host_drift=none` |
 | [42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) (U1 CRL renewal/push) | `8be7437` (ancestor of current main) | PASS: offline 30-day CRL renewal, SSH push and activation on both nodes, CRL number `0x1002→0x1003`, 2 MiB recovery/integrity, short and replayed CRLs refused |
-| [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) (trusted U7 integrated MVP acceptance) | `1219f547` | **IN PROGRESS / NOT VERIFIED:** release-tag and release-asset checks passed; the two-host acceptance job has not completed. Do not count this as a PASS yet. |
+| [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) (trusted U7 integrated MVP acceptance) | `1219f547` | **PASS:** release-tag, signed-asset verification and real two-host acceptance all completed successfully. See the U7 acceptance record in the roadmap and HQ Issue #2. |
 
 Earlier "Reverse" LAB results (before 8 November 2026) tested a label only, not a reverse data path, and are **not** evidence for the current Reverse implementation (see [ADR-0021](docs/ADR-0021-connection-topology-and-reverse.md)).
 
@@ -112,7 +112,7 @@ These are bounded LAB results, not a production-readiness certification or a lon
 
 ## Roadmap
 
-The authoritative phase model and delivery order are maintained in [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md). Current work is completing the signed RC.7 MVP acceptance (U7), then reconciling the operator guides (U8). Later Fleet/control-plane and additional transport work remains gated; do not infer that a planned item is shipped from this README.
+The authoritative phase model and delivery order are maintained in [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md). U7 signed-RC.7 MVP acceptance passed; current work is reconciling the operator guides (U8). Later Fleet/control-plane and additional transport work remains gated; do not infer that a planned item is shipped from this README.
 
 ## Repository guide
 
