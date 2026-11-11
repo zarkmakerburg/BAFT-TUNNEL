@@ -117,7 +117,7 @@ The P0 gates proved the runtime; they did not make the product usable by a non-e
 | done | U4, U5b | Panel pairing, root config promotion, bundle import/export and D2 CSR/certificate enrollment (PR #150; trusted repeat LAB 42996224181) | REAL-LAB | — |
 | done | U6 | Signed prerelease packaging and quick installer; `v0.1.0-rc.7` published | release workflow | — |
 | done | U7 | Signed RC.7 MVP acceptance v2: clean install, guided Direct setup, lifecycle, diagnostics, 64 KiB + 2 MiB hash integrity, backup/restore, RC.5→RC.7 upgrade, failed-update rollback, revocation, uninstall and cleanup | REAL-LAB PASS [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428); 3600s soak, 264 rounds, 0 failed probes | — |
-| now | U8 | Final operator quickstarts en/fa and troubleshooting follow the exact accepted U7 path; eliminate contradictory legacy operator instructions | docs PR in progress | — |
+| now | U8 | Final operator quickstarts en/fa and troubleshooting follow the exact accepted U7 path; eliminate contradictory legacy operator instructions | [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165); exact-head CI/review pending | — |
 | after U8 | B1–B6 | B1 structured localized evidence is implemented in draft PR #164; exact-head CI rerun after one test assertion correction. Then B2 integrity probe, B3 read-only firewall visibility, B4 BAFT configuration, B5 history/alerts, B6 accessibility | as listed | — |
 | Phase 6 | S1–S10 | Stable hardening; no soak longer than 1 hour is planned. Keep external nftables attribution as a separate open environmental item (S10) | ≤60 min where soak is needed | owner review currently paused |
 
