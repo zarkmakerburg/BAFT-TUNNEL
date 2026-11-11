@@ -1,6 +1,6 @@
 # ADR-0027: panel-managed offline tcp-tls certificate enrollment
 
-**Status:** D2-B1/B2/C/D/E implementation candidate on feature/d2-panel-tcp-tls-enrollment; local Rust and browser evidence is recorded below. D2-F (exact-head Linux CI and two-host LAB) remains OPEN / NOT VERIFIED. No merge, release or production deployment.
+**Status (current 2026-11-11): ACCEPTED / MERGED.** D2 was merged through [PR #150](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/150) (`e5a7451f259be7df14187a58db5fe1c29c51a81b`). Exact-head CI and trusted two-host RC.7 repeat [run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181) passed. Implementation-candidate / D2-F-open statements later in this ADR are historical snapshots, superseded by this status. This is bounded Direct evidence, not Stable or production acceptance.
 **Date:** 2026-11-10
 **Related:** Issue #149, ADR-0012, ADR-0023, ADR-0026
 
@@ -142,3 +142,10 @@ The D2 implementation must account for these concrete seams:
 ## Acceptance blockers
 
 D2 remains **OPEN / NOT VERIFIED** until exact-head CI, Linux/systemd validation, and two-host LAB evidence pass. D2-B1/B2/C/D/E are local implementation candidates; no target-host/LAB acceptance, merge, release or production deployment is claimed.
+
+
+## 2026-11-11 acceptance addendum
+
+- PR #150 merged the panel-managed offline tcp-tls CSR/certificate lifecycle. Trusted repeat on immutable signed RC.7 candidate [run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181) passed on both Ubuntu 22.04/systemd 249 LAB nodes: panel → local Agent → root helper → isolated offline CA → certificate/CA/CRL import → pairing → Start, 64 KiB and 2 MiB integrity, tampered checksum and revoked-peer refusal, listener-restart recovery and cleanup.
+- The Agent did not read the node private key; the CA private key remained isolated in the offline CA environment. `host_drift=none`, `baft_fw_rules=0`.
+- Scope: Direct only. This repeat does not prove Reverse, CA/pin rollover, long-duration operation or Stable readiness. `ready` remains Unknown by design.
