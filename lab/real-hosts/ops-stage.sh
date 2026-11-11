@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Direct (tcp-tls) operations stage, sourced by phase1-two-host-e2e.sh when LAB_OPS>0 (soak seconds).
 # Installed product path on both LAB hosts: clean install, guided setup (--direction direct), Apply start through the
-# non-root local agent into hardened systemd units, diagnostics/status/traffic evidence, a short soak, reconnect,
+# non-root local agent into hardened systemd units, diagnostics/status/traffic evidence, a bounded soak (max 3600 s), reconnect,
 # backup/restore, guarded update with automatic rollback of a failing binary, revocation and uninstall.
 # Only resources this stage creates are removed; firewall, listeners and other units are compared.
 # Topology: abroad = serve (listens on the tunnel port, owns the service target), iran = forward (dials, owns the ingress).
@@ -12,6 +12,9 @@ MSVC=18094; MTP=18330; MAG=18096
 EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGD=/var/lib/baft-tunnel/agent; PKG="$REMOTE_DIR/pkg"
 CLI=opscli; SRV=opssrv          # instance names on iran (forward) / abroad (serve)
 MVP_SHA="$(sha256sum "$MVP_BINARY_PATH" | awk '{print $1}')"
+MVP_INITIAL_BINARY_PATH="${MVP_INITIAL_BINARY:-$MVP_BINARY_PATH}"
+[[ -f "$MVP_INITIAL_BINARY_PATH" && ! -L "$MVP_INITIAL_BINARY_PATH" && -x "$MVP_INITIAL_BINARY_PATH" ]] || { echo "MVP_INITIAL_BINARY must be an executable regular file" >&2; exit 2; }
+OP_INITIAL_SHA="$(sha256sum "$MVP_INITIAL_BINARY_PATH" | awk '{print $1}')"
 
 side_snapshot() { # side : normalized firewall rules, listeners outside the test ports, baft-tunnel* unit-file count
   ssh_host "$1" "echo '# firewall'; { nft list ruleset 2>/dev/null | sed -E 's/packets [0-9]+ bytes [0-9]+//'; iptables-save 2>/dev/null | grep -v '^#' | sed -E 's/\\[[0-9]+:[0-9]+\\]//'; };
@@ -42,19 +45,27 @@ op_cleanup() {
 # set +e: under errexit the (exit N) that restores the status would end the trap before cleanup runs.
 trap 'op_status=$?; set +e; op_cleanup; (exit "$op_status"); cleanup' EXIT
 
-echo "--- install (${MVP_SOURCE}, sha256 ${MVP_SHA}) ---"
-tar -czf "$LOCAL_TMP/op-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd
-cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-ra"
-# Update candidates: same code with a different digest (trailing NUL), and a binary that passes --version but exits at start.
+echo "--- install (${MVP_SOURCE}, initial_sha256 ${OP_INITIAL_SHA}, target_sha256 ${MVP_SHA}) ---"
+if [[ -n "${MVP_PKG:-}" ]]; then
+  OP_PKG_ROOT="$(bash lab/real-hosts/prepare-ops-package.sh "$MVP_PKG" "$MVP_BINARY_PATH" "$LOCAL_TMP/op-pkg-unpacked")"
+  tar -czf "$LOCAL_TMP/op-pkg.tgz" -C "$OP_PKG_ROOT" .
+  echo "OPS_PACKAGE=verified_signed_bundle"
+else
+  tar -czf "$LOCAL_TMP/op-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd
+  echo "OPS_PACKAGE=trusted_main_scripts"
+fi
+cp "$MVP_INITIAL_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-ra"
+# The target release is also used for cross-version, same-code digest-change and failed-start rollback controls.
+cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-op-upgrade"
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-op-new"; printf '\0' >> "$LOCAL_TMP/baft-tunnel-op-new"; chmod 755 "$LOCAL_TMP/baft-tunnel-op-new"
 printf '#!/bin/sh\n[ "$1" = "--version" ] && { echo "baft-tunnel 0.0.0-bad"; exit 0; }\nexit 1\n' > "$LOCAL_TMP/baft-tunnel-op-bad"; chmod 755 "$LOCAL_TMP/baft-tunnel-op-bad"
 OP_NEW_SHA="$(sha256sum "$LOCAL_TMP/baft-tunnel-op-new" | awk '{print $1}')"
 for side in iran abroad; do
-  copy_to_host "$side" "$LOCAL_TMP/op-pkg.tgz" "$LOCAL_TMP/baft-tunnel-ra" "$LOCAL_TMP/baft-tunnel-op-new" "$LOCAL_TMP/baft-tunnel-op-bad"
+  copy_to_host "$side" "$LOCAL_TMP/op-pkg.tgz" "$LOCAL_TMP/baft-tunnel-ra" "$LOCAL_TMP/baft-tunnel-op-upgrade" "$LOCAL_TMP/baft-tunnel-op-new" "$LOCAL_TMP/baft-tunnel-op-bad"
   ssh_host "$side" "set -e; mkdir -p '$PKG'; tar -xzf '$REMOTE_DIR/op-pkg.tgz' -C '$PKG';
-    [ \"\$(sha256sum '$REMOTE_DIR/baft-tunnel-ra' | cut -d' ' -f1)\" = '$MVP_SHA' ];
+    [ \"$(sha256sum '$REMOTE_DIR/baft-tunnel-ra' | cut -d' ' -f1)\" = '$OP_INITIAL_SHA' ];
     bash '$PKG/scripts/install.sh' --binary '$REMOTE_DIR/baft-tunnel-ra' >/dev/null;
-    [ \"\$(sha256sum $UB | cut -d' ' -f1)\" = '$MVP_SHA' ]"
+    [ \"$(sha256sum $UB | cut -d' ' -f1)\" = '$OP_INITIAL_SHA' ]"
 done
 
 echo "--- offline PKI (runner plays the offline CA) ---"
@@ -196,6 +207,28 @@ for side in iran abroad; do
 done
 [[ "$(op_apply iran $CLI forward op-cli-0001 | jf replayed)" == True ]] || { echo "idempotent replay failed" >&2; exit 1; }
 [[ "$(op_apply iran $CLI forward op-cli-0002 | jf result)" == refused ]] || { echo "Apply start on a running forward node was not refused" >&2; exit 1; }
+
+OP_CROSS_VERSION=0
+if [[ "$OP_INITIAL_SHA" != "$MVP_SHA" ]]; then
+  echo "--- cross-version upgrade: previous prerelease runtime to target signed release ---"
+  for side in iran abroad; do
+    inst=$CLI; [[ "$side" == abroad ]] && inst=$SRV
+    ssh_host "$side" "bash '$PKG/scripts/update.sh' --binary '$REMOTE_DIR/baft-tunnel-op-upgrade' --instance $inst --health-secs 20" | grep -q '^UPDATE_OK' || { echo "cross-version update on $side was not accepted" >&2; exit 1; }
+    [[ "$(ssh_host "$side" "sha256sum $UB | cut -d' ' -f1")" == "$MVP_SHA" ]] || { echo "cross-version update on $side did not install the target binary" >&2; exit 1; }
+  done
+  # Restart the old Agent processes so subsequent evidence is served by the target release too.
+  for side in iran abroad; do
+    cfg=$CLI; [[ "$side" == abroad ]] && cfg=$SRV
+    ssh_host "$side" "set -e; [ -s '$REMOTE_DIR/agent.pid' ] && kill \$(cat '$REMOTE_DIR/agent.pid') 2>/dev/null || true; rm -f '$REMOTE_DIR/agent.pid';
+      nohup setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG --instance $cfg > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
+      for n in \$(seq 1 40); do python3 -c 'import urllib.request;urllib.request.urlopen(\"http://127.0.0.1:$MAG/v1/health\",timeout=1)' 2>/dev/null && exit 0; sleep 0.25; done; tail -20 '$REMOTE_DIR/agent.log'; exit 1"
+  done
+  sleep 12
+  op_wait 90 >/dev/null || { echo "tunnel did not recover after the cross-version upgrade" >&2; exit 1; }
+  probe_host iran 2097289
+  op_evidence cross_version 65536
+  OP_CROSS_VERSION=1
+fi
 
 echo "--- stability: ${OPS_SOAK}s of traffic every ~10 s over the installed Direct tunnel ---"
 read -r pf0 pr0 pn0 <<<"$(unit_stats iran $CLI)"; read -r sf0 sr0 sn0 <<<"$(unit_stats abroad $SRV)"
@@ -373,4 +406,4 @@ for side in iran abroad; do
     OP_FW_DRIFT+=("$side")
   fi
 done
-echo "OPS_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} update_sha256=${OP_NEW_SHA} setup_direction_direct=1 apply_start_serve=applied apply_start_forward=applied non_root=1 receipt_session=${OP_SESSION} receipt_ready=${OP_READY} integrity_64k_2m=1 evidence_diag_status_traffic=1 replay=1 running_refused=1 ${OP_SOAK_LINE} serve_sigkill_s=${OP_SRV_KILL_S} forward_sigkill_s=${OP_CLI_KILL_S} serve_apply_restart_s=${OP_SRV_APPLY_S} forward_apply_restart_s=${OP_CLI_APPLY_S} backup_restore=1 restore_owners_modes_identical=1 restore_recovery_s=${OP_RESTORE_S} update_ok=1 update_recovery_s=${OP_UPDATE_S} bad_update_rolled_back=1 rollback_recovery_s=${OP_ROLLBACK_S} ${OP_CRL_LINE} revoked_refused=1 uninstalled=1 listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=${OP_FW_DRIFT[*]:-none} cross_version_update=0"
+echo "OPS_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} update_sha256=${OP_NEW_SHA} setup_direction_direct=1 apply_start_serve=applied apply_start_forward=applied non_root=1 receipt_session=${OP_SESSION} receipt_ready=${OP_READY} integrity_64k_2m=1 evidence_diag_status_traffic=1 replay=1 running_refused=1 ${OP_SOAK_LINE} serve_sigkill_s=${OP_SRV_KILL_S} forward_sigkill_s=${OP_CLI_KILL_S} serve_apply_restart_s=${OP_SRV_APPLY_S} forward_apply_restart_s=${OP_CLI_APPLY_S} backup_restore=1 restore_owners_modes_identical=1 restore_recovery_s=${OP_RESTORE_S} update_ok=1 update_recovery_s=${OP_UPDATE_S} bad_update_rolled_back=1 rollback_recovery_s=${OP_ROLLBACK_S} ${OP_CRL_LINE} revoked_refused=1 uninstalled=1 listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=${OP_FW_DRIFT[*]:-none} cross_version_update=${OP_CROSS_VERSION}"

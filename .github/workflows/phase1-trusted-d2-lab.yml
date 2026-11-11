@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: baft-tunnel-trusted-d2-lab
+  group: baft-tunnel-trusted-lab-hosts
   cancel-in-progress: false
 
 jobs:
@@ -50,7 +50,7 @@ jobs:
           actual="$(git rev-parse --verify "$REQUESTED_SHA^{commit}")"
           [[ "$actual" == "$REQUESTED_SHA" ]]
           git merge-base --is-ancestor "$actual" "$GITHUB_SHA"
-          unexpected="$(git diff --name-only "$actual" "$GITHUB_SHA" | grep -v -E '^(\.github/workflows/phase1-trusted-lab\.yml|\.github/workflows/phase1-trusted-d2-lab\.yml|lab/trusted/test-workflow-boundary\.sh|lab/real-hosts/panel-pairing-stage\.sh|scripts/pki/test-panel-tls-lab-stage\.sh)$' || true)"
+          unexpected="$(git diff --name-only "$actual" "$GITHUB_SHA" | grep -v -E '^(\.github/workflows/phase0\.yml|\.github/workflows/phase1-trusted-lab\.yml|\.github/workflows/phase1-trusted-d2-lab\.yml|\.github/workflows/phase1-trusted-u7-lab\.yml|lab/trusted/test-workflow-boundary\.sh|lab/real-hosts/ops-stage\.sh|lab/real-hosts/prepare-ops-package\.sh|lab/real-hosts/test-prepare-ops-package\.sh|lab/real-hosts/panel-pairing-stage\.sh|scripts/pki/test-panel-tls-lab-stage\.sh|docs/PHASE1_IMPLEMENTATION_STATUS\.md|docs/PRODUCT_ROADMAP\.md|docs/PROJECT_BOARD\.md|docs/REMAINING_WORK_PLAN\.md)$' || true)"
           [[ -z "$unexpected" ]] || { printf 'Candidate and trusted-main product sources differ:\n%s\n' "$unexpected" >&2; exit 2; }
           echo "sha=$actual" >> "$GITHUB_OUTPUT"
           echo "D2_CANDIDATE_SHA=$actual" >> "$GITHUB_STEP_SUMMARY"
