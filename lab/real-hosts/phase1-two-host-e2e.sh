@@ -72,7 +72,7 @@ if [[ "$BAFT" == 1 ]]; then [[ -x "$BAFT_BINARY_PATH" ]] || { echo "LAB_BAFT=1 n
 [[ "$SOAK_SECONDS" =~ ^[0-9]+$ ]] && (( SOAK_SECONDS <= 3600 )) || { echo "LAB_SOAK_SECONDS must be 0-3600" >&2; exit 2; }
 [[ "$IMPAIR" == 0 || "$IMPAIR" == 1 ]] || { echo "LAB_IMPAIR must be 0 or 1" >&2; exit 2; }
 REMOTE_DIR="/tmp/baft-tunnel-e2e-${GITHUB_RUN_ID:-$$}"
-BINARY="${BAFT_TUNNEL_BINARY:-target/release/baft-tunnel}"
+BINARY="${BAFT_TUNNEL_BINARY:-${MVP_BINARY:-target/release/baft-tunnel}}"
 LOCAL_TMP="$(mktemp -d)"
 
 validate_ip() {
