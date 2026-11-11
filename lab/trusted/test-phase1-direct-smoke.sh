@@ -65,6 +65,9 @@ test "$(wc -l < "$SCP_CALL_LOG" | tr -d ' ')" = 2
 grep -F 'runuser -u nobody' "$SSH_CALL_LOG" >/dev/null
 grep -F 'echo $$ >' "$SSH_CALL_LOG" >/dev/null
 grep -F 'exec timeout --signal=TERM --kill-after=5s 180s' "$SSH_CALL_LOG" >/dev/null
+grep -F 'ss -lntH' "$SSH_CALL_LOG" >/dev/null
+grep -F 'ldd ' "$SSH_CALL_LOG" >/dev/null
+grep -F 'for f in serve.pid forward.pid echo.pid' "$SSH_CALL_LOG" >/dev/null
 grep -F -- '--remote "[2001:db8::20]:18300"' "$SSH_CALL_LOG" >/dev/null
 grep -F 'root@[2001:db8::20]:' "$SCP_CALL_LOG" >/dev/null
 if grep -Eqi 'bash .*phase1|lab/real-hosts|scripts/' "$SSH_CALL_LOG"; then

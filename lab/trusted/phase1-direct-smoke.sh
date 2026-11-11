@@ -65,9 +65,30 @@ copy_to_host() {
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" \
     -o ConnectTimeout=12 -o LogLevel=ERROR "$@" "$(user_for "$side")@$host:$REMOTE_DIR/"
 }
+diagnose_host() {
+  local side="$1"
+  echo "LAB_DIAGNOSTICS host=$side"
+  ssh_host "$side" "for f in echo.log serve.log forward.log; do if [ -f '$REMOTE_DIR/'\$f ]; then echo ===\$f===; tail -n 80 '$REMOTE_DIR/'\$f; fi; done; echo ===processes===; ps -eo user,pid,ppid,args | grep -E '[b]aft-tunnel|[e]cho.py' || true; echo ===listeners===; ss -lntp || true" || true
+}
+wait_remote_listener() {
+  local side="$1" port="$2" attempt
+  for attempt in {1..20}; do
+    if ssh_host "$side" "ss -lntH 'sport = :$port' | grep -q LISTEN"; then
+      echo "LAB_LISTENER_READY host=$side port=$port"
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "LAB_LISTENER_TIMEOUT host=$side port=$port" >&2
+  diagnose_host "$side"
+  return 1
+}
 cleanup() {
   local rc=$?
   trap - EXIT
+  if (( rc != 0 )); then
+    for side in iran abroad; do diagnose_host "$side"; done
+  fi
   for side in iran abroad; do
     ssh_host "$side" "if [ -d '$REMOTE_DIR' ]; then for f in serve.pid forward.pid echo.pid; do if [ -s '$REMOTE_DIR/'\$f ]; then kill \$(cat '$REMOTE_DIR/'\$f) 2>/dev/null || true; fi; done; sleep 0.2; rm -rf '$REMOTE_DIR'; fi" || rc=1
   done
@@ -79,7 +100,7 @@ trap cleanup EXIT
 for side in iran abroad; do
   # The dedicated test hosts must be reachable as root for staging, but candidate processes
   # are always demoted to nobody and receive no SSH credentials.
-  ssh_host "$side" 'test "$(id -u)" = 0 && id nobody >/dev/null && command -v runuser >/dev/null && command -v timeout >/dev/null && command -v ss >/dev/null && getent group nogroup >/dev/null && command -v python3 >/dev/null && command -v openssl >/dev/null'
+  ssh_host "$side" 'test "$(id -u)" = 0 && id nobody >/dev/null && command -v runuser >/dev/null && command -v timeout >/dev/null && command -v ss >/dev/null && getent group nogroup >/dev/null && command -v python3 >/dev/null && command -v openssl >/dev/null && command -v ldd >/dev/null'
 done
 
 mkdir -p "$LOCAL_TMP/newcerts"
@@ -163,13 +184,15 @@ for side in iran abroad; do
   copy_to_host "$side" "$CANDIDATE_BINARY" "$LOCAL_TMP/ca.crt" "$LOCAL_TMP/ca.crl" \
     "$LOCAL_TMP/iran.crt" "$LOCAL_TMP/iran.key" "$LOCAL_TMP/abroad.crt" "$LOCAL_TMP/abroad.key" \
     "$LOCAL_TMP/echo.py" "$LOCAL_TMP/probe.py"
-  ssh_host "$side" "chown -R nobody:nogroup '$REMOTE_DIR' && chmod 755 '$REMOTE_DIR/baft-tunnel' && chmod 600 '$REMOTE_DIR/'*.key"
+  ssh_host "$side" "chown -R nobody:nogroup '$REMOTE_DIR' && chmod 755 '$REMOTE_DIR/baft-tunnel' && chmod 600 '$REMOTE_DIR/'*.key && ldd '$REMOTE_DIR/baft-tunnel' >/dev/null"
 done
 
 ssh_host abroad "nohup runuser -u nobody -- sh -c 'echo \$\$ > \"$REMOTE_DIR/echo.pid\"; exec timeout --signal=TERM --kill-after=5s 180s python3 \"$REMOTE_DIR/echo.py\"' > '$REMOTE_DIR/echo.log' 2>&1 < /dev/null &"
 sleep 1
 ssh_host abroad "nohup runuser -u nobody -- sh -c 'echo \$\$ > \"$REMOTE_DIR/serve.pid\"; exec timeout --signal=TERM --kill-after=5s 180s \"$REMOTE_DIR/baft-tunnel\" serve --listen \"0.0.0.0:$E2E_PORT\" --target \"127.0.0.1:$ECHO_PORT\" --local-id abroad --peer-id iran --tunnel-id trusted-lab --direction direct --peer-fingerprint \"$IRAN_PIN\" --ca \"$REMOTE_DIR/ca.crt\" --crl \"$REMOTE_DIR/ca.crl\" --cert \"$REMOTE_DIR/abroad.crt\" --key \"$REMOTE_DIR/abroad.key\" --max-streams 8' > '$REMOTE_DIR/serve.log' 2>&1 < /dev/null &"
+wait_remote_listener abroad "$E2E_PORT"
 ssh_host iran "nohup runuser -u nobody -- sh -c 'echo \$\$ > \"$REMOTE_DIR/forward.pid\"; exec timeout --signal=TERM --kill-after=5s 180s \"$REMOTE_DIR/baft-tunnel\" forward --listen \"127.0.0.1:$LOCAL_PORT\" --remote \"$ABROAD_DIAL_HOST:$E2E_PORT\" --server-name abroad.lab --local-id iran --peer-id abroad --tunnel-id trusted-lab --direction direct --peer-fingerprint \"$ABROAD_PIN\" --ca \"$REMOTE_DIR/ca.crt\" --crl \"$REMOTE_DIR/ca.crl\" --cert \"$REMOTE_DIR/iran.crt\" --key \"$REMOTE_DIR/iran.key\" --max-streams 8' > '$REMOTE_DIR/forward.log' 2>&1 < /dev/null &"
+wait_remote_listener iran "$LOCAL_PORT"
 sleep 2
 ssh_host iran "python3 '$REMOTE_DIR/probe.py' 65536"
 ssh_host iran "python3 '$REMOTE_DIR/probe.py' 2097289"
