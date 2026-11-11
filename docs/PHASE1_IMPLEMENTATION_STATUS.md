@@ -1,5 +1,7 @@
 # Phase 1 implementation status
 
+> **Current verified addendum (2026-11-11):** current main is `b2c8ab5020754cad15485371a1f062de4092229f`. D2 panel-managed TCP-TLS PKI is merged in PR #150 and its trusted two-host repeat passed in run 42996224181. U1 CRL renewal and real two-host push passed in run 42656507521 on ancestor SHA `8be74376176442106669f4a81293f0865629ecaf`. Exact scope and limitations are recorded in the dated addendum at the end of this file. Historical branch/status text below describes earlier development and is not the current branch state.
+
 **Authorization:** Owner-approved 2026-11-06.
 **Branch:** phase1/rust-tcp-transport.
 **Latest branch-head CI-verified commit (superseded by dated addendum below):** 4baba491499faacfc051b66ef78f3db1263695ee. See the 2026-11-07 current-head addendum for the authoritative state.
@@ -408,3 +410,12 @@ PR #109 merged as main `4852ecf`. What the agent (`--instance NAME`) now serves:
 | Real-host LAB, main `4852ecf` (local build, binary sha256 `6160c9be…d5e4`) | phase1-two-host-e2e run 42545941726, mvp=1: PASS. Both hosts `p1_evidence=1`: traffic from_peer = to_peer = 2,162,825 bytes (64 KiB + 2 MiB sent), all tiers pass up to data_path, integrity unknown, state `carrying_traffic` with the correct peer id, audit with actor and no token. After revocation the dialing node reports `secure_channel: fail` (`p1_revoked_tier=secure_channel`). Cleanup: uninstall proven, listeners/units unchanged, no BAFT firewall rules; unrelated nft address-set drift on abroad (as in P0-5) |
 
 Open: remote Job receipts (need the P1-1 enrollment ADR); counter history beyond the agent's one-hour memory; Preflight evidence codes, read-only firewall inspection and "Add from Link" (P1 items 6 to 8).
+
+## 2026-11-11 — Current main acceptance addendum (U1 + D2)
+
+Current repository baseline: `main` `b2c8ab5020754cad15485371a1f062de4092229f`.
+
+- **U1 CRL renewal and real push — REAL-LAB PASS:** [run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521), product code SHA `8be74376176442106669f4a81293f0865629ecaf` (ancestor of current main), `LAB_CRL_PUSH=1`. Offline `renew-crl` issued a 30-day CRL; `push-crl.sh` delivered and activated it on both nodes sequentially; CRL number advanced `0x1002→0x1003`; both agents reported `crl_state=ok`; 2 MiB integrity passed after activation and recovery was 2 s; a 2-day CRL and replayed CRL were refused. Overall `PHASE1_TWO_HOST_E2E=PASS`. The run also observed unrelated firewall drift on abroad; no BAFT firewall rules remained. This is historical evidence on the exact listed SHA, not a test of current HEAD.
+- **D2 panel-managed TLS PKI — merged and trusted repeat PASS:** PR [#150](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/150), merge commit `e5a7451f259be7df14187a58db5fe1c29c51a81b`. Trusted repeat [run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181) used immutable RC.7 product candidate `51c0f53cb3cc71b2f...`, built without LAB credentials. On both Ubuntu 22.04 hosts, panel→Agent→root helper→isolated offline CA→certificate/CA/CRL import→pairing→Start passed; private node keys remained local and unreadable by Agent; CA private key remained in network-isolated runner tmpfs; checksum tampering and revoked peers were refused; 64 KiB and 2,097,289-byte payload integrity passed; listener-restart recovery and cleanup passed. Run result `PHASE1_TWO_HOST_E2E=PASS`, `PANEL_PAIRING_RESULT engine=tcp-tls`, `baft_fw_rules=0`, `host_drift=none`.
+- **Drift qualification:** the earlier nftables set delta from run 42989166468 was not reproduced in run 42996224181. Its external owner/source remains unidentified; preserve S10 as a separate environmental follow-up. Do not claim attribution or use this as proof of universal firewall neutrality.
+- Scope: D2 evidence is Direct only; no soak, impairment, rollover, reboot or Reverse coverage in this repeat. No Stable release or production deployment is implied.

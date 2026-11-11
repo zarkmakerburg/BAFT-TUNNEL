@@ -1,5 +1,8 @@
 # Remaining work: assessment and prioritized plan
 
+> **Verified status correction — 2026-11-11 (supersedes the 2026-11-09 assessment below):** the tables and findings that follow are retained as the historical assessment baseline, not current-state claims. Current main is `b2c8ab5020754cad15485371a1f062de4092229f`. Q1, Q3 and Q4 are implemented; Q2 documentation reconciliation remains active. U1 is complete: [LAB run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) on ancestor SHA `8be74376176442106669f4a81293f0865629ecaf` renewed the CRL to 30 days, pushed to both nodes, advanced CRL number `0x1002→0x1003`, recovered the 2 MiB tunnel in 2 seconds, and refused short/replayed CRLs. U2/U3/U5a/U4/U5b are implemented; D2 was merged in [PR #150](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/150), and the trusted repeat [LAB run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181) passed the two-host D2 lifecycle on the immutable RC.7 candidate. U6 is complete with signed prerelease `v0.1.0-rc.7`. The next integrated gate is U7 on the signed RC.7 package, capped at 60 minutes. The prior unrelated nftables-set delta was not reproduced in the D2 repeat (`host_drift=none`), but its source remains unattributed and stays separate under S10. No stable release or production readiness is implied. The owner has paused the independent pre-stable review; do not restart it without a new instruction. No soak longer than one hour is required or planned.
+
+
 - **Date:** 2026-11-09. **Baseline:** `main` at `0a7576b` (PR #132), rechecked at `c7dbd15` after PR #133 merged (BAFT listed as Preview, Direct only, in `/v1/engines` and the Wizard; Reverse role wording). No finding below changed with #133.
 - **Method:** read-only review of the source, docs, ADRs, HQ Issue #2 and the recorded CI/LAB runs. Nothing was built or run for this document; no LAB run, tag, release or deploy.
 - **Evidence labels:** **[CODE]** read in the source at the baseline; **[DOC]** stated in a repository document; **[CI]** / **[LAB]** exact-SHA run evidence recorded elsewhere; **[INF]** inferred from the code, not executed.
@@ -88,7 +91,7 @@
 | Engine / mode | Still open |
 |---|---|
 | `tcp-tls` Direct | `ready` unknown (by design); cross-version update; multi-hour soak; unrelated nft drift on the abroad host |
-| `tcp-tls` Reverse (Preview) | Multi-hour soak; cross-version update; single LAB pair; nft drift; Wizard wording (fixed in PR #133, merged `c7dbd15`) |
+| `tcp-tls` Reverse (Preview) | Additional evidence gaps remain; any soak is capped at 3600 s; cross-version update and environmental nft drift follow-up remain |
 | `noise-tcp` Direct (Experimental) | No loss/soak/ops acceptance; Reverse unavailable. No work planned (L6) |
 | `baft` (Preview, Direct only) | Exposed as Preview, Direct only by PR #133 (merged); not configurable (B4); no status/diagnostics (unknown by design); multi-hour soak; listener RSS +23 % over 1200 s (watch in S1) |
 
@@ -171,7 +174,7 @@ Effort: **S** = one small PR; **M** = one or two PRs, about a day with CI; **L**
 
 | ID | Work | Effort | LAB | Owner |
 |---|---|---|---|---|
-| S1 | Multi-hour soak: 6 h in one job (raise the LAB job timeout), then 24 h detached with a periodic checker; `tcp-tls` Direct and Reverse; BAFT listener RSS | M | LAB window | O7 |
+| S1 | Bounded soak up to 3600 s (1 h) per run for `tcp-tls` Direct/Reverse and BAFT listener RSS; no longer soak | M | ≤60 min | — |
 | S2 | Cross-version update on every prerelease (N-1 → N), config compatibility included | S per release | Yes | — |
 | S3 | Reboot persistence on real hosts, or on disposable VMs (S9) | S | Yes | O1 |
 | S4 | Fuzz depth: weekly 10–30 min per target; new targets for the Apply body, bundle import and the runtime evidence file readers | S–M | — | — |
@@ -222,12 +225,12 @@ Parallel tracks that do not share files or LAB time: (U1, Q1–Q4) alongside U2.
 | ID | What | Blocks |
 |---|---|---|
 | O1 | Approve rebooting the LAB hosts once (or provide disposable VMs) | S3, full U3 proof |
-| O2 | Find what changes the nftables address set on the abroad host | S10 (clean firewall claim) |
+| O2 | Find what changes the nftables address set on the abroad host; prior D2 drift did not reproduce in run 42996224181, but original source remains unknown | S10 (clean firewall claim) |
 | O3 | One check of the panel on a real phone through `ssh -L` | B6, U5a sign-off |
 | O4 | Fresh VM pair for release acceptance (optional, recommended before Stable) | S9 |
 | O5 | ~~Licence review of shipping the AGPL BAFT engine~~ Done 2026-11-09: the owner confirmed BAFT is theirs and its use is allowed (separate-binary model, ADR-0019) | — |
-| O6 | External full security review before v1.0 | S5 |
-| O7 | Reserve the LAB hosts for multi-hour soak windows | S1 |
+| O6 | External full security review before v1.0 — **paused by owner on 2026-11-11; do not initiate until re-authorized** | S5 |
+| O7 | Reserve the LAB hosts for a maximum one-hour soak window if a specific gap requires it | S1 |
 | O8 | Release authorization for `rc.5` (delegated to the coordinator under the owner's standing approval; still a separate gate from merge) | U6, U7 |
 | O9 | Real offline CA ceremony for any use outside the LAB; the CA key stays with the owner | Real deployments |
 
@@ -267,14 +270,14 @@ Parallel tracks that do not share files or LAB time: (U1, Q1–Q4) alongside U2.
 
 No new engines or protocols, no Fleet or billing, no React migration, no `noise-tcp` promotion, no firewall mutation, no change to production hosts. Nothing in this plan authorizes a tag, release or deploy; those stay separate gates.
 
-## Progress 2026-11-09: U2, U3, U5a
+## Historical progress snapshot 2026-11-09: U2, U3, U5a (superseded by the verified status correction at the top)
 
 - Merged: PR #137 (`8d4b1f4`, agent service, lifecycle, panel), #140 (LAB stage), #141 (Wizard last step), #142 (LAB package contents).
 - LAB run 42692143748 on `main` `ff868a7`, both hosts Ubuntu 22.04 / systemd 249: clean hosts; one-step `install.sh --binary --register`; setup as root with no manual `chown`; agent service started by itself as `baft-tunnel-agent` on loopback; Start (enabled at boot), Restart (new process), Stop (disabled, no data), Start again through `POST /v1/tunnel/lifecycle`; 64 KiB + 2 MiB integrity; diagnostics `next_action` none while running and start while stopped; **one real reboot of both hosts** (owner-approved, O1): back over SSH in about 44 s, tunnel and agent active and enabled with no command from the test, 64 KiB + 2 MiB integrity after the reboot; full uninstall, users removed, no host drift.
 - Earlier runs 42684792291 and 42687963213 stopped on LAB script defects (fixed in #141, #142); both cleaned up.
 - U2 and U3 done; U5a done except the O3 phone check. Still open: U6 (`rc.5`) and the rest of the queue; receipt `ready` stays Unknown by design. Not production-ready.
 
-## Progress 2026-11-10: D2-B1/B2/C local implementation candidate
+## Historical progress snapshot 2026-11-10: D2-B1/B2/C local implementation candidate (superseded by PR #150 merge and LAB run 42996224181)
 
 - Branch: feature/d2-panel-tcp-tls-enrollment; issue #149; PR #150 remains Draft while runtime implementation and acceptance evidence are completed.
 - Added the separate root-only CSR create/read protocol (NAME.pki / NAME.pki-result), digest-bound replay receipts, P-256/CN/key-match validation, fixed PKI paths, no-overwrite installation, and node/SAN/public-key metadata. The helper returns only public CSR material; the private key remains at /etc/baft-tunnel/node.key with baft-tunnel ownership and mode 0600.
