@@ -25,4 +25,19 @@ test "$(grep -c 'secrets\.' "$trusted")" = 4
 # Candidate processes are privilege-dropped; the SSH private key stays in the runner harness.
 grep -F 'runuser -u nobody' "$root/lab/trusted/phase1-direct-smoke.sh" >/dev/null
 grep -F 'ssh_key_exposed_to_candidate=0' "$root/lab/trusted/phase1-direct-smoke.sh" >/dev/null
+# The D2 workflow also checks out trusted main orchestration; only the candidate binary is built separately.
+d2="$root/.github/workflows/phase1-trusted-d2-lab.yml"
+grep -F "if: \${{ github.ref == 'refs/heads/main' }}" "$d2" >/dev/null
+grep -F 'ref: ${{ github.sha }}' "$d2" >/dev/null
+grep -F 'git merge-base --is-ancestor "$actual" "$GITHUB_SHA"' "$d2" >/dev/null
+grep -F 'git diff --name-only "$actual" "$GITHUB_SHA"' "$d2" >/dev/null
+grep -F 'bash lab/real-hosts/phase1-two-host-e2e.sh' "$d2" >/dev/null
+grep -F 'LAB_PANEL_PAIRING=1 LAB_PANEL_ENGINE=tcp-tls' "$d2" >/dev/null
+grep -F 'unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS' "$d2" >/dev/null
+grep -F 'environment: baft-tunnel-lab' "$d2" >/dev/null
+if awk '/^  build-candidate:/{inside=1} /^  d2-two-host-lab:/{inside=0} inside && /secrets\./{found=1} END{exit !found}' "$d2"; then
+  echo 'D2 candidate build job has access to LAB secrets' >&2
+  exit 1
+fi
+test "$(grep -c 'secrets\.' "$d2")" = 4
 echo 'Trusted Phase 1 workflow boundary tests: PASS'
