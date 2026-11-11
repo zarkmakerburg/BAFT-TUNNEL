@@ -27,9 +27,9 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 
 ## Project status
 
-<sub>Updated: 11 November 2026 · source baseline: `main` `1219f547` · roadmap: [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
+<sub>Updated: 11 November 2026 · source baseline: `main` `a58dd880` · roadmap: [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
 
-> **Active development — signed pre-release `v0.1.0-rc.7`; not production-ready.** The trusted U7 acceptance workflow is currently running against `main` `1219f547` ([run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428)); its two-host result is not yet known.
+> **Active development — signed pre-release `v0.1.0-rc.7`; not production-ready.** Trusted U7 acceptance passed on the signed RC.7 package in [run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428): both LAB hosts completed setup, Direct traffic integrity, 3600-second soak, backup/restore, update/rollback, revocation and uninstall. U8 operator quickstart reconciliation is in progress.
 
 - **`tcp-tls` Direct:** supported pre-release path with real two-host integrity, recovery, revocation, operations, and bounded soak/loss evidence.
 - **`tcp-tls` Reverse:** real outbound-only data path with recovery and impairment evidence; remains **Preview**, not Stable.
@@ -38,7 +38,7 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 - **Panel PKI (D2):** panel → local Agent → root helper → isolated offline CA → certificate/CA/CRL import → pairing → Start passed the trusted two-host repeat ([run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181)). This is Direct evidence and does not imply Stable readiness.
 - **CRL renewal/push (U1):** a 30-day CRL was renewed offline, pushed and activated on both LAB nodes, and tunnel recovery/integrity passed ([run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521), product-code SHA `8be7437`, an ancestor of current main).
 - Apply receipts report observed effects; `ready` remains **Unknown** by design. The panel and Agent are local to each host; there is no central Fleet or online enrollment service.
-- Stable release and production deployment have not occurred. The owner paused the independent pre-stable security review; it must not be restarted without a new instruction. LAB soak is capped at one hour.
+- U7 scope is Direct only; `ready` and ordinary diagnostics `integrity` remain Unknown. An unrelated six-line firewall/address-set drift on the abroad LAB host remains open as S10; no BAFT-TUNNEL firewall rules were present. Stable release and production deployment have not occurred. The owner paused the independent pre-stable security review; it must not be restarted without a new instruction. LAB soak is capped at one hour.
 
 | Area | Current state |
 |---|---|
