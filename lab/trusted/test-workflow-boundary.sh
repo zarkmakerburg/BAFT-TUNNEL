@@ -11,9 +11,9 @@ fi
 grep -F 'exit 1' "$legacy" >/dev/null
 # Only a workflow dispatched from main may reach the secret-bearing environment.
 grep -F "if: \${{ github.ref == 'refs/heads/main' }}" "$trusted" >/dev/null
-grep -F 'ref: audit/pr150-remediation-2026-11-10' "$trusted" >/dev/null
-grep -F '[[ "$actual" == "$REQUESTED_SHA" ]]' "$trusted" >/dev/null
 grep -F 'ref: ${{ github.sha }}' "$trusted" >/dev/null
+grep -F 'git merge-base --is-ancestor "$actual" "$GITHUB_SHA"' "$trusted" >/dev/null
+grep -F '[[ "$actual" == "$REQUESTED_SHA" ]]' "$trusted" >/dev/null
 grep -F 'run: bash lab/trusted/phase1-direct-smoke.sh' "$trusted" >/dev/null
 # Candidate validation/build jobs must not receive secrets.
 if awk '/^  build-candidate:/{inside=1} /^  two-host-lab:/{inside=0} inside && /secrets\./{found=1} END{exit !found}' "$trusted"; then
