@@ -32,7 +32,7 @@ State column: I = implemented, P = partial, M = missing (backend gap, hidden or 
 - G5 **Closed** by PR #109: audit v2 includes actor fingerprint, target, resource and receipt reference.
 - G6 **Closed** by PR #109 and panel PR #120: runtime traffic/throughput counters are exposed through the API and shown in the panel.
 - G7 Read-only firewall inspection.
-- G8 Structured Preflight/Diagnostics evidence codes + typed params and Persian/English localization: implemented in B1; exact-head CI passed on `cc37f48`; merge sync after U8 is in progress.
+- G8 Structured Preflight/Diagnostics evidence codes + typed params and Persian/English localization: implemented in B1; all exact-head CI groups passed in PR #168 at `5f37a7a`; merge is pending.
 - G9 **Partly closed**: BAFT is visible as Preview, Direct only; guided setup cannot yet configure it (B4 remains open).
 
 ## Changed files
@@ -56,4 +56,4 @@ State column: I = implemented, P = partial, M = missing (backend gap, hidden or 
 - Current main at this documentation update is `52a2825254f8254386f71af7220c7cb244200fc2` (U8 PR #165 merged). The local Agent lifecycle now includes start/stop/restart and boot persistence; audit v2 and traffic counters are implemented. `ready` remains Unknown by design.
 - The trusted D2 panel/PKI two-host repeat passed on the immutable RC.7 candidate (run [42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181)).
 - The trusted U7 integrated acceptance run [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) passed release-tag, signed-asset and real two-host acceptance. U7 is accepted within the bounded Direct scope.
-- Remaining product gaps in this matrix are remote fleet inventory (G1), complete remote preflight contract (G3), read-only firewall visibility (G7), and BAFT guided configuration (G9/B4). G8 implementation and exact-head CI passed in B1; its synchronized merge is in progress. Formal accessibility audit and physical-phone testing have not been run.
+- Remaining product gaps in this matrix are remote fleet inventory (G1), complete remote preflight contract (G3), read-only firewall visibility (G7), and BAFT guided configuration (G9/B4). G8 implementation and exact-head CI passed in B1; its synchronized PR #168 passed exact-head CI and is awaiting merge. Formal accessibility audit and physical-phone testing have not been run.
