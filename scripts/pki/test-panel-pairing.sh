@@ -41,7 +41,7 @@ cleanup() {
   sudo "$ROOT/scripts/install-agent-control.sh" --remove --instance "$NAME" >/dev/null 2>&1 || true
   sudo systemctl disable --now "baft-tunnel@$NAME.service" >/dev/null 2>&1 || true
   if [[ "$INSTALLED" == 1 ]]; then sudo "$ROOT/scripts/uninstall.sh" --stop --purge-config --yes >/dev/null 2>&1 || true; fi
-  sudo rm -rf /etc/baft-tunnel /var/lib/baft-tunnel /var/lib/baft-tunnel-agent "$CTL"
+  sudo rm -rf /etc/baft-tunnel /var/lib/baft-tunnel /var/lib/baft-tunnel-agent /var/lib/baft-tunnel-control "$CTL"
   sudo rm -f /usr/local/bin/baft-tunnel /etc/systemd/system/baft-tunnel@.service \
     /etc/systemd/system/baft-tunnel-control-*@.* /etc/systemd/system/baft-tunnel-agent@.* /etc/tmpfiles.d/baft-tunnel-control.conf
   sudo rm -rf /etc/systemd/system/baft-tunnel-agent@*.service.d
