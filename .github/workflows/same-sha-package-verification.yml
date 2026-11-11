@@ -83,10 +83,14 @@ jobs:
             --certificate-identity "${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@${GITHUB_REF}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
             echo "::error::signature verified under another workflow identity"; exit 1; fi
-          if cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
-            --certificate-identity "${ID}@refs/heads/main" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
-            echo "::error::signature verified under a main-branch identity"; exit 1; fi
+          # On main, the expected positive identity is itself the main-branch identity.
+          # Only run this negative control from other refs.
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            if cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+              --certificate-identity "${ID}@refs/heads/main" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
+              echo "::error::signature verified under a main-branch identity"; exit 1; fi
+          fi
           echo "COSIGN_IDENTITY_NEGATIVES=PASS" | tee -a "$GITHUB_STEP_SUMMARY"
           sha256sum --check SHA256SUMS
           echo "SAME_SHA_PACKAGE_SIGNATURE=PASS ($CANDIDATE_SHA; no release or deployment)" | tee -a "$GITHUB_STEP_SUMMARY"
