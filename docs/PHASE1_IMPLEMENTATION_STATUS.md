@@ -426,3 +426,12 @@ Current repository baseline: `main` `b2c8ab5020754cad15485371a1f062de4092229f`.
 - Current main advanced to `1219f547e6d9c2fe9605385f37a7d5dd8dab2995` through PR #162. The change corrects the two remote installation checksum commands to execute on the LAB hosts; it does not change the product runtime.
 - Trusted U7 run [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) is tied to this main SHA. `validate-release-tags` and `verify-release-assets` completed successfully. `two-host-u7-lab` is still in progress; no two-host acceptance result is claimed yet.
 - This addendum preserves the prior evidence and does not close or reopen product acceptance gates by itself.
+
+
+## 2026-11-11 — TRUSTED U7 SIGNED RC.7 TWO-HOST ACCEPTANCE PASS
+
+- Workflow: [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428), pinned to product parent SHA `1219f547e6d9c2fe9605385f37a7d5dd8dab2995`. All three jobs passed: release-tag ancestry, signed RC.7/RC.5 asset verification, and real two-host U7 acceptance.
+- Package: signed `v0.1.0-rc.7`; previous signed prerelease RC.5 used for cross-version upgrade. The release package and binary were verified by the workflow before transfer to the LAB runner.
+- Two-host result: `PHASE1_TWO_HOST_E2E=PASS`. `OPS_RESULT` recorded `integrity_64k_2m=1`, `cross_version_update=1`, `backup_restore=1`, `bad_update_rolled_back=1`, `revoked_refused=1`, `uninstalled=1`, `soak_s=3600`, `rounds=264`, `failed_probes=0`, `max_probe_s=5`, `restarts=0->0/0->0`, and `baft_fw_rules=0`.
+- The run exercised clean install and guided Direct setup, Apply start on serve and forward, diagnostics/status/traffic/audit, 64 KiB and 2 MiB matching SHA-256 payloads, RC.5→RC.7 upgrade, a one-hour traffic soak, SIGKILL/restart and Apply recovery, backup/simulated loss/restore with owner/mode preservation, guarded update and automatic rollback of a failing binary, certificate revocation refusal, uninstall and cleanup.
+- Limits: `ready` and diagnostics `integrity` remained Unknown by design. U7 ran Direct only; `crl_push=0` (U1 has separate two-host evidence in run 42656507521). No Reverse, BAFT, Noise, Stable or production claim. `unrelated_fw_drift=abroad` recorded a six-line address-set delta; no BAFT-TUNNEL firewall rules existed, but the external source remains unknown (S10).
