@@ -54,7 +54,8 @@ jobs:
 
   build-candidate:
     needs: validate-candidate
-    runs-on: ubuntu-24.04
+    # Build against the oldest supported LAB baseline to avoid newer glibc requirements.
+    runs-on: ubuntu-22.04
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
