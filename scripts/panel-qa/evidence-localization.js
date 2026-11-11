@@ -4,6 +4,7 @@ const vm = require('node:vm');
 const window = {};
 vm.runInNewContext(fs.readFileSync('panel/i18n.js', 'utf8'), { window });
 const codes = [
+  'pfc.planner','pfc.direction_support','pfc.directory','pfc.setup_helper','pfc.existing_pairing','pfc.pki_helper','pfc.pki_files','pfc.node_key','pfc.directory_writable','pfc.service_port','pfc.tunnel_port','pfc.service_unit','pfc.peer_reachability','pfc.peer_identity','pfc.firewall',
   'pfr.planner','pfr.direction_support','pfr.directory','pfr.setup_helper','pfr.pki_helper','pfr.directory_writable','pfr.existing_pairing','pfr.pki_files','pfr.node_key','pfr.service_port','pfr.tunnel_port','pfr.service_unit','pfr.peer_reachability','pfr.peer_identity','pfr.firewall',
   'pf.planner.pass','pf.planner.blocked','pf.direction_support.pass','pf.direction_support.blocked',
   'pf.directory.pass','pf.directory.blocked','pf.directory.warning','pf.setup_helper.pass','pf.setup_helper.blocked',
