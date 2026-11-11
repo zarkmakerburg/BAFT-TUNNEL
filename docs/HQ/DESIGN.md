@@ -1,8 +1,8 @@
 # طراحی مرکز فرماندهی BAFT-TUNNEL
 
-**وضعیت:** تأییدشده توسط مالک — 2026-11-11  
-**مخزن:** `zarkmakerburg/BAFT-TUNNEL`  
-**شاخه طراحی/اجرا:** `docs/hq-command-center-foundation`
+- **وضعیت:** تأییدشده توسط مالک — 2026-11-11
+- **مخزن:** `zarkmakerburg/BAFT-TUNNEL`
+- **شاخه طراحی/اجرا:** `docs/hq-command-center-foundation`
 
 ## هدف
 ایجاد یک مدل فرماندهی سبک، repository-native و قابل‌گسترش برای چند پروژه؛ شروع با BAFT-TUNNEL. HQ نقطه ورود مشترک چت‌ها و عامل‌های توسعه است و وضعیت واقعی را از GitHub، محیط توسعه، CI و LAB می‌گیرد.
