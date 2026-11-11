@@ -26,7 +26,25 @@ non-interactive flags of the scripts keep working unchanged. Installed copy:
 `/usr/local/lib/baft-tunnel/scripts/menu.sh` (removed by uninstall, restored by rollback).
 Test: `scripts/test-menu.sh BINARY` (run unprivileged).
 
-## Phase 1 offline certificate bootstrap (experimental)
+> **Engine limitation:** the current menu's standalone **Pair the two nodes** action hardcodes `noise-tcp` (Experimental Direct). Do not use that shortcut for the supported `tcp-tls` path. For `tcp-tls` use the panel-managed Wizard and PKI flow below / in the quick starts. The menu remains the supported wrapper for install, lifecycle, status, backup, update, CRL and uninstall operations.
+
+## Panel-managed tcp-tls enrollment (current D2 path)
+
+This is the current installed-service path for the supported pre-release `tcp-tls` engine. It was accepted in the trusted two-host repeat [LAB run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181) on the signed RC.7 candidate. The CA remains offline; the Agent never receives the node private key.
+
+1. Install the signed package and register the local Agent on each host: `sudo scripts/install.sh --binary ./baft-tunnel --register NAME`. Open the local panel through SSH; never expose its loopback port publicly.
+2. In the panel Wizard/PKI flow, enter the node's own DNS/IP certificate identity separately from the peer's certificate name. Generate or retrieve the CSR. The private key is generated on the node and remains there; only the public CSR is returned.
+3. On the offline CA machine, issue the certificate using `scripts/pki/baft-pki.sh issue-node` with the exact node ID, CSR and requested DNS/IP SAN. The panel displays the corresponding command. Never move the CA key, database or passphrase to a node.
+4. Return only the leaf certificate, CA certificate and current CRL to that node. Upload the three public files through the panel. The fixed root helper validates the PEM types, key match, chain, CRL signature/freshness/revocation, client/server EKUs, exact node URI SAN and exact DNS/IP SAN.
+5. The node private key remains at the fixed `/etc/baft-tunnel/node.key` path (service-owned, mode 0600). Public credential sets are stored immutably under `/etc/baft-tunnel/pki/sets/<digest>/`; `/etc/baft-tunnel/pki/current` is switched atomically only after full validation. The Agent cannot read the private key.
+6. Upload does not restart the tunnel service. Wait for the successful install receipt; then use the Wizard to complete Init/Join on both nodes, exchange only public bundles and compare checksums out of band. Review the plan before explicit Apply/Start.
+
+The manual CA issuance step is offline; this is not online enrollment. Uploading a certificate set does not itself start or restart a service. A failed validation leaves the previously active credential set unchanged.
+
+
+> **Legacy manual flat-file workflow.** The following section is retained for developer/standalone CLI use. For an installed Agent-managed tcp-tls node, use the versioned panel enrollment procedure above; do not combine the legacy flat-file copy/chown steps with it.
+
+## Legacy manual offline certificate bootstrap (standalone CLI)
 
 This is a manual offline-CA workflow for the current TCP/TLS transport. It is not online enrollment and is not yet a production control plane.
 
@@ -131,7 +149,7 @@ CRLs are still issued only on the offline CA. Transfer only the signed `ca.crl` 
 4. If any activation fails, stop the rollout. Restore the prior CRL on every node already updated and verify recovery. A rollback restores the old trust state and may re-admit a revoked certificate; it is an explicit availability recovery, not a security-neutral operation.
 5. After both nodes activate, verify rejection of the revoked identity and reconnection of the intended peer. There is no distributed transaction; interruption during the rollout is expected. The helper never contacts the other node or distributes files.
 
-The helper does not automate CA rollover, pin overlap, or remote CRL distribution. Run `bash scripts/pki/test-apply-crl.sh` for its isolated temporary-CA validation suite. On a disposable systemd 250+ host, `bash scripts/pki/test-crl-activation-systemd.sh` additionally exercises real transient-service activation and rollback; neither test touches a live CA or production service.
+The `apply-crl.sh` helper performs guarded activation on one node. The separate `push-crl.sh` wrapper distributes an offline-signed CRL over strict SSH and invokes node-side validation/activation; it was accepted on real two-host LAB in [run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521). CA bundle/per-CA CRL and dual-pin rollover primitives are implemented and unit/mock tested, but the complete CA+pin rollover sequence has not been run end-to-end on real LAB hosts. Run `bash scripts/pki/test-apply-crl.sh` for isolated temporary-CA validation; on disposable systemd 250+ use `bash scripts/pki/test-crl-activation-systemd.sh` for transient-service activation/rollback. These tests do not touch a live CA or production service.
 
 ## CA rollover naming (ADR-0017 B1)
 
