@@ -3880,7 +3880,7 @@ mod tests {
         }
         assert_eq!(d["tiers"][4]["code"], "diag.session.pass");
         assert_eq!(d["tiers"][4]["params"]["peer_id"], "iran");
-        assert_eq!(d["next_action"]["code"], "diag.next.none");
+        assert_eq!(d["next_action"]["code"], "diag.next.check"); // The test unit has no readable systemd state; never hide that Unknown.
         assert_eq!(
             get_json(&ctx, "/v1/diagnostics").await.1["at_unix"],
             d["at_unix"]
