@@ -139,7 +139,7 @@ Current limitations:
 - Traffic counters / throughput are not exposed by the API; do not invent chart values.
 - No firewall inspection or firewall mutation.
 - Audit records do not yet provide complete actor and target semantics.
-- Preflight evidence strings are not fully localized by machine-readable evidence code.
+- Preflight/Diagnostics evidence now carries stable codes and typed params; the panel localization for evidence, sources, remediation and next actions is implemented in draft PR #164. The 103-code fa/en contract and bilingual browser assertions are present; CI and U7/U8 acceptance remain pending, so this capability is not yet marked accepted.
 - Physical-phone UX and formal accessibility audits are not recorded as complete.
 
 A separate BCC-style Connection Test is **not yet equivalent to an authenticated end-to-end diagnostic**. The current Preflight TCP probe must not be relabelled as a successful tunnel/data-path test. “Add from Link” is also not verified as an existing BAFT-TUNNEL workflow; treat it as a later feature request requiring an explicit safe link schema and validation.
@@ -259,7 +259,7 @@ Do not expose buttons for “Deploy best”, Direct/Reverse selection, firewall 
 3. End-to-end tunnel status and last-verified time.
 4. Audit actor/target/resource fields and durable remote Job receipts.
 5. Real traffic/throughput counters (bytes, rate, sampling interval, units and freshness).
-6. Machine-readable Preflight evidence codes for reliable Persian/English localization.
+6. Machine-readable Preflight/Diagnostics evidence codes + params and Persian/English localization (implementation in draft PR #164; acceptance pending U7/U8).
 7. Read-only Firewall inspection, with explicit Unknown where unavailable.
 8. “Add from Link” only after a versioned import schema, checksum, strict validation, secret redaction and preview are designed.
 

@@ -1,6 +1,6 @@
 # Remaining work: assessment and prioritized plan
 
-> **Verified status correction — 2026-11-11 (supersedes the 2026-11-09 assessment below):** the tables and findings that follow are retained as the historical assessment baseline, not current-state claims. Current main is `b2c8ab5020754cad15485371a1f062de4092229f`. Q1, Q3 and Q4 are implemented; Q2 documentation reconciliation remains active. U1 is complete: [LAB run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) on ancestor SHA `8be74376176442106669f4a81293f0865629ecaf` renewed the CRL to 30 days, pushed to both nodes, advanced CRL number `0x1002→0x1003`, recovered the 2 MiB tunnel in 2 seconds, and refused short/replayed CRLs. U2/U3/U5a/U4/U5b are implemented; D2 was merged in [PR #150](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/150), and the trusted repeat [LAB run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181) passed the two-host D2 lifecycle on the immutable RC.7 candidate. U6 is complete with signed prerelease `v0.1.0-rc.7`. The next integrated gate is U7 on the signed RC.7 package, capped at 60 minutes. The prior unrelated nftables-set delta was not reproduced in the D2 repeat (`host_drift=none`), but its source remains unattributed and stays separate under S10. No stable release or production readiness is implied. The owner has paused the independent pre-stable review; do not restart it without a new instruction. No soak longer than one hour is required or planned.
+> **Verified status correction — 2026-11-11 (supersedes the 2026-11-09 assessment below):** the tables and findings that follow are retained as the historical assessment baseline, not current-state claims. Current main is `a58dd88078a7db3426e105122acf811da5f83974` (PR #163 docs/status merge). Q1, Q3 and Q4 are implemented; Q2 documentation reconciliation continues through U8. B1 structured localized evidence is implemented in draft [PR #164](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/164), head `dc2245270266ac12ff2fe20eaefdff06fa09f159`; it is not accepted/merged until U7 and U8 gates are closed. U1 is complete: [LAB run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) on ancestor SHA `8be74376176442106669f4a81293f0865629ecaf` renewed the CRL to 30 days, pushed to both nodes, advanced CRL number `0x1002→0x1003`, recovered the 2 MiB tunnel in 2 seconds, and refused short/replayed CRLs. U2/U3/U5a/U4/U5b are implemented; D2 was merged in [PR #150](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/150), and the trusted repeat [LAB run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181) passed the two-host D2 lifecycle on the immutable RC.7 candidate. U6 is complete with signed prerelease `v0.1.0-rc.7`. The next integrated gate is U7 on the signed RC.7 package, capped at 60 minutes. The prior unrelated nftables-set delta was not reproduced in the D2 repeat (`host_drift=none`), but its source remains unattributed and stays separate under S10. No stable release or production readiness is implied. The owner has paused the independent pre-stable review; do not restart it without a new instruction. No soak longer than one hour is required or planned.
 
 
 - **Date:** 2026-11-09. **Baseline:** `main` at `0a7576b` (PR #132), rechecked at `c7dbd15` after PR #133 merged (BAFT listed as Preview, Direct only, in `/v1/engines` and the Wizard; Reverse role wording). No finding below changed with #133.
@@ -49,7 +49,7 @@
 | Servers page is not a Fleet | Open, post-MVP | L2 |
 | No live throughput counters | **Done** (in-memory history 1 h) | PR #109 `/v1/traffic`, panel PR #120; persistence B5 |
 | No read-only firewall inspection | Open | B3 |
-| Audit actor/target; machine-readable evidence codes | Audit **done**; evidence codes **partial** | PR #109; B1 |
+| Audit actor/target; machine-readable evidence codes | Audit **done**; evidence codes implemented in draft PR #164; acceptance pending U7/U8 | PR #109; B1 |
 | No billing in core | By design | — |
 | No production release | Open | Prereleases only: `v0.1.0-phase1-pre`, `rc.2`, `rc.3` (superseded), `rc.4` |
 
@@ -62,7 +62,7 @@
 | 3 | End-to-end tunnel state and last verified time | **Done** | — |
 | 4 | Audit actor/target/resource | **Done**; remote Job receipts wait for L1 | L1 |
 | 5 | Traffic counters with units, interval, freshness | **Done**; history only in memory (1 h) | B5 |
-| 6 | Machine-readable Preflight evidence codes | **Partial**: check ids act as codes and remediation is localized by id, but evidence text is English (gap G8) | B1 |
+| 6 | Machine-readable Preflight evidence codes | **Implementation in draft PR #164**: Preflight and Diagnostics emit stable `code` + typed `params`; panel localizes evidence, source, remediation and next actions in fa/en. CI acceptance is pending; keep B1 open until U7/U8 gates and PR merge. | B1 |
 | 7 | Read-only firewall visibility | Not started | B3 |
 | 8 | Safe "Add from Link" | Code done (U5b): `baft-tunnel://pair?v=1&b=` link, paste or upload, checksum compare and preview | LAB run 42779915532 PASS |
 
@@ -110,7 +110,7 @@ SA-01..SA-06, SA-08 and SA-10 are fixed. SA-07 is accepted (the token holder is 
 | G5 audit actor/target | **Closed** (#109) |
 | G6 traffic counters | **Closed** (#109, #120) |
 | G7 firewall inspection | Open, B3 |
-| G8 evidence codes | Partial, B1 |
+| G8 evidence codes | Implemented in draft PR #164; CI/U7/U8 acceptance pending |
 | G9 BAFT in the panel | Display: done in PR #133; configurable: B4 |
 | Physical phone test, formal accessibility audit | Not run, B6 |
 
@@ -163,7 +163,7 @@ Effort: **S** = one small PR; **M** = one or two PRs, about a day with CI; **L**
 
 | ID | Work | Depends | Effort | LAB | Exit evidence |
 |---|---|---|---|---|---|
-| B1 | P1-6: per-outcome evidence `code` + `params` in Preflight and diagnostics; panel localizes every line in fa/en; a test fails when a code lacks a translation | — | S–M | — | Unit test; fa screenshots without English evidence text |
+| B1 | P1-6: per-outcome evidence `code` + `params` in Preflight and diagnostics; panel localizes every line in fa/en; a test fails when a code lacks a translation | — | S–M | — | Draft PR #164: six focused Rust tests; 103-code × fa/en translation contract; bilingual Playwright assertions for localized evidence and port-param interpolation; Linux diagnostics integration test and full CI pending. Hold merge until U7/U8. |
 | B2 | In-product integrity probe ("Test tunnel"): an authenticated, size- and rate-bounded probe stream answered by the serve node, SHA-256 compared; the `integrity` tier can pass for this probe only; ADR because it touches the stream-open contract (D3) | U7 | M | Yes | Unit + LAB: pass on a good tunnel, fail on a tampered path, never `ready` |
 | B3 | P1-7 read-only firewall visibility: a root read helper with a fixed command, filtered to the tunnel port; tier `firewall` pass/fail/unknown; no mutation; ADR | U2 | M | Read-only | LAB shows the tier without changing a rule |
 | B4 | BAFT configurable (ADR-0019 phase F): `setup plan/init/join` for `baft` (Direct), Engine Store install in `install.sh`, Apply start/stop, Wizard selectable; status and traffic stay unknown | U5b | L | Yes | LAB with the signed engine through the Wizard path |

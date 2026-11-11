@@ -1,8 +1,8 @@
 # BAFT-TUNNEL — Product Roadmap and Verified Delivery Queue
 
 **Status snapshot:** 2026-11-11 (verified refresh)
-**Source baseline:** `main` at `b2c8ab5020754cad15485371a1f062de4092229f` (PR #157).
-**Gate status:** P0-1..P0-5 remain closed. D2 panel-managed `tcp-tls` CSR/certificate lifecycle is implemented and merged in [PR #150](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/150) (merge `e5a7451f259be7df14187a58db5fe1c29c51a81b`); exact-head CI/two-host evidence is recorded in that PR, and a trusted repeat on the immutable RC.7 candidate passed in [LAB run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181). U1 CRL renewal and real two-host push are proven by [LAB run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) on ancestor code SHA `8be74376176442106669f4a81293f0865629ecaf`: CRL number `0x1002→0x1003`, 30-day validity, both nodes report `crl_state=ok`, 2 MiB tunnel recovery, short/replayed CRLs refused. The repeat D2 LAB reported `host_drift=none`; the earlier unrelated nftables delta was not reproduced, but its source remains unattributed (S10).
+**Source baseline:** `main` at `a58dd88078a7db3426e105122acf811da5f83974` (PR #163; documentation/status reconciliation only).
+**Gate status:** P0-1..P0-5 remain closed. Trusted U7 run [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) is active on parent product SHA `1219f547e6d9c2fe9605385f37a7d5dd8dab2995`: release-tag and asset checks passed; the two-host acceptance job remains in progress, so U7 is NOT VERIFIED. B1 structured evidence is implemented in draft [PR #164](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/164), held from merge until U7/U8 gates. D2 panel-managed `tcp-tls` CSR/certificate lifecycle is implemented and merged in [PR #150](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/150) (merge `e5a7451f259be7df14187a58db5fe1c29c51a81b`); exact-head CI/two-host evidence is recorded in that PR, and a trusted repeat on the immutable RC.7 candidate passed in [LAB run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181). U1 CRL renewal and real two-host push are proven by [LAB run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) on ancestor code SHA `8be74376176442106669f4a81293f0865629ecaf`: CRL number `0x1002→0x1003`, 30-day validity, both nodes report `crl_state=ok`, 2 MiB tunnel recovery, short/replayed CRLs refused. The repeat D2 LAB reported `host_drift=none`; the earlier unrelated nftables delta was not reproduced, but its source remains unattributed (S10).
 **Release:** signed prerelease `v0.1.0-rc.7` is published; [release](https://github.com/zarkmakerburg/BAFT-TUNNEL/releases/tag/v0.1.0-rc.7). `rc.6` is historical and must not be used because its Cosign identity was invalid under the current tag policy. No stable release or production deploy.
 **Product status:** Active development / pre-release; not production-ready. `ready` remains Unknown unless independently verified under the readiness contract. Main is protected; all code changes continue through PRs and exact-SHA CI.
 
@@ -91,7 +91,7 @@ _Status marks added at `main` `0a7576b`; this list is not a current-state snapsh
 - The Servers page is not a Hashem-style Fleet; it has local/configured-peer information only.
 - ~~No live throughput counters exposed in the API~~ **Done** (PR #109 `/v1/traffic`, panel PR #120); history is in memory for one hour only.
 - No read-only firewall inspection and no firewall mutation.
-- ~~Audit actor/target completeness~~ **Done** (audit v2, PR #109). Machine-readable/localizable Preflight evidence codes remain **partial** (B1).
+- ~~Audit actor/target completeness~~ **Done** (audit v2, PR #109). Machine-readable/localizable Preflight and Diagnostics evidence is implemented in draft PR #164; CI and U7/U8 phase gates remain before acceptance (B1).
 - Since U2 (PR #137, LAB 42692143748) the agent is a systemd service under its own user and setup sets owners itself. U1 CRL renewal/push is accepted (LAB 42656507521); U6 signed packaging and quick installer are complete in prerelease `v0.1.0-rc.7`.
 - No customer/subscription/reseller/billing system in core.
 - No production release. Independent security assessment of the P0+P1 surface done 2026-11-09 (`docs/SECURITY_ASSESSMENT.md`): 3 Medium and 3 Low fixed (#112, #114, main `f3c8b54`), 4 Low/Info open or accepted; no Critical/High found. This is not the pre-stable review of the full product.
@@ -118,7 +118,7 @@ The P0 gates proved the runtime; they did not make the product usable by a non-e
 | done | U6 | Signed prerelease packaging and quick installer; `v0.1.0-rc.7` published | release workflow | — |
 | next | U7 | MVP acceptance v2 on the signed RC.7 package: clean install, guided setup, lifecycle, diagnostics, 64 KiB + 2 MiB integrity, backup/restore, update compatibility decision, revocation, uninstall and cleanup | yes, bounded to ≤60 min | — |
 | after U7 | U8 | Final operator quickstarts en/fa and troubleshooting must follow the exact accepted U7 path | — | — |
-| after U8 | B1–B6 | Localized evidence codes, in-product integrity probe, read-only firewall visibility, BAFT configuration, history/alerts and accessibility | as listed | — |
+| after U8 | B1–B6 | B1 structured localized evidence is implemented in draft PR #164 and held for U7/U8 acceptance; then B2 integrity probe, B3 read-only firewall visibility, B4 BAFT configuration, B5 history/alerts and B6 accessibility | as listed | — |
 | Phase 6 | S1–S10 | Stable hardening; no soak longer than 1 hour is planned. Keep external nftables attribution as a separate open environmental item (S10) | ≤60 min where soak is needed | owner review currently paused |
 
 Not before the MVP queue is done: P1-1 enrollment and P2 Fleet/Jobs (Tier L in the plan).
@@ -142,7 +142,7 @@ Not before the MVP queue is done: P1-1 enrollment and P2 Fleet/Jobs (Tier L in t
 3. End-to-end tunnel state and last-verified timestamp. — **Done** (PR #109).
 4. Complete audit actor, target and resource identity. — **Done** for local Apply (PR #109); remote Job receipts wait for item 1.
 5. Measured throughput/byte counters and history with units, interval, provenance and freshness. — **Done** (PR #109, panel PR #120); history beyond one hour is B5.
-6. Machine-readable Preflight evidence codes and localized explanations. — _Partial_ (check ids and remediation localized; evidence text English): B1.
+6. Machine-readable Preflight/Diagnostics evidence codes + params and fa/en explanations. — _Implementation in draft PR #164; CI and U7/U8 acceptance pending_: B1.
 7. Read-only firewall visibility. — _Not started_: B3.
 8. Safe “Add from Link” import with versioned schema, checksum, strict validation and preview. — _Not started_; delivered as the panel bundle import in U5b.
 
