@@ -1,7 +1,7 @@
 # Evidence Record: <claim / acceptance criterion>
 
 - **Evidence ID:** <unique identifier>
-- **Project:** BAFT-TUNNEL
+- **Project:** <project name / stable ID>
 - **Task / Issue / PR:** <canonical link>
 - **Recorded at (UTC):** <YYYY-MM-DD HH:MM:SSZ>
 - **Evidence type:** LOCAL_TEST | STATIC_CHECK | HOSTED_CI | SIMULATION | REAL_TWO_HOST_LAB | MANUAL_REVIEW
@@ -9,7 +9,7 @@
 
 ## Provenance
 
-- **Repository:** `zarkmakerburg/BAFT-TUNNEL`
+- **Repository:** `<owner>/<repository>`
 - **Exact commit SHA tested:** `<full SHA>`
 - **Branch / PR:** <branch and PR link>
 - **Workflow / run ID:** <URL and numeric ID, or not applicable>
@@ -41,4 +41,4 @@
 - **Reviewed by:** <QA/Integrator>
 - **Disposition:** ACCEPTED | REJECTED | NEEDS_MORE_EVIDENCE | NOT REVIEWED
 - **Review note:** <reason and follow-up>
-- **Canonical board entry:** <HQ Issue #2 comment/link>
+- **Canonical board entry:** <canonical project-board comment/link>

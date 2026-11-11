@@ -1,11 +1,11 @@
 # HQ Conversation Command Protocol
 
-These are plain-language conversation shorthands for BAFT-TUNNEL work. They are not shell commands, GitHub slash commands, API endpoints, or guaranteed ChatGPT account-level settings. The agent must read `AGENTS.md` and verify live state in every new session; repository instructions do not automatically configure a ChatGPT account or every unrelated conversation.
+These are plain-language conversation shorthands for work in a project governed by this HQ methodology. They are not shell commands, GitHub slash commands, API endpoints, or guaranteed ChatGPT account-level settings. The agent must read `AGENTS.md` and verify live state in every new session; repository instructions do not automatically configure a ChatGPT account or every unrelated conversation.
 
 | User message | Intended behavior | Minimum output / action |
 |---|---|---|
-| `.` or `..` | Continue from the latest verified BAFT-TUNNEL state and perform the next safe, authorized action. Do not substitute a status recap for execution. | Execute until a real blocker, permission gate or completed task; then give a concise factual handoff. |
-| `status` / `وضعیت` | Read-only live status check. | Report current phase/next gate from Issue #2, main SHA, relevant PR/CI state, active blockers and evidence freshness. |
+| `.` or `..` | Continue from the latest verified project state and perform the next safe, authorized action. Do not substitute a status recap for execution. | Execute until a real blocker, permission gate or completed task; then give a concise factual handoff. |
+| `status` / `وضعیت` | Read-only live status check. | Report current phase/next gate from the canonical board declared in PROJECT_PROFILE.md, main SHA, relevant PR/CI state, active blockers and evidence freshness. |
 | `plan: <goal>` | Explore/plan the requested goal without implementation. | Clarify constraints only when essential; produce a scoped plan, dependencies and acceptance criteria. |
 | `implement: <task>` | Implement an already authorized, sufficiently specified task. | Verify ownership/baseline, use an isolated workspace, follow the appropriate skill and commit coherent changes. |
 | `verify: <sha or PR>` | Validate a specific commit or PR without changing its implementation unless separately requested. | Inspect exact diff, required checks, review threads and available test/LAB evidence; UNKNOWN stays UNKNOWN. |

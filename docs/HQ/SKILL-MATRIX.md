@@ -4,7 +4,7 @@ Skills are selected per task, not loaded globally. Start with the smallest workf
 
 | Task type | Required / recommended skill | When to load | Expected output |
 |---|---|---|---|
-| Any new BAFT-TUNNEL session | `superpowers:using-superpowers` | At session start, before project work | Relevant skill discovery and workflow discipline |
+| Any new project session governed by HQ | `superpowers:using-superpowers` | At session start, before project work | Relevant skill discovery and workflow discipline |
 | Product/architecture exploration | `superpowers:brainstorming` | Before proposing new behavior, architecture or UX | Agreed problem, constraints, options and decision record |
 | Multi-step implementation | `superpowers:writing-plans` | Before implementation when the work spans multiple tasks | Reviewed plan with task boundaries, interfaces and verification |
 | Execute an approved plan inline | `superpowers:executing-plans` | When the owner chooses inline execution | Task-by-task implementation, ledger and final review |
@@ -13,7 +13,7 @@ Skills are selected per task, not loaded globally. Start with the smallest workf
 | Unexpected failure or defect | `superpowers:systematic-debugging` | Before changing code to address a failure | Evidence-based root cause and verified fix |
 | Before claiming completion | `superpowers:verification-before-completion` | Before reporting PASS, completion or readiness | Fresh command/output verification against acceptance criteria |
 | Isolated parallel development | `superpowers:using-git-worktrees` | Before implementation that needs isolation | Verified isolated branch/worktree without disturbing other work |
-| Request an independent review | `superpowers:requesting-code-review` | For substantial changes or before merge consideration | Review findings against scope and failure modes |
+| Request an independent review | `superpowers:requesting-code-review` | Mandatory before acceptance/merge consideration for every PR changing `AGENTS.md`, `docs/HQ/**`, security policy, permissions, or delivery gates; recommended for other substantial changes | Review findings against scope and failure modes, submitted by someone other than the author and tied to the exact head SHA |
 | Respond to review feedback | `superpowers:receiving-code-review` | When review comments arrive | Evidence-backed disposition and fixes |
 | Finish a development branch | `superpowers:finishing-a-development-branch` | After implementation and verification are complete | Safe integration/PR options; no automatic permission to merge |
 | Benchmark/performance analysis | CodSpeed integration and relevant performance guidance | When measuring a defined performance question | Exact-SHA benchmark evidence and comparison |

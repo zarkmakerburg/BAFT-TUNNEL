@@ -1,11 +1,11 @@
 # Task: <short title>
 
 - **Task ID:** <issue / plan / task identifier>
-- **Project:** BAFT-TUNNEL
-- **State:** proposed | ready | active | blocked | review | accepted
+- **Project:** <project name / stable ID>
+- **State:** proposed | ready | active | blocked | review | independent-review | accepted
 - **Owner / role:** <worker or HQ role>
 - **Created / updated (UTC):** <YYYY-MM-DD HH:MM>
-- **Canonical board:** [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2)
+- **Canonical board:** the project's canonical board defined in docs/HQ/PROJECT_PROFILE.md
 
 ## Goal and scope
 

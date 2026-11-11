@@ -1,14 +1,14 @@
 # Engineering Handoff: <task / workstream>
 
-- **Project:** BAFT-TUNNEL
+- **Project:** <project name / stable ID>
 - **Task / Issue:** <identifier and link>
-- **State:** active | blocked | review | accepted
+- **State:** active | blocked | review | independent-review | accepted
 - **Handoff time (UTC):** <YYYY-MM-DD HH:MM>
 - **From → To:** <role/worker> → <role/worker>
 
 ## Exact repository state
 
-- **Repository:** `zarkmakerburg/BAFT-TUNNEL`
+- **Repository:** `<owner>/<repository>`
 - **Branch:** `<branch>`
 - **Base SHA:** `<full SHA>`
 - **Current HEAD:** `<full SHA>`
@@ -44,4 +44,4 @@ Do not list unexecuted checks as PASS. Preserve failed runs and explain any reru
 
 ## Canonical record
 
-Append operationally significant changes to [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2). This handoff summarizes the transition; it does not replace the append-only board.
+Append operationally significant changes to the project's canonical board defined in docs/HQ/PROJECT_PROFILE.md. This handoff summarizes the transition; it does not replace the append-only board.
