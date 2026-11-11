@@ -16,8 +16,8 @@ fn tcp_tls() -> Value {
         "id": "tcp-tls",
         "status": "stable",
         "guided_setup": {"available": true},
-        "directions": ["direct", "reverse"],
-        "reverse": {"state": "preview", "reason": "real two-host LAB passed once (ADR-0021 Amendment 1); not stable, not production-ready"},
+        "directions": ["direct"],
+        "reverse": {"state": "unavailable", "reason": "independent security and acceptance gates remain open; Reverse is not selectable in API, Preflight or Wizard"},
         "security": "TLS 1.3 mutual authentication, offline CA, mandatory CRL",
         "transport": {"carrier": "tcp", "encapsulation": "tls1.3-mtls+yamux", "udp": false},
         "roles": {"listener": true, "dialer": true},
@@ -34,7 +34,7 @@ fn tcp_tls() -> Value {
         "platform": {"os": ["linux"], "min_agent": "0.1.0"},
         "evidence": {
             "unit_tests": true,
-            "lab_two_host": {"direct": "pass", "reverse": "pass"},
+            "lab_two_host": {"direct": "pass", "reverse": "not-offered-pending-independent-acceptance"},
             "source": "docs/PHASE1_IMPLEMENTATION_STATUS.md"
         }
     })
@@ -130,15 +130,15 @@ fn direction_model() -> Value {
             }
         },
         "reverse": {
-            "state": "preview",
-            "engines": ["tcp-tls"],
+            "state": "unavailable",
+            "engines": [],
             "connection_initiator": "forward (the node that owns the service dials out)",
             "connection_listener": "serve (the reachable node)",
             "traffic_ingress": "serve (loopback user ingress)",
             "traffic_egress": "forward (fixed local target)",
             "public_reachability_needed": "serve (inbound tunnel port)",
-            "evidence": "two-host LAB run 42506805986 (tcp-tls, one run)",
-            "not_claimed": "stable, production-ready, noise-tcp reverse; earlier 'reverse' LAB results were label-acceptance only"
+            "evidence": "historical two-host LAB run 42506805986 is retained as historical evidence only; independent acceptance is still pending",
+            "not_claimed": "available, stable or production-ready Reverse for any engine"
         },
         "nat": "the dialing side needs outbound reachability to the listener's tunnel port; the listener needs that port reachable inbound",
         "firewall": "inbound allow on the listener's tunnel port; not inspected by the agent (unknown)"
@@ -209,13 +209,16 @@ mod tests {
         let doc = catalog();
         assert_eq!(doc["runtime"]["keepalive_interval_s"], 15);
         assert_eq!(doc["runtime"]["reconnect"]["max_backoff_s"], 60);
-        assert_eq!(doc["direction_model"]["reverse"]["state"], "preview");
+        assert_eq!(doc["direction_model"]["reverse"]["state"], "unavailable");
         assert_eq!(
             doc["direction_model"]["implemented"]["direct"]["connection_initiator"],
             "forward"
         );
         assert!(supports_direction("tcp-tls", "direct"));
-        assert!(supports_direction("tcp-tls", "reverse"));
+        assert!(!supports_direction("tcp-tls", "reverse"));
+        assert_eq!(doc["engines"][0]["directions"], json!(["direct"]));
+        assert_eq!(doc["engines"][0]["reverse"]["state"], "unavailable");
+        assert_eq!(doc["direction_model"]["reverse"]["state"], "unavailable");
         assert!(!supports_direction("noise-tcp", "reverse"));
     }
 

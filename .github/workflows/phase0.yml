@@ -29,6 +29,8 @@ jobs:
         run: shellcheck -S warning scripts/menu.sh scripts/test-menu.sh scripts/install.sh scripts/rollback.sh scripts/uninstall.sh
       - name: Test staged install, rollback, and uninstall
         run: bash scripts/test-install.sh
+      - name: Test quick installer signature, checksum, download, and archive rejection paths
+        run: bash scripts/test-quick-install.sh
       - name: Test staged backup, restore, guarded update and automatic rollback
         run: bash scripts/test-backup-update.sh
       - name: Enforce immutable workflow action pins

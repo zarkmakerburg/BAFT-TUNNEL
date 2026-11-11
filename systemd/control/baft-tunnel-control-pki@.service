@@ -1,0 +1,35 @@
+[Unit]
+Description=Run bounded PKI enrollment and certificate import for baft-tunnel@%i (root helper, ADR-0027)
+StartLimitIntervalSec=10s
+StartLimitBurst=60
+
+[Service]
+Type=oneshot
+# Fixed command and closed operations only: create/read CSR and validate/install the signed public
+# certificate, CA and CRL for this instance. The node private key stays under /etc/baft-tunnel
+# with baft-tunnel ownership and mode 0600; no private-key bytes are returned.
+ExecStart=/usr/local/bin/baft-tunnel setup pki-helper --instance %i
+ExecStopPost=/usr/bin/rm -f /run/baft-tunnel/control/%i.pki
+TimeoutStartSec=60s
+UMask=0022
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE

@@ -4,21 +4,29 @@
 
 دو سرور Ubuntu 22.04 یا جدیدتر (systemd 249+): **خارج** سرویس می‌دهد (serve) و **ایران** فوروارد می‌کند (forward). همهٔ دستورها با root و روی هر دو سرور اجرا شوند، مگر خلافش گفته شود.
 
+## ۰. نصب یک‌خطی (Ubuntu 22.04+، معماری x86_64)
+
+روی هر سرور اجرا کن؛ نام نمونهٔ این نود t1 است و می‌توانی آن را عوض کنی:
+
+    curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/main/scripts/quick-install.sh | sudo bash -s -- --register t1
+
+این دستور جدیدترین نسخهٔ منتشرشده را (فعلاً شامل Preview) پیدا می‌کند، امضای Sigstore و SHA-256 را بررسی می‌کند و برنامه، سرویس‌های systemd و Agent پنل را نصب می‌کند؛ **تونل را روشن نمی‌کند**. برای دریافت فقط نسخهٔ پایدار، --stable و برای نسخهٔ مشخص، --tag vX.Y.Z را اضافه کن. فعلاً فقط Linux x86_64 پشتیبانی می‌شود.
+
 ## ۱. دریافت و بررسی بستهٔ امضاشده
 
 ```bash
-TAG=v0.1.0-rc.6   # نسخه‌ای که نصب می‌کنید
+TAG=vX.Y.Z   # نسخه‌ای که پس از اعمال سیاست امضای Tag منتشر شده است
 R=https://github.com/zarkmakerburg/BAFT-TUNNEL/releases/download/$TAG
 P=baft-tunnel-$TAG-linux-x86_64
 curl -fLO $R/$P.tar.gz -fLO $R/SHA256SUMS -fLO $R/SHA256SUMS.cosign.bundle
 cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
-  --certificate-identity-regexp '^https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/(heads/main|tags/v[0-9][0-9A-Za-z.+-]*)$' \
+  --certificate-identity "https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/tags/$TAG" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 sha256sum -c --ignore-missing SHA256SUMS      # باید چاپ کند: $P.tar.gz: OK
 tar -xzf $P.tar.gz && cd $P
 ```
 
-بدون cosign، `sha256sum -c` فقط سالم‌بودن دانلود را نشان می‌دهد، نه این‌که چه کسی آن را امضا کرده.
+نسخه‌های قدیمی که با هویت `refs/heads/main` امضا شده‌اند عمداً پذیرفته نمی‌شوند. بدون cosign، `sha256sum -c` فقط سالم‌بودن دانلود را نشان می‌دهد، نه این‌که چه کسی آن را امضا کرده.
 
 ## ۲. نصب (برنامه، سرویس‌ها، منو، ایجنت محلی)
 

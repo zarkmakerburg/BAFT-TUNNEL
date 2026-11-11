@@ -1,0 +1,9 @@
+[Unit]
+Description=BAFT-TUNNEL agent PKI operation request for instance %i
+
+[Path]
+PathExists=/run/baft-tunnel/control/%i.pki
+Unit=baft-tunnel-control-pki@%i.service
+
+[Install]
+WantedBy=multi-user.target

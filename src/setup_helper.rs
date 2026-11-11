@@ -13,7 +13,7 @@
 //! written to `CONTROL_DIR/NAME.setup-result` (root:baft-tunnel 0640), where the agent reads it.
 
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -27,9 +27,43 @@ pub const MAX_FILE_BYTES: u64 = 64 * 1024;
 pub const REQUEST_SUFFIX: &str = "setup";
 pub const RESULT_SUFFIX: &str = "setup-result";
 /// The root helper's own receipt store (replay of the same key, evidence on the host).
-pub const HELPER_RECEIPTS: &str = "/var/lib/baft-tunnel/setup-receipts";
+pub const HELPER_RECEIPTS: &str = "/var/lib/baft-tunnel-control/setup-receipts";
 /// How long the agent waits for the helper; init on tcp-tls checks PKI, join validates config.
 pub const WAIT: Duration = Duration::from_secs(60);
+
+fn ensure_private_receipt_dir(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                bail!("receipt path {} is not a real directory", path.display());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(path)
+                .with_context(|| format!("create receipt directory {}", path.display()))?;
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect receipt directory {}", path.display()));
+        }
+    }
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_dir() || meta.file_type().is_symlink() || meta.uid() != unsafe { libc::geteuid() } {
+        bail!(
+            "receipt directory {} has an unexpected type or owner",
+            path.display()
+        );
+    }
+    if meta.mode() & 0o022 != 0 {
+        bail!(
+            "receipt directory {} is writable by group or others",
+            path.display()
+        );
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("secure receipt directory {}", path.display()))?;
+    Ok(())
+}
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -189,19 +223,26 @@ pub fn run(name: &str, control_dir: &Path, config_dir: &Path, receipts: &Path) -
         }
         Ok(req) => {
             let instance_receipts = receipts.join(name);
-            std::fs::create_dir_all(&instance_receipts)?;
-            std::fs::set_permissions(receipts, std::fs::Permissions::from_mode(0o700))?;
-            std::fs::set_permissions(&instance_receipts, std::fs::Permissions::from_mode(0o700))?;
-            let (_, mut receipt) = apply::run(&req, &instance_receipts, None);
-            receipt["source"] = json!("root setup helper");
-            if receipt["result"] == "applied" && receipt["replayed"] != json!(true) {
-                let config_file = crate::setup::config_file_name(Some(name))?;
-                match crate::setup::adopt_for_service(config_dir, &config_file) {
-                    Ok(lines) => receipt["ownership"] = json!(lines),
-                    Err(e) => receipt["ownership_error"] = json!(format!("{e:#}")),
+            match ensure_private_receipt_dir(receipts)
+                .and_then(|()| ensure_private_receipt_dir(&instance_receipts))
+            {
+                Err(error) => refused(
+                    Some(&req.key),
+                    format!("cannot prepare the root-owned receipt directory: {error:#}"),
+                ),
+                Ok(()) => {
+                    let (_, mut receipt) = apply::run(&req, &instance_receipts, None);
+                    receipt["source"] = json!("root setup helper");
+                    if receipt["result"] == "applied" && receipt["replayed"] != json!(true) {
+                        let config_file = crate::setup::config_file_name(Some(name))?;
+                        match crate::setup::adopt_for_service(config_dir, &config_file) {
+                            Ok(lines) => receipt["ownership"] = json!(lines),
+                            Err(e) => receipt["ownership_error"] = json!(format!("{e:#}")),
+                        }
+                    }
+                    receipt
                 }
             }
-            receipt
         }
     };
     write_result(control_dir, name, &receipt)?;
@@ -355,6 +396,33 @@ mod tests {
     }
 
     #[test]
+    fn receipt_parent_failure_returns_refused_result_without_waiting_for_timeout() {
+        let (_t, control, conf, receipts) = setup();
+        put(
+            &control,
+            &json!({"stage": "init", "key": "helper-key-parent", "plan": plan_json(&conf, "inst1")}),
+        );
+        // The parent of the configured receipt root does not exist. The helper must still
+        // publish a bounded refusal through the separate control result channel.
+        let missing_parent = receipts.join("missing").join("setup-receipts");
+        let out = run("inst1", &control, &conf, &missing_parent).unwrap();
+        assert_eq!(out["result"], "refused", "{out}");
+        assert!(
+            out["reason"]
+                .as_str()
+                .unwrap()
+                .contains("cannot prepare the root-owned receipt directory"),
+            "{out}"
+        );
+        let result: Value =
+            serde_json::from_slice(&std::fs::read(control.join("inst1.setup-result")).unwrap())
+                .unwrap();
+        assert_eq!(result["result"], "refused");
+        assert_eq!(result["id"], "helper-key-parent");
+        assert_eq!(std::fs::read_dir(&conf).unwrap().count(), 0);
+    }
+
+    #[test]
     fn refuses_other_instance_other_directory_and_lifecycle_stages() {
         let (_t, control, conf, receipts) = setup();
         for (body, why) in [
@@ -414,6 +482,33 @@ mod tests {
         let out = run("inst1", &control, &conf, &receipts).unwrap();
         assert_eq!(out["result"], "refused");
         assert_eq!(std::fs::read_dir(&conf).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn refuses_symlinked_receipt_root() {
+        let (t, _control, _conf, receipts) = setup();
+        let victim = t.path().join("victim");
+        std::fs::create_dir(&victim).unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&victim, &receipts).unwrap();
+        assert!(ensure_private_receipt_dir(&receipts).is_err());
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+    }
+
+    #[test]
+    fn refuses_group_writable_receipt_root() {
+        let (t, _control, _conf, receipts) = setup();
+        std::fs::create_dir(&receipts).unwrap();
+        std::fs::set_permissions(&receipts, std::fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(ensure_private_receipt_dir(&receipts).is_err());
+        assert_eq!(
+            std::fs::metadata(&receipts).unwrap().permissions().mode() & 0o777,
+            0o770
+        );
+        drop(t);
     }
 
     #[test]

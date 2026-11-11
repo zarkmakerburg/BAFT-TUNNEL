@@ -5,7 +5,8 @@
 #   - the API token /var/lib/baft-tunnel-agent/token (created once, mode 0600, never printed);
 #   - the control helper: root path units that turn a request file into one fixed command for
 #     exactly baft-tunnel@NAME (start, stop, enable --now, disable --now), and the root setup
-#     helper (ADR-0026) that runs setup init/join for NAME in /etc/baft-tunnel only. No polkit, no sudo.
+#     helper (ADR-0026) that runs setup init/join and bounded PKI CSR/import operations (ADR-0027) for NAME
+#     in /etc/baft-tunnel only. No polkit, no sudo.
 #   install-agent-control.sh --instance NAME [--listen 127.0.0.1:PORT] [--destdir ROOT]
 #   install-agent-control.sh --remove --instance NAME [--destdir ROOT]
 set -Eeuo pipefail
@@ -40,7 +41,7 @@ fi
 UNIT_DIR="$ROOT_PREFIX/etc/systemd/system"
 TMPF="$ROOT_PREFIX/etc/tmpfiles.d/baft-tunnel-control.conf"
 STATE="$ROOT_PREFIX/var/lib/baft-tunnel-agent"
-VERBS=(start stop enable disable setup)
+VERBS=(start stop enable disable setup pki)
 FILES=(); for v in "${VERBS[@]}"; do FILES+=("baft-tunnel-control-$v@.path" "baft-tunnel-control-$v@.service"); done
 CTL_PATHS=(); for v in "${VERBS[@]}"; do CTL_PATHS+=("baft-tunnel-control-$v@$INSTANCE.path"); done
 AGENT_UNITS=("baft-tunnel-agent@$INSTANCE.path" "baft-tunnel-agent@$INSTANCE.service")
@@ -94,5 +95,5 @@ echo "  agent:  baft-tunnel-agent@$INSTANCE (user $AGENT_USER), running now and 
 echo "  panel:  http://${LISTEN:-127.0.0.1:18080}/ (loopback; from another machine: ssh -L 18080:127.0.0.1:18080 HOST)"
 echo "  token:  /var/lib/baft-tunnel-agent/token (read it as root: sudo cat ...; never share it)"
 echo "  helper: the agent can request start, stop, enable --now and disable --now of baft-tunnel@$INSTANCE only,"
-echo "          and setup init/join for $INSTANCE in /etc/baft-tunnel (pair from the panel: Create tunnel)."
+echo "          setup init/join and bounded PKI CSR/certificate import for $INSTANCE in /etc/baft-tunnel (panel enrollment)."
 echo "The tunnel itself was not started."

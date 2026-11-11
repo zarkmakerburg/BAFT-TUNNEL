@@ -29,7 +29,7 @@ started at all, so the panel could not help before the configuration existed.
 4. **Result.** The receipt goes to `NAME.setup-result` (root:baft-tunnel 0640, created exclusively after removing any
    stale file or planted link). The agent accepts it only when it carries the request's idempotency key and digest, stores
    its own copy (same-key replay) and writes an audit line. The helper keeps its own receipts in
-   `/var/lib/baft-tunnel/setup-receipts/NAME`.
+   `/var/lib/baft-tunnel-control/setup-receipts/NAME`.
 5. **Panel.** The Wizard's last step pairs from the panel when the agent is in setup mode: prepare (init), export the own
    bundle (copy, download, or a `baft-tunnel://pair?v=1&b=<base64url>` link) with its checksum, import the peer bundle
    (paste JSON or link, or upload) with a preview from `POST /v1/setup/bundle/inspect` (checksum compare, field match against

@@ -121,7 +121,9 @@ new_node() {
   chmod 700 "$node_dir"
   [[ ! -e "$node_dir/node.key" && ! -e "$node_dir/node.csr" ]] ||
     die "node key or CSR already exists; refusing to overwrite"
-  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$node_dir/node.key"
+  # SEC1 PEM is directly supported by rustls-ring. Older OpenSSL PKCS#8 output can omit
+  # the public-key field required by ring; runtime also normalizes legacy PKCS#8 in memory.
+  openssl ecparam -name prime256v1 -genkey -noout -out "$node_dir/node.key"
   chmod 600 "$node_dir/node.key"
   openssl req -new -key "$node_dir/node.key" -out "$node_dir/node.csr" -subj "/CN=$node_id"
   openssl req -in "$node_dir/node.csr" -verify -noout >/dev/null

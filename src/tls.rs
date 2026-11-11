@@ -1,6 +1,6 @@
 use std::{fs::File, io::BufReader, path::Path, sync::Arc};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use rustls::{
     ClientConfig, RootCertStore, ServerConfig,
     client::WebPkiServerVerifier,
@@ -10,6 +10,7 @@ use rustls::{
     server::WebPkiClientVerifier,
 };
 use tokio_rustls::{TlsAcceptor, TlsConnector};
+use zeroize::Zeroizing;
 
 fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
     let file =
@@ -57,6 +58,56 @@ pub fn crl_seconds_remaining(path: &Path) -> Result<i64> {
     Ok(earliest.context("certificate revocation list file contains no CRLs")? - now)
 }
 
+/// Verify the local leaf as both a TLS server and client using the exact trust/CRL policy
+/// used by tunnel connections. This is used by the root enrollment helper before activation.
+pub(crate) fn verify_local_certificate(
+    ca: &Path,
+    crl: &Path,
+    cert: &Path,
+    expected_server_name: &str,
+) -> Result<()> {
+    use rustls::{
+        client::danger::ServerCertVerifier,
+        pki_types::{ServerName, UnixTime},
+    };
+    let chain = certificates(cert)?;
+    let leaf = chain
+        .first()
+        .context("certificate file contains no leaf certificate")?;
+    let intermediates = &chain[1..];
+    let roots = Arc::new(roots(ca)?);
+    let revocation = revocation_lists(crl)?;
+    let server_verifier = WebPkiServerVerifier::builder(roots.clone())
+        .with_crls(revocation.clone())
+        .enforce_revocation_expiration()
+        .build()
+        .context("build server certificate verifier for local enrollment")?;
+    let server_name = if let Some(ip) = expected_server_name.strip_prefix("IP:") {
+        ServerName::IpAddress(
+            ip.parse::<std::net::IpAddr>()
+                .context("configured server IP SAN is invalid")?
+                .into(),
+        )
+    } else if let Some(dns) = expected_server_name.strip_prefix("DNS:") {
+        ServerName::try_from(dns.to_owned()).context("configured DNS SAN is invalid")?
+    } else {
+        bail!("expected server SAN must be DNS or IP");
+    };
+    server_verifier
+        .verify_server_cert(leaf, intermediates, &server_name, &[], UnixTime::now())
+        .context("leaf certificate failed TLS server-auth, chain, validity or CRL verification")?;
+
+    let client_verifier = WebPkiClientVerifier::builder(roots)
+        .with_crls(revocation)
+        .enforce_revocation_expiration()
+        .build()
+        .context("build client certificate verifier for local enrollment")?;
+    client_verifier
+        .verify_client_cert(leaf, intermediates, UnixTime::now())
+        .context("leaf certificate failed TLS client-auth, chain, validity or CRL verification")?;
+    Ok(())
+}
+
 /// Seconds until the first (leaf) certificate in the file expires (negative once expired).
 pub fn certificate_seconds_remaining(path: &Path) -> Result<i64> {
     let now = std::time::SystemTime::now()
@@ -72,10 +123,153 @@ pub fn certificate_seconds_remaining(path: &Path) -> Result<i64> {
     Ok(parsed.validity().not_after.timestamp() - now)
 }
 
+fn der_tlv<'a>(input: &'a [u8], offset: &mut usize) -> Result<(u8, &'a [u8])> {
+    ensure!(*offset < input.len(), "truncated DER tag");
+    let tag = input[*offset];
+    *offset += 1;
+    ensure!(*offset < input.len(), "truncated DER length");
+    let first = input[*offset];
+    *offset += 1;
+    let length = if first & 0x80 == 0 {
+        first as usize
+    } else {
+        let count = (first & 0x7f) as usize;
+        ensure!(
+            count > 0 && count <= 4 && *offset + count <= input.len(),
+            "invalid DER length"
+        );
+        let mut value = 0usize;
+        for byte in &input[*offset..*offset + count] {
+            value = value
+                .checked_mul(256)
+                .and_then(|n| n.checked_add(*byte as usize))
+                .context("DER length overflow")?;
+        }
+        *offset += count;
+        value
+    };
+    let end = offset.checked_add(length).context("DER offset overflow")?;
+    ensure!(end <= input.len(), "truncated DER value");
+    let value = &input[*offset..end];
+    *offset = end;
+    Ok((tag, value))
+}
+
+fn der_encode(tag: u8, value: &[u8]) -> Result<Vec<u8>> {
+    let mut output = vec![tag];
+    if value.len() < 128 {
+        output.push(value.len() as u8);
+    } else {
+        let bytes = value.len().to_be_bytes();
+        let first = bytes
+            .iter()
+            .position(|byte| *byte != 0)
+            .unwrap_or(bytes.len() - 1);
+        let length_bytes = &bytes[first..];
+        ensure!(length_bytes.len() <= 4, "DER value is too large");
+        output.push(0x80 | length_bytes.len() as u8);
+        output.extend_from_slice(length_bytes);
+    }
+    output.extend_from_slice(value);
+    Ok(output)
+}
+
+/// Rewrite OpenSSL's explicit-parameter SEC1 output to named-curve SEC1 with the public point.
+/// This keeps legacy P-256 PKCS#8 keys compatible with ring without writing the key to disk.
+fn normalize_legacy_p256_sec1(explicit_der: &[u8]) -> Result<Vec<u8>> {
+    let mut offset = 0usize;
+    let (sequence_tag, sequence) = der_tlv(explicit_der, &mut offset)?;
+    ensure!(
+        sequence_tag == 0x30 && offset == explicit_der.len(),
+        "invalid EC private-key DER sequence"
+    );
+    let mut inner = 0usize;
+    let (version_tag, version) = der_tlv(sequence, &mut inner)?;
+    ensure!(
+        version_tag == 0x02 && version == [1],
+        "unsupported EC private-key version"
+    );
+    let (private_tag, private_scalar) = der_tlv(sequence, &mut inner)?;
+    ensure!(
+        private_tag == 0x04 && (1..=32).contains(&private_scalar.len()),
+        "legacy private key is not a P-256 scalar"
+    );
+    // OpenSSL's explicit-parameter SEC1 encoder can omit the leading zero octet
+    // from the fixed-width P-256 scalar. Restore the required 32-byte width.
+    let mut padded_scalar = Zeroizing::new([0u8; 32]);
+    padded_scalar[32 - private_scalar.len()..].copy_from_slice(private_scalar);
+    let (parameters_tag, _parameters) = der_tlv(sequence, &mut inner)?;
+    ensure!(
+        parameters_tag == 0xa0,
+        "legacy EC key lacks explicit curve parameters"
+    );
+    let (public_tag, public_field) = der_tlv(sequence, &mut inner)?;
+    ensure!(
+        public_tag == 0xa1 && inner == sequence.len(),
+        "legacy EC key lacks a final public-key field"
+    );
+    let mut public_offset = 0usize;
+    let (bit_string_tag, public_bits) = der_tlv(public_field, &mut public_offset)?;
+    ensure!(
+        bit_string_tag == 0x03
+            && public_offset == public_field.len()
+            && public_bits.len() == 66
+            && public_bits[0] == 0
+            && public_bits[1] == 0x04,
+        "legacy EC public point is not an uncompressed P-256 point"
+    );
+
+    const P256_NAMED_CURVE: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let parameters = der_encode(0xa0, P256_NAMED_CURVE)?;
+    let public = der_encode(0xa1, &der_encode(0x03, public_bits)?)?;
+    let private_tlv = Zeroizing::new(der_encode(0x04, padded_scalar.as_ref())?);
+    let mut content = Zeroizing::new(Vec::with_capacity(128));
+    content.extend_from_slice(&[0x02, 0x01, 0x01]);
+    content.extend_from_slice(&private_tlv);
+    content.extend_from_slice(&parameters);
+    content.extend_from_slice(&public);
+    der_encode(0x30, &content)
+}
+
 fn private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
     let file =
         File::open(path).with_context(|| format!("open private key file {}", path.display()))?;
-    PrivateKeyDer::from_pem_reader(BufReader::new(file)).context("parse PEM private key")
+    let key =
+        PrivateKeyDer::from_pem_reader(BufReader::new(file)).context("parse PEM private key")?;
+    if matches!(&key, PrivateKeyDer::Pkcs8(_)) {
+        // Older OpenSSL genpkey releases emitted PKCS#8 EC keys without the public-key field
+        // required by ring's ECDSA parser. Normalize P-256 keys to SEC1 in memory only; never
+        // write, log or export the private key. New enrollment writes SEC1 directly.
+        let public = std::process::Command::new("/usr/bin/openssl")
+            .args(["pkey", "-in"])
+            .arg(path)
+            .args(["-pubout", "-outform", "DER"])
+            .output()
+            .context("extract legacy EC public key for curve identification")?;
+        if !public.status.success()
+            || !crate::pki_helper::is_p256_subject_public_key_info(&public.stdout)
+        {
+            return Ok(key);
+        }
+        let explicit = std::process::Command::new("/usr/bin/openssl")
+            .args(["ec", "-in"])
+            .arg(path)
+            .args(["-outform", "DER"])
+            .output()
+            .context("start fixed OpenSSL to read legacy P-256 private key")?;
+        if !explicit.status.success() {
+            bail!(
+                "OpenSSL could not read the legacy P-256 private key: {}",
+                String::from_utf8_lossy(&explicit.stderr).trim()
+            );
+        }
+        let explicit_der = Zeroizing::new(explicit.stdout);
+        let normalized = Zeroizing::new(normalize_legacy_p256_sec1(&explicit_der)?);
+        return Ok(PrivateKeyDer::Sec1(
+            rustls::pki_types::PrivateSec1KeyDer::from(normalized.as_slice().to_vec()),
+        ));
+    }
+    Ok(key)
 }
 
 fn roots(path: &Path) -> Result<RootCertStore> {
@@ -176,6 +370,61 @@ pub(crate) mod tests {
     };
     use tokio::{io::duplex, time::timeout};
 
+    #[test]
+    fn normalizes_p256_scalar_when_openssl_omits_leading_zero_octet() {
+        const P256_NAMED_CURVE: &[u8] =
+            &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+        let mut content = vec![0x02, 0x01, 0x01];
+        content.extend_from_slice(&der_encode(0x04, &[1u8; 31]).unwrap());
+        content.extend_from_slice(&der_encode(0xa0, P256_NAMED_CURVE).unwrap());
+        let mut public_bits = vec![0u8, 0x04];
+        public_bits.extend_from_slice(&[2u8; 64]);
+        let bit_string = der_encode(0x03, &public_bits).unwrap();
+        content.extend_from_slice(&der_encode(0xa1, &bit_string).unwrap());
+        let explicit = der_encode(0x30, &content).unwrap();
+
+        let normalized = normalize_legacy_p256_sec1(&explicit).unwrap();
+        let mut offset = 0;
+        let (_, sequence) = der_tlv(&normalized, &mut offset).unwrap();
+        let mut inner = 0;
+        let _ = der_tlv(sequence, &mut inner).unwrap();
+        let (_, scalar) = der_tlv(sequence, &mut inner).unwrap();
+        assert_eq!(scalar.len(), 32);
+        assert_eq!(scalar[0], 0);
+        assert_eq!(&scalar[1..], &[1u8; 31]);
+    }
+
+    #[test]
+    fn legacy_openssl_pkcs8_ec_keys_are_normalized_for_rustls_ring_in_memory() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "baft-legacy-pkcs8-{}-{}.pem",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let status = std::process::Command::new("/usr/bin/openssl")
+            .args([
+                "genpkey",
+                "-algorithm",
+                "EC",
+                "-pkeyopt",
+                "ec_paramgen_curve:P-256",
+                "-out",
+            ])
+            .arg(&path)
+            .status()
+            .expect("openssl is required for legacy PKCS#8 compatibility test");
+        assert!(status.success());
+        let original = std::fs::read_to_string(&path).unwrap();
+        assert!(original.starts_with("-----BEGIN PRIVATE KEY-----"));
+        let normalized = private_key(&path).unwrap();
+        assert!(matches!(normalized, PrivateKeyDer::Sec1(_)));
+        assert!(rustls::crypto::ring::sign::any_supported_type(&normalized).is_ok());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[tokio::test]
     async fn tls13_enforces_mtls_pins_identity_and_certificate_validity() {
         let directory = std::env::temp_dir().join(format!(
@@ -240,7 +489,7 @@ pub(crate) mod tests {
         fs::write(directory.join("serial"), "1000\n").unwrap();
         fs::write(directory.join("crlnumber"), "1000\n").unwrap();
         let openssl_config = format!(
-            "[ ca ]\ndefault_ca = CA_default\n[ CA_default ]\ndatabase = {}\nnew_certs_dir = {}\ncertificate = {}\nprivate_key = {}\nserial = {}\ncrlnumber = {}\ndefault_md = sha256\ndefault_crl_days = 2\npolicy = policy_any\n[ policy_any ]\ncommonName = supplied\n",
+            "[ ca ]\ndefault_ca = CA_default\n[ CA_default ]\ndatabase = {}\nnew_certs_dir = {}\ncertificate = {}\nprivate_key = {}\nserial = {}\ncrlnumber = {}\ncrl_extensions = crl_ext\ndefault_md = sha256\ndefault_crl_days = 2\npolicy = policy_any\n[ crl_ext ]\nauthorityKeyIdentifier = keyid:always\n[ policy_any ]\ncommonName = supplied\n",
             openssl_db.display(),
             new_certs.display(),
             directory.join("ca.pem").display(),
@@ -475,7 +724,7 @@ pub(crate) mod tests {
         fs::write(rogue_pki_dir.join("serial"), "1000\n").unwrap();
         fs::write(rogue_pki_dir.join("crlnumber"), "1000\n").unwrap();
         let rogue_openssl_config = format!(
-            "[ ca ]\ndefault_ca = CA_default\n[ CA_default ]\ndatabase = {}\nnew_certs_dir = {}\ncertificate = {}\nprivate_key = {}\nserial = {}\ncrlnumber = {}\ndefault_md = sha256\ndefault_crl_days = 2\npolicy = policy_any\n[ policy_any ]\ncommonName = supplied\n",
+            "[ ca ]\ndefault_ca = CA_default\n[ CA_default ]\ndatabase = {}\nnew_certs_dir = {}\ncertificate = {}\nprivate_key = {}\nserial = {}\ncrlnumber = {}\ncrl_extensions = crl_ext\ndefault_md = sha256\ndefault_crl_days = 2\npolicy = policy_any\n[ crl_ext ]\nauthorityKeyIdentifier = keyid:always\n[ policy_any ]\ncommonName = supplied\n",
             rogue_pki_dir.join("index.txt").display(),
             rogue_new_certs.display(),
             rogue_ca_path.display(),
@@ -797,7 +1046,7 @@ pub(crate) mod tests {
         fs::write(dir.join("serial"), "1000\n").unwrap();
         fs::write(dir.join("crlnumber"), "1000\n").unwrap();
         let config = format!(
-            "[ ca ]\ndefault_ca = CA_default\n[ CA_default ]\ndatabase = {}\nnew_certs_dir = {}\ncertificate = {}\nprivate_key = {}\nserial = {}\ncrlnumber = {}\ndefault_md = sha256\ndefault_crl_days = 2\npolicy = policy_any\n[ policy_any ]\ncommonName = supplied\n",
+            "[ ca ]\ndefault_ca = CA_default\n[ CA_default ]\ndatabase = {}\nnew_certs_dir = {}\ncertificate = {}\nprivate_key = {}\nserial = {}\ncrlnumber = {}\ncrl_extensions = crl_ext\ndefault_md = sha256\ndefault_crl_days = 2\npolicy = policy_any\n[ crl_ext ]\nauthorityKeyIdentifier = keyid:always\n[ policy_any ]\ncommonName = supplied\n",
             dir.join("index.txt").display(),
             dir.join("newcerts").display(),
             ca_pem.display(),

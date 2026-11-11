@@ -117,6 +117,16 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
 
     let path = |name: &str| req.dir.join(name);
     let text = |name: &str| path(name).to_string_lossy().into_owned();
+    // Existing flat credential sets remain supported. New D2 enrollment uses a single
+    // versioned directory pointer so CA, CRL and leaf certificate switch as one atomic unit.
+    let versioned_tls = if req.engine == EngineKind::TcpTls {
+        crate::pki_helper::active_set_dir(&req.dir)?.is_some()
+            || !["node.crt", "ca.crt", "ca.crl"]
+                .into_iter()
+                .all(|name| req.dir.join(name).is_file())
+    } else {
+        false
+    };
     let mut config = json!({
         "engine": engine_name(req.engine),
         "direction": req.direction.as_str(),
@@ -188,19 +198,38 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
             pending.push("peer Noise public key (from the pairing bundle)");
         }
         EngineKind::TcpTls => {
-            map.insert("ca".into(), json!(text("ca.crt")));
-            map.insert("crl".into(), json!(text("ca.crl")));
-            map.insert("cert".into(), json!(text("node.crt")));
+            let ca = if versioned_tls {
+                "pki/current/ca.crt"
+            } else {
+                "ca.crt"
+            };
+            let crl = if versioned_tls {
+                "pki/current/ca.crl"
+            } else {
+                "ca.crl"
+            };
+            let cert = if versioned_tls {
+                "pki/current/node.crt"
+            } else {
+                "node.crt"
+            };
+            map.insert("ca".into(), json!(text(ca)));
+            map.insert("crl".into(), json!(text(crl)));
+            map.insert("cert".into(), json!(text(cert)));
             map.insert("key".into(), json!(text("node.key")));
             map.insert("peer_fingerprint".into(), json!(PEER_KEY_PLACEHOLDER));
             for (name, mode, note) in [
                 (
-                    "ca.crt",
+                    ca,
                     "0644",
-                    "trusted CA certificate(s) from the offline CA",
+                    "trusted CA certificate(s), through the selected PKI set",
                 ),
-                ("ca.crl", "0644", "current CRL(s), one per CA"),
-                ("node.crt", "0644", "this node's certificate"),
+                (crl, "0644", "current CRL(s), through the selected PKI set"),
+                (
+                    cert,
+                    "0644",
+                    "this node's certificate, through the selected PKI set",
+                ),
                 ("node.key", "0600", "this node's private key"),
             ] {
                 files.push(PlannedFile {
@@ -510,16 +539,23 @@ fn tls_material(dir: &Path, node_id: &str) -> Result<(String, Option<String>)> {
             dir.display()
         );
     }
-    for name in ["node.key", "node.crt", "ca.crt", "ca.crl"] {
-        let path = dir.join(name);
+    let selected_set = crate::pki_helper::active_set_dir(dir)?;
+    let material_dir = selected_set.as_deref().unwrap_or(dir);
+    for (base, name) in [
+        (dir, "node.key"),
+        (material_dir, "node.crt"),
+        (material_dir, "ca.crt"),
+        (material_dir, "ca.crl"),
+    ] {
+        let path = base.join(name);
         let meta = std::fs::symlink_metadata(&path).with_context(|| {
             format!(
-                "{} is missing (produce it with scripts/pki/baft-pki.sh)",
+                "{} is missing (produce it with scripts/pki/baft-pki.sh or install a versioned certificate set)",
                 path.display()
             )
         })?;
-        if !meta.is_file() {
-            bail!("{} must be a regular file", path.display());
+        if !meta.is_file() || meta.file_type().is_symlink() {
+            bail!("{} must be a regular non-symlink file", path.display());
         }
     }
     let mode = std::fs::metadata(dir.join("node.key"))?
@@ -530,9 +566,9 @@ fn tls_material(dir: &Path, node_id: &str) -> Result<(String, Option<String>)> {
         bail!("node.key must not be readable by group or others (use mode 0600)");
     }
     let (ca, crl, cert, key) = (
-        dir.join("ca.crt"),
-        dir.join("ca.crl"),
-        dir.join("node.crt"),
+        material_dir.join("ca.crt"),
+        material_dir.join("ca.crl"),
+        material_dir.join("node.crt"),
         dir.join("node.key"),
     );
     crate::tls::server_config(&ca, &crl, &cert, &key)
@@ -1060,6 +1096,54 @@ mod tests {
                 .contains(&body)
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn versioned_certificate_set_is_used_by_setup_without_flat_file_migration() {
+        let root = temp("tls-versioned");
+        let ca = crate::tls::tests::make_ca(&root, "ca");
+        let dir = install_pki(&root, "versioned-node", "abroad", &ca);
+        let cert = std::fs::read(dir.join("node.crt")).unwrap();
+        let ca_pem = std::fs::read(dir.join("ca.crt")).unwrap();
+        let crl = std::fs::read(dir.join("ca.crl")).unwrap();
+        let id = crate::pki_helper::version_set_id(&cert, &ca_pem, &crl);
+        let set_dir = dir.join("pki").join("sets").join(&id);
+        std::fs::create_dir_all(&set_dir).unwrap();
+        for (name, bytes) in [
+            ("node.crt", cert.as_slice()),
+            ("ca.crt", ca_pem.as_slice()),
+            ("ca.crl", crl.as_slice()),
+        ] {
+            std::fs::write(set_dir.join(name), bytes).unwrap();
+            std::fs::remove_file(dir.join(name)).unwrap();
+        }
+        std::os::unix::fs::symlink(format!("sets/{id}"), dir.join("pki/current")).unwrap();
+
+        let req = tls_side(&root, Role::Serve, "abroad", "iran", dir.clone());
+        let plan = plan(&req).unwrap();
+        assert_eq!(
+            plan.config["ca"],
+            dir.join("pki/current/ca.crt").to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            plan.config["crl"],
+            dir.join("pki/current/ca.crl").to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            plan.config["cert"],
+            dir.join("pki/current/node.crt").to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            plan.config["key"],
+            dir.join("node.key").to_string_lossy().as_ref()
+        );
+        let result = init(&req, None).unwrap();
+        assert!(result.bundle_path.is_file());
+        assert!(
+            !dir.join(config_file_name(req.instance.as_deref()).unwrap())
+                .exists()
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
