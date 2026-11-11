@@ -91,7 +91,7 @@ _Status marks added at `main` `0a7576b`; this list is not a current-state snapsh
 - The Servers page is not a Hashem-style Fleet; it has local/configured-peer information only.
 - ~~No live throughput counters exposed in the API~~ **Done** (PR #109 `/v1/traffic`, panel PR #120); history is in memory for one hour only.
 - No read-only firewall inspection and no firewall mutation.
-- ~~Audit actor/target completeness~~ **Done** (audit v2, PR #109). Machine-readable/localizable Preflight evidence codes remain **partial** (B1).
+- ~~Audit actor/target completeness~~ **Done** (audit v2, PR #109). Structured Preflight/Diagnostics evidence codes + params and fa/en localization are implemented in draft PR #164; exact-head CI and U8 acceptance remain pending (B1).
 - Since U2 (PR #137, LAB 42692143748) the agent is a systemd service under its own user and setup sets owners itself. U1 CRL renewal/push is accepted (LAB 42656507521); U6 signed packaging and quick installer are complete in prerelease `v0.1.0-rc.7`.
 - No customer/subscription/reseller/billing system in core.
 - No production release. Independent security assessment of the P0+P1 surface done 2026-11-09 (`docs/SECURITY_ASSESSMENT.md`): 3 Medium and 3 Low fixed (#112, #114, main `f3c8b54`), 4 Low/Info open or accepted; no Critical/High found. This is not the pre-stable review of the full product.
@@ -142,7 +142,7 @@ Not before the MVP queue is done: P1-1 enrollment and P2 Fleet/Jobs (Tier L in t
 3. End-to-end tunnel state and last-verified timestamp. — **Done** (PR #109).
 4. Complete audit actor, target and resource identity. — **Done** for local Apply (PR #109); remote Job receipts wait for item 1.
 5. Measured throughput/byte counters and history with units, interval, provenance and freshness. — **Done** (PR #109, panel PR #120); history beyond one hour is B5.
-6. Machine-readable Preflight evidence codes and localized explanations. — _Partial_ (check ids and remediation localized; evidence text English): B1.
+6. Machine-readable Preflight/Diagnostics evidence codes + params and localized explanations. — _Implemented in draft PR #164; CI and U8 acceptance pending_: B1.
 7. Read-only firewall visibility. — _Not started_: B3.
 8. Safe “Add from Link” import with versioned schema, checksum, strict validation and preview. — _Not started_; delivered as the panel bundle import in U5b.
 
