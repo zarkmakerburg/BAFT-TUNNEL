@@ -10,6 +10,8 @@ A security-first, Linux-native tunnel platform built around authenticated connec
 
 **Public repository, all rights reserved · Rust core · TCP + TLS 1.3 · Direct / Reverse**
 
+<a href="https://app.codspeed.io/zarkmakerburg/BAFT-TUNNEL?utm_source=badge"><img src="https://img.shields.io/endpoint?url=https://codspeed.io/badge.json" alt="CodSpeed"/></a>
+
 </div>
 
 ---
