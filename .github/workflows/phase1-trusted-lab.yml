@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: Exact current head SHA of audit/pr150-remediation-2026-11-10
+        description: Exact commit SHA already contained in reviewed main history
         required: true
         type: string
       confirm:
@@ -38,17 +38,20 @@ jobs:
           [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate_sha must be a full 40-character commit SHA' >&2; exit 2; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
-          ref: audit/pr150-remediation-2026-11-10
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Pin candidate to the reviewed branch head
+      - name: Pin candidate to reviewed main history
         id: candidate
         env:
           REQUESTED_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
-          actual="$(git rev-parse --verify HEAD^{commit})"
-          [[ "$actual" == "$REQUESTED_SHA" ]] || { echo "Requested SHA is not the current reviewed branch head: $actual" >&2; exit 2; }
+          actual="$(git rev-parse --verify "$REQUESTED_SHA^{commit}")" \
+            || { echo 'Requested candidate SHA is not a commit in the reviewed checkout' >&2; exit 2; }
+          [[ "$actual" == "$REQUESTED_SHA" ]] || { echo "Candidate SHA must be the full lowercase commit SHA: $actual" >&2; exit 2; }
+          git merge-base --is-ancestor "$actual" "$GITHUB_SHA" \
+            || { echo "Candidate SHA is not contained in the reviewed main history: $actual" >&2; exit 2; }
           echo "sha=$actual" >> "$GITHUB_OUTPUT"
           echo "CANDIDATE_SHA=$actual" >> "$GITHUB_STEP_SUMMARY"
 
