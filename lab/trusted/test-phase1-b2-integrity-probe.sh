@@ -12,25 +12,25 @@ grep -F 'unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS' "$harness" >/dev/null
 grep -F 'GlobalKnownHostsFile=/dev/null' "$harness" >/dev/null
 grep -F 'StrictHostKeyChecking=yes' "$harness" >/dev/null
 grep -F 'runuser -u baft-tunnel --' "$harness" >/dev/null
-grep -F 'REMOTE_BASE="/var/tmp/baft-b2-lab-$RUN_ID"' "$harness" >/dev/null
+grep -F 'REMOTE_BASE="/run/baft-b2-lab-$RUN_ID"' "$harness" >/dev/null
 grep -F 'command -v findmnt >/dev/null' "$harness" >/dev/null
-grep -F 'mount_options=\$(findmnt -n -o OPTIONS --target /var/tmp)' "$harness" >/dev/null
+grep -F 'run_options=\$(findmnt -n -o OPTIONS --target /run)' "$harness" >/dev/null
 python3 - "$harness" <<'PYCASE'
 from pathlib import Path
 import sys
-line = next(line for line in Path(sys.argv[1]).read_text().splitlines() if 'noexec' in line and 'mount_options' in line)
+line = next(line for line in Path(sys.argv[1]).read_text().splitlines() if 'noexec' in line and 'run_options' in line)
 bs = chr(92)
-assert 'case '+bs+'",' + bs + '$mount_options,' + bs + '"' in line, line
+assert 'case '+bs+'",' + bs + '$run_options,' + bs + '"' in line, line
 PYCASE
-grep -F 'ECHO_STATE="/run/baft-b2-echo-$RUN_ID"' "$harness" >/dev/null
+grep -F 'ECHO_STATE="$REMOTE_BASE/echo-state"' "$harness" >/dev/null
 grep -F 'ReadWritePaths=$ECHO_STATE' "$harness" >/dev/null
 python3 - "$harness" <<'PYCLEAN'
 from pathlib import Path
 import sys
-bs = chr(92)
 source = Path(sys.argv[1]).read_text()
-assert "rm -rf '$REMOTE_BASE' '$ECHO_STATE'" in source
+assert "rm -rf '$REMOTE_BASE'" in source
 PYCLEAN
+grep -F 'PrivateTmp=yes' "$harness" >/dev/null
 grep -F 'B2_LAB_START_ECHO_FIXTURE' "$harness" >/dev/null
 grep -F 'B2_LAB_START_TUNNEL host=iran' "$harness" >/dev/null
 grep -F 'B2_LAB_START_TUNNEL host=abroad' "$harness" >/dev/null
@@ -54,13 +54,15 @@ test "$capture_rc" = 99
 test -s "$capture_tmp/remote-command"
 bash -n -c "$(cat "$capture_tmp/remote-command")"
 echo 'Remote SSH preflight command parse: PASS (mock SSH only)'
-grep -F 'stat.S_ISDIR(s.st_mode)' "$harness" >/dev/null
-python3 - "$harness" <<'PYQUOTE'
+python3 - "$harness" <<'PYRUN'
 from pathlib import Path
 import sys
-line = next(line for line in Path(sys.argv[1]).read_text().splitlines() if "python3 -c 'import os,stat;" in line)
-assert 'os.stat(\\"/var/tmp\\"' in line, line
-PYQUOTE
+bs = chr(92)
+source = Path(sys.argv[1]).read_text()
+assert "test "+bs+"$(stat -c '%U:%G' /run) = root:root" in source
+assert "run_mode="+bs+"$(stat -c '%a' /run)" in source
+assert "int(sys.argv[1], 8) & 0o022 == 0" in source
+PYRUN
 grep -F 'mkdir -m 0755' "$harness" >/dev/null
 grep -F '&& test \$(stat -c' "$harness" >/dev/null
 grep -F 'runuser -u baft-tunnel-agent --' "$harness" >/dev/null

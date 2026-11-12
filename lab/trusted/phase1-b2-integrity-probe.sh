@@ -49,9 +49,9 @@ validate_port "$IRAN_PORT" && validate_port "$ABROAD_PORT" || { echo 'invalid LA
 RUN_ID="${GITHUB_RUN_ID:-$$}"
 [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo 'invalid workflow run ID' >&2; exit 2; }
 INSTANCE="b2lab-$RUN_ID"
-REMOTE_BASE="/var/tmp/baft-b2-lab-$RUN_ID"
+REMOTE_BASE="/run/baft-b2-lab-$RUN_ID"
 REMOTE_BIN="$REMOTE_BASE/baft-tunnel"
-ECHO_STATE="/run/baft-b2-echo-$RUN_ID"
+ECHO_STATE="$REMOTE_BASE/echo-state"
 LOCAL_TMP="$(mktemp -d)"
 SSH_KEY="$LOCAL_TMP/id_ed25519"
 KNOWN_HOSTS="$LOCAL_TMP/known_hosts"
@@ -136,7 +136,7 @@ cleanup() {
         fi
         test ! -e '/run/baft-tunnel/$INSTANCE' || { echo 'systemd runtime directory remains; preserving files' >&2; exit 1; }
         systemctl reset-failed $units 2>/dev/null || true
-        if [[ "$side" == abroad ]]; then rm -rf '$REMOTE_BASE' '$ECHO_STATE'; else rm -rf '$REMOTE_BASE'; fi
+        rm -rf '$REMOTE_BASE'
       "; then
         echo "LAB cleanup incomplete on $side; temporary files were preserved" >&2
         rc=1
@@ -164,10 +164,12 @@ for side in iran abroad; do
     test "$(uname -m)" = x86_64
     command -v timeout >/dev/null
     command -v findmnt >/dev/null
-    test -d /var/tmp && test ! -L /var/tmp
-    python3 -c 'import os,stat; s=os.stat(\"/var/tmp\", follow_symlinks=False); assert stat.S_ISDIR(s.st_mode) and s.st_uid == 0 and s.st_mode & stat.S_ISVTX and s.st_mode & 0o002'
-    mount_options=\$(findmnt -n -o OPTIONS --target /var/tmp)
-    case \",\$mount_options,\" in *,noexec,*) echo \"/var/tmp is mounted noexec; refusing candidate execution\" >&2; exit 2 ;; esac
+    test -d /run && test ! -L /run
+    test \$(stat -c '%U:%G' /run) = root:root
+    run_mode=\$(stat -c '%a' /run)
+    python3 -c 'import sys; assert int(sys.argv[1], 8) & 0o022 == 0' \$run_mode
+    run_options=\$(findmnt -n -o OPTIONS --target /run)
+    case \",\$run_options,\" in *,noexec,*) echo \"/run is mounted noexec; refusing candidate execution\" >&2; exit 2 ;; esac
     id baft-tunnel >/dev/null
     id baft-tunnel-agent >/dev/null
     id nobody >/dev/null
@@ -179,7 +181,6 @@ for side in iran abroad; do
     getent group nogroup >/dev/null
     id -nG baft-tunnel-agent | grep -Eq '(^| )baft-tunnel( |$)'
     test ! -e '$REMOTE_BASE' && test ! -L '$REMOTE_BASE'
-    if [[ "$side" == abroad ]]; then test ! -e '$ECHO_STATE' && test ! -L '$ECHO_STATE'; fi
     test ! -e '/run/baft-tunnel/$INSTANCE' && test ! -L '/run/baft-tunnel/$INSTANCE'
     ! systemctl is-active --quiet '$(agent_unit_for "$side")'
     ! systemctl is-active --quiet '$(tunnel_unit_for "$side")'
