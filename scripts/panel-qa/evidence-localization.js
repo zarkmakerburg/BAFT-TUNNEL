@@ -35,8 +35,8 @@ for (const lang of ['fa', 'en']) {
     }
   }
   const sessionTemplate = window.BAFT_I18N[lang]['diag.session.pass'];
-  const sessionRendered = sessionTemplate.replace(/\\{(\\w+)\\}/g, (_, key) => ({ sessions: 1, peer_id: 'test-peer' }[key] ?? ''));
-  if (!sessionRendered.includes('test-peer') || /\\{\\w+\\}/.test(sessionRendered)) {
+  const sessionRendered = sessionTemplate.replace(/\{(\w+)\}/g, (_, key) => ({ sessions: 1, peer_id: 'test-peer' }[key] ?? ''));
+  if (!sessionRendered.includes('test-peer') || /\{\w+\}/.test(sessionRendered)) {
     console.error(`FAIL ${lang} diag.session.pass peer_id interpolation`); failed++;
   }
 }
