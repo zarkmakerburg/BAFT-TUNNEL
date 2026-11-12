@@ -53,6 +53,8 @@ jobs:
         run: bash lab/trusted/test-phase1-direct-smoke.sh
       - name: Test trusted Phase 1 workflow secret boundary
         run: sh lab/trusted/test-workflow-boundary.sh
+      - name: Test trusted B2 two-host LAB orchestration (static only)
+        run: bash lab/trusted/test-phase1-b2-integrity-probe.sh
       - name: Test offline PKI lifecycle (temporary CA only)
         run: bash scripts/pki/test.sh
       - name: Test guarded CRL update validation (temporary CAs only)
