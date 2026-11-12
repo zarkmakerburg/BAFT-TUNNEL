@@ -1,6 +1,6 @@
 # Protocol v1/v2 Peer Compatibility and Upgrade Matrix
 
-**Status:** Proposed — owner decision required; this document does not authorize B2 runtime implementation.  
+**Status:** Owner decision recorded — Option A (strict coordinated peer-pair upgrade) selected on 2026-11-12. Documentation only; this does not authorize B2 runtime implementation.  
 **Scope:** ADR-0028 B2 implementation-start prerequisite.  
 **Baseline:** `main` at `7bf0b9ab1ae7c905d2ae8b1c6d3b369ed2a59b0a` (2026-11-12).  
 **Related:** [ADR-0028](ADR-0028-authenticated-integrity-probe.md), [ADR-0011](ADR-0011-authorization.md), [ADR-0024](ADR-0024-operations-evidence.md), [Readiness contract](READINESS_CONTRACT.md).
@@ -17,9 +17,9 @@ The current mainline source is protocol v1 only:
 
 Consequently, the current source does **not** implement v2, `IntegrityProbe`, mixed-version negotiation, or a typed v1/v2 compatibility response. This document must not be read as evidence that any of those behaviors already work.
 
-## 2. Compatibility matrix — proposed strict policy
+## 2. Accepted compatibility policy — Option A
 
-The following is the conservative proposed policy consistent with ADR-0028's prohibition on silent downgrade. It requires explicit owner acceptance before it becomes the implementation contract.
+On 2026-11-12, the project owner selected **Option A — strict coordinated peer-pair upgrade**. This is now the compatibility policy for implementation and testing. There is no legacy-v1 mixed-version mode.
 
 | Initiator | Responder | New session | TCP forwarding | IntegrityProbe | Required operator-visible result |
 |---|---|---|---|---|---|
@@ -27,13 +27,13 @@ The following is the conservative proposed policy consistent with ADR-0028's pro
 | v2 | v2 | Accept using v2 | Supported | Supported only when separately authorized in the v2 capability set | Probe returns pass/fail/unknown for that probe only |
 | v2 | v1 | Reject under strict policy | No new session under strict policy | Unsupported | Explicit incompatibility; no silent v1 fallback |
 | v1 | v2 | Reject under strict policy | No new session under strict policy | Unsupported | Explicit incompatibility; no reinterpretation as TcpForward |
-| v1 | v2, legacy mode explicitly enabled | Accept only if the owner selects the optional compatibility policy in §4 | TcpForward only | Always unavailable | Explicitly selected legacy-v1 mode; never automatic |
+
 
 ### Session continuity during rolling upgrades
 
 A process that is already running v1 may keep its existing in-memory v1 session until that process or connection is restarted or lost. This is not a guarantee that a v1 session survives a service restart, binary replacement, network interruption, or reconnect.
 
-Under the strict policy above, once either endpoint restarts into a v2-only build, a new v1↔v2 session is rejected. Therefore, peer pairs must be upgraded in a coordinated maintenance window, or the owner must explicitly approve the optional legacy compatibility policy in §4. Do not claim zero-downtime rolling upgrades.
+Under the accepted policy, once either endpoint restarts into a v2-only build, a new v1↔v2 session is rejected. Peer pairs must be upgraded in a coordinated maintenance window. There is no exception or legacy compatibility mode. Do not claim zero-downtime rolling upgrades.
 
 ## 3. No-downgrade and capability rules
 
@@ -44,33 +44,21 @@ Regardless of the owner-selected mixed-version policy:
 3. A v1 peer must never be treated as B2-capable.
 4. A v2 probe request to a peer/session without v2 `IntegrityProbe` support returns a typed unsupported result where the peer protocol can express it. If the old peer simply closes or cannot return that error, the caller must report a bounded handshake incompatibility/unknown result rather than inventing a confirmed peer version.
 5. No implicit retry using v1 is allowed after a v2 negotiation or probe failure.
-6. If explicit legacy-v1 mode is approved, it must be operator-configured, visible in diagnostics, restricted to `TcpForward`, and incapable of invoking `IntegrityProbe`. It is not a fallback path and must not be enabled automatically.
+6. No legacy-v1 compatibility mode is permitted. A mixed-version session is rejected; operators must complete the coordinated peer-pair upgrade.
 7. Version selection and capability authorization are separate checks. A v2 handshake alone does not authorize `IntegrityProbe`; the authenticated session must advertise and authorize that capability.
 
-## 4. Owner decision required: mixed-version data-plane behavior
+## 4. Accepted owner decision — Option A
 
-ADR-0028 already decides that B2 requires v2 and forbids silent downgrade. It does not fully decide whether a v2-capable node may explicitly preserve ordinary v1 TCP forwarding with an older peer.
-
-Choose one policy before implementation:
-
-### Option A — strict coordinated upgrade (recommended for the smallest security surface)
+The project owner selected Option A on 2026-11-12:
 
 - v1↔v1 continues unchanged while both endpoints remain on v1.
-- v2↔v2 supports v2 and B2.
-- Any new v1↔v2 session is rejected; no automatic fallback.
+- v2↔v2 supports v2; B2 is available only after the v2 capability and all B2 gates are implemented and accepted.
+- Any new v1↔v2 session is rejected; no automatic fallback and no legacy compatibility switch.
 - Upgrade both ends of each tunnel pair in one coordinated maintenance window.
 - A restart/reconnect between the two upgrades may leave the tunnel unavailable until both endpoints are v2.
+- Rollback must restore both endpoints to the same protocol generation before reconnecting.
 
-### Option B — explicit legacy-v1 data-plane compatibility
-
-- v2 nodes may accept a v1 session only when a dedicated, explicit operator setting enables legacy compatibility for that peer/tunnel.
-- The selected protocol is recorded and shown as v1; no silent negotiation or retry is permitted.
-- The session is limited to the existing v1 `TcpForward` capability.
-- `IntegrityProbe` is unavailable and must return unsupported for that session.
-- Default is disabled; configuration must not be silently migrated to enable it.
-- Tests must prove that the legacy mode cannot reach the v2 probe handler and that disabling it rejects the mixed-version session.
-
-**No option is accepted by this document.** The owner must select A or B and record the decision in ADR-0028 before B2 implementation starts.
+Option B is rejected and is not part of the implementation contract.
 
 ## 5. Upgrade and rollback matrix
 
@@ -83,7 +71,7 @@ Choose one policy before implementation:
 | One endpoint rolled back to v1 | New mixed-version session rejected | Roll back both endpoints or keep the pair offline until versions match |
 | v2 peer lacks `IntegrityProbe` authorization | Session may exist, but probe is rejected as unsupported/not-authorized | Do not infer support from protocol version alone |
 
-Under Option B, the two mixed-version rows may establish only an explicitly configured v1 `TcpForward` session; probe remains unavailable. Rollback must not auto-enable compatibility.
+There is no Option B behavior. Mixed-version sessions are always rejected under the accepted policy.
 
 ## 6. Required compatibility tests and evidence
 
@@ -99,14 +87,13 @@ These tests establish the current v1 baseline only. They do not establish v2 or 
 
 ### Pre-implementation contract tests (required before the B2 runtime feature work)
 
-Before B2 implementation is authorized, add and run isolated protocol-contract tests for the selected Option A or B. They must not require an `IntegrityProbe` data-path implementation:
+Before B2 implementation is authorized, add and run isolated protocol-contract tests for accepted Option A. They must not require an `IntegrityProbe` data-path implementation:
 
 - Version-selection test vectors prove the exact accepted/rejected version pairs.
 - No-downgrade test proves that a failed v2 negotiation never triggers an implicit v1 retry.
 - Capability-separation test proves v1 can never advertise or authorize `IntegrityProbe`.
 - Typed incompatibility test proves a peer incompatibility is not misreported as a network success or probe pass.
 - Session-continuity test documents the boundary: an existing in-memory v1 session is not a promise of reconnect compatibility after restart.
-- If Option B is selected, explicit configuration tests prove legacy mode defaults off, is visible, authorizes only v1 `TcpForward`, and cannot invoke B2.
 
 Record exact source SHA, test command, test result and logs. A written test plan or green unrelated CI is not test evidence.
 
@@ -125,7 +112,7 @@ This document is a proposed compatibility contract only.
 
 The ADR-0028 B2 implementation-start gate remains **BLOCKED** until:
 
-1. The owner selects Option A or Option B and that decision is recorded in ADR-0028.
+1. The accepted Option A decision is recorded in ADR-0028 and this matrix.
 2. The pre-implementation contract tests above are implemented and pass on an exact SHA.
 3. The independent F0 trust-boundary/security review is approved, including UDS lifecycle, safe stale-socket handling, exact `SO_PEERCRED` UID enforcement, bounded framing and fail-closed behavior.
 4. U7 and merged B1 remain accepted.
