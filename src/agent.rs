@@ -777,10 +777,16 @@ fn inspect_bundle(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+fn default_setup_protocol_version() -> u16 {
+    crate::authorization::PROTOCOL_V1
+}
+
 pub(crate) struct PlanBody {
     engine: crate::config::EngineKind,
     role: crate::setup::Role,
     direction: crate::authorization::ConnectionDirection,
+    #[serde(default = "default_setup_protocol_version")]
+    protocol_version: u16,
     node_id: String,
     peer_id: String,
     tunnel_id: String,
@@ -798,6 +804,7 @@ impl PlanBody {
             engine: self.engine,
             role: self.role,
             direction: self.direction,
+            protocol_version: self.protocol_version,
             node_id: self.node_id.clone(),
             peer_id: self.peer_id.clone(),
             tunnel_id: self.tunnel_id.clone(),
@@ -2169,7 +2176,8 @@ fn setup_plan(body: &[u8]) -> (u16, Value) {
         let role = enum_arg(&serde_json::to_value(req.role)?);
         let direction = enum_arg(&serde_json::to_value(req.direction)?);
         let mut init = format!(
-            "baft-tunnel setup init --engine {engine} --role {role} --direction {direction} --node-id {} --peer-id {} --tunnel-id {} --service-port {} --tunnel-port {} --dir {dir}",
+            "baft-tunnel setup init --engine {engine} --role {role} --direction {direction} --protocol-version {} --node-id {} --peer-id {} --tunnel-id {} --service-port {} --tunnel-port {} --dir {dir}",
+            req.protocol_version,
             shell_quote(&req.node_id)?,
             shell_quote(&req.peer_id)?,
             shell_quote(&req.tunnel_id)?,
@@ -5143,6 +5151,7 @@ mod tests {
                 engine: crate::config::EngineKind::NoiseTcp,
                 role: crate::setup::Role::Forward,
                 direction: crate::authorization::ConnectionDirection::Direct,
+                protocol_version: crate::authorization::PROTOCOL_V1,
                 node_id: "iran".into(),
                 peer_id: "abroad".into(),
                 tunnel_id: "pairdemo".into(),
