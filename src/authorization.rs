@@ -94,13 +94,21 @@ pub fn authorize_session_versioned(
     {
         bail!("peer requested an unsupported stream capability");
     }
-    let mut unique = capabilities.to_vec();
-    unique.sort_by_key(|capability| *capability as u8);
-    unique.dedup();
-    if unique.len() != capabilities.len() {
-        bail!("peer requested a duplicate stream capability");
+    // The capability enum is intentionally small and closed. Track each variant directly
+    // instead of cloning/sorting the peer-provided slice on every authenticated session.
+    let mut has_tcp_forward = false;
+    let mut has_integrity_probe = false;
+    for capability in capabilities {
+        let seen = match capability {
+            StreamCapability::TcpForward => &mut has_tcp_forward,
+            StreamCapability::IntegrityProbe => &mut has_integrity_probe,
+        };
+        if *seen {
+            bail!("peer requested a duplicate stream capability");
+        }
+        *seen = true;
     }
-    if !capabilities.contains(&StreamCapability::TcpForward) {
+    if !has_tcp_forward {
         bail!("peer omitted the required TCP forwarding capability");
     }
     Ok(())
