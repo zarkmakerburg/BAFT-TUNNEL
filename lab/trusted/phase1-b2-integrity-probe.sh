@@ -165,7 +165,7 @@ for side in iran abroad; do
     command -v timeout >/dev/null
     command -v findmnt >/dev/null
     test -d /var/tmp && test ! -L /var/tmp
-    python3 -c 'import os,stat; s=os.stat("/var/tmp", follow_symlinks=False); assert stat.S_ISDIR(s.st_mode) and s.st_uid == 0 and s.st_mode & stat.S_ISVTX and s.st_mode & 0o002'
+    python3 -c 'import os,stat; s=os.stat(\"/var/tmp\", follow_symlinks=False); assert stat.S_ISDIR(s.st_mode) and s.st_uid == 0 and s.st_mode & stat.S_ISVTX and s.st_mode & 0o002'
     mount_options=\$(findmnt -n -o OPTIONS --target /var/tmp)
     case ",\$mount_options," in *,noexec,*) echo "/var/tmp is mounted noexec; refusing candidate execution" >&2; exit 2 ;; esac
     id baft-tunnel >/dev/null
