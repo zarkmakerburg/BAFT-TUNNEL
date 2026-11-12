@@ -242,6 +242,25 @@
       }, function () { btn.disabled = false; diagOut.textContent = t('diag.failed'); });
     }
     var diagBtn = h('button', { type: 'button', onclick: function () { runDiag(diagBtn); }, text: t('diag.run') });
+    var verifyOut = h('div', { class: 'sub', 'aria-live': 'polite' });
+    function runVerify(btn) {
+      btn.disabled = true; verifyOut.textContent = t('verify.running');
+      BAFT.api('POST', '/v1/verify').then(function (r) {
+        btn.disabled = false;
+        var v = r.body || {};
+        var when = v.timestamp ? BAFT.ago(v.timestamp) : t('unknown');
+        if (r.status === 200 && v.result === 'pass' && v.sha256_match === true) {
+          verifyOut.textContent = t('verify.pass', { bytes: BAFT.fmtNum(v.bytes || 0, 0), ms: BAFT.fmtNum(v.duration_ms || 0, 0), when: when });
+        } else if (r.status === 200 && v.result === 'fail') {
+          verifyOut.textContent = t('verify.fail', { reason: t('verify.reason.' + (v.reason || 'invalid_probe_response')), when: when });
+        } else if (r.status === 200) {
+          verifyOut.textContent = t('verify.unknown', { reason: t('verify.reason.' + (v.reason || 'probe_failed')), when: when });
+        } else {
+          verifyOut.textContent = t('verify.failed');
+        }
+      }, function () { btn.disabled = false; verifyOut.textContent = t('verify.failed'); });
+    }
+    var verifyBtn = h('button', { type: 'button', onclick: function () { runVerify(verifyBtn); }, text: t('verify.run') });
     if (dg) { showDiag(dg); }
     var res = h('section', { class: 'card res' },
       h('div', { class: 'head' }, h('div', null, h('div', { class: 'title' }, BAFT.ltr(c.tunnel_id)),
@@ -252,9 +271,14 @@
         [t('f.peer'), tn && tn.tiers.authorized_session && tn.tiers.authorized_session.peer_id ? BAFT.ltr(tn.tiers.authorized_session.peer_id) : null],
         [t('tier.data_path'), tn ? tierPill((tn.tiers.data_path || {}).result) : pill('unknown', t('state.unknown'))],
         [t('tier.integrity'), pill('unknown', t('state.unknown'))],
+        [t('verify.last'), tn && tn.tiers.integrity && tn.tiers.integrity.last_probe
+          ? pill(tn.tiers.integrity.last_probe.result, t('verify.result.' + tn.tiers.integrity.last_probe.result)) + ' · ' + BAFT.ago(tn.tiers.integrity.last_probe.timestamp)
+          : t('never')],
         [t('f.verified'), tn && tn.last_verified_unix ? BAFT.ago(tn.last_verified_unix) : t('f.verified.none')],
         [t('ts.lastfail'), tn && tn.last_failure ? t('tier.' + tn.last_failure.stage) + ' · ' + BAFT.ago(tn.last_failure.at_unix) : t('ts.nofail')]]),
       h('hr', { class: 'sep' }), h('h3', { text: t('diag.title') }), h('p', { class: 'sub', text: t('diag.note') }), diagBtn, diagOut,
+      h('hr', { class: 'sep' }), h('h3', { text: t('verify.title') }),
+      h('p', { class: 'sub', text: t('verify.note') }), verifyBtn, verifyOut,
       h('hr', { class: 'sep' }), h('h3', { text: t('tunnels.metrics') }),
       kv([[t('f.latency'), st.med == null ? t('unknown') : BAFT.ltr(BAFT.fmtNum(st.med, 2) + ' ms')], [t('f.avail'), st.avail == null ? t('unknown') : [BAFT.ltr(BAFT.fmtNum(st.avail, 1) + '%'), ' · ' + t('ov.window', { n: BAFT.fmtNum(st.hist.length, 0) })]]]),
       h('hr', { class: 'sep' }), h('h3', { text: t('tunnels.config') }),

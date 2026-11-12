@@ -1,6 +1,9 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
+#[cfg(test)]
+use crate::authorization::PROTOCOL_V1;
 use crate::session_status::Stage;
+
 use crate::{
     authorization::{ConnectionDirection, StreamCapability},
     engine::{BoxedSecureStream, NoiseEngine, NoiseSettings, StreamEngine, TlsEngine},
@@ -115,6 +118,13 @@ fn yamux_config(max: usize) -> YamuxConfig {
         connection_write_timeout: Duration::from_secs(10),
         max_stream_count: max,
         max_stream_window_size: MAX_STREAM_WINDOW_SIZE,
+    }
+}
+
+fn configured_control_server() -> Result<Option<crate::control_socket::ControlServer>> {
+    match std::env::var_os("BAFT_TUNNEL_CONTROL_SOCKET") {
+        Some(path) => crate::control_socket::ControlServer::bind(PathBuf::from(path)).map(Some),
+        None => Ok(None),
     }
 }
 
@@ -275,8 +285,15 @@ async fn queue_when_session_present(
     }
 }
 
+#[cfg(test)]
 pub async fn serve(options: ServerOptions) -> Result<()> {
+    serve_versioned(options, PROTOCOL_V1).await
+}
+
+pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> Result<()> {
     crate::session_status::start_publisher();
+    let probe_control = Arc::new(crate::integrity_probe::ProbeControl::default());
+    let probe_limiter = Arc::new(crate::integrity_probe::ProbeLimiter::default());
     let listen = socket(&options.listen, "--listen")?;
     let ingress_addr = options
         .ingress
@@ -325,11 +342,19 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("bind {listen}"))?;
+    let control_server = configured_control_server()?;
     let sessions = Arc::new(Semaphore::new(MAX_SESSIONS));
     let pending = Arc::new(Semaphore::new(MAX_PENDING_HANDSHAKES));
     let pending_per_ip = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let streams = Arc::new(Semaphore::new(options.max_streams));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let control_task = control_server.map(|server| {
+        tokio::spawn(server.run(
+            probe_control.clone(),
+            probe_limiter.clone(),
+            shutdown_rx.clone(),
+        ))
+    });
     let mut tasks = JoinSet::new();
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
@@ -398,6 +423,8 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                 );
                 let session_shutdown = shutdown_rx.clone();
                 let ingress_side = ingress.clone();
+                let session_probe_control = probe_control.clone();
+                let session_probe_limiter = probe_limiter.clone();
                 tasks.spawn(async move {
                     let result: Result<()> = async {
                         // A bare TCP connect that closes without sending anything is a reachability
@@ -409,7 +436,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                         let mut secure = engine.accept(socket).await?;
                         timeout(
                             HANDSHAKE_TIMEOUT,
-                            handshake::server_handshake(&mut secure, &local, &peer, &tunnel, direction),
+                            handshake::server_handshake_versioned(&mut secure, &local, &peer, &tunnel, direction, protocol_version),
                         )
                         .await
                         .context("protocol handshake timeout")
@@ -422,7 +449,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                             .map_err(|_| anyhow::anyhow!("session capacity reached"))?;
                         match ingress_side {
                             None => {
-                                server_session(secure, target, max, stream_slots, tunnel, peer, direction, session_shutdown).await;
+                                server_session_versioned(secure, target, max, stream_slots, tunnel, peer, direction, protocol_version, session_probe_control, session_probe_limiter.clone(), session_shutdown).await;
                             }
                             Some(side) => {
                                 // Reverse: the dialing peer holds the service. This node opens the streams.
@@ -443,7 +470,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
                                 let _presence = SessionPresence::attach(side.clone());
                                 let mut receiver = side.receiver.lock().await;
                                 let session = Session::new_server(secure, yamux_config(max));
-                                let outcome = run_forward_session(session, &mut receiver, &stream_slots, direction, &tunnel, &peer, end_rx).await;
+                                let outcome = run_forward_session_versioned(session, &mut receiver, &stream_slots, direction, &tunnel, &peer, protocol_version, session_probe_control, session_probe_limiter.clone(), end_rx).await;
                                 relay_end.abort();
                                 if let Err(error) = outcome {
                                     eprintln!("reverse session ended: {error:#}");
@@ -463,6 +490,14 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
     }
 
     let _ = shutdown_tx.send(true);
+    if let Some(task) = control_task {
+        match timeout(SHUTDOWN_TIMEOUT, task).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => eprintln!("control socket stopped: {error:#}"),
+            Ok(Err(error)) => eprintln!("control socket task failed: {error}"),
+            Err(_) => eprintln!("control socket did not stop before shutdown deadline"),
+        }
+    }
     let drain = async { while tasks.join_next().await.is_some() {} };
     if timeout(STREAM_DRAIN_TIMEOUT, drain).await.is_err() {
         eprintln!("graceful peer-session drain timed out; aborting remaining sessions");
@@ -486,7 +521,7 @@ async fn drain_stream_tasks(tasks: &mut JoinSet<()>, role: &str) {
 }
 
 #[allow(clippy::too_many_arguments)] // one call site; the ids are the session identity
-async fn server_session<S>(
+async fn server_session_versioned<S>(
     stream: S,
     target: SocketAddr,
     max: usize,
@@ -494,32 +529,78 @@ async fn server_session<S>(
     tunnel: String,
     peer: String,
     direction: ConnectionDirection,
+    protocol_version: u16,
+    probe_control: Arc<crate::integrity_probe::ProbeControl>,
+    probe_limiter: Arc<crate::integrity_probe::ProbeLimiter>,
     shutdown: watch::Receiver<bool>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let session = Session::new_server(stream, yamux_config(max));
     let _mark = crate::session_status::SessionMark::open(&tunnel, &peer, direction);
-    serve_streams(session, target, slots, tunnel, direction, shutdown).await;
+    serve_streams_versioned(
+        session,
+        target,
+        slots,
+        tunnel,
+        direction,
+        protocol_version,
+        probe_control,
+        probe_limiter,
+        shutdown,
+    )
+    .await;
 }
 
 /// Accept multiplexed streams on an established, authenticated session and relay each to the
 /// fixed `target`. Which node dialed the TCP connection does not matter here: Direct runs this on
 /// the listener, Reverse (ADR-0021) runs it on the dialer.
-async fn serve_streams<S>(
+#[allow(clippy::too_many_arguments)] // Keep authenticated session and probe authority explicit at this boundary.
+async fn serve_streams_versioned<S>(
     mut session: Session<S>,
     target: SocketAddr,
     slots: Arc<Semaphore>,
     tunnel: String,
     direction: ConnectionDirection,
+    protocol_version: u16,
+    probe_control: Arc<crate::integrity_probe::ProbeControl>,
+    probe_limiter: Arc<crate::integrity_probe::ProbeLimiter>,
     mut shutdown: watch::Receiver<bool>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    let (_probe_guard, mut probe_rx) = probe_control.begin_session();
     let mut control = session.control();
     let mut stream_tasks = JoinSet::new();
     loop {
         let item = tokio::select! {
+            probe = probe_rx.recv() => {
+                if let Some(request) = probe {
+                    let mut stream_control = control.clone();
+                    let tunnel = tunnel.clone();
+                    let version = protocol_version;
+                    stream_tasks.spawn(async move {
+                        let result: Result<crate::integrity_probe::ProbeResult> = async {
+                            if version != crate::authorization::PROTOCOL_V2 {
+                                bail!("integrity probe requires protocol v2 on both peers");
+                            }
+                            let mut stream = timeout(CONNECT_TIMEOUT, stream_control.open_stream())
+                                .await
+                                .context("opening integrity probe stream timed out")??;
+                            handshake::client_stream_open_versioned(
+                                &mut stream,
+                                &tunnel,
+                                direction,
+                                StreamCapability::IntegrityProbe,
+                                version,
+                            ).await.context("authorize IntegrityProbe stream")?;
+                            crate::integrity_probe::run_initiator(&mut stream).await
+                        }.await;
+                        let _ = request.reply.send(result.map_err(|error| format!("{error:#}")));
+                    });
+                }
+                continue;
+            }
             item = session.next() => item,
             completed = stream_tasks.join_next(), if !stream_tasks.is_empty() => {
                 let _ = completed;
@@ -550,23 +631,44 @@ async fn serve_streams<S>(
                 };
                 let destination = target;
                 let stream_tunnel = tunnel.clone();
+                let stream_probe_limiter = probe_limiter.clone();
                 stream_tasks.spawn(async move {
                     let _permit = permit;
                     let result: Result<()> = async {
-                        timeout(
+                        let capability = timeout(
                             HANDSHAKE_TIMEOUT,
-                            handshake::server_stream_open(&mut logical, &stream_tunnel, direction),
+                            handshake::server_stream_open_capability(
+                                &mut logical,
+                                &stream_tunnel,
+                                direction,
+                                protocol_version,
+                            ),
                         )
                         .await
                         .context("stream authorization timeout")??;
-                        let mut upstream =
-                            timeout(CONNECT_TIMEOUT, TcpStream::connect(destination))
+                        match capability {
+                            StreamCapability::TcpForward => {
+                                let mut upstream =
+                                    timeout(CONNECT_TIMEOUT, TcpStream::connect(destination))
+                                        .await
+                                        .context("destination connect timeout")??;
+                                eprintln!("fixed destination connected for yamux stream");
+                                relay_with_idle_timeout(
+                                    &mut logical,
+                                    &mut upstream,
+                                    STREAM_IDLE_TIMEOUT,
+                                )
                                 .await
-                                .context("destination connect timeout")??;
-                        eprintln!("fixed destination connected for yamux stream");
-                        relay_with_idle_timeout(&mut logical, &mut upstream, STREAM_IDLE_TIMEOUT)
-                            .await
-                            .context("forward TCP stream")?;
+                                .context("forward TCP stream")?;
+                            }
+                            StreamCapability::IntegrityProbe => {
+                                if protocol_version != crate::authorization::PROTOCOL_V2 {
+                                    bail!("IntegrityProbe is unavailable outside protocol v2");
+                                }
+                                let _probe_permit = stream_probe_limiter.acquire().await?;
+                                crate::integrity_probe::respond(&mut logical).await?;
+                            }
+                        }
                         Ok(())
                     }
                     .await;
@@ -593,15 +695,26 @@ async fn closed_without_data(socket: &TcpStream) -> bool {
     )
 }
 
+#[cfg(test)]
 async fn connect_peer(options: &ForwardOptions) -> Result<Session<BoxedSecureStream>> {
-    let result = connect_peer_staged(options).await;
+    connect_peer_versioned(options, PROTOCOL_V1).await
+}
+
+async fn connect_peer_versioned(
+    options: &ForwardOptions,
+    protocol_version: u16,
+) -> Result<Session<BoxedSecureStream>> {
+    let result = connect_peer_staged(options, protocol_version).await;
     if let Err(error) = &result {
         crate::session_status::record_failure(error);
     }
     result
 }
 
-async fn connect_peer_staged(options: &ForwardOptions) -> Result<Session<BoxedSecureStream>> {
+async fn connect_peer_staged(
+    options: &ForwardOptions,
+    protocol_version: u16,
+) -> Result<Session<BoxedSecureStream>> {
     let remote = socket(&options.remote, "--remote")?;
     // Rebuilt on every (re)connect so a refreshed CRL on disk is picked up.
     let engine: Box<dyn StreamEngine> = match &options.noise {
@@ -627,12 +740,13 @@ async fn connect_peer_staged(options: &ForwardOptions) -> Result<Session<BoxedSe
     let mut secure = engine.dial(remote).await?;
     timeout(
         HANDSHAKE_TIMEOUT,
-        handshake::client_handshake(
+        handshake::client_handshake_versioned(
             &mut secure,
             &options.local_id,
             &options.peer_id,
             &options.tunnel_id,
             options.direction,
+            protocol_version,
         ),
     )
     .await
@@ -664,30 +778,131 @@ fn tls_alert(error: &anyhow::Error) -> bool {
     })
 }
 
+#[cfg(test)]
 async fn run_forward_session(
+    session: Session<BoxedSecureStream>,
+    receiver: &mut Receiver<TcpStream>,
+    slots: &Arc<Semaphore>,
+    direction: ConnectionDirection,
+    tunnel: &str,
+    peer: &str,
+    shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    run_forward_session_versioned(
+        session,
+        receiver,
+        slots,
+        direction,
+        tunnel,
+        peer,
+        PROTOCOL_V1,
+        Arc::new(crate::integrity_probe::ProbeControl::default()),
+        Arc::new(crate::integrity_probe::ProbeLimiter::default()),
+        shutdown,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)] // Keep authenticated session, identity and probe authority explicit.
+async fn run_forward_session_versioned(
     mut session: Session<BoxedSecureStream>,
     receiver: &mut Receiver<TcpStream>,
     slots: &Arc<Semaphore>,
     direction: ConnectionDirection,
     tunnel: &str,
     peer: &str,
+    protocol_version: u16,
+    probe_control: Arc<crate::integrity_probe::ProbeControl>,
+    probe_limiter: Arc<crate::integrity_probe::ProbeLimiter>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
+    let _probe_guard_and_rx = probe_control.begin_session();
+    let (_probe_guard, mut probe_rx) = _probe_guard_and_rx;
     let _mark = crate::session_status::SessionMark::open(tunnel, peer, direction);
     let mut control = session.control();
     let mut stream_tasks = JoinSet::new();
+    let driver_tunnel = tunnel.to_owned();
+    let driver_direction = direction;
+    let driver_version = protocol_version;
+    let driver_limiter = probe_limiter.clone();
     let mut driver = tokio::spawn(async move {
+        let mut incoming_tasks = JoinSet::new();
         while let Some(item) = session.next().await {
             match item {
-                Ok(unexpected) => drop(unexpected),
-                Err(error) => return Err(anyhow::anyhow!("yamux session failed: {error}")),
+                Ok(mut incoming) => {
+                    eprintln!("forward-side driver accepted peer stream");
+                    let tunnel = driver_tunnel.clone();
+                    let direction = driver_direction;
+                    let version = driver_version;
+                    let limiter = driver_limiter.clone();
+                    incoming_tasks.spawn(async move {
+                        let result: Result<()> = async {
+                            let capability = timeout(
+                                HANDSHAKE_TIMEOUT,
+                                handshake::server_stream_open_capability(
+                                    &mut incoming,
+                                    &tunnel,
+                                    direction,
+                                    version,
+                                ),
+                            )
+                            .await
+                            .context("incoming stream authorization timeout")??;
+                            eprintln!("forward-side stream capability: {capability:?}");
+                            match capability {
+                                StreamCapability::IntegrityProbe => {
+                                    if version != crate::authorization::PROTOCOL_V2 {
+                                        bail!("IntegrityProbe is unavailable outside protocol v2");
+                                    }
+                                    let _probe_permit = limiter.acquire().await?;
+                                    eprintln!("forward-side responding to integrity probe");
+                                    crate::integrity_probe::respond(&mut incoming).await
+                                }
+                                StreamCapability::TcpForward => {
+                                    bail!("unexpected peer-initiated TCP forwarding stream")
+                                }
+                            }
+                        }
+                        .await;
+                        if let Err(error) = result {
+                            eprintln!("incoming peer stream refused: {error:#}");
+                        }
+                    });
+                }
+                Err(error) => {
+                    drain_stream_tasks(&mut incoming_tasks, "incoming probe").await;
+                    return Err(anyhow::anyhow!("yamux session failed: {error}"));
+                }
             }
         }
+        drain_stream_tasks(&mut incoming_tasks, "incoming probe").await;
         Err(anyhow::anyhow!("yamux session closed"))
     });
 
     loop {
         tokio::select! {
+            probe = probe_rx.recv() => {
+                if let Some(request) = probe {
+                    let result: Result<crate::integrity_probe::ProbeResult> = async {
+                        if protocol_version != crate::authorization::PROTOCOL_V2 {
+                            bail!("integrity probe requires protocol v2 on both peers");
+                        }
+                        let mut stream_control = control.clone();
+                        let mut stream = timeout(CONNECT_TIMEOUT, stream_control.open_stream())
+                            .await
+                            .context("opening integrity probe stream timed out")??;
+                        handshake::client_stream_open_versioned(
+                            &mut stream,
+                            tunnel,
+                            direction,
+                            StreamCapability::IntegrityProbe,
+                            protocol_version,
+                        ).await.context("authorize IntegrityProbe stream")?;
+                        crate::integrity_probe::run_initiator(&mut stream).await
+                    }.await;
+                    let _ = request.reply.send(result.map_err(|error| format!("{error:#}")));
+                }
+            }
             completed = stream_tasks.join_next(), if !stream_tasks.is_empty() => {
                 let _ = completed;
             }
@@ -728,11 +943,12 @@ async fn run_forward_session(
                         .context("opening multiplexed stream timed out")?
                         .context("open multiplexed stream")?;
                         eprintln!("yamux stream opened for local connection");
-                        handshake::client_stream_open(
+                        handshake::client_stream_open_versioned(
                             &mut stream,
                             &tunnel,
                             direction,
                             StreamCapability::TcpForward,
+                            protocol_version,
                         )
                         .await
                         .context("authorize TCP forwarding stream")?;
@@ -776,6 +992,9 @@ async fn supervise_forward(
     options: ForwardOptions,
     mut receiver: Receiver<TcpStream>,
     slots: Arc<Semaphore>,
+    protocol_version: u16,
+    probe_control: Arc<crate::integrity_probe::ProbeControl>,
+    probe_limiter: Arc<crate::integrity_probe::ProbeLimiter>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut backoff = INITIAL_BACKOFF;
@@ -784,7 +1003,7 @@ async fn supervise_forward(
             break;
         }
         let connection = tokio::select! {
-            result = connect_peer(&options) => result,
+            result = connect_peer_versioned(&options, protocol_version) => result,
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() { break; }
                 continue;
@@ -794,13 +1013,16 @@ async fn supervise_forward(
             Ok(session) => {
                 eprintln!("authenticated tunnel session established");
                 backoff = INITIAL_BACKOFF;
-                if let Err(error) = run_forward_session(
+                if let Err(error) = run_forward_session_versioned(
                     session,
                     &mut receiver,
                     &slots,
                     options.direction,
                     &options.tunnel_id,
                     &options.peer_id,
+                    protocol_version,
+                    probe_control.clone(),
+                    probe_limiter.clone(),
                     shutdown.clone(),
                 )
                 .await
@@ -842,10 +1064,23 @@ impl Drop for AbortOnDrop {
     }
 }
 
-async fn reverse_service(options: ForwardOptions) -> Result<()> {
+async fn reverse_service_versioned_with_control(
+    options: ForwardOptions,
+    protocol_version: u16,
+    probe_control: Arc<crate::integrity_probe::ProbeControl>,
+    probe_limiter: Arc<crate::integrity_probe::ProbeLimiter>,
+    control_server: Option<crate::control_socket::ControlServer>,
+) -> Result<()> {
     let target = destination(options.target.as_deref().unwrap_or_default())?;
     let slots = Arc::new(Semaphore::new(options.max_streams));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let control_task = control_server.map(|server| {
+        tokio::spawn(server.run(
+            probe_control.clone(),
+            probe_limiter.clone(),
+            shutdown_rx.clone(),
+        ))
+    });
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
     eprintln!(
@@ -857,6 +1092,9 @@ async fn reverse_service(options: ForwardOptions) -> Result<()> {
         options,
         target,
         slots,
+        protocol_version,
+        probe_control,
+        probe_limiter,
         shutdown_rx,
     )));
     tokio::select! {
@@ -868,6 +1106,14 @@ async fn reverse_service(options: ForwardOptions) -> Result<()> {
         eprintln!("reverse supervisor did not stop before shutdown deadline; aborting it");
         supervisor.0.abort();
     }
+    if let Some(task) = control_task {
+        match timeout(SHUTDOWN_TIMEOUT, task).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => eprintln!("control socket stopped: {error:#}"),
+            Ok(Err(error)) => eprintln!("control socket task failed: {error}"),
+            Err(_) => eprintln!("control socket did not stop before shutdown deadline"),
+        }
+    }
     eprintln!("BAFT-TUNNEL reverse service node stopped");
     Ok(())
 }
@@ -876,6 +1122,9 @@ async fn supervise_reverse_service(
     options: ForwardOptions,
     target: SocketAddr,
     slots: Arc<Semaphore>,
+    protocol_version: u16,
+    probe_control: Arc<crate::integrity_probe::ProbeControl>,
+    probe_limiter: Arc<crate::integrity_probe::ProbeLimiter>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut backoff = INITIAL_BACKOFF;
@@ -884,7 +1133,7 @@ async fn supervise_reverse_service(
             break;
         }
         let connection = tokio::select! {
-            result = connect_peer(&options) => result,
+            result = connect_peer_versioned(&options, protocol_version) => result,
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() { break; }
                 continue;
@@ -899,12 +1148,15 @@ async fn supervise_reverse_service(
                     &options.peer_id,
                     options.direction,
                 );
-                serve_streams(
+                serve_streams_versioned(
                     session,
                     target,
                     slots.clone(),
                     options.tunnel_id.clone(),
                     options.direction,
+                    protocol_version,
+                    probe_control.clone(),
+                    probe_limiter.clone(),
                     shutdown.clone(),
                 )
                 .await;
@@ -926,19 +1178,50 @@ async fn supervise_reverse_service(
     }
 }
 
+#[cfg(test)]
 pub async fn forward(options: ForwardOptions) -> Result<()> {
+    forward_versioned(options, PROTOCOL_V1).await
+}
+
+pub async fn forward_versioned(options: ForwardOptions, protocol_version: u16) -> Result<()> {
     crate::session_status::start_publisher();
+    let probe_control = Arc::new(crate::integrity_probe::ProbeControl::default());
+    let probe_limiter = Arc::new(crate::integrity_probe::ProbeLimiter::default());
     if options.target.is_some() {
-        return reverse_service(options).await;
+        let control_server = configured_control_server()?;
+        return reverse_service_versioned_with_control(
+            options,
+            protocol_version,
+            probe_control,
+            probe_limiter,
+            control_server,
+        )
+        .await;
     }
     let listen = socket(&options.listen, "--listen")?;
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("bind {listen}"))?;
+    let control_server = configured_control_server()?;
     let (sender, receiver) = mpsc::channel(options.max_streams);
     let slots = Arc::new(Semaphore::new(options.max_streams));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let supervisor = tokio::spawn(supervise_forward(options, receiver, slots, shutdown_rx));
+    let control_task = control_server.map(|server| {
+        tokio::spawn(server.run(
+            probe_control.clone(),
+            probe_limiter.clone(),
+            shutdown_rx.clone(),
+        ))
+    });
+    let supervisor = tokio::spawn(supervise_forward(
+        options,
+        receiver,
+        slots,
+        protocol_version,
+        probe_control,
+        probe_limiter,
+        shutdown_rx,
+    ));
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
 
@@ -972,6 +1255,14 @@ pub async fn forward(options: ForwardOptions) -> Result<()> {
         supervisor.abort();
         let _ = supervisor.await;
     }
+    if let Some(task) = control_task {
+        match timeout(SHUTDOWN_TIMEOUT, task).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => eprintln!("control socket stopped: {error:#}"),
+            Ok(Err(error)) => eprintln!("control socket task failed: {error}"),
+            Err(_) => eprintln!("control socket did not stop before shutdown deadline"),
+        }
+    }
     eprintln!("BAFT-TUNNEL forwarder stopped");
     Ok(())
 }
@@ -980,6 +1271,187 @@ pub async fn forward(options: ForwardOptions) -> Result<()> {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+
+    #[tokio::test]
+    async fn authenticated_v2_session_probes_work_in_both_directions_without_tcp_target_access() {
+        let (client_io, server_io) = duplex(256 * 1024);
+        let client_session =
+            Session::new_client(Box::new(client_io) as BoxedSecureStream, yamux_config(8));
+        let server_session = Session::new_server(server_io, yamux_config(8));
+        let target: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let slots_client = Arc::new(Semaphore::new(8));
+        let slots_server = Arc::new(Semaphore::new(8));
+        let client_control = Arc::new(crate::integrity_probe::ProbeControl::default());
+        let server_control = Arc::new(crate::integrity_probe::ProbeControl::default());
+        let client_limiter = Arc::new(crate::integrity_probe::ProbeLimiter::default());
+        let server_limiter = Arc::new(crate::integrity_probe::ProbeLimiter::default());
+        let (local_tx, local_rx) = mpsc::channel(1);
+        let (client_stop_tx, client_stop_rx) = watch::channel(false);
+        let (server_stop_tx, server_stop_rx) = watch::channel(false);
+
+        let client_control_for_task = client_control.clone();
+        let client_task = tokio::spawn(async move {
+            let mut local_rx = local_rx;
+            run_forward_session_versioned(
+                client_session,
+                &mut local_rx,
+                &slots_client,
+                ConnectionDirection::Direct,
+                "tunnel-probe",
+                "peer-b",
+                crate::authorization::PROTOCOL_V2,
+                client_control_for_task,
+                client_limiter,
+                client_stop_rx,
+            )
+            .await
+        });
+        let server_task = tokio::spawn(serve_streams_versioned(
+            server_session,
+            target,
+            slots_server,
+            "tunnel-probe".into(),
+            ConnectionDirection::Direct,
+            crate::authorization::PROTOCOL_V2,
+            server_control.clone(),
+            server_limiter.clone(),
+            server_stop_rx,
+        ));
+
+        timeout(Duration::from_secs(2), async {
+            while !client_control.is_active() || !server_control.is_active() {
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let from_client = client_control.request().await.unwrap();
+        assert_eq!(from_client.bytes, crate::integrity_probe::PROBE_BYTES);
+        let from_server = server_control.request().await.unwrap();
+        assert_eq!(from_server.bytes, crate::integrity_probe::PROBE_BYTES);
+
+        let _ = client_stop_tx.send(true);
+        let _ = server_stop_tx.send(true);
+        drop(local_tx);
+        timeout(SHUTDOWN_TIMEOUT, client_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        timeout(SHUTDOWN_TIMEOUT, server_task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn agent_uds_request_runs_probe_over_the_active_authenticated_v2_session() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "baft-probe-e2e-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let instance_dir = root.join("node-a");
+        std::fs::create_dir_all(&instance_dir).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&instance_dir, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let socket_path = instance_dir.join("control.sock");
+        let control = Arc::new(crate::integrity_probe::ProbeControl::default());
+        let limiter = Arc::new(crate::integrity_probe::ProbeLimiter::default());
+        let server = crate::control_socket::ControlServer::bind_for_test(
+            socket_path.clone(),
+            unsafe { libc::geteuid() },
+            &root,
+        )
+        .unwrap();
+        let (control_stop_tx, control_stop_rx) = watch::channel(false);
+        let control_task =
+            tokio::spawn(server.run(control.clone(), limiter.clone(), control_stop_rx));
+
+        let (client_io, server_io) = duplex(256 * 1024);
+        let client_session =
+            Session::new_client(Box::new(client_io) as BoxedSecureStream, yamux_config(8));
+        let server_session = Session::new_server(server_io, yamux_config(8));
+        let target: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let slots_client = Arc::new(Semaphore::new(8));
+        let slots_server = Arc::new(Semaphore::new(8));
+        let peer_control = Arc::new(crate::integrity_probe::ProbeControl::default());
+        let peer_limiter = Arc::new(crate::integrity_probe::ProbeLimiter::default());
+        let (local_tx, local_rx) = mpsc::channel(1);
+        let (client_stop_tx, client_stop_rx) = watch::channel(false);
+        let (server_stop_tx, server_stop_rx) = watch::channel(false);
+
+        let control_for_tunnel = control.clone();
+        let client_task = tokio::spawn(async move {
+            let mut local_rx = local_rx;
+            run_forward_session_versioned(
+                client_session,
+                &mut local_rx,
+                &slots_client,
+                ConnectionDirection::Direct,
+                "tunnel-uds-probe",
+                "peer-b",
+                crate::authorization::PROTOCOL_V2,
+                control_for_tunnel,
+                limiter,
+                client_stop_rx,
+            )
+            .await
+        });
+        let server_task = tokio::spawn(serve_streams_versioned(
+            server_session,
+            target,
+            slots_server,
+            "tunnel-uds-probe".into(),
+            ConnectionDirection::Direct,
+            crate::authorization::PROTOCOL_V2,
+            peer_control,
+            peer_limiter,
+            server_stop_rx,
+        ));
+
+        timeout(Duration::from_secs(2), async {
+            while !control.is_active() {
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let response = crate::control_socket::request(&socket_path).await.unwrap();
+        assert_eq!(response.result, "pass");
+        assert_eq!(response.bytes, crate::integrity_probe::PROBE_BYTES);
+        assert!(response.sha256_match);
+        assert!(response.timestamp > 0);
+
+        let _ = client_stop_tx.send(true);
+        let _ = server_stop_tx.send(true);
+        drop(local_tx);
+        timeout(SHUTDOWN_TIMEOUT, client_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        timeout(SHUTDOWN_TIMEOUT, server_task)
+            .await
+            .unwrap()
+            .unwrap();
+        let _ = control_stop_tx.send(true);
+        timeout(SHUTDOWN_TIMEOUT, control_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(!socket_path.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn bare_tcp_probe_is_told_apart_from_a_handshake_attempt() {

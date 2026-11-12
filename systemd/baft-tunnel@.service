@@ -12,6 +12,7 @@ Type=simple
 User=baft-tunnel
 Group=baft-tunnel
 WorkingDirectory=/etc/baft-tunnel
+Environment=BAFT_TUNNEL_CONTROL_SOCKET=/run/baft-tunnel/%i/control.sock
 # No ExecStartPre= validation: on systemd 249 (Ubuntu 22.04) /run/credentials is
 # inaccessible to pre-start commands, so credential-based validation can only
 # run in ExecStart. `apply` validates the config and resolves the credential

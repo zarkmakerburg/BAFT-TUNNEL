@@ -1,5 +1,9 @@
+#[cfg(test)]
+use crate::authorization::PROTOCOL_V1;
+
 use crate::authorization::{
-    ConnectionDirection, PHASE1_CAPABILITIES, StreamCapability, authorize_session, authorize_stream,
+    ConnectionDirection, StreamCapability, authorize_session_versioned, authorize_stream_versioned,
+    capabilities_for_version,
 };
 use anyhow::{Context, Result, bail};
 use rand::{RngCore, rngs::OsRng};
@@ -7,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-const VERSION: u16 = 1;
+#[cfg(test)]
+const VERSION: u16 = PROTOCOL_V1;
 const MAX_MESSAGE: usize = 2048;
 const NONCE_BYTES: usize = 32;
 
@@ -115,6 +120,7 @@ async fn read_message<S: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     serde_json::from_slice(&bytes).context("decode handshake")
 }
 
+#[cfg(test)]
 pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     local: &str,
@@ -122,27 +128,44 @@ pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     tunnel: &str,
     direction: ConnectionDirection,
 ) -> Result<()> {
+    client_handshake_versioned(stream, local, peer, tunnel, direction, PROTOCOL_V1).await
+}
+
+pub async fn client_handshake_versioned<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    local: &str,
+    peer: &str,
+    tunnel: &str,
+    direction: ConnectionDirection,
+    version: u16,
+) -> Result<()> {
+    let capabilities = capabilities_for_version(version)?;
     let client_nonce = nonce();
     write_message(
         stream,
         &ClientHello {
-            version: VERSION,
+            version,
             client_id: local.into(),
             server_id: peer.into(),
             tunnel_id: tunnel.into(),
             direction,
-            capabilities: PHASE1_CAPABILITIES.to_vec(),
+            capabilities: capabilities.to_vec(),
             nonce: client_nonce.clone(),
         },
     )
     .await?;
     let response: ServerHello = read_message(stream).await?;
-    if response.version != VERSION
-        || response.server_id != peer
+    if response.version != version {
+        bail!(
+            "protocol version mismatch: configured v{version}, peer returned v{}",
+            response.version
+        );
+    }
+    if response.server_id != peer
         || response.client_id != local
         || response.tunnel_id != tunnel
         || response.direction != direction
-        || response.capabilities != PHASE1_CAPABILITIES
+        || response.capabilities != capabilities
         || response.client_nonce != client_nonce
         || !valid_nonce(&response.server_nonce)
         || response.server_nonce == client_nonce
@@ -152,6 +175,7 @@ pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     Ok(())
 }
 
+#[cfg(test)]
 pub async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     local: &str,
@@ -159,15 +183,30 @@ pub async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     tunnel: &str,
     direction: ConnectionDirection,
 ) -> Result<()> {
+    server_handshake_versioned(stream, local, peer, tunnel, direction, PROTOCOL_V1).await
+}
+
+pub async fn server_handshake_versioned<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    local: &str,
+    peer: &str,
+    tunnel: &str,
+    direction: ConnectionDirection,
+    version: u16,
+) -> Result<()> {
+    let capabilities = capabilities_for_version(version)?;
     let request: ClientHello = read_message(stream).await?;
-    if request.version != VERSION
-        || request.client_id != peer
-        || request.server_id != local
-        || !valid_nonce(&request.nonce)
-    {
+    if request.version != version {
+        bail!(
+            "protocol version mismatch: configured v{version}, peer requested v{}",
+            request.version
+        );
+    }
+    if request.client_id != peer || request.server_id != local || !valid_nonce(&request.nonce) {
         bail!("peer rejected or returned an invalid protocol handshake");
     }
-    authorize_session(
+    authorize_session_versioned(
+        version,
         &request.client_id,
         peer,
         &request.tunnel_id,
@@ -176,15 +215,18 @@ pub async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(
         direction,
         &request.capabilities,
     )?;
+    if request.capabilities != capabilities {
+        bail!("peer protocol capability set does not match configured version");
+    }
     write_message(
         stream,
         &ServerHello {
-            version: VERSION,
+            version,
             server_id: local.into(),
             client_id: peer.into(),
             tunnel_id: tunnel.into(),
             direction,
-            capabilities: PHASE1_CAPABILITIES.to_vec(),
+            capabilities: capabilities.to_vec(),
             client_nonce: request.nonce,
             server_nonce: nonce(),
         },
@@ -201,17 +243,28 @@ struct StreamOpen {
     capability: StreamCapability,
 }
 
+#[cfg(test)]
 pub async fn client_stream_open<S: AsyncWrite + Unpin>(
     stream: &mut S,
     tunnel: &str,
     direction: ConnectionDirection,
     capability: StreamCapability,
 ) -> Result<()> {
-    authorize_stream(tunnel, tunnel, direction, direction, capability)?;
+    client_stream_open_versioned(stream, tunnel, direction, capability, PROTOCOL_V1).await
+}
+
+pub async fn client_stream_open_versioned<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    tunnel: &str,
+    direction: ConnectionDirection,
+    capability: StreamCapability,
+    version: u16,
+) -> Result<()> {
+    authorize_stream_versioned(version, tunnel, tunnel, direction, direction, capability)?;
     write_message(
         stream,
         &StreamOpen {
-            version: VERSION,
+            version,
             tunnel_id: tunnel.into(),
             direction,
             capability,
@@ -220,22 +273,39 @@ pub async fn client_stream_open<S: AsyncWrite + Unpin>(
     .await
 }
 
+#[cfg(test)]
 pub async fn server_stream_open<S: AsyncRead + Unpin>(
     stream: &mut S,
     expected_tunnel: &str,
     expected_direction: ConnectionDirection,
 ) -> Result<()> {
+    server_stream_open_capability(stream, expected_tunnel, expected_direction, PROTOCOL_V1)
+        .await
+        .map(|_| ())
+}
+
+pub async fn server_stream_open_capability<S: AsyncRead + Unpin>(
+    stream: &mut S,
+    expected_tunnel: &str,
+    expected_direction: ConnectionDirection,
+    version: u16,
+) -> Result<StreamCapability> {
     let request: StreamOpen = read_message(stream).await?;
-    if request.version != VERSION {
-        bail!("unsupported stream-open protocol version");
+    if request.version != version {
+        bail!(
+            "protocol version mismatch in stream-open: expected v{version}, got v{}",
+            request.version
+        );
     }
-    authorize_stream(
+    authorize_stream_versioned(
+        version,
         &request.tunnel_id,
         expected_tunnel,
         request.direction,
         expected_direction,
         request.capability,
-    )
+    )?;
+    Ok(request.capability)
 }
 
 /// Bind the TLS-authenticated certificate to the enrolled logical node identity.
@@ -293,6 +363,7 @@ pub fn verify_peer_fingerprint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::authorization::PHASE1_CAPABILITIES;
     use tokio::io::duplex;
 
     #[test]
@@ -566,6 +637,100 @@ mod tests {
             .is_err()
         );
         assert!(server_task.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn protocol_v2_handshake_succeeds_only_when_both_peers_are_v2() {
+        let (mut client, mut server) = duplex(4096);
+        let server_task = tokio::spawn(async move {
+            server_handshake_versioned(
+                &mut server,
+                "abroad",
+                "iran",
+                "tunnel-a",
+                ConnectionDirection::Direct,
+                2,
+            )
+            .await
+        });
+        client_handshake_versioned(
+            &mut client,
+            "iran",
+            "abroad",
+            "tunnel-a",
+            ConnectionDirection::Direct,
+            2,
+        )
+        .await
+        .unwrap();
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn mixed_protocol_generations_are_rejected_without_retry_or_downgrade() {
+        for (client_version, server_version) in [(1, 2), (2, 1)] {
+            let (mut client, mut server) = duplex(4096);
+            let server_task = tokio::spawn(async move {
+                server_handshake_versioned(
+                    &mut server,
+                    "abroad",
+                    "iran",
+                    "tunnel-a",
+                    ConnectionDirection::Direct,
+                    server_version,
+                )
+                .await
+            });
+            let result = client_handshake_versioned(
+                &mut client,
+                "iran",
+                "abroad",
+                "tunnel-a",
+                ConnectionDirection::Direct,
+                client_version,
+            )
+            .await;
+            assert!(
+                result.is_err(),
+                "mixed v{client_version}/v{server_version} accepted"
+            );
+            assert!(server_task.await.unwrap().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn integrity_probe_stream_open_is_v2_only_and_separately_authorized() {
+        let (mut client, mut server) = duplex(4096);
+        let server_task = tokio::spawn(async move {
+            server_stream_open_capability(&mut server, "tunnel-a", ConnectionDirection::Direct, 2)
+                .await
+        });
+        client_stream_open_versioned(
+            &mut client,
+            "tunnel-a",
+            ConnectionDirection::Direct,
+            StreamCapability::IntegrityProbe,
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            server_task.await.unwrap().unwrap(),
+            StreamCapability::IntegrityProbe
+        );
+
+        let (mut client, _server) = duplex(4096);
+        assert!(
+            client_stream_open_versioned(
+                &mut client,
+                "tunnel-a",
+                ConnectionDirection::Direct,
+                StreamCapability::IntegrityProbe,
+                1
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[test]

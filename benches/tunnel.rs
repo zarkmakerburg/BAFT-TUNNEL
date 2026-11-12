@@ -16,12 +16,16 @@ mod baft_engine;
 mod capabilities;
 #[path = "../src/config.rs"]
 mod config;
+#[path = "../src/control_socket.rs"]
+mod control_socket;
 #[path = "../src/engine.rs"]
 mod engine;
 #[path = "../src/engine_store.rs"]
 mod engine_store;
 #[path = "../src/handshake.rs"]
 mod handshake;
+#[path = "../src/integrity_probe.rs"]
+mod integrity_probe;
 #[path = "../src/key_custody.rs"]
 mod key_custody;
 #[path = "../src/noise.rs"]

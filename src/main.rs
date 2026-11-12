@@ -5,9 +5,11 @@ mod authorization;
 mod baft_engine;
 mod capabilities;
 mod config;
+mod control_socket;
 mod engine;
 mod engine_store;
 mod handshake;
+mod integrity_probe;
 pub mod key_custody;
 mod noise;
 mod observe;
@@ -370,6 +372,7 @@ async fn run() -> Result<()> {
                 peer_id,
                 tunnel_id,
                 direction,
+                protocol_version: authorization::PROTOCOL_V1,
                 peer_fingerprint,
                 ca,
                 crl,
@@ -409,6 +412,7 @@ async fn run() -> Result<()> {
                 peer_id,
                 tunnel_id,
                 direction,
+                protocol_version: authorization::PROTOCOL_V1,
                 peer_fingerprint,
                 ca,
                 crl,

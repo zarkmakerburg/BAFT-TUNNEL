@@ -541,6 +541,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/engines"
             | "/v1/traffic"
             | "/v1/diagnostics"
+            | "/v1/verify"
             | "/v1/tunnel/lifecycle"
             | "/v1/setup/bundle"
             | "/v1/setup/bundle/inspect"
@@ -564,6 +565,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         ("GET", "/v1/traffic") => (200, traffic(ctx)),
         ("GET", "/v1/diagnostics") => get_diagnostics(ctx),
         ("POST", "/v1/diagnostics") => (200, run_diagnostics(ctx, config).await),
+        ("POST", "/v1/verify") => verify_integrity(ctx, config).await,
         ("GET", "/v1/history") => (200, history(ctx)),
         ("GET", "/v1/security") => (200, security(config)),
         ("GET", "/v1/audit") => get_audit(ctx),
@@ -2273,6 +2275,67 @@ fn crl_state(remaining: Option<i64>) -> &'static str {
     }
 }
 
+async fn verify_integrity(ctx: &Ctx, config: &RuntimeConfig) -> (u16, Value) {
+    let Some(state_dir) = ctx.state_dir.as_deref() else {
+        return (
+            409,
+            json!({"result":"unknown","reason":"audit_unavailable"}),
+        );
+    };
+    let response = match ctx.runtime_dir.as_deref() {
+        Some(runtime_dir) => {
+            match crate::control_socket::request(&runtime_dir.join("control.sock")).await {
+                Ok(response) => response,
+                Err(_) => crate::control_socket::ProbeControlResponse {
+                    result: "unknown".into(),
+                    reason: Some("control_unavailable".into()),
+                    bytes: 0,
+                    sha256_match: false,
+                    duration_ms: None,
+                    timestamp: unix_now(),
+                },
+            }
+        }
+        None => crate::control_socket::ProbeControlResponse {
+            result: "unknown".into(),
+            reason: Some("control_unavailable".into()),
+            bytes: 0,
+            sha256_match: false,
+            duration_ms: None,
+            timestamp: unix_now(),
+        },
+    };
+    let result = response.result.as_str();
+    let detail = response.reason.as_deref().unwrap_or("sha256_verified");
+    let resource = format!("tunnel/{}", config.ids().2);
+    if audit(
+        state_dir,
+        ctx,
+        AuditEvent {
+            action: "integrity_probe",
+            result,
+            resource,
+            node: Some(config.ids().0),
+            instance: ctx.instance.as_deref(),
+            sha256: "",
+            detail,
+            receipt_id: None,
+        },
+    )
+    .is_err()
+    {
+        return (500, json!({"result":"unknown","reason":"audit_failed"}));
+    }
+    let mut body = serde_json::to_value(response)
+        .unwrap_or_else(|_| json!({"result":"unknown","reason":"response_encoding_failed"}));
+    if let Some(fields) = body.as_object_mut() {
+        fields.insert("peer_id".into(), json!(config.ids().1));
+        fields.insert("tunnel_id".into(), json!(config.ids().2));
+        fields.insert("direction".into(), json!(config.direction_name()));
+    }
+    (200, body)
+}
+
 fn get_audit(ctx: &Ctx) -> (u16, Value) {
     let Some(dir) = &ctx.state_dir else {
         return (404, json!({"error": "desired state is disabled"}));
@@ -2551,6 +2614,39 @@ fn stored_diagnostics(ctx: &Ctx) -> Option<Value> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
+fn last_integrity_probe(ctx: &Ctx) -> Option<Value> {
+    let dir = ctx.state_dir.as_ref()?;
+    let mut latest: Option<Value> = None;
+    for name in [AUDIT_ROTATED, AUDIT_FILE] {
+        for line in audit_tail(&dir.join(name)).lines() {
+            let Ok(event) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if event["action"] != "integrity_probe" {
+                continue;
+            }
+            let timestamp = event["ts"].as_u64().unwrap_or(0);
+            if latest
+                .as_ref()
+                .and_then(|value| value["timestamp"].as_u64())
+                .is_none_or(|current| timestamp > current)
+            {
+                let result = event["result"].as_str()?;
+                if !matches!(result, "pass" | "fail" | "unknown") {
+                    continue;
+                }
+                latest = Some(json!({
+                    "result": result,
+                    "reason": event["detail"],
+                    "timestamp": timestamp,
+                    "source": "in_product_probe",
+                }));
+            }
+        }
+    }
+    latest
+}
+
 const INTEGRITY_UNKNOWN: &str = "payload integrity is measured only by an end-to-end echo probe (Verify/LAB); the agent never reads tunnel payload";
 
 /// End-to-end tunnel state as separate evidence tiers (ADR-0024). The summary `state` is the
@@ -2584,6 +2680,7 @@ async fn tunnel_status(ctx: &Ctx, config: &RuntimeConfig, listening: bool) -> Va
         "down"
     };
     let stored = stored_diagnostics(ctx);
+    let last_probe = last_integrity_probe(ctx);
     json!({
         "state": state,
         "observed_unix": now,
@@ -2606,7 +2703,7 @@ async fn tunnel_status(ctx: &Ctx, config: &RuntimeConfig, listening: bool) -> Va
                 "window_s": DATA_WINDOW_S,
                 "last_bidirectional_unix": last_bidi,
             }),
-            "integrity": {"result": "unknown", "reason": INTEGRITY_UNKNOWN},
+            "integrity": {"result": "unknown", "reason": INTEGRITY_UNKNOWN, "last_probe": last_probe},
         },
         "last_failure": ev.failure,
         "last_verified_unix": stored.as_ref().and_then(|d| d["verified_unix"].as_u64()),
@@ -3751,14 +3848,107 @@ mod tests {
             "diag.col.next",
             "diag.next",
             "diag.next.start",
+            "verify.title",
+            "verify.run",
+            "verify.pass",
+            "verify.reason.unsupported_protocol",
+            "verify.fail",
+            "verify.last",
+            "verify.result.pass",
+            "verify.result.fail",
+            "verify.result.unknown",
         ] {
             let needle = format!("'{key}':");
             assert!(fa.contains(&needle), "fa missing {key}");
             assert!(en.contains(&needle), "en missing {key}");
         }
         let pages = include_str!("../panel/pages.js");
+        assert!(pages.contains("'/v1/verify'"));
+        assert!(pages.contains("verify.title"));
         assert!(pages.contains("'/v1/tunnel/lifecycle'"));
         assert!(pages.contains("window.confirm(t('life.confirm.' + action))"));
+    }
+
+    #[tokio::test]
+    async fn integrity_verify_route_is_authenticated_and_audits_unknown_without_a_control_socket() {
+        let dir = state_dir("verify");
+        let runtime = dir.join("runtime");
+        std::fs::create_dir(&runtime).unwrap();
+        let ctx = Ctx::new(sample(), TOKEN.into(), Some(dir.clone()))
+            .with_unit(Some("verify-node".into()), Some(runtime));
+        let (status, response) = route(&post("/v1/verify"), b"", &ctx).await;
+        assert_eq!(status, 200);
+        assert_eq!(response["result"], "unknown");
+        assert_eq!(response["reason"], "control_unavailable");
+        assert_eq!(response["bytes"], 0);
+        assert_eq!(response["sha256_match"], false);
+        assert_eq!(response["peer_id"], sample().ids().1);
+        assert_eq!(response["tunnel_id"], sample().ids().2);
+        assert_eq!(response["direction"], sample().direction_name());
+
+        let audit_path = dir.join(AUDIT_FILE);
+        let lines = std::fs::read_to_string(&audit_path).unwrap();
+        let event: Value = serde_json::from_str(lines.lines().next().unwrap()).unwrap();
+        assert_eq!(event["action"], "integrity_probe");
+        assert_eq!(event["result"], "unknown");
+        assert_eq!(event["detail"], "control_unavailable");
+        assert_eq!(event["sha256"], "");
+        assert!(response.get("sha256").is_none());
+        assert!(!lines.contains(TOKEN));
+
+        let no_runtime_dir = state_dir("verify-no-runtime");
+        let no_runtime = Ctx::new(sample(), TOKEN.into(), Some(no_runtime_dir.clone()))
+            .with_unit(Some("verify-node".into()), None);
+        let (status, response) = route(&post("/v1/verify"), b"", &no_runtime).await;
+        assert_eq!(status, 200);
+        assert_eq!(response["result"], "unknown");
+        assert_eq!(response["reason"], "control_unavailable");
+        let event: Value = serde_json::from_str(
+            std::fs::read_to_string(no_runtime_dir.join(AUDIT_FILE))
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(event["action"], "integrity_probe");
+        assert_eq!(event["result"], "unknown");
+        let _ = std::fs::remove_dir_all(&no_runtime_dir);
+
+        let bare = Ctx::new(sample(), TOKEN.into(), None);
+        assert_eq!(
+            route("POST /v1/verify HTTP/1.1\r\n\r\n", b"", &bare)
+                .await
+                .0,
+            401
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn latest_probe_audit_is_exposed_as_historical_evidence() {
+        let dir = state_dir("last-probe");
+        let ctx = Ctx::new(sample(), TOKEN.into(), Some(dir.clone()));
+        audit(
+            &dir,
+            &ctx,
+            AuditEvent {
+                action: "integrity_probe",
+                result: "pass",
+                resource: "tunnel/demo".into(),
+                node: None,
+                instance: None,
+                sha256: "test-digest",
+                detail: "sha256_verified",
+                receipt_id: None,
+            },
+        )
+        .unwrap();
+        let last = last_integrity_probe(&ctx).unwrap();
+        assert_eq!(last["result"], "pass");
+        assert_eq!(last["source"], "in_product_probe");
+        assert!(last["timestamp"].as_u64().is_some());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

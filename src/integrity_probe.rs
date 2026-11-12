@@ -1,0 +1,357 @@
+//! Bounded protocol-v2 integrity probe exchange (ADR-0028).
+//!
+//! The wire format is fixed-size and length-prefixed. Payload bytes are streamed through a
+//! small stack buffer; no peer-controlled length is used for allocation.
+
+use std::{
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
+
+use anyhow::{Context, Result, bail};
+use rand::{RngCore, rngs::OsRng};
+use sha2::{Digest, Sha256};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
+    time::timeout,
+};
+
+pub const PROBE_BYTES: usize = 64 * 1024;
+pub const PROBE_DEADLINE: Duration = Duration::from_secs(10);
+pub const PROBE_COOLDOWN: Duration = Duration::from_secs(60);
+const NONCE_BYTES: usize = 32;
+const CHUNK_BYTES: usize = 4096;
+const REQUEST_FRAME_BYTES: u32 = (NONCE_BYTES + PROBE_BYTES) as u32;
+const RESPONSE_FRAME_BYTES: u32 = (2 + NONCE_BYTES + 4 + 32) as u32;
+const PROTOCOL_VERSION: u16 = 2;
+const REQUEST_MAGIC: &[u8; 4] = b"BTP2";
+const RESPONSE_MAGIC: &[u8; 4] = b"BTR2";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProbeResult {
+    pub bytes: usize,
+    pub duration_ms: u128,
+}
+
+pub struct ProbeRequest {
+    pub reply: oneshot::Sender<std::result::Result<ProbeResult, String>>,
+}
+
+struct ProbeControlInner {
+    next_id: AtomicU64,
+    current: StdMutex<Option<(u64, mpsc::Sender<ProbeRequest>)>>,
+}
+
+#[derive(Clone)]
+pub struct ProbeControl {
+    inner: Arc<ProbeControlInner>,
+}
+
+impl Default for ProbeControl {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(ProbeControlInner {
+                next_id: AtomicU64::new(1),
+                current: StdMutex::new(None),
+            }),
+        }
+    }
+}
+
+pub struct ProbeSessionGuard {
+    inner: Arc<ProbeControlInner>,
+    id: u64,
+}
+
+impl Drop for ProbeSessionGuard {
+    fn drop(&mut self) {
+        let mut current = self.inner.current.lock().unwrap_or_else(|e| e.into_inner());
+        if current.as_ref().is_some_and(|(id, _)| *id == self.id) {
+            *current = None;
+        }
+    }
+}
+
+impl ProbeControl {
+    /// Bind one active authenticated yamux session as the target for local probe requests.
+    pub fn begin_session(&self) -> (ProbeSessionGuard, mpsc::Receiver<ProbeRequest>) {
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        let (sender, receiver) = mpsc::channel(1);
+        *self.inner.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, sender));
+        (
+            ProbeSessionGuard {
+                inner: self.inner.clone(),
+                id,
+            },
+            receiver,
+        )
+    }
+
+    #[cfg(test)]
+    pub fn is_active(&self) -> bool {
+        self.inner
+            .current
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// Submit only to a currently active authenticated session; never queue across reconnects.
+    #[cfg(any(target_os = "linux", test))]
+    pub async fn request(&self) -> Result<ProbeResult> {
+        let sender = self
+            .inner
+            .current
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|(_, sender)| sender.clone())
+            .context("authenticated tunnel session is unavailable")?;
+        let (reply, response) = oneshot::channel();
+        sender.try_send(ProbeRequest { reply }).map_err(|_| {
+            anyhow::anyhow!("integrity probe request is busy or session is closing")
+        })?;
+        timeout(PROBE_DEADLINE, response)
+            .await
+            .context("integrity probe request timed out")?
+            .context("integrity probe session ended")?
+            .map_err(anyhow::Error::msg)
+    }
+}
+
+pub struct ProbeLimiter {
+    active: Arc<Semaphore>,
+    last_started: Mutex<Option<Instant>>,
+}
+
+impl Default for ProbeLimiter {
+    fn default() -> Self {
+        Self {
+            active: Arc::new(Semaphore::new(1)),
+            last_started: Mutex::new(None),
+        }
+    }
+}
+
+impl ProbeLimiter {
+    /// Atomically enforces one active probe and one start per cooldown window.
+    pub async fn acquire(&self) -> Result<OwnedSemaphorePermit> {
+        let permit = self
+            .active
+            .clone()
+            .try_acquire_owned()
+            .context("integrity probe already active for this tunnel instance")?;
+        let mut last = self.last_started.lock().await;
+        if last.is_some_and(|at| at.elapsed() < PROBE_COOLDOWN) {
+            drop(last);
+            drop(permit);
+            bail!("integrity probe rate limit: one start per 60 seconds");
+        }
+        *last = Some(Instant::now());
+        Ok(permit)
+    }
+}
+
+/// Initiate one fresh 64 KiB challenge and verify the authenticated peer's response.
+pub async fn run_initiator<S>(stream: &mut S) -> Result<ProbeResult>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    timeout(PROBE_DEADLINE, run_initiator_inner(stream))
+        .await
+        .context("integrity probe exceeded its 10-second end-to-end deadline")?
+}
+
+async fn run_initiator_inner<S>(stream: &mut S) -> Result<ProbeResult>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let started = Instant::now();
+    let mut nonce = [0u8; NONCE_BYTES];
+    let mut payload = vec![0u8; PROBE_BYTES];
+    OsRng.fill_bytes(&mut nonce);
+    OsRng.fill_bytes(&mut payload);
+    let expected_digest = Sha256::digest(&payload);
+
+    stream.write_all(REQUEST_MAGIC).await?;
+    stream.write_all(&REQUEST_FRAME_BYTES.to_be_bytes()).await?;
+    stream.write_all(&nonce).await?;
+    for chunk in payload.chunks(CHUNK_BYTES) {
+        stream.write_all(chunk).await?;
+    }
+    stream.flush().await?;
+    // Half-close the request direction; the response remains readable.
+    stream.shutdown().await?;
+
+    let mut magic = [0u8; 4];
+    stream
+        .read_exact(&mut magic)
+        .await
+        .context("read probe response magic")?;
+    if &magic != RESPONSE_MAGIC {
+        bail!("malformed integrity probe response magic");
+    }
+    let mut length = [0u8; 4];
+    stream.read_exact(&mut length).await?;
+    if u32::from_be_bytes(length) != RESPONSE_FRAME_BYTES {
+        bail!("invalid integrity probe response frame length");
+    }
+    let mut version = [0u8; 2];
+    let mut response_nonce = [0u8; NONCE_BYTES];
+    let mut count = [0u8; 4];
+    let mut digest = [0u8; 32];
+    stream.read_exact(&mut version).await?;
+    stream.read_exact(&mut response_nonce).await?;
+    stream.read_exact(&mut count).await?;
+    stream.read_exact(&mut digest).await?;
+    if u16::from_be_bytes(version) != PROTOCOL_VERSION {
+        bail!("unsupported integrity probe response version");
+    }
+    if response_nonce != nonce {
+        bail!("integrity probe response nonce mismatch (replay or wrong session)");
+    }
+    if u32::from_be_bytes(count) as usize != PROBE_BYTES {
+        bail!("integrity probe response byte count mismatch");
+    }
+    if digest != expected_digest.as_slice() {
+        bail!("integrity probe SHA-256 mismatch");
+    }
+    let mut extra = [0u8; 1];
+    if stream.read(&mut extra).await? != 0 {
+        bail!("integrity probe response contains trailing bytes");
+    }
+    Ok(ProbeResult {
+        bytes: PROBE_BYTES,
+        duration_ms: started.elapsed().as_millis(),
+    })
+}
+
+/// Respond to exactly one authenticated IntegrityProbe stream. This never touches a TCP target.
+pub async fn respond<S>(stream: &mut S) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    timeout(PROBE_DEADLINE, respond_inner(stream))
+        .await
+        .context("integrity probe responder exceeded its 10-second deadline")?
+}
+
+async fn respond_inner<S>(stream: &mut S) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut magic = [0u8; 4];
+    stream
+        .read_exact(&mut magic)
+        .await
+        .context("read probe request magic")?;
+    if &magic != REQUEST_MAGIC {
+        bail!("malformed integrity probe request magic");
+    }
+    let mut length = [0u8; 4];
+    stream.read_exact(&mut length).await?;
+    if u32::from_be_bytes(length) != REQUEST_FRAME_BYTES {
+        bail!("invalid integrity probe request frame length");
+    }
+    let mut nonce = [0u8; NONCE_BYTES];
+    stream.read_exact(&mut nonce).await?;
+    let mut hasher = Sha256::new();
+    let mut remaining = PROBE_BYTES;
+    let mut chunk = [0u8; CHUNK_BYTES];
+    while remaining > 0 {
+        let take = remaining.min(chunk.len());
+        stream.read_exact(&mut chunk[..take]).await?;
+        hasher.update(&chunk[..take]);
+        remaining -= take;
+    }
+    let mut extra = [0u8; 1];
+    if stream.read(&mut extra).await? != 0 {
+        bail!("integrity probe request contains trailing payload bytes");
+    }
+    let digest = hasher.finalize();
+
+    stream.write_all(RESPONSE_MAGIC).await?;
+    stream
+        .write_all(&RESPONSE_FRAME_BYTES.to_be_bytes())
+        .await?;
+    stream.write_all(&PROTOCOL_VERSION.to_be_bytes()).await?;
+    stream.write_all(&nonce).await?;
+    stream
+        .write_all(&(PROBE_BYTES as u32).to_be_bytes())
+        .await?;
+    stream.write_all(&digest).await?;
+    stream.flush().await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::duplex;
+
+    #[tokio::test]
+    async fn fixed_size_probe_round_trip_verifies_digest_and_nonce() {
+        let (mut initiator, mut responder) = duplex(PROBE_BYTES + 1024);
+        let task = tokio::spawn(async move { respond(&mut responder).await });
+        let result = run_initiator(&mut initiator).await.unwrap();
+        task.await.unwrap().unwrap();
+        assert_eq!(result.bytes, PROBE_BYTES);
+        assert!(result.duration_ms <= 10_000);
+    }
+
+    #[tokio::test]
+    async fn responder_rejects_oversized_frame_before_reading_payload() {
+        let (mut initiator, mut responder) = duplex(128);
+        let task = tokio::spawn(async move { respond(&mut responder).await });
+        initiator.write_all(REQUEST_MAGIC).await.unwrap();
+        initiator
+            .write_all(&(REQUEST_FRAME_BYTES + 1).to_be_bytes())
+            .await
+            .unwrap();
+        assert!(task.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn responder_rejects_truncated_payload() {
+        let (mut initiator, mut responder) = duplex(128);
+        let task = tokio::spawn(async move { respond(&mut responder).await });
+        initiator.write_all(REQUEST_MAGIC).await.unwrap();
+        initiator
+            .write_all(&REQUEST_FRAME_BYTES.to_be_bytes())
+            .await
+            .unwrap();
+        initiator.write_all(&[0u8; NONCE_BYTES]).await.unwrap();
+        initiator.shutdown().await.unwrap();
+        assert!(task.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn control_rejects_requests_without_an_active_authenticated_session() {
+        let control = ProbeControl::default();
+        assert!(control.request().await.is_err());
+        let (guard, mut receiver) = control.begin_session();
+        let request = tokio::spawn({
+            let control = control.clone();
+            async move { control.request().await }
+        });
+        let command = receiver.recv().await.unwrap();
+        let _ = command.reply.send(Err("test-unavailable".into()));
+        assert!(request.await.unwrap().is_err());
+        drop(guard);
+        assert!(control.request().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn limiter_enforces_single_active_and_cooldown() {
+        let limiter = ProbeLimiter::default();
+        let permit = limiter.acquire().await.unwrap();
+        assert!(limiter.acquire().await.is_err());
+        drop(permit);
+        assert!(limiter.acquire().await.is_err());
+    }
+}
