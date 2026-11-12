@@ -20,8 +20,20 @@ from pathlib import Path
 import sys
 line = next(line for line in Path(sys.argv[1]).read_text().splitlines() if 'noexec' in line and 'mount_options' in line)
 bs = chr(92)
-assert 'case '+bs+'",'+bs+'$mount_options,'+bs+'"' in line, line
+assert 'case '+bs+'",' + bs + '$mount_options,' + bs + '"' in line, line
 PYCASE
+grep -F 'ECHO_STATE="/run/baft-b2-echo-$RUN_ID"' "$harness" >/dev/null
+grep -F 'ReadWritePaths=$ECHO_STATE' "$harness" >/dev/null
+python3 - "$harness" <<'PYCLEAN'
+from pathlib import Path
+import sys
+bs = chr(92)
+source = Path(sys.argv[1]).read_text()
+assert "rm -rf '$REMOTE_BASE' '$ECHO_STATE'" in source
+PYCLEAN
+grep -F 'B2_LAB_START_ECHO_FIXTURE' "$harness" >/dev/null
+grep -F 'B2_LAB_START_TUNNEL host=iran' "$harness" >/dev/null
+grep -F 'B2_LAB_START_TUNNEL host=abroad' "$harness" >/dev/null
 capture_tmp=$(mktemp -d)
 trap 'rm -rf "$capture_tmp"' EXIT
 mkdir -p "$capture_tmp/bin"

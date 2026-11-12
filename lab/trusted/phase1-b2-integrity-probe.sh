@@ -51,7 +51,7 @@ RUN_ID="${GITHUB_RUN_ID:-$$}"
 INSTANCE="b2lab-$RUN_ID"
 REMOTE_BASE="/var/tmp/baft-b2-lab-$RUN_ID"
 REMOTE_BIN="$REMOTE_BASE/baft-tunnel"
-ECHO_STATE="$REMOTE_BASE/echo-state"
+ECHO_STATE="/run/baft-b2-echo-$RUN_ID"
 LOCAL_TMP="$(mktemp -d)"
 SSH_KEY="$LOCAL_TMP/id_ed25519"
 KNOWN_HOSTS="$LOCAL_TMP/known_hosts"
@@ -136,7 +136,7 @@ cleanup() {
         fi
         test ! -e '/run/baft-tunnel/$INSTANCE' || { echo 'systemd runtime directory remains; preserving files' >&2; exit 1; }
         systemctl reset-failed $units 2>/dev/null || true
-        rm -rf '$REMOTE_BASE'
+        if [[ "$side" == abroad ]]; then rm -rf '$REMOTE_BASE' '$ECHO_STATE'; else rm -rf '$REMOTE_BASE'; fi
       "; then
         echo "LAB cleanup incomplete on $side; temporary files were preserved" >&2
         rc=1
@@ -179,6 +179,7 @@ for side in iran abroad; do
     getent group nogroup >/dev/null
     id -nG baft-tunnel-agent | grep -Eq '(^| )baft-tunnel( |$)'
     test ! -e '$REMOTE_BASE' && test ! -L '$REMOTE_BASE'
+    if [[ "$side" == abroad ]]; then test ! -e '$ECHO_STATE' && test ! -L '$ECHO_STATE'; fi
     test ! -e '/run/baft-tunnel/$INSTANCE' && test ! -L '/run/baft-tunnel/$INSTANCE'
     ! systemctl is-active --quiet '$(agent_unit_for "$side")'
     ! systemctl is-active --quiet '$(tunnel_unit_for "$side")'
@@ -317,8 +318,11 @@ ssh_host abroad "chown root:baft-tunnel '$(side_dir abroad)' && chmod 0750 '$(si
 
 # The echo destination is a nobody-owned fixture. The data plane and agent run as distinct,
 # pre-existing service accounts; systemd creates the exact 0750 per-instance runtime directory.
+echo "B2_LAB_START_ECHO_FIXTURE host=abroad unit=$ECHO_UNIT state=$ECHO_STATE"
 ssh_host abroad "systemd-run --quiet --collect --unit='$ECHO_UNIT' --property=User=nobody --property=Group=nogroup --property=UMask=0077 --property=NoNewPrivileges=yes --property=PrivateTmp=yes --property=PrivateDevices=yes --property=ProtectSystem=strict --property=ProtectHome=yes --property=ProtectKernelTunables=yes --property=ProtectKernelModules=yes --property=ProtectKernelLogs=yes --property=ProtectControlGroups=yes --property=ProtectClock=yes --property=ProtectHostname=yes --property=RestrictSUIDSGID=yes --property=RestrictNamespaces=yes --property=RestrictRealtime=yes --property=LockPersonality=yes --property=MemoryDenyWriteExecute=yes --property='SystemCallFilter=@system-service' --property=SystemCallArchitectures=native --property=CapabilityBoundingSet= --property=AmbientCapabilities= --property=RuntimeMaxSec=600 --property=TimeoutStopSec=3 --property=MemoryMax=96M --property=TasksMax=32 --property=LimitNOFILE=128 --property=IPAddressDeny=any --property='IPAddressAllow=127.0.0.0/8 ::1/128' --property='RestrictAddressFamilies=AF_INET' --property='ReadWritePaths=$ECHO_STATE' -- /usr/bin/python3 '$REMOTE_BASE/echo.py' '$ECHO_STATE/stats.json' '$ECHO_PORT'"
+echo "B2_LAB_START_TUNNEL host=abroad unit=$ABROAD_TUNNEL_UNIT"
 ssh_host abroad "systemd-run --quiet --collect --unit='$ABROAD_TUNNEL_UNIT' --property=User=baft-tunnel --property=Group=baft-tunnel --property=UMask=0077 --property=WorkingDirectory='$(side_dir abroad)' --property='RuntimeDirectory=baft-tunnel/$INSTANCE' --property=RuntimeDirectoryMode=0750 --property='Environment=BAFT_TUNNEL_CONTROL_SOCKET=/run/baft-tunnel/$INSTANCE/control.sock' --property=NoNewPrivileges=yes --property=PrivateTmp=yes --property=PrivateDevices=yes --property=ProtectSystem=strict --property=ProtectHome=yes --property=ProtectKernelTunables=yes --property=ProtectKernelModules=yes --property=ProtectKernelLogs=yes --property=ProtectControlGroups=yes --property=ProtectClock=yes --property=ProtectHostname=yes --property=RestrictSUIDSGID=yes --property=RestrictNamespaces=yes --property=RestrictRealtime=yes --property=LockPersonality=yes --property=MemoryDenyWriteExecute=yes --property='SystemCallFilter=@system-service' --property=SystemCallArchitectures=native --property=CapabilityBoundingSet= --property=AmbientCapabilities= --property=RuntimeMaxSec=600 --property=TimeoutStopSec=10 --property=MemoryMax=512M --property=TasksMax=256 --property=LimitNOFILE=4096 --property=ProtectProc=invisible --property=ProcSubset=pid --property='InaccessiblePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-agent -/run/baft-tunnel/control' --property=IPAddressDeny=any --property="IPAddressAllow=127.0.0.0/8 ::1/128 $IRAN_CIDR" --property='RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX' -- '$REMOTE_BIN' apply --config '$(side_dir abroad)/$INSTANCE.json' --confirm"
+echo "B2_LAB_START_TUNNEL host=iran unit=$IRAN_TUNNEL_UNIT"
 ssh_host iran "systemd-run --quiet --collect --unit='$IRAN_TUNNEL_UNIT' --property=User=baft-tunnel --property=Group=baft-tunnel --property=UMask=0077 --property=WorkingDirectory='$(side_dir iran)' --property='RuntimeDirectory=baft-tunnel/$INSTANCE' --property=RuntimeDirectoryMode=0750 --property='Environment=BAFT_TUNNEL_CONTROL_SOCKET=/run/baft-tunnel/$INSTANCE/control.sock' --property=NoNewPrivileges=yes --property=PrivateTmp=yes --property=PrivateDevices=yes --property=ProtectSystem=strict --property=ProtectHome=yes --property=ProtectKernelTunables=yes --property=ProtectKernelModules=yes --property=ProtectKernelLogs=yes --property=ProtectControlGroups=yes --property=ProtectClock=yes --property=ProtectHostname=yes --property=RestrictSUIDSGID=yes --property=RestrictNamespaces=yes --property=RestrictRealtime=yes --property=LockPersonality=yes --property=MemoryDenyWriteExecute=yes --property='SystemCallFilter=@system-service' --property=SystemCallArchitectures=native --property=CapabilityBoundingSet= --property=AmbientCapabilities= --property=RuntimeMaxSec=600 --property=TimeoutStopSec=10 --property=MemoryMax=512M --property=TasksMax=256 --property=LimitNOFILE=4096 --property=ProtectProc=invisible --property=ProcSubset=pid --property='InaccessiblePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-agent -/run/baft-tunnel/control' --property=IPAddressDeny=any --property="IPAddressAllow=127.0.0.0/8 ::1/128 $ABROAD_CIDR" --property='RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX' -- '$REMOTE_BIN' apply --config '$(side_dir iran)/$INSTANCE.json' --confirm"
 
 wait_listener() {
@@ -364,6 +368,7 @@ for side in iran abroad; do
   api_port="$(api_port_for "$side")"
   ssh_host "$side" "runuser -u baft-tunnel-agent -- '$REMOTE_BIN' agent-token --out '$(agent_state_dir "$side")/token'"
   agent_unit="$(agent_unit_for "$side")"
+  echo "B2_LAB_START_AGENT host=$side unit=$agent_unit"
   ssh_host "$side" "systemd-run --quiet --unit='$agent_unit' --property=User=baft-tunnel-agent --property=Group=baft-tunnel-agent --property=UMask=0077 --property=SupplementaryGroups=baft-tunnel --property=NoNewPrivileges=yes --property=PrivateTmp=yes --property=PrivateDevices=yes --property=ProtectSystem=strict --property=ProtectHome=yes --property=ProtectKernelTunables=yes --property=ProtectKernelModules=yes --property=ProtectKernelLogs=yes --property=ProtectControlGroups=yes --property=ProtectClock=yes --property=ProtectHostname=yes --property=RestrictSUIDSGID=yes --property=RestrictNamespaces=yes --property=RestrictRealtime=yes --property=LockPersonality=yes --property=MemoryDenyWriteExecute=yes --property='SystemCallFilter=@system-service' --property=SystemCallArchitectures=native --property=CapabilityBoundingSet= --property=AmbientCapabilities= --property=RuntimeMaxSec=600 --property=TimeoutStopSec=10 --property=MemoryMax=256M --property=TasksMax=64 --property=LimitNOFILE=1024 --property='InaccessiblePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-agent -/run/baft-tunnel/control' --property='ReadWritePaths=$(agent_state_dir "$side")' --property=IPAddressDeny=any --property='IPAddressAllow=127.0.0.0/8 ::1/128' --property='RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX' -- '$REMOTE_BIN' agent --config '$(side_dir "$side")/$INSTANCE.json' --token-file '$(agent_state_dir "$side")/token' --state-dir '$(agent_state_dir "$side")' --instance '$INSTANCE' --listen '127.0.0.1:$api_port'"
 done
 for side in iran abroad; do
