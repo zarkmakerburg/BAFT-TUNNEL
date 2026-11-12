@@ -1,0 +1,34 @@
+name: codspeed
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  # Lets CodSpeed trigger backtest runs to build initial performance data.
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write # OpenID Connect authentication with CodSpeed
+jobs:
+  benchmarks:
+    name: Run benchmarks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Install pinned cargo-codspeed
+        # cargo-codspeed is a build tool; it is compiled with stable while the benchmarks use 1.88.0.
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo +stable install cargo-codspeed --version 6.0.0 --locked
+      - name: Build the benchmark target
+        run: cargo +1.88.0 codspeed build -m simulation
+      - name: Run the benchmarks
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # CodSpeedHQ/action v5.6.3
+        with:
+          mode: simulation
+          run: cargo +1.88.0 codspeed run
