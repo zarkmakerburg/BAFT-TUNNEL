@@ -4,6 +4,7 @@
 //! small stack buffer; no peer-controlled length is used for allocation.
 
 use std::{
+    future::Future,
     sync::{
         Arc, Mutex as StdMutex,
         atomic::{AtomicU64, Ordering},
@@ -156,8 +157,39 @@ impl ProbeLimiter {
     }
 }
 
+/// Run stream opening, authorization and the transfer under one end-to-end deadline.
+pub async fn run_on_session<S, F, Fut>(open_and_authorize: F) -> Result<ProbeResult>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<S>>,
+{
+    run_on_session_with_deadline(PROBE_DEADLINE, open_and_authorize).await
+}
+
+async fn run_on_session_with_deadline<S, F, Fut>(
+    deadline: Duration,
+    open_and_authorize: F,
+) -> Result<ProbeResult>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<S>>,
+{
+    timeout(deadline, async {
+        let started = Instant::now();
+        let mut stream = open_and_authorize().await?;
+        let mut result = run_initiator_inner(&mut stream).await?;
+        result.duration_ms = started.elapsed().as_millis();
+        Ok(result)
+    })
+    .await
+    .context("integrity probe exceeded its 10-second end-to-end deadline")?
+}
+
 /// Initiate one fresh 64 KiB challenge and verify the authenticated peer's response.
-pub async fn run_initiator<S>(stream: &mut S) -> Result<ProbeResult>
+#[cfg(test)]
+async fn run_initiator<S>(stream: &mut S) -> Result<ProbeResult>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -302,6 +334,18 @@ mod tests {
         task.await.unwrap().unwrap();
         assert_eq!(result.bytes, PROBE_BYTES);
         assert!(result.duration_ms <= 10_000);
+    }
+
+    #[tokio::test]
+    async fn session_deadline_includes_stream_open_and_authorization() {
+        let result = run_on_session_with_deadline(Duration::from_millis(10), || async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let (stream, _peer) = duplex(16);
+            Ok(stream)
+        })
+        .await;
+        assert!(result.is_err());
+        assert!(format!("{:#}", result.unwrap_err()).contains("end-to-end deadline"));
     }
 
     #[tokio::test]
