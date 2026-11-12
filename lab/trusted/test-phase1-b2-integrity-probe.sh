@@ -40,21 +40,36 @@ fi
 if grep -Eqi 'iptables|nft |ufw |firewall-cmd|sysctl -w|useradd|groupadd|apt-get|dnf install' "$harness"; then
   echo 'B2 harness contains host policy/account/package mutations' >&2; exit 1
 fi
-grep -F -- '--protocol-version 2' "$harness" >/dev/null
+grep -F 'PROTOCOL_V2_CONFIG_READY' "$harness" >/dev/null
+grep -F 'protocol_version' "$harness" >/dev/null
+grep -F 'config validate --config' "$harness" >/dev/null
+grep -F 'local side="$1" config plan' "$harness" >/dev/null
+grep -F 'set_protocol_v2 iran' "$harness" >/dev/null
+grep -F 'set_protocol_v2 abroad' "$harness" >/dev/null
+grep -F 'config plan --config' "$harness" >/dev/null
+grep -F 'setup_config_override=1' "$harness" >/dev/null
+if grep -F -- '--protocol-version' "$harness" >/dev/null; then
+  echo 'current PR #177 setup CLI does not accept --protocol-version' >&2; exit 1
+fi
 grep -F '^[0-9a-f]{8}(-[0-9a-f]{8}){3}$' "$harness" >/dev/null
-test "$(grep -c '^verify_pass ' "$harness")" = 2
+test "$(grep -c '^verify_probe ' "$harness")" = 2
 grep -F 'CONTROL_SOCKET_READY' "$harness" >/dev/null
 grep -F 'id -u baft-tunnel-agent' "$harness" >/dev/null
 grep -F 'id -gn baft-tunnel-agent' "$harness" >/dev/null
 grep -F 'PROBE_COOLDOWN_PASS' "$harness" >/dev/null
-grep -F 'IDEMPOTENCY_REPLAY_PERSISTED_PASS' "$harness" >/dev/null
-grep -F 'AUDIT_REPLAY_SINGLE_EVENT_PASS' "$harness" >/dev/null
+grep -F 'LAST_PROBE_PERSISTED_AFTER_AGENT_RESTART_PASS' "$harness" >/dev/null
+grep -F 'LAST_PROBE_COOLDOWN_PERSISTED_PASS' "$harness" >/dev/null
+grep -F 'INTEGRITY_AUDIT_EVENTS_PASS' "$harness" >/dev/null
+grep -F 'integrity.get("result") == "unknown"' "$harness" >/dev/null
 grep -F 'systemctl restart' "$harness" >/dev/null
 if grep -E "systemd-run --quiet --collect --unit=.*agent_unit" "$harness" >/dev/null; then
-  echo 'Agent transient unit must remain restartable for the persisted-idempotency check' >&2; exit 1
+  echo 'Agent transient unit must remain restartable for the last-probe persistence check' >&2; exit 1
 fi
 
-grep -F 'request_sha256' "$harness" >/dev/null
+grep -F 'POST /v1/verify ""' "$harness" >/dev/null
+if grep -E 'idempotency_key|replayed|IDEMPOTENCY' "$harness" >/dev/null; then
+  echo 'current PR #177 verify API has no idempotency request body' >&2; exit 1
+fi
 grep -F 'INTEGRITY_PROBE_DID_NOT_TOUCH_TCP_TARGET=PASS' "$harness" >/dev/null
 grep -F 'DATA_PATH_OK' "$harness" >/dev/null
 grep -F 'wait_listener abroad "$ECHO_PORT"' "$harness" >/dev/null
@@ -79,4 +94,4 @@ if awk '/^  build-candidate:/{inside=1} /^  two-host-b2-lab:/{inside=0} inside &
   echo 'B2 candidate build job has access to LAB secrets' >&2; exit 1
 fi
 test "$(grep -c 'secrets\.' "$workflow")" = 4
-echo 'Trusted B2 LAB workflow boundary tests: PASS (static checks only; no hosts contacted)'
+echo 'Trusted B2 LAB workflow boundary tests: PASS (current PR #177 API contract; static checks only; no hosts contacted)'
