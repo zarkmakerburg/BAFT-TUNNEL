@@ -32,6 +32,8 @@
 ۶. **U8:** تکمیل و ادغام شد؛ [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165)، Commit ادغام `52a2825`؛ تمام CIها PASS.
 ۷. **B1 — پذیرفته و Merge شد:** شواهد ساختاریافتهٔ Preflight/Diagnostics، ترجمهٔ فارسی/انگلیسی و تست‌های عدم تکرار کلیدها در [PR #168](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/168) ادغام شدند؛ Merge commit: `311b706a836ca5aa6a4629c16cb845427e699392`. چهار گروه CI روی Head نهایی `62d7ee6` موفق شدند.
 ۸. **B2–B6:** پس از U8 و B1، طبق Roadmap و گیت‌های هر قابلیت؛ بدون افزودن پروتکل یا Fleet قبل از تکمیل این گیت‌ها.
+۹. **Design System ناوگان:** [PR #172](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/172) در `0e66077` ادغام شد؛ فقط سند طراحی Modern Minimal/RTL است و پیاده‌سازی Fleet را مجاز نمی‌کند.
+۱۰. **CodSpeed:** [PR #167](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/167) در `7bf0b9a` ادغام شد؛ یک Suite واحد با ۱۶ سناریوی اندازه‌گیری‌شده؛ نتایج Simulation، تضمین Performance تولید نیستند.
 
 **موارد باز:** منشأ Drift شش‌خطی Address Set روی میزبان خارج در U7 (S10؛ هیچ قانون BAFT-TUNNEL وجود نداشت)، آزمون پنل روی گوشی واقعی، B2–B6 و گیت‌های انتشار. بازبینی امنیتی مستقل فعلاً به درخواست مالک متوقف است. Soak بیش از یک ساعت برنامه‌ریزی نمی‌شود. (بررسی حقوقی AGPL موتور BAFT حذف شد: BAFT متعلق به مالک است و استفاده از آن به‌صورت باینری جدا طبق ADR-0019 مجاز است؛ تأیید مالک 2026-11-09.)
 
