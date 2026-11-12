@@ -8,7 +8,10 @@
 #     control_unavailable while the unit is stopped, one pass of exactly 65536 bytes,
 #     idempotent replay of the same key (no second probe), rate_limited on a new key inside 60 s,
 #     a v1/v2 mismatch that must not relay and must not be reported as pass,
-#     and a direct connect to the control socket as root and as the tunnel user, which must be refused.
+#     a direct connect to the control socket as root and as the tunnel user, which must be refused,
+#     and a tampered responder built from the same commit by the test harness (never a production
+#     switch): a corrupted digest must report fail, a truncated response must report unknown, and
+#     neither may ever be reported as pass; the clean binary then passes again.
 #   Finally status/diagnostics/audit must agree with the probe, the data plane must still carry
 #   traffic afterwards, and a full uninstall must leave the hosts as they were found.
 # Only resources this stage creates are removed; listeners, units and firewall rules are compared.
@@ -22,6 +25,11 @@ stop_role iran serve; stop_role abroad serve; stop_role iran forward; stop_role 
 B2_MSVC=18095; B2_MTP=18331; B2_AGP=18097; B2_PEER_TIMEOUT=120
 B2_WAIT="${B2_COOLDOWN_WAIT:-61}"
 [[ "$B2_WAIT" =~ ^[0-9]+$ ]] && (( B2_WAIT >= 60 && B2_WAIT <= 300 )) || { echo "B2_COOLDOWN_WAIT must be 60-300 seconds" >&2; exit 2; }
+B2_TAMPER="${B2_TAMPER:-corrupt}"
+case "$B2_TAMPER" in
+  none|corrupt|truncate|both) ;;
+  *) echo "B2_TAMPER must be none, corrupt, truncate or both" >&2; exit 2 ;;
+esac
 EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGS=/var/lib/baft-tunnel-agent; PKG="$REMOTE_DIR/pkg"
 B2_SRV=b2srv; B2_CLI=b2cli; B2_TID=b2acc
 B2_SHA="$(sha256sum "$MVP_BINARY_PATH" | awk '{print $1}')"
@@ -145,6 +153,40 @@ b2_wait_carry() { # seconds: the forward node relays a 64 KiB round trip again
   return 1
 }
 b2_socket_stat() { ssh_host "$1" "stat -c '%U %G %a %F' /run/baft-tunnel/$(b2_inst "$1")/control.sock"; }
+b2_build_tampered() { # mode -> prints the path of a release binary built from this commit with one patched line
+  local mode="$1" src="$LOCAL_TMP/b2-tamper-src-$mode" bin="$LOCAL_TMP/b2-tamper-target/release/baft-tunnel"
+  command -v cargo >/dev/null 2>&1 || { echo "B2_TAMPER=$mode needs cargo on the runner to build the corrupted responder" >&2; exit 2; }
+  rm -rf "$src"; mkdir -p "$src"
+  # Work on a throwaway copy: the checkout under test is never modified, so no tamper switch reaches the product.
+  tar -cf - --exclude=./target --exclude=./.git . | tar -xf - -C "$src"
+  [[ -f "$src/src/integrity_probe.rs" ]] ||
+    { echo "this checkout has no src/integrity_probe.rs: run the B2 stage from a SHA that contains B2" >&2; exit 2; }
+  python3 - "$src/src/integrity_probe.rs" "$mode" <<'PY'
+import sys
+text = open(sys.argv[1], encoding='utf-8').read()
+if sys.argv[2] == 'corrupt':
+    old = '    let digest = hasher.finalize();\n'
+    new = '    let mut digest = hasher.finalize().to_vec();\n    digest[0] ^= 0x01;\n'
+elif sys.argv[2] == 'truncate':
+    old = '    stream.write_all(&digest).await?;\n'
+    new = '    stream.write_all(&digest[..16]).await?;\n'
+else:
+    raise SystemExit('unknown tamper mode')
+assert text.count(old) == 1, ('the tamper anchor is no longer unique', text.count(old))
+open(sys.argv[1], 'w', encoding='utf-8').write(text.replace(old, new))
+PY
+  grep -Fq "digest[0] ^= 0x01;" "$src/src/integrity_probe.rs" || grep -Fq "&digest[..16]" "$src/src/integrity_probe.rs" ||
+    { echo "the $mode patch was not applied" >&2; exit 1; }
+  ( cd "$src" && CARGO_TARGET_DIR="$LOCAL_TMP/b2-tamper-target" cargo +1.88.0 build --locked --release --bin baft-tunnel >/dev/null 2>&1 ||
+      CARGO_TARGET_DIR="$LOCAL_TMP/b2-tamper-target" cargo build --locked --release --bin baft-tunnel >/dev/null ) ||
+    { echo "building the $mode tampered responder failed" >&2; exit 1; }
+  [[ -x "$bin" ]] || { echo "the $mode tampered build produced no binary" >&2; exit 1; }
+  [[ "$(sha256sum "$bin" | cut -d' ' -f1)" != "$B2_SHA" ]] || { echo "the $mode tampered binary is identical to the clean build" >&2; exit 1; }
+  echo "$bin"
+}
+b2_audit_result() { # side receipt-id -> recorded result of that integrity_probe, if any
+  b2_api "$1" GET /v1/audit | python3 -c 'import json,sys; a=[e for e in json.load(sys.stdin)["entries"] if e.get("action")=="integrity_probe" and e.get("receipt_id")==sys.argv[1]]; print(a[0]["result"] if len(a)==1 else "")' "$2"
+}
 b2_audit_count() { # side action receipt-id -> number of matching audit records
   b2_api "$1" GET /v1/audit | python3 -c 'import json,sys; a=json.load(sys.stdin)["entries"]; print(sum(1 for e in a if e.get("action")==sys.argv[1] and e.get("receipt_id")==sys.argv[2]))' "$2" "$3"
 }
@@ -307,6 +349,65 @@ PY"; then echo "the control socket answered a $user peer (the agent is supposed 
 done
 echo "B2_PEER_UID root_refused=1 tunnel_user_refused=1"
 
+if [[ "$B2_TAMPER" != none ]]; then
+  echo "--- tampered responder built by the harness (B2_TAMPER=$B2_TAMPER): the probe must never pass ---"
+  B2_MODES=()
+  [[ "$B2_TAMPER" == corrupt || "$B2_TAMPER" == both ]] && B2_MODES+=(corrupt)
+  [[ "$B2_TAMPER" == truncate || "$B2_TAMPER" == both ]] && B2_MODES+=(truncate)
+  for mode in "${B2_MODES[@]}"; do
+    tampered="$(b2_build_tampered "$mode")"
+    tampered_sha="$(sha256sum "$tampered" | awk '{print $1}')"
+    cp "$tampered" "$LOCAL_TMP/b2-serve-$mode"
+    copy_to_host abroad "$LOCAL_TMP/b2-serve-$mode"
+    ssh_host abroad "set -e; [ -f '$REMOTE_DIR/b2-clean-serve' ] || cp -f '$REMOTE_DIR/baft-tunnel' '$REMOTE_DIR/b2-clean-serve';
+      install -m 0755 '$REMOTE_DIR/b2-serve-$mode' $UB;
+      [ \"\$(sha256sum $UB | cut -d' ' -f1)\" = '$tampered_sha' ]" ||
+      { echo "could not install the $mode tampered responder on abroad" >&2; exit 1; }
+    b2_lifecycle abroad restart "b2-tamper-$mode-restart" >/dev/null
+    b2_wait_carry "$B2_PEER_TIMEOUT" >/dev/null || { echo "the $mode tampered serve node never accepted a session" >&2; exit 1; }
+    sleep "$B2_WAIT"
+    b2_verify iran "b2-tamper-$mode" > "$LOCAL_TMP/b2-tamper-$mode.json"
+    python3 - "$LOCAL_TMP/b2-tamper-$mode.json" "$mode" <<'PY'
+import json, sys
+d, mode = json.load(open(sys.argv[1])), sys.argv[2]
+assert d["result"] != "pass", (mode, d)
+if mode == "corrupt":
+    assert d["result"] == "fail" and d.get("reason") == "integrity_mismatch", (mode, d)
+else:
+    assert d["result"] == "unknown" and d.get("reason"), (mode, d)
+assert d["sha256_match"] is False, d
+PY
+    b2_api iran GET /v1/status > "$LOCAL_TMP/b2-status-tamper-$mode.json"
+    python3 - "$LOCAL_TMP/b2-status-tamper-$mode.json" "$mode" <<'PY'
+import json, sys
+t = json.load(open(sys.argv[1]))["tunnel"]
+assert t["tiers"]["integrity"]["result"] != "pass", (sys.argv[2], t["tiers"]["integrity"])
+PY
+    [[ "$(b2_audit_result iran "b2-tamper-$mode")" != "" ]] ||
+      { echo "the $mode tamper probe left no audit record" >&2; exit 1; }
+    ssh_host abroad "set -e; install -m 0755 '$REMOTE_DIR/b2-clean-serve' $UB;
+      [ \"\$(sha256sum $UB | cut -d' ' -f1)\" = '$B2_SHA' ]" ||
+      { echo "could not restore the clean binary on abroad after the $mode run" >&2; exit 1; }
+    b2_lifecycle abroad restart "b2-restore-$mode" >/dev/null
+    b2_wait_carry "$B2_PEER_TIMEOUT" >/dev/null || { echo "the clean serve node did not carry traffic again after $mode" >&2; exit 1; }
+    echo "B2_TAMPER_MODE mode=$mode result=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["result"])' "$LOCAL_TMP/b2-tamper-$mode.json") never_pass=1 clean_binary_restored=1"
+  done
+  sleep "$B2_WAIT"
+  b2_verify iran "b2-recovered" > "$LOCAL_TMP/b2-recovered.json"
+  python3 - "$LOCAL_TMP/b2-recovered.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["result"] == "pass" and d["bytes"] == 65536 and d["sha256_match"] is True, d
+PY
+  b2_api iran GET /v1/status > "$LOCAL_TMP/b2-status-recovered.json"
+  python3 - "$LOCAL_TMP/b2-status-recovered.json" <<'PY'
+import json, sys
+t = json.load(open(sys.argv[1]))["tunnel"]
+assert t["tiers"]["integrity"]["result"] == "pass", t["tiers"]["integrity"]
+PY
+  echo "B2_TAMPER modes=${B2_MODES[*]} never_pass=1 recovered_pass=1"
+fi
+
 echo "--- uninstall and host-drift comparison ---"
 for side in iran abroad; do
   inst="$(b2_inst "$side")"
@@ -321,4 +422,4 @@ for side in iran abroad; do
     { echo "$side changed outside this stage (firewall, listeners or unit files)" >&2; exit 1; }
 done
 
-echo "B2_RESULT protocol_v2_both=1 control_socket_env=1 socket_mode=660 probe_pass=1 probe_bytes=65536 status_tier=pass diagnostics_tier=pass audit=1 idempotent_replay=1 rate_limited=1 control_unavailable=1 v1_peer_refused=1 peer_uid_refused=1 data_plane_after_probe=1 cleanup_clean=1"
+echo "B2_RESULT protocol_v2_both=1 control_socket_env=1 socket_mode=660 probe_pass=1 probe_bytes=65536 status_tier=pass diagnostics_tier=pass audit=1 idempotent_replay=1 rate_limited=1 control_unavailable=1 v1_peer_refused=1 peer_uid_refused=1 tamper_mode=$B2_TAMPER tamper_never_pass=1 tamper_recovered=1 data_plane_after_probe=1 cleanup_clean=1"

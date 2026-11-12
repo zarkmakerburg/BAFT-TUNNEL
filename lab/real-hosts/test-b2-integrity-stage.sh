@@ -36,7 +36,33 @@ for marker in 'result"] == "pass"' 'd["bytes"] == 65536' 'control_unavailable' '
   need "$marker"
 done
 need "c['protocol_version'] = 1"
+need 'the clean binary on abroad after the $mode run'
 need 'B2_RESULT protocol_v2_both=1'
+
+# Tamper injection comes from the harness only: a throwaway copy of the checkout is patched and
+# built, the product tree is untouched, and no production switch is added.
+need 'B2_TAMPER="${B2_TAMPER:-corrupt}"'
+need 'B2_TAMPER must be none, corrupt, truncate or both'
+need 'b2_build_tampered()'
+need 'tar -cf - --exclude=./target --exclude=./.git . | tar -xf - -C "$src"'
+need 'the checkout under test is never modified, so no tamper switch reaches the product'
+need 'let digest = hasher.finalize();'
+need 'stream.write_all(&digest).await?;'
+need 'digest[0] ^= 0x01;'
+need '&digest[..16]'
+need 'the tamper anchor is no longer unique'
+need 'the $mode tampered binary is identical to the clean build'
+need 'run the B2 stage from a SHA that contains B2'
+if grep -Eq '(^|[^_a-z])src/integrity_probe.rs' "$STAGE" && ! grep -Fq '"$src/src/integrity_probe.rs"' "$STAGE"; then
+  echo 'the stage patches the checkout instead of its throwaway copy' >&2; exit 1
+fi
+need 'd["result"] == "fail" and d.get("reason") == "integrity_mismatch"'
+need 'd["result"] == "unknown" and d.get("reason")'
+need 'd["result"] != "pass"'
+need 'never_pass=1'
+need 'clean_binary_restored=1'
+need 'tamper_never_pass=1 tamper_recovered=1'
+need 'b2_audit_result()'
 
 # The probe is a local control-plane action: the stage must not talk to the network or print the token.
 if grep -Eq '(^|[^a-z])curl ' "$STAGE"; then echo 'stage must not use curl' >&2; exit 1; fi
