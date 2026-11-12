@@ -158,6 +158,7 @@ fn validate_response(response: &ProbeControlResponse) -> Result<()> {
                 || response.bytes != 0
                 || response.sha256_match
                 || response.duration_ms.is_some()
+                || response.timestamp == 0
             {
                 bail!("control socket returned an invalid non-pass receipt");
             }
@@ -775,6 +776,15 @@ mod tests {
         let mut over_deadline = valid;
         over_deadline.duration_ms = Some(10_001);
         assert!(validate_response(&over_deadline).is_err());
+
+        let failure = ProbeControlResponse::from_result(Err(anyhow::anyhow!("SHA-256 mismatch")));
+        assert_eq!(failure.result, "fail");
+        assert_eq!(failure.reason.as_deref(), Some("integrity_mismatch"));
+        validate_response(&failure).unwrap();
+
+        let mut invalid_failure = failure;
+        invalid_failure.reason = Some("probe_failed".into());
+        assert!(validate_response(&invalid_failure).is_err());
     }
 
     #[test]
