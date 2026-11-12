@@ -99,11 +99,17 @@ for line in hash_lines:
     assert line.count('$(sha256sum') == 1, line
     assert line.count(r'\$(sha256sum') == 1, line
 PYOPS
-# B2 accepts only exact open PR #177 head, then uses trusted main orchestration.
+# B2 accepts only the exact code SHA of merged PR #177, verifies its merge is on current main,
+# and gates on branch-protection-required exact-SHA checks (not advisory CodSpeed).
 b2="$root/.github/workflows/phase1-trusted-b2-lab.yml"
 grep -F 'github.ref == ' "$b2" >/dev/null
 grep -F 'gh api "repos/$REPOSITORY/pulls/177"' "$b2" >/dev/null
+grep -F '.state == "closed"' "$b2" >/dev/null
+grep -F '.merged == true' "$b2" >/dev/null
 grep -F '.head.sha == $sha' "$b2" >/dev/null
+grep -F 'required_checks=(rust ubuntu-2204-baseline lab-config)' "$b2" >/dev/null
+grep -F 'git merge-base --is-ancestor "$REQUESTED_SHA" "$merge_sha"' "$b2" >/dev/null
+grep -F 'git merge-base --is-ancestor "$merge_sha" "$GITHUB_SHA"' "$b2" >/dev/null
 grep -F 'environment: baft-tunnel-lab' "$b2" >/dev/null
 grep -F 'github.sha' "$b2" >/dev/null
 grep -F 'run: bash lab/trusted/phase1-b2-integrity-probe.sh' "$b2" >/dev/null

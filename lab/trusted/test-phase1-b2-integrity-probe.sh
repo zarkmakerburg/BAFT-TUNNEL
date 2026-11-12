@@ -83,8 +83,12 @@ grep -F "rm -rf '\$REMOTE_BASE'" "$harness" >/dev/null
 grep -F 'github.ref == ' "$workflow" >/dev/null
 grep -F 'gh api "repos/$REPOSITORY/pulls/177"' "$workflow" >/dev/null
 grep -F 'commits/$REQUESTED_SHA/check-runs' "$workflow" >/dev/null
-grep -F 'all(.check_runs[]; .status == "completed" and .conclusion == "success")' "$workflow" >/dev/null
+grep -F 'required_checks=(rust ubuntu-2204-baseline lab-config)' "$workflow" >/dev/null
+grep -F '.state == "closed"' "$workflow" >/dev/null
+grep -F '.merged == true' "$workflow" >/dev/null
 grep -F '.head.sha == $sha' "$workflow" >/dev/null
+grep -F 'git merge-base --is-ancestor "$REQUESTED_SHA" "$merge_sha"' "$workflow" >/dev/null
+grep -F 'git merge-base --is-ancestor "$merge_sha" "$GITHUB_SHA"' "$workflow" >/dev/null
 grep -F 'environment: baft-tunnel-lab' "$workflow" >/dev/null
 grep -F 'checks: read' "$workflow" >/dev/null
 grep -F 'needs.validate-candidate.outputs.candidate_sha' "$workflow" >/dev/null
