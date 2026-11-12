@@ -46,16 +46,10 @@ fi
 if grep -Eqi 'iptables|nft |ufw |firewall-cmd|sysctl -w|useradd|groupadd|apt-get|dnf install' "$harness"; then
   echo 'B2 harness contains host policy/account/package mutations' >&2; exit 1
 fi
-grep -F 'PROTOCOL_V2_CONFIG_READY' "$harness" >/dev/null
-grep -F 'protocol_version' "$harness" >/dev/null
-grep -F 'config validate --config' "$harness" >/dev/null
-grep -F 'local side="$1" config plan' "$harness" >/dev/null
-grep -F 'set_protocol_v2 iran' "$harness" >/dev/null
-grep -F 'set_protocol_v2 abroad' "$harness" >/dev/null
-grep -F 'config plan --config' "$harness" >/dev/null
-grep -F 'setup_config_override=1' "$harness" >/dev/null
-if grep -F -- '--protocol-version' "$harness" >/dev/null; then
-  echo 'current PR #177 setup CLI does not accept --protocol-version' >&2; exit 1
+test "$(grep -c -- '--protocol-version 2' "$harness")" = 2
+grep -F 'setup_v2_selection=1' "$harness" >/dev/null
+if grep -E 'set_protocol_v2|setup_config_override|PROTOCOL_V2_CONFIG_READY|config validate --config|config plan --config' "$harness" >/dev/null; then
+  echo 'B2 LAB must exercise protocol-v2 selection through normal setup, not mutate generated configs' >&2; exit 1
 fi
 grep -F '^[0-9a-f]{8}(-[0-9a-f]{8}){3}$' "$harness" >/dev/null
 test "$(grep -c '^verify_probe ' "$harness")" = 2

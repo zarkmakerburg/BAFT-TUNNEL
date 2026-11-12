@@ -292,11 +292,11 @@ for side in iran abroad; do
 done
 ssh_host abroad "install -d -o nobody -g nogroup -m 0700 '$ECHO_STATE' && install -m 0600 -o nobody -g nogroup /dev/null '$ECHO_STATE/stats.json'"
 
-# Create Noise pairing bundles as the unprivileged tunnel user; v2 is set below in test-only ephemeral configs.
-out="$(ssh_host iran "runuser -u baft-tunnel -- '$REMOTE_BIN' setup init --engine noise-tcp --role forward --direction direct --node-id iran --peer-id abroad --tunnel-id '$INSTANCE' --service-port '$LOCAL_PORT' --tunnel-port '$TUNNEL_PORT' --peer-host '$LAB_ABROAD_HOST' --dir '$(side_dir iran)' --instance '$INSTANCE'")"
+# Create both protocol-v2 Noise pairing bundles through the normal, explicit setup CLI path.
+out="$(ssh_host iran "runuser -u baft-tunnel -- '$REMOTE_BIN' setup init --engine noise-tcp --role forward --direction direct --protocol-version 2 --node-id iran --peer-id abroad --tunnel-id '$INSTANCE' --service-port '$LOCAL_PORT' --tunnel-port '$TUNNEL_PORT' --peer-host '$LAB_ABROAD_HOST' --dir '$(side_dir iran)' --instance '$INSTANCE'")"
 IRAN_CHECKSUM="$(printf '%s\n' "$out" | awk '/^Checksum / {print $NF}')"
 [[ "$IRAN_CHECKSUM" =~ ^[0-9a-f]{8}(-[0-9a-f]{8}){3}$ ]] || { echo 'could not read Iran pairing checksum' >&2; exit 1; }
-out="$(ssh_host abroad "runuser -u baft-tunnel -- '$REMOTE_BIN' setup init --engine noise-tcp --role serve --direction direct --node-id abroad --peer-id iran --tunnel-id '$INSTANCE' --service-port '$ECHO_PORT' --tunnel-port '$TUNNEL_PORT' --dir '$(side_dir abroad)' --instance '$INSTANCE'")"
+out="$(ssh_host abroad "runuser -u baft-tunnel -- '$REMOTE_BIN' setup init --engine noise-tcp --role serve --direction direct --protocol-version 2 --node-id abroad --peer-id iran --tunnel-id '$INSTANCE' --service-port '$ECHO_PORT' --tunnel-port '$TUNNEL_PORT' --dir '$(side_dir abroad)' --instance '$INSTANCE'")"
 ABROAD_CHECKSUM="$(printf '%s\n' "$out" | awk '/^Checksum / {print $NF}')"
 [[ "$ABROAD_CHECKSUM" =~ ^[0-9a-f]{8}(-[0-9a-f]{8}){3}$ ]] || { echo 'could not read Abroad pairing checksum' >&2; exit 1; }
 
@@ -306,19 +306,6 @@ copy_to_host iran "$LOCAL_TMP/abroad.bundle.json"
 copy_to_host abroad "$LOCAL_TMP/iran.bundle.json"
 ssh_host iran "install -m 0644 '$REMOTE_BASE/abroad.bundle.json' '$(side_dir iran)/peer.bundle.json' && chown baft-tunnel:baft-tunnel '$(side_dir iran)/peer.bundle.json' && runuser -u baft-tunnel -- '$REMOTE_BIN' setup join --dir '$(side_dir iran)' --bundle '$(side_dir iran)/peer.bundle.json' --checksum '$ABROAD_CHECKSUM'"
 ssh_host abroad "install -m 0644 '$REMOTE_BASE/iran.bundle.json' '$(side_dir abroad)/peer.bundle.json' && chown baft-tunnel:baft-tunnel '$(side_dir abroad)/peer.bundle.json' && runuser -u baft-tunnel -- '$REMOTE_BIN' setup join --dir '$(side_dir abroad)' --bundle '$(side_dir abroad)/peer.bundle.json' --checksum '$IRAN_CHECKSUM'"
-
-# Runtime-only test override: current setup Plan/Init and Agent Wizard do not expose protocol_version.
-# The trusted harness sets v2 only in these ephemeral configs; this does not count as setup UX acceptance.
-set_protocol_v2() {
-  local side="$1" config plan
-  config="$(side_dir "$side")/$INSTANCE.json"
-  ssh_host "$side" "python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); assert d.get(\"engine\")==\"noise-tcp\" and d.get(\"mode\") in (\"forward\",\"serve\"); d[\"protocol_version\"]=2; f=open(p,\"w\"); json.dump(d,f,indent=2); f.close(); print(\"PROTOCOL_V2_CONFIG_READY\")' '$config'"
-  ssh_host "$side" "runuser -u baft-tunnel -- '$REMOTE_BIN' config validate --config '$config'"
-  plan="$(ssh_host "$side" "runuser -u baft-tunnel -- '$REMOTE_BIN' config plan --config '$config'")"
-  printf '%s' "$plan" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("configuration",{}).get("protocol_version")==2, d; print("PROTOCOL_V2_CONFIG_READY")'
-}
-set_protocol_v2 iran
-set_protocol_v2 abroad
 
 ssh_host iran "chown root:baft-tunnel '$(side_dir iran)' && chmod 0750 '$(side_dir iran)'"
 ssh_host abroad "chown root:baft-tunnel '$(side_dir abroad)' && chmod 0750 '$(side_dir abroad)'"
@@ -521,4 +508,4 @@ for side in iran abroad; do
   ssh_host "$side" "systemctl is-active --quiet '$(tunnel_unit_for "$side")' && systemctl is-active --quiet '$(agent_unit_for "$side")'"
 done
 
-echo "TRUSTED_B2_INTEGRITY_LAB=PASS candidate_sha=$CANDIDATE_SHA protocol=v2 direction=direct probes_both_directions=1 setup_config_override=1 bytes=65536 audit=pass+rate_limited agent_restart_persistence=1 cooldown=1 tcp_target_untouched=1 dataplane_before_after=1 candidate_unprivileged=1 ssh_key_exposed_to_candidate=0"
+echo "TRUSTED_B2_INTEGRITY_LAB=PASS candidate_sha=$CANDIDATE_SHA protocol=v2 direction=direct probes_both_directions=1 setup_v2_selection=1 bytes=65536 audit=pass+rate_limited agent_restart_persistence=1 cooldown=1 tcp_target_untouched=1 dataplane_before_after=1 candidate_unprivileged=1 ssh_key_exposed_to_candidate=0"
