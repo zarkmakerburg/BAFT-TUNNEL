@@ -57,6 +57,8 @@ fi
 grep -F 'request_sha256' "$harness" >/dev/null
 grep -F 'INTEGRITY_PROBE_DID_NOT_TOUCH_TCP_TARGET=PASS' "$harness" >/dev/null
 grep -F 'DATA_PATH_OK' "$harness" >/dev/null
+grep -F 'wait_listener abroad "$ECHO_PORT"' "$harness" >/dev/null
+grep -F 'test "$(uname -m)" = x86_64' "$harness" >/dev/null
 grep -F 'RuntimeDirectory=baft-tunnel/$INSTANCE' "$harness" >/dev/null
 grep -F 'peer_id' "$harness" >/dev/null
 grep -F 'direction' "$harness" >/dev/null

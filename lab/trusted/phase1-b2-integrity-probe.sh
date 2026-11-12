@@ -160,7 +160,8 @@ for side in iran abroad; do
     command -v runuser >/dev/null
     command -v curl >/dev/null
     command -v ss >/dev/null
-    command -v python3 >/dev/null
+    test -x /usr/bin/python3
+    test "$(uname -m)" = x86_64
     command -v timeout >/dev/null
     id baft-tunnel >/dev/null
     id baft-tunnel-agent >/dev/null
@@ -323,6 +324,7 @@ wait_listener() {
   echo "listener did not become ready: side=$side port=$port" >&2
   return 1
 }
+wait_listener abroad "$ECHO_PORT"
 wait_listener abroad "$TUNNEL_PORT"
 wait_listener iran "$LOCAL_PORT"
 wait_control_socket() {
