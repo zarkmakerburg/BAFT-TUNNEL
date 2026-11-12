@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -31,6 +31,62 @@ const RESPONSE_FRAME_BYTES: u32 = (2 + NONCE_BYTES + 4 + 32) as u32;
 const PROTOCOL_VERSION: u16 = 2;
 const REQUEST_MAGIC: &[u8; 4] = b"BTP2";
 const RESPONSE_MAGIC: &[u8; 4] = b"BTR2";
+
+/// A typed probe failure. A result is classified from this kind, never from message text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProbeFailure {
+    IntegrityMismatch,
+    InvalidResponse,
+    RateLimited,
+    Busy,
+    PeerUnavailable,
+    UnsupportedProtocol,
+    Timeout,
+}
+
+impl ProbeFailure {
+    /// The stable reason code exposed on the local control socket.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::IntegrityMismatch => "integrity_mismatch",
+            Self::InvalidResponse => "invalid_probe_response",
+            Self::RateLimited => "rate_limited",
+            Self::Busy => "probe_busy",
+            Self::PeerUnavailable => "peer_unavailable",
+            Self::UnsupportedProtocol => "unsupported_protocol",
+            Self::Timeout => "timeout",
+        }
+    }
+
+    /// Only evidence that the probe itself was wrong is a `fail`; limits and transport are `unknown`.
+    pub fn result(self) -> &'static str {
+        match self {
+            Self::IntegrityMismatch | Self::InvalidResponse => "fail",
+            _ => "unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for ProbeFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::IntegrityMismatch => "integrity probe payload or digest did not match",
+            Self::InvalidResponse => "integrity probe response was malformed",
+            Self::RateLimited => "integrity probe rate limit: one start per 60 seconds",
+            Self::Busy => "integrity probe already active for this tunnel instance",
+            Self::PeerUnavailable => "integrity probe peer or authenticated session is unavailable",
+            Self::UnsupportedProtocol => "peer does not support integrity probe protocol v2",
+            Self::Timeout => "integrity probe timed out",
+        })
+    }
+}
+
+impl std::error::Error for ProbeFailure {}
+
+/// Keep a human-readable context while staying downcastable to the typed kind.
+fn failure(kind: ProbeFailure, context: &'static str) -> anyhow::Error {
+    anyhow::Error::new(kind).context(context)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProbeResult {
@@ -111,16 +167,34 @@ impl ProbeControl {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|(_, sender)| sender.clone())
-            .context("authenticated tunnel session is unavailable")?;
+            .ok_or_else(|| {
+                failure(
+                    ProbeFailure::PeerUnavailable,
+                    "authenticated tunnel session is unavailable",
+                )
+            })?;
         let (reply, response) = oneshot::channel();
         sender.try_send(ProbeRequest { reply }).map_err(|_| {
-            anyhow::anyhow!("integrity probe request is busy or session is closing")
+            failure(
+                ProbeFailure::Busy,
+                "integrity probe request is busy or session is closing",
+            )
         })?;
         timeout(PROBE_DEADLINE, response)
             .await
-            .context("integrity probe request timed out")?
-            .context("integrity probe session ended")?
-            .map_err(anyhow::Error::msg)
+            .map_err(|_| failure(ProbeFailure::Timeout, "integrity probe request timed out"))?
+            .map_err(|_| {
+                failure(
+                    ProbeFailure::PeerUnavailable,
+                    "integrity probe session ended",
+                )
+            })?
+            .map_err(|_| {
+                failure(
+                    ProbeFailure::PeerUnavailable,
+                    "integrity probe peer reported a failure",
+                )
+            })
     }
 }
 
@@ -141,16 +215,20 @@ impl Default for ProbeLimiter {
 impl ProbeLimiter {
     /// Atomically enforces one active probe and one start per cooldown window.
     pub async fn acquire(&self) -> Result<OwnedSemaphorePermit> {
-        let permit = self
-            .active
-            .clone()
-            .try_acquire_owned()
-            .context("integrity probe already active for this tunnel instance")?;
+        let permit = self.active.clone().try_acquire_owned().map_err(|_| {
+            failure(
+                ProbeFailure::Busy,
+                "integrity probe already active for this tunnel instance",
+            )
+        })?;
         let mut last = self.last_started.lock().await;
         if last.is_some_and(|at| at.elapsed() < PROBE_COOLDOWN) {
             drop(last);
             drop(permit);
-            bail!("integrity probe rate limit: one start per 60 seconds");
+            return Err(failure(
+                ProbeFailure::RateLimited,
+                "integrity probe rate limit: one start per 60 seconds",
+            ));
         }
         *last = Some(Instant::now());
         Ok(permit)
@@ -184,7 +262,12 @@ where
         Ok(result)
     })
     .await
-    .context("integrity probe exceeded its 10-second end-to-end deadline")?
+    .map_err(|_| {
+        failure(
+            ProbeFailure::Timeout,
+            "integrity probe exceeded its 10-second end-to-end deadline",
+        )
+    })?
 }
 
 /// Initiate one fresh 64 KiB challenge and verify the authenticated peer's response.
@@ -195,7 +278,12 @@ where
 {
     timeout(PROBE_DEADLINE, run_initiator_inner(stream))
         .await
-        .context("integrity probe exceeded its 10-second end-to-end deadline")?
+        .map_err(|_| {
+            failure(
+                ProbeFailure::Timeout,
+                "integrity probe exceeded its 10-second end-to-end deadline",
+            )
+        })?
 }
 
 async fn run_initiator_inner<S>(stream: &mut S) -> Result<ProbeResult>
@@ -225,12 +313,18 @@ where
         .await
         .context("read probe response magic")?;
     if &magic != RESPONSE_MAGIC {
-        bail!("malformed integrity probe response magic");
+        return Err(failure(
+            ProbeFailure::InvalidResponse,
+            "malformed integrity probe response magic",
+        ));
     }
     let mut length = [0u8; 4];
     stream.read_exact(&mut length).await?;
     if u32::from_be_bytes(length) != RESPONSE_FRAME_BYTES {
-        bail!("invalid integrity probe response frame length");
+        return Err(failure(
+            ProbeFailure::InvalidResponse,
+            "invalid integrity probe response frame length",
+        ));
     }
     let mut version = [0u8; 2];
     let mut response_nonce = [0u8; NONCE_BYTES];
@@ -241,20 +335,35 @@ where
     stream.read_exact(&mut count).await?;
     stream.read_exact(&mut digest).await?;
     if u16::from_be_bytes(version) != PROTOCOL_VERSION {
-        bail!("unsupported integrity probe response version");
+        return Err(failure(
+            ProbeFailure::UnsupportedProtocol,
+            "unsupported integrity probe response version",
+        ));
     }
     if response_nonce != nonce {
-        bail!("integrity probe response nonce mismatch (replay or wrong session)");
+        return Err(failure(
+            ProbeFailure::IntegrityMismatch,
+            "integrity probe response nonce mismatch (replay or wrong session)",
+        ));
     }
     if u32::from_be_bytes(count) as usize != PROBE_BYTES {
-        bail!("integrity probe response byte count mismatch");
+        return Err(failure(
+            ProbeFailure::IntegrityMismatch,
+            "integrity probe response byte count mismatch",
+        ));
     }
     if digest != expected_digest.as_slice() {
-        bail!("integrity probe SHA-256 mismatch");
+        return Err(failure(
+            ProbeFailure::IntegrityMismatch,
+            "integrity probe SHA-256 mismatch",
+        ));
     }
     let mut extra = [0u8; 1];
     if stream.read(&mut extra).await? != 0 {
-        bail!("integrity probe response contains trailing bytes");
+        return Err(failure(
+            ProbeFailure::InvalidResponse,
+            "integrity probe response contains trailing bytes",
+        ));
     }
     Ok(ProbeResult {
         bytes: PROBE_BYTES,
@@ -269,7 +378,12 @@ where
 {
     timeout(PROBE_DEADLINE, respond_inner(stream))
         .await
-        .context("integrity probe responder exceeded its 10-second deadline")?
+        .map_err(|_| {
+            failure(
+                ProbeFailure::Timeout,
+                "integrity probe responder exceeded its 10-second deadline",
+            )
+        })?
 }
 
 async fn respond_inner<S>(stream: &mut S) -> Result<()>
@@ -282,12 +396,18 @@ where
         .await
         .context("read probe request magic")?;
     if &magic != REQUEST_MAGIC {
-        bail!("malformed integrity probe request magic");
+        return Err(failure(
+            ProbeFailure::InvalidResponse,
+            "malformed integrity probe request magic",
+        ));
     }
     let mut length = [0u8; 4];
     stream.read_exact(&mut length).await?;
     if u32::from_be_bytes(length) != REQUEST_FRAME_BYTES {
-        bail!("invalid integrity probe request frame length");
+        return Err(failure(
+            ProbeFailure::InvalidResponse,
+            "invalid integrity probe request frame length",
+        ));
     }
     let mut nonce = [0u8; NONCE_BYTES];
     stream.read_exact(&mut nonce).await?;
@@ -302,7 +422,10 @@ where
     }
     let mut extra = [0u8; 1];
     if stream.read(&mut extra).await? != 0 {
-        bail!("integrity probe request contains trailing payload bytes");
+        return Err(failure(
+            ProbeFailure::InvalidResponse,
+            "integrity probe request contains trailing payload bytes",
+        ));
     }
     let digest = hasher.finalize();
 

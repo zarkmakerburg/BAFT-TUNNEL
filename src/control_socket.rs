@@ -14,9 +14,9 @@ use tokio::{
     time::timeout,
 };
 
-#[cfg(any(target_os = "linux", test))]
-use crate::integrity_probe::ProbeResult;
 use crate::integrity_probe::{ProbeControl, ProbeLimiter};
+#[cfg(any(target_os = "linux", test))]
+use crate::integrity_probe::{ProbeFailure, ProbeResult};
 
 const REQUEST: &[u8] = b"BAFT-PROBE-V2";
 const MAX_RESPONSE_BYTES: usize = 4096;
@@ -49,27 +49,11 @@ impl ProbeControlResponse {
                 timestamp,
             },
             Err(error) => {
-                let text = format!("{error:#}");
-                let (result, reason) = if text.contains("mismatch") {
-                    ("fail", "integrity_mismatch")
-                } else if text.contains("malformed")
-                    || text.contains("invalid integrity probe")
-                    || text.contains("trailing")
-                    || text.contains("unsupported integrity probe response")
-                {
-                    ("fail", "invalid_probe_response")
-                } else if text.contains("rate limit") {
-                    ("unknown", "rate_limited")
-                } else if text.contains("already active") || text.contains("busy") {
-                    ("unknown", "probe_busy")
-                } else if text.contains("unavailable") || text.contains("session ended") {
-                    ("unknown", "peer_unavailable")
-                } else if text.contains("protocol v2") {
-                    ("unknown", "unsupported_protocol")
-                } else if text.contains("timed out") || text.contains("deadline") {
-                    ("unknown", "timeout")
-                } else {
-                    ("unknown", "probe_failed")
+                // Classification comes from the typed cause only; message text is never parsed, so
+                // rewording a failure cannot silently turn a real mismatch into something else.
+                let (result, reason) = match failure_kind(&error) {
+                    Some(failure) => (failure.result(), failure.reason()),
+                    None => ("unknown", "probe_failed"),
                 };
                 Self {
                     result: result.into(),
@@ -209,8 +193,17 @@ impl ControlServer {
         prepare_socket_path_under(&path, runtime_root, unsafe { libc::geteuid() }, unsafe {
             libc::getegid()
         })?;
-        let listener = UnixListener::bind(&path)
-            .with_context(|| format!("bind per-instance control socket {}", path.display()))?;
+        // Bind under a restrictive umask so the socket never becomes reachable with group or other
+        // permissions before its final mode is applied: the pre-chmod state is owner-only (0700),
+        // never wider than the 0660 it ends at. umask is process-wide, so keep the window short.
+        let listener = {
+            // SAFETY: umask only reads and replaces the process mask; the previous value is restored below.
+            let previous = unsafe { libc::umask(0o077) };
+            let bound = UnixListener::bind(&path);
+            // SAFETY: restoring the exact process umask value read above.
+            unsafe { libc::umask(previous) };
+            bound.with_context(|| format!("bind per-instance control socket {}", path.display()))?
+        };
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))?;
         let metadata = std::fs::symlink_metadata(&path)?;
         if metadata.uid() != unsafe { libc::geteuid() }
@@ -311,22 +304,31 @@ async fn serve_connection(
 ) -> Result<()> {
     let uid = peer_uid(&stream)?;
     if !peer_uid_allowed(uid, expected_uid) {
-        bail!("unauthorized peer uid");
+        return Err(refusal(
+            ControlRefusal::PeerIdentity,
+            "unauthorized peer uid",
+        ));
     }
     let mut request = vec![0u8; REQUEST.len()];
     timeout(CONTROL_IO_TIMEOUT, stream.read_exact(&mut request))
         .await
-        .context("control request read timeout")??;
+        .map_err(|_| refusal(ControlRefusal::Timeout, "control request read timeout"))??;
     if request != REQUEST {
-        bail!("unsupported control operation");
+        return Err(refusal(
+            ControlRefusal::InvalidRequest,
+            "unsupported control operation",
+        ));
     }
     let mut extra = [0u8; 1];
     if timeout(CONTROL_IO_TIMEOUT, stream.read(&mut extra))
         .await
-        .context("control request close timeout")??
+        .map_err(|_| refusal(ControlRefusal::Timeout, "control request close timeout"))??
         != 0
     {
-        bail!("control request contains trailing bytes");
+        return Err(refusal(
+            ControlRefusal::InvalidRequest,
+            "control request contains trailing bytes",
+        ));
     }
     let result = match limiter.acquire().await {
         Ok(_permit) => control.request().await,
@@ -335,7 +337,10 @@ async fn serve_connection(
     let response = ProbeControlResponse::from_result(result);
     let body = serde_json::to_vec(&response)?;
     if body.is_empty() || body.len() > MAX_RESPONSE_BYTES {
-        bail!("control response exceeds fixed size limit");
+        return Err(refusal(
+            ControlRefusal::RequestFailed,
+            "control response exceeds fixed size limit",
+        ));
     }
     let length = u16::try_from(body.len())?;
     stream.write_all(&length.to_be_bytes()).await?;
@@ -363,10 +368,16 @@ fn peer_uid(stream: &tokio::net::UnixStream) -> Result<u32> {
         )
     };
     if result != 0 || length as usize != std::mem::size_of::<libc::ucred>() {
-        bail!("SO_PEERCRED is unavailable; refusing control request");
+        return Err(refusal(
+            ControlRefusal::PeerIdentity,
+            "SO_PEERCRED is unavailable; refusing control request",
+        ));
     }
     if credentials.pid <= 0 {
-        bail!("invalid control peer process identity");
+        return Err(refusal(
+            ControlRefusal::PeerIdentity,
+            "invalid control peer process identity",
+        ));
     }
     Ok(credentials.uid)
 }
@@ -520,17 +531,55 @@ fn remove_owned_socket(path: &Path) {
     }
 }
 
+/// Why the tunnel refused a control request. Typed so the logged reason never depends on text.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ControlRefusal {
+    PeerIdentity,
+    Timeout,
+    InvalidRequest,
+    RequestFailed,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl std::fmt::Display for ControlRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::PeerIdentity => "control peer identity was rejected",
+            Self::Timeout => "control exchange timed out",
+            Self::InvalidRequest => "control request was malformed or unsupported",
+            Self::RequestFailed => "control request could not be completed",
+        })
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl std::error::Error for ControlRefusal {}
+
+#[cfg(any(target_os = "linux", test))]
+fn refusal(kind: ControlRefusal, context: &'static str) -> anyhow::Error {
+    anyhow::Error::new(kind).context(context)
+}
+
+/// The typed probe failure behind an error chain, if the error is a probe failure at all.
+#[cfg(any(target_os = "linux", test))]
+fn failure_kind(error: &anyhow::Error) -> Option<ProbeFailure> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<ProbeFailure>())
+        .copied()
+}
+
 #[cfg(target_os = "linux")]
 fn safe_reason(error: &anyhow::Error) -> &'static str {
-    let text = format!("{error:#}");
-    if text.contains("uid") || text.contains("SO_PEERCRED") {
-        "peer_identity"
-    } else if text.contains("timeout") {
-        "timeout"
-    } else if text.contains("unsupported") || text.contains("invalid") {
-        "invalid_request"
-    } else {
-        "request_failed"
+    match error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<ControlRefusal>())
+    {
+        Some(ControlRefusal::PeerIdentity) => "peer_identity",
+        Some(ControlRefusal::Timeout) => "timeout",
+        Some(ControlRefusal::InvalidRequest) => "invalid_request",
+        Some(ControlRefusal::RequestFailed) | None => "request_failed",
     }
 }
 
@@ -538,21 +587,56 @@ fn safe_reason(error: &anyhow::Error) -> &'static str {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn refusal_reasons_come_from_the_typed_kind_only() {
+        assert_eq!(
+            safe_reason(&refusal(ControlRefusal::PeerIdentity, "uid rejected")),
+            "peer_identity"
+        );
+        assert_eq!(
+            safe_reason(&refusal(ControlRefusal::Timeout, "slow")),
+            "timeout"
+        );
+        assert_eq!(
+            safe_reason(&refusal(ControlRefusal::InvalidRequest, "bad")),
+            "invalid_request"
+        );
+        assert_eq!(
+            safe_reason(&refusal(ControlRefusal::RequestFailed, "internal")),
+            "request_failed"
+        );
+        assert_eq!(
+            safe_reason(&anyhow::anyhow!(
+                "uid SO_PEERCRED timeout unsupported invalid"
+            )),
+            "request_failed"
+        );
+    }
+
     #[test]
     fn probe_failures_are_distinct_from_unknown_transport_outcomes() {
-        let mismatch = ProbeControlResponse::from_result(Err(anyhow::anyhow!(
-            "integrity probe SHA-256 mismatch"
+        let mismatch = ProbeControlResponse::from_result(Err(anyhow::Error::new(
+            ProbeFailure::IntegrityMismatch,
         )));
         assert_eq!(mismatch.result, "fail");
         assert_eq!(mismatch.reason.as_deref(), Some("integrity_mismatch"));
         validate_response(&mismatch).unwrap();
 
-        let unavailable = ProbeControlResponse::from_result(Err(anyhow::anyhow!(
-            "authenticated tunnel session is unavailable"
+        let unavailable = ProbeControlResponse::from_result(Err(anyhow::Error::new(
+            ProbeFailure::PeerUnavailable,
         )));
         assert_eq!(unavailable.result, "unknown");
         assert_eq!(unavailable.reason.as_deref(), Some("peer_unavailable"));
         validate_response(&unavailable).unwrap();
+
+        // Message text is no longer a classification input: this stays unknown, not a failure.
+        let text_only = ProbeControlResponse::from_result(Err(anyhow::anyhow!(
+            "integrity probe SHA-256 mismatch"
+        )));
+        assert_eq!(text_only.result, "unknown");
+        assert_eq!(text_only.reason.as_deref(), Some("probe_failed"));
+        validate_response(&text_only).unwrap();
 
         let invalid = ProbeControlResponse {
             result: "fail".into(),
@@ -778,7 +862,9 @@ mod tests {
         over_deadline.duration_ms = Some(10_001);
         assert!(validate_response(&over_deadline).is_err());
 
-        let failure = ProbeControlResponse::from_result(Err(anyhow::anyhow!("SHA-256 mismatch")));
+        let failure = ProbeControlResponse::from_result(Err(anyhow::Error::new(
+            ProbeFailure::IntegrityMismatch,
+        )));
         assert_eq!(failure.result, "fail");
         assert_eq!(failure.reason.as_deref(), Some("integrity_mismatch"));
         validate_response(&failure).unwrap();
@@ -790,7 +876,8 @@ mod tests {
 
     #[test]
     fn response_contains_only_bounded_non_secret_metadata() {
-        let response = ProbeControlResponse::from_result(Err(anyhow::anyhow!("rate limit")));
+        let response =
+            ProbeControlResponse::from_result(Err(anyhow::Error::new(ProbeFailure::RateLimited)));
         assert_eq!(response.result, "unknown");
         assert_eq!(response.reason.as_deref(), Some("rate_limited"));
         assert_eq!(response.bytes, 0);
