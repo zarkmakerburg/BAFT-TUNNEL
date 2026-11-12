@@ -37,7 +37,7 @@ Under the accepted policy, once either endpoint restarts into a v2-only build, a
 
 ## 3. No-downgrade and capability rules
 
-Regardless of the owner-selected mixed-version policy:
+Under the accepted Option A policy:
 
 1. A v2 session must identify its selected protocol version explicitly; the selected version must be authenticated/bound to the handshake transcript.
 2. `IntegrityProbe` is a distinct capability. It must never be inferred from `TcpForward`, mapped to a generic stream, or sent through the TCP-forward destination path.
@@ -108,11 +108,11 @@ Record exact source SHA, test command, test result and logs. A written test plan
 
 ## 7. Gate interpretation
 
-This document is a proposed compatibility contract only.
+This document records the owner-accepted compatibility policy. It is a documentation decision, not implementation or test evidence.
 
 The ADR-0028 B2 implementation-start gate remains **BLOCKED** until:
 
-1. The accepted Option A decision is recorded in ADR-0028 and this matrix.
+1. The accepted Option A decision remains recorded in ADR-0028 and this matrix.
 2. The pre-implementation contract tests above are implemented and pass on an exact SHA.
 3. The independent F0 trust-boundary/security review is approved, including UDS lifecycle, safe stale-socket handling, exact `SO_PEERCRED` UID enforcement, bounded framing and fail-closed behavior.
 4. U7 and merged B1 remain accepted.
