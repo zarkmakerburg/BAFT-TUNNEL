@@ -575,7 +575,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn socket_stale_cleanup_restart_and_instance_isolation() {
-        use std::{os::unix::fs::{MetadataExt, PermissionsExt}, time::Duration};
+        use std::{
+            os::unix::fs::{MetadataExt, PermissionsExt},
+            time::Duration,
+        };
         use tokio::net::UnixListener;
 
         let root = std::env::temp_dir().join(format!(

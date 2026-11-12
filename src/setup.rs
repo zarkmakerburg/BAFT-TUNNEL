@@ -14,7 +14,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::{authorization::{ConnectionDirection, PROTOCOL_V1, PROTOCOL_V2}, config::EngineKind, handshake::validate_identity};
+use crate::{
+    authorization::{ConnectionDirection, PROTOCOL_V1, PROTOCOL_V2},
+    config::EngineKind,
+    handshake::validate_identity,
+};
 
 /// Placeholder written where pairing has not provided the peer's trust material yet.
 pub const PEER_KEY_PLACEHOLDER: &str = "SET_BY_PAIRING";
@@ -28,7 +32,6 @@ fn default_protocol_version() -> u16 {
 fn is_default_protocol_version(version: &u16) -> bool {
     *version == PROTOCOL_V1
 }
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum, Serialize, Deserialize)]
 #[value(rename_all = "kebab-case")]
@@ -299,7 +302,10 @@ pub struct Bundle {
     pub engine: String,
     pub direction: String,
     /// Omitted for v1 so legacy pairing bundle checksums remain byte-for-byte compatible.
-    #[serde(default = "default_protocol_version", skip_serializing_if = "is_default_protocol_version")]
+    #[serde(
+        default = "default_protocol_version",
+        skip_serializing_if = "is_default_protocol_version"
+    )]
     pub protocol_version: u16,
     pub role: Role,
     pub node_id: String,
@@ -444,6 +450,7 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
     let state = State {
         engine: engine.into(),
         direction: req.direction.as_str().into(),
+        protocol_version: req.protocol_version,
         role: req.role,
         node_id: req.node_id.clone(),
         peer_id: req.peer_id.clone(),
@@ -637,7 +644,9 @@ pub fn join(dir: &Path, bundle_path: &Path, checksum: &str) -> Result<PathBuf> {
         return Err(mismatch("direction"));
     }
     if bundle.protocol_version != state.protocol_version {
-        return Err(mismatch("protocol generation; both nodes must use the same version"));
+        return Err(mismatch(
+            "protocol generation; both nodes must use the same version",
+        ));
     }
     if bundle.tunnel_id != state.tunnel_id {
         return Err(mismatch("tunnel id"));
@@ -756,6 +765,21 @@ mod tests {
     }
 
     #[test]
+    fn protocol_v2_is_written_to_the_plan_for_supported_engines_and_external_baft_rejects_it() {
+        for engine in [EngineKind::NoiseTcp, EngineKind::TcpTls] {
+            let mut req = request(engine, Role::Forward);
+            req.protocol_version = PROTOCOL_V2;
+            let planned = plan(&req).unwrap();
+            assert_eq!(planned.config["protocol_version"], PROTOCOL_V2);
+            parses_as_runtime_config(&planned);
+        }
+
+        let mut external_baft = request(EngineKind::Baft, Role::Forward);
+        external_baft.protocol_version = PROTOCOL_V2;
+        assert!(plan(&external_baft).is_err());
+    }
+
+    #[test]
     fn serve_and_forward_use_one_service_port_and_a_fixed_loopback_boundary() {
         let serve = plan(&request(EngineKind::NoiseTcp, Role::Serve)).unwrap();
         assert_eq!(serve.config["listen"], "0.0.0.0:8443");
@@ -866,6 +890,33 @@ mod tests {
         assert!(join(&forward.dir, &a.bundle_path, &a.checksum).is_err());
         join(&serve.dir, &b.bundle_path, &b.checksum).unwrap();
         assert!(serve.dir.join("edge.json").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn protocol_generation_is_bound_to_pairing_bundle_and_mixed_join_is_rejected() {
+        let root = temp("protocol-generation");
+        let mut serve_v2 = side(&root, Role::Serve, "abroad", "iran", "serve-v2");
+        let mut forward_v1 = side(&root, Role::Forward, "iran", "abroad", "forward-v1");
+        serve_v2.protocol_version = PROTOCOL_V2;
+        forward_v1.protocol_version = PROTOCOL_V1;
+        let _serve = init(&serve_v2, None).unwrap();
+        let forward = init(&forward_v1, None).unwrap();
+
+        let legacy_bundle = std::fs::read_to_string(&forward.bundle_path).unwrap();
+        assert!(!legacy_bundle.contains("protocol_version"));
+        let mixed = join(&serve_v2.dir, &forward.bundle_path, &forward.checksum).unwrap_err();
+        assert!(mixed.to_string().contains("protocol generation"));
+        assert!(!serve_v2.dir.join(CONFIG_FILE).exists());
+
+        let mut forward_v2 = side(&root, Role::Forward, "iran", "abroad", "forward-v2");
+        forward_v2.protocol_version = PROTOCOL_V2;
+        let peer = init(&forward_v2, None).unwrap();
+        join(&serve_v2.dir, &peer.bundle_path, &peer.checksum).unwrap();
+        let config: Value =
+            serde_json::from_slice(&std::fs::read(serve_v2.dir.join(CONFIG_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(config["protocol_version"], PROTOCOL_V2);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -318,11 +318,11 @@
     return s;
   }
   function freshWizard(c) {
-    return { step: 0, direction: null, role: 'forward', engine: 'tcp-tls', node: c.local_identity || '', peerId: '', tunnel: '', port: '', peerHost: '', serverName: '', localServerName: '',
+    return { step: 0, direction: null, role: 'forward', engine: 'tcp-tls', protocolVersion: 1, node: c.local_identity || '', peerId: '', tunnel: '', port: '', peerHost: '', serverName: '', localServerName: '',
       tport: '8443', dir: '/etc/baft-tunnel', inst: '', pf: null, plan: null, busy: false, errors: {} };
   }
   function body(w) {
-    var b = { engine: w.engine, direction: w.direction, role: w.role, node_id: w.node.trim(), peer_id: w.peerId.trim(), tunnel_id: w.tunnel.trim(),
+    var b = { engine: w.engine, direction: w.direction, role: w.role, protocol_version: w.protocolVersion || 1, node_id: w.node.trim(), peer_id: w.peerId.trim(), tunnel_id: w.tunnel.trim(),
       service_port: Number(w.port), tunnel_port: Number(w.tport), dir: w.dir.trim() };
     if (w.inst.trim()) { b.instance = w.inst.trim(); }
     if (w.role === 'forward') { b.peer_host = w.peerHost.trim(); if (w.engine === 'tcp-tls') { b.server_name = w.serverName.trim(); } }
@@ -330,6 +330,7 @@
   }
   BAFT.register({ id: 'setup', icon: 'setup', order: 4, primary: true, needs: ['engines'], refresh: false, render: function (ctx) {
     var w = BAFT.wiz = BAFT.wiz || freshWizard(conf(ctx.data));
+    if (w.protocolVersion !== 1 && w.protocolVersion !== 2) { w.protocolVersion = 1; }
     var st0 = ctx.data.status || {};
     // Setup mode (ADR-0026): this agent pairs exactly its own instance in its own directory.
     if (st0.setup_pending && !w.prefilled) { w.inst = st0.instance || ''; w.dir = st0.config_dir || w.dir; w.prefilled = true; }
@@ -419,13 +420,18 @@
     }
     function stepMethod() {
       var ok = engines.filter(function (e) { return e.directions.indexOf(w.direction) >= 0; });
-      return h('div', null, h('h2', { text: t('meth.q') }), h('div', { class: 'choices', role: 'radiogroup', 'aria-label': t('meth.q') }, ok.map(function (e) {
+      var versionChoices = h('div', null, h('h3', { text: t('proto.title') }),
+        h('div', { class: 'choices', role: 'radiogroup', 'aria-label': t('proto.title') },
+          choice('protocol-version', '1', w.protocolVersion === 1, t('proto.v1'), t('proto.v1.note'), function () { w.protocolVersion = 1; invalidate(); draw(); }),
+          choice('protocol-version', '2', w.protocolVersion === 2, t('proto.v2'), t(w.engine === 'baft' ? 'proto.v2.unavailable' : 'proto.v2.note'), function () { w.protocolVersion = 2; invalidate(); draw(); }, null, w.engine === 'baft')),
+        h('p', { class: 'sub', text: t('proto.policy') }));
+      return h('div', null, h('h2', { text: t('meth.q') }), versionChoices, h('h3', { text: t('meth.q') }), h('div', { class: 'choices', role: 'radiogroup', 'aria-label': t('meth.q') }, ok.map(function (e) {
         var rec = e.status === 'stable' && w.direction !== 'reverse';
         var pre = e.status === 'preview' || w.direction === 'reverse';
         var lab = (((e.evidence || {}).lab_two_host) || {})[w.direction];
         var labPill = lab === 'pass' ? pill('ok', t('meth.lab.pass')) : pill('unknown', t('meth.lab.unknown'));
         return choice('engine', e.id, w.engine === e.id, [BAFT.ltr(e.id), pill(rec ? 'ok' : 'warn', rec ? t('meth.rec') + ' · ' + t('meth.stable') : pre ? t('dir.preview') : t('meth.experimental')), labPill], t('meth.' + e.id) + (e.id === 'baft' ? ' ' + t('meth.baft.limits') : '') + ((e.guided_setup || {}).available === false ? ' ' + t('meth.noguided') : '') + (w.direction === 'reverse' ? ' ' + t('meth.rev.note') : ''),
-          function (v) { w.engine = v; invalidate(); draw(); }, null, (e.guided_setup || {}).available === false);
+          function (v) { w.engine = v; if (v === 'baft') { w.protocolVersion = 1; } invalidate(); draw(); }, null, (e.guided_setup || {}).available === false);
       })));
     }
     function stepPreflight() {
@@ -457,6 +463,7 @@
         h('h3', { text: t('pv.topology') }),
         kv([[t('sum.dir'), dirLabel(w.direction)], [t('pv.thisrole'), roleLabel(serve ? 'serve' : 'forward', w.direction)],
           [t('pv.otherrole'), roleLabel(serve ? 'forward' : 'serve', w.direction)], [t('sum.engine'), BAFT.ltr(w.engine)],
+          [t('proto.title'), t('proto.v' + w.protocolVersion)],
           [t('pv.listener'), serve ? h('span', null, BAFT.ltr(cfg.listen || '—'), ' (' + t('pv.thisserver') + ')') : t('pv.otherserver')],
           [t('pv.dialer'), serve ? t('pv.otherserver') : h('span', null, BAFT.ltr(cfg.remote || '—'), ' (' + t('pv.thisserver') + ' → ' + t('pv.otherserver') + ')')],
           [t(rev && serve ? 'pv.ingress' : 'pv.service'), BAFT.ltr(rev ? (serve ? (cfg.ingress || '—') : (cfg.target || '—')) : (serve ? (cfg.target || '—') : (cfg.listen || '—')))],
