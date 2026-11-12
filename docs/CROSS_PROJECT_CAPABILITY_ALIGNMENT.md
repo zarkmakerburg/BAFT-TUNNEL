@@ -4,7 +4,8 @@
 - **Assessment date:** 2026-11-08.
 - **Repository:** `zarkmakerburg/BAFT-TUNNEL`.
 - **Code baseline:** `main` at `05a2b8078cc7afae751520209dba7fd474914bfb` (PR #86).
-- **Concurrent implementation:** PR [#88](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/88), head `969154c0b02dee5656ba91cf410a8be3da006061`; open, not merged, real-systemd LAB not run according to its current description.
+- **Current status correction (2026-11-12):** the assessment below was taken at `05a2b80`; current `main` is `32bf85f10d75efafc0d5f7a45a25d060f7f7c9b6`. B1 is merged (`311b706`, `62d7ee6`) and the B2 implementation-start prerequisites are satisfied ([ADR-0028](ADR-0028-authenticated-integrity-probe.md), the accepted Option A policy in [PROTOCOL_V2_COMPATIBILITY_MATRIX.md](PROTOCOL_V2_COMPATIBILITY_MATRIX.md) and the contract vectors in `tests/protocol_v2_contract.rs`); the B2 runtime probe is **not** implemented (the protocol is still v1) and is tracked in PR #177.
+- **Concurrent implementation (historical):** PR [#88](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/88), head `969154c0b02dee5656ba91cf410a8be3da006061`; open at the assessment baseline and **merged since**. Its real-systemd gate (P0-1) closed on 2026-11-08 in hosted run [42523536944](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42523536944) on SHA `22e94f1`, and the two-host proof followed in P0-5 ([run 42538458094](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42538458094), main `92c4e70`). U3 (PR #137) later added stop/restart and boot persistence.
 - **Authority:** this document supplements existing ADRs and acceptance policies. It does not silently amend an ADR, authorize a merge/release/deploy, or promote an experimental capability to stable.
 
 ## 1. Purpose and decision summary
@@ -21,7 +22,7 @@ Do not turn BAFT-TUNNEL into a copy of any reference product. In particular:
 - A capability visible in source code is not automatically a supported product capability.
 - The BAFT main engine is a separate pinned Go process. It must not be collapsed into the Rust `StreamEngine` abstraction or copied into the proprietary Rust tree.
 - Reverse for `tcp-tls` is **Preview**, not Stable. Reverse for `noise-tcp` is unproven and must remain unavailable.
-- PR #88's Apply `start` stage is not part of `main` at this baseline and has no real-systemd LAB evidence yet.
+- PR #88's Apply `start` stage was not part of `main` at this baseline; it has since merged and is LAB-proven (P0-1 and P0-5), and U3 added stop/restart with boot persistence. Apply still never claims `ready`, which stays Unknown by design.
 
 ## 2. Evidence and verification rules
 
@@ -39,7 +40,7 @@ Use these labels in all implementation reports and HQ entries:
 | **PLANNED / NOT VERIFIED** | Design or code exists without required execution evidence. |
 | **BLOCKED / UNAVAILABLE** | Must not be offered as an operational choice. |
 
-**Assessment limitation:** this is a source/document/PR evidence review, not a new build, formal security audit, or fresh LAB execution. PR descriptions are not treated as proof when they explicitly say a test has not run. The GitHub status lookup for PR #88 did not return a combined check result in this assessment; do not infer success or failure from an empty status response.
+**Assessment limitation:** this is a source/document/PR evidence review, not a new build, formal security audit, or fresh LAB execution. PR descriptions are not treated as proof when they explicitly say a test has not run. The GitHub status lookup for PR #88 did not return a combined check result in this assessment; do not infer success or failure from an empty status response. (Historical: PR #88 later merged and its real-systemd gate closed in run 42523536944.)
 
 ## 3. Verified state of the current product
 
@@ -92,11 +93,12 @@ The current Apply implementation on `main` (ADR-0022 / PR #86) supports only loc
 
 It does **not** start/enable a service, change/inspect firewall state, contact/authenticate the peer, or verify end-to-end application data. The UI's Apply wording must continue to say exactly what is done and not done.
 
-PR #88 proposes adding `start` through narrowly-scoped systemd path units. It is **open and unmerged** at the assessment baseline. Its stated evidence is local tests/fake controller and staged installer checks; its author explicitly says no real systemd-host test has run. Therefore:
-- Do not mark start/stop via Apply as implemented in main.
-- Do not merge or enable the UI action based only on fake-controller tests.
-- Complete security review and a real Ubuntu 22.04/systemd 249 LAB lifecycle test first.
-- Preserve PR #88's branch and work; do not duplicate, reset, force-push or overwrite it.
+PR #88 added `start` through narrowly-scoped systemd path units and was **open at the assessment baseline with local fake-controller evidence only**. Every follow-up condition it needed has since been met:
+- The real Ubuntu 22.04/systemd 249 lifecycle gate (P0-1) closed on 2026-11-08 in hosted run [42523536944](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42523536944) on SHA `22e94f1`: start/stop, scope restriction, refusal of invalid or unregistered instances, failure rollback, idempotent/stale requests, no unrelated state change and cleanup.
+- The two-host proof in P0-5 ([run 42538458094](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42538458094), main `92c4e70`, signed `v0.1.0-rc.4`) recorded `apply_start_serve/forward=applied` and `receipt_session=observed`.
+- U3 (PR #137, LAB [42692143748](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42692143748)) added Apply `stop`/`restart`, boot persistence and the agent unit.
+- Apply still never claims data integrity or `ready`; Verify/LAB measures those and `ready` stays Unknown by design.
+- PR #88's history is preserved: do not rewrite it or re-implement the same change elsewhere.
 
 ### 3.4 Preflight and truthful status
 
@@ -138,8 +140,8 @@ Current limitations:
 - Tunnel view does not verify the authenticated peer/data path and does not provide full remote lifecycle actions.
 - Traffic counters / throughput are not exposed by the API; do not invent chart values.
 - No firewall inspection or firewall mutation.
-- Audit v2 records actor, target and resource semantics (PR #109); structured evidence localization is tracked separately in B1.
-- Structured Preflight/Diagnostics evidence codes + typed params and fa/en localization are implemented in B1; original implementation CI passed at `cc37f48`. U8 is merged in PR #165. The synchronized code-bearing head `ec730c3559a0d81a180c9051183fc0ff3dfe4052` in PR #168 passed all four exact-head workflow groups, including Rust, Ubuntu 22.04/systemd 249, panel-ui, offline CA, phase0, fuzz-smoke and same-SHA package/signature. A final static review found duplicate `diag.next.*` keys shadowing explanatory translations; the latest PR revision removes them and adds a duplicate-key regression assertion. Exact-head CI must pass again before merge.
+- Audit v2 records actor, target and resource semantics (PR #109); structured evidence localization is delivered in B1 and merged into `main`.
+- Structured Preflight/Diagnostics evidence codes + typed params and fa/en localization are implemented in B1 and **merged into `main`** (`311b706`; the duplicate `diag.next.*` keys that shadowed explanatory translations were removed with a regression assertion in `62d7ee6`). Original implementation CI passed at `cc37f48`; U8 is merged in PR #165. The synchronized head `ec730c3` in PR #168 passed all four exact-head workflow groups (Rust, Ubuntu 22.04/systemd 249, panel-ui, offline CA, phase0, fuzz-smoke and same-SHA package/signature); that run remains historical evidence, not a current-head claim.
 - Physical-phone UX and formal accessibility audits are not recorded as complete.
 
 A separate BCC-style Connection Test is **not yet equivalent to an authenticated end-to-end diagnostic**. The current Preflight TCP probe must not be relabelled as a successful tunnel/data-path test. “Add from Link” is also not verified as an existing BAFT-TUNNEL workflow; treat it as a later feature request requiring an explicit safe link schema and validation.
@@ -203,7 +205,7 @@ Do not expose buttons for “Deploy best”, Direct/Reverse selection, firewall 
 | Local setup CLI | Implemented; setup plan/init/join and prior two-host setup evidence | Make the signed-release path the actual operator acceptance path |
 | Local Agent/API | Implemented | Extend only with evidence-backed lifecycle and session telemetry |
 | Apply init/join | Implemented on main | Preserve receipts, idempotency and rollback boundary |
-| Apply start/stop | PR #88 only | Real-systemd security/LAB gate before merge and UI exposure |
+| Apply start/stop | Implemented and LAB-proven (P0-1/P0-5; stop/restart and boot persistence via U3, PR #137) | Keep receipts truthful; `ready` stays Unknown |
 | Local preflight | Implemented; peer TCP probe is not peer identity | Add authenticated peer/session/data-path diagnostics |
 | Panel | Implemented local static UI | Keep simple; align docs with source; no React migration by default |
 | Fleet / remote Nodes | Not implemented | Later Control Plane phase |
@@ -217,12 +219,12 @@ Do not expose buttons for “Deploy best”, Direct/Reverse selection, firewall 
 
 ### P0 — close the real product lifecycle
 
-**P0-1 — PR #88 systemd control helper**
+**P0-1 — PR #88 systemd control helper — CLOSED 2026-11-08**
 - Review unit templates, helper script, file ownership/modes, instance-name validation, symlink/race behavior, stale request cleanup, replay, and scope restriction.
 - Confirm the agent cannot run arbitrary commands or directly control unrelated systemd units.
 - Real Ubuntu 22.04/systemd 249 LAB: install helper for one disposable instance; start; verify stable service; stop; refuse unregistered instance; refuse malformed instance; failure during start must stop/rollback; exercise duplicate/stale requests; prove no unrelated service/port/firewall is changed; cleanup all temporary resources.
 - Preserve exact logs without secrets and tie the result to code SHA + run ID.
-- Only after a clean result should PR #88 be considered for merge. A green unit test is not a substitute for this LAB.
+- **Result:** the gate passed on 2026-11-08 in hosted run [42523536944](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42523536944) on SHA `22e94f1`; PR #88 is merged and the two-host lifecycle proof followed in P0-5. A green unit test was not accepted as a substitute for this LAB.
 
 **P0-2 — Apply/Verify/Receipt truth and real data-path readiness**
 - Keep `init` and `join` semantics unchanged.
@@ -259,7 +261,7 @@ Do not expose buttons for “Deploy best”, Direct/Reverse selection, firewall 
 3. End-to-end tunnel status and last-verified time.
 4. Audit actor/target/resource fields and durable remote Job receipts.
 5. Real traffic/throughput counters (bytes, rate, sampling interval, units and freshness).
-6. Structured Preflight/Diagnostics evidence codes + typed params and Persian/English localization (implemented in PR #168; code-bearing head `ec730c3` passed all checks; duplicate diagnostic translation-key regression fix is in the latest revision and exact-head CI is being rechecked).
+6. Structured Preflight/Diagnostics evidence codes + typed params and Persian/English localization (**merged** into `main`: `311b706`, duplicate-key fix `62d7ee6`; historical exact-head CI in PR #168).
 7. Read-only Firewall inspection, with explicit Unknown where unavailable.
 8. “Add from Link” only after a versioned import schema, checksum, strict validation, secret redaction and preview are designed.
 
@@ -300,9 +302,9 @@ Evaluate WebSocket/TLS, uTLS sidecar, QUIC/UDP, relay and automatic engine/path 
 The implementation agent receiving this document must follow this order:
 
 1. **Re-read live state first.** Fetch latest `main`, Issue #2, open PRs, workflow checks and exact code SHAs. This document's main SHA is a snapshot, not permission to ignore later merges.
-2. **Protect in-flight work.** PR #88 belongs to an active branch. Inspect it and coordinate with its owner; do not rewrite its branch, reset it, force-push, or implement the same change elsewhere.
+2. **Protect in-flight work (historical).** PR #88 has since merged; do not rewrite its history, reset it or force-push, and do not re-implement the same change elsewhere.
 3. **Reconcile status.** Update this document/Roadmap only when code, test and evidence state changed. Preserve historical failed runs and explain superseded evidence.
-4. **Complete P0 in dependency order.** First close the Start helper review and real-systemd LAB; then data-path readiness; then BAFT Store path LAB; then Reverse R3; then integrated signed-artifact acceptance. Parallelize only tasks that do not share LAB hosts or source files.
+4. **Complete P0 in dependency order.** First close the Start helper review and real-systemd LAB; then data-path readiness; then BAFT Store path LAB; then Reverse R3; then integrated signed-artifact acceptance. *(Historical: all five P0 gates have since closed — see the [roadmap](PRODUCT_ROADMAP.md) for the exact SHAs and run IDs.)* Parallelize only tasks that do not share LAB hosts or source files.
 5. **Implement only the smallest required slice.** Name exact files, API contract, side effects, authorization boundary, rollback scope and test plan before editing.
 6. **Test at the effect boundary.** Unit/fake tests are necessary but insufficient for systemd, filesystem ownership, remote node, network path, engine process and cleanup behavior.
 7. **Do not expand product scope.** Do not start billing/subscriptions, Fleet, a React migration, new transports or automatic rotation while P0 lifecycle gates remain open unless the owner gives a new explicit priority.
@@ -338,5 +340,5 @@ A task is complete only when all applicable rows are satisfied:
 - [Phase 1 implementation evidence](PHASE1_IMPLEMENTATION_STATUS.md)
 - [ADR-0021: connection topology and Reverse](ADR-0021-connection-topology-and-reverse.md)
 - [ADR-0022: Apply, Verify, Receipt](ADR-0022-apply-verify-receipt.md)
-- [PR #88 — agent control helper](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/88) — proposed, not merged at this baseline
+- [PR #88 — agent control helper](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/88) — merged; its real-systemd gate closed 2026-11-08 ([run 42523536944](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42523536944))
 - [BAFT engine integration design](BAFT_ENGINE_INTEGRATION_DESIGN.md)
