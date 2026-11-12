@@ -4090,6 +4090,8 @@ mod tests {
             "verify.pass.bytes",
             "verify.pass.duration",
             "verify.reason.unsupported_protocol",
+            "verify.reason.request_interrupted",
+            "verify.reason.audit_failed",
             "diag.next.integrity_pass",
             "diag.next.integrity_fail",
             "diag.next.integrity_unknown",
