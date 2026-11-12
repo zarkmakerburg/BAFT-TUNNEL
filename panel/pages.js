@@ -250,7 +250,14 @@
         var v = r.body || {};
         var when = v.timestamp ? BAFT.ago(v.timestamp) : t('unknown');
         if (r.status === 200 && v.result === 'pass' && v.sha256_match === true) {
-          verifyOut.textContent = t('verify.pass', { bytes: BAFT.fmtNum(v.bytes || 0, 0), ms: BAFT.fmtNum(v.duration_ms || 0, 0), when: when });
+          verifyOut.replaceChildren(
+            h('span', { text: t('verify.pass.prefix') }),
+            BAFT.ltr(BAFT.fmtNum(v.bytes || 0, 0)),
+            h('span', { text: t('verify.pass.bytes') }),
+            BAFT.ltr(BAFT.fmtNum(v.duration_ms || 0, 0)),
+            h('span', { text: t('verify.pass.duration') }),
+            h('span', { text: when })
+          );
         } else if (r.status === 200 && v.result === 'fail') {
           verifyOut.textContent = t('verify.fail', { reason: t('verify.reason.' + (v.reason || 'invalid_probe_response')), when: when });
         } else if (r.status === 200) {

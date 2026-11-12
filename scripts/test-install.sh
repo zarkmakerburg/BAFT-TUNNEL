@@ -137,6 +137,7 @@ grep -qx 'Environment=BAFT_AGENT_LISTEN=127.0.0.1:18085' "$STAGE/etc/systemd/sys
 [[ -f "$STAGE/etc/systemd/system/baft-tunnel-agent@.path" ]]
 grep -qx 'RuntimeDirectoryMode=0750' "$UNIT" && grep -q 'InaccessiblePaths=.*/var/lib/baft-tunnel-agent' "$UNIT"
 grep -qx 'Environment=BAFT_TUNNEL_CONTROL_SOCKET=/run/baft-tunnel/%i/control.sock' "$UNIT"
+grep -q 'restart it once to enable integrity probes' "$ROOT/scripts/install-agent-control.sh"
 # The agent never listens off loopback, and a bad name or address is refused.
 refused() { if "$@" >/dev/null 2>&1; then echo "accepted: $*" >&2; exit 1; fi; }
 refused "$ROOT/scripts/install-agent-control.sh" --instance iran --listen 0.0.0.0:18080 --destdir "$STAGE"
