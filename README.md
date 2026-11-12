@@ -10,8 +10,6 @@ A security-first, Linux-native tunnel platform built around authenticated connec
 
 **Public repository, all rights reserved · Rust core · TCP + TLS 1.3 · Direct / Reverse**
 
-<a href="https://app.codspeed.io/zarkmakerburg/BAFT-TUNNEL?utm_source=badge"><img src="https://img.shields.io/endpoint?url=https://codspeed.io/badge.json" alt="CodSpeed"/></a>
-
 </div>
 
 ---
@@ -29,9 +27,9 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 
 ## Project status
 
-<sub>Updated: 11 November 2026 · source baseline: `main` `52a2825` · roadmap: [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
+<sub>Updated: 12 November 2026 · source baseline: `main` `7bf0b9a` · roadmap: [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
 
-> **Active development — signed pre-release `v0.1.0-rc.7`; not production-ready.** Trusted U7 acceptance passed on the signed RC.7 package in [run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428): both LAB hosts completed setup, Direct traffic integrity, 3600-second soak, backup/restore, update/rollback, revocation and uninstall. U8 operator documentation was completed and merged in [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165) (merge `52a2825254f8254386f71af7220c7cb244200fc2`). B1 structured localized evidence is in [PR #168](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/168). All four exact-head workflow groups passed on the code-bearing head `ec730c3559a0d81a180c9051183fc0ff3dfe4052` (Rust, Ubuntu 22.04/systemd 249, panel UI, offline CA, phase0, fuzz-smoke and same-SHA package/signature). A final static review found four duplicate `diag.next.*` keys that shadowed explanatory Persian/English translations. The latest revision removes the duplicate entries and adds a regression assertion; exact-head CI must pass again before merge.
+> **Active development — signed pre-release `v0.1.0-rc.7`; not production-ready.** Trusted U7 acceptance passed on the signed RC.7 package in [run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428): both LAB hosts completed setup, Direct traffic integrity, 3600-second soak, backup/restore, update/rollback, revocation and uninstall. U8 operator documentation is merged in [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165). B1 structured localized Preflight/Diagnostics evidence is implemented and merged in [PR #168](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/168), merge commit `311b706a836ca5aa6a4629c16cb845427e699392`; all four exact-head workflow groups passed on tested head `62d7ee67f65ae6c08cfa21bf87786c25d05cbe1a` (Rust, Ubuntu 22.04/systemd 249, panel UI, offline CA, phase0, fuzz-smoke and same-SHA package/signature).
 
 - **`tcp-tls` Direct:** supported pre-release path with real two-host integrity, recovery, revocation, operations, and bounded soak/loss evidence.
 - **`tcp-tls` Reverse:** real outbound-only data path with recovery and impairment evidence; remains **Preview**, not Stable.
@@ -114,7 +112,7 @@ These are bounded LAB results, not a production-readiness certification or a lon
 
 ## Roadmap
 
-The authoritative phase model and delivery order are maintained in [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md). U7 signed-RC.7 MVP acceptance passed; U8 operator guides are merged. B1 implementation and exact-head CI passed on code-bearing head `ec730c3`; a final review found duplicate `diag.next.*` keys; the latest revision removes them and adds a regression assertion. Its exact-head CI must pass before merge. After acceptance and merge, B2–B6 follow in roadmap order. Later Fleet/control-plane and additional transport work remains gated; do not infer that a planned item is shipped from this README.
+The authoritative phase model and delivery order are maintained in [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md). U7 signed-RC.7 MVP acceptance passed; U8 operator guides are merged; B1 structured localized Preflight/Diagnostics evidence is now merged in PR #168. B2–B6 remain the next product-quality queue, each subject to its own acceptance and security gates. Fleet/control-plane and additional transport work remain gated; do not infer that a planned item is shipped from this README.
 
 ## Repository guide
 
