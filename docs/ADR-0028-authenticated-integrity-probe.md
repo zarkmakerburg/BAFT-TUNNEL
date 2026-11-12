@@ -63,6 +63,7 @@ The local agent API remains bearer-token protected and loopback-only. The panel 
 - Audit the request and outcome using ADR-0024's actor/target/resource model; resource is a dedicated integrity-verification action. Preserve the request idempotency and audit durability conventions already used by mutating/verification endpoints.
 - `integrity` may become `pass` only from a successful authenticated B2 probe. A missing, stale, failed, unsupported or unverifiable result is not a pass. The report must identify the source as the in-product probe and expose its timestamp/age.
 - A pass is scoped to this peer, tunnel, direction, payload size and probe time. It does not imply every application flow is intact, prove censorship resistance, or guarantee future health.
+- The live integrity tier may show Pass only while the most recent successful probe is no older than 60 seconds (the existing data-path evidence window). After expiry, the live tier returns to Unknown while the last-probe record remains available as historical evidence. This freshness rule never changes Apply receipt ready.
 - `ready` and Apply receipt readiness remain `unknown` in every outcome. A successful probe must not set a production-ready state, change Apply state, or promote unrelated evidence tiers.
 
 ## 6. Panel behavior
