@@ -17,6 +17,12 @@ grep -F 'command -v findmnt >/dev/null' "$harness" >/dev/null
 grep -F 'mount_options=\$(findmnt -n -o OPTIONS --target /var/tmp)' "$harness" >/dev/null
 grep -F 'case ",\$mount_options," in *,noexec,*' "$harness" >/dev/null
 grep -F 'stat.S_ISDIR(s.st_mode)' "$harness" >/dev/null
+python3 - "$harness" <<'PYQUOTE'
+from pathlib import Path
+import sys
+line = next(line for line in Path(sys.argv[1]).read_text().splitlines() if "python3 -c 'import os,stat;" in line)
+assert 'os.stat(\\"/var/tmp\\"' in line, line
+PYQUOTE
 grep -F 'mkdir -m 0755' "$harness" >/dev/null
 grep -F '&& test \$(stat -c' "$harness" >/dev/null
 grep -F 'runuser -u baft-tunnel-agent --' "$harness" >/dev/null
