@@ -139,7 +139,7 @@ Current limitations:
 - Traffic counters / throughput are not exposed by the API; do not invent chart values.
 - No firewall inspection or firewall mutation.
 - Audit v2 records actor, target and resource semantics (PR #109); structured evidence localization is tracked separately in B1.
-- Structured Preflight/Diagnostics evidence codes + typed params and fa/en localization are implemented in B1; original implementation CI passed at `cc37f48`. U8 is merged in PR #165. The synchronized code-bearing head `ec730c3559a0d81a180c9051183fc0ff3dfe4052` in PR #168 passed all four exact-head workflow groups, including Rust, Ubuntu 22.04/systemd 249, panel-ui, offline CA, phase0, fuzz-smoke and same-SHA package/signature. A later documentation-only evidence-ledger commit is undergoing its own exact-head CI before merge.
+- Structured Preflight/Diagnostics evidence codes + typed params and fa/en localization are implemented in B1; original implementation CI passed at `cc37f48`. U8 is merged in PR #165. The synchronized code-bearing head `ec730c3559a0d81a180c9051183fc0ff3dfe4052` in PR #168 passed all four exact-head workflow groups, including Rust, Ubuntu 22.04/systemd 249, panel-ui, offline CA, phase0, fuzz-smoke and same-SHA package/signature. A final static review found duplicate `diag.next.*` keys shadowing explanatory translations; the latest PR revision removes them and adds a duplicate-key regression assertion. Exact-head CI must pass again before merge.
 - Physical-phone UX and formal accessibility audits are not recorded as complete.
 
 A separate BCC-style Connection Test is **not yet equivalent to an authenticated end-to-end diagnostic**. The current Preflight TCP probe must not be relabelled as a successful tunnel/data-path test. “Add from Link” is also not verified as an existing BAFT-TUNNEL workflow; treat it as a later feature request requiring an explicit safe link schema and validation.
@@ -259,7 +259,7 @@ Do not expose buttons for “Deploy best”, Direct/Reverse selection, firewall 
 3. End-to-end tunnel status and last-verified time.
 4. Audit actor/target/resource fields and durable remote Job receipts.
 5. Real traffic/throughput counters (bytes, rate, sampling interval, units and freshness).
-6. Structured Preflight/Diagnostics evidence codes + typed params and Persian/English localization (implemented in PR #168; all checks passed on code-bearing head `ec730c3`; a documentation-only evidence-ledger update is being rechecked before merge).
+6. Structured Preflight/Diagnostics evidence codes + typed params and Persian/English localization (implemented in PR #168; code-bearing head `ec730c3` passed all checks; duplicate diagnostic translation-key regression fix is in the latest revision and exact-head CI is being rechecked).
 7. Read-only Firewall inspection, with explicit Unknown where unavailable.
 8. “Add from Link” only after a versioned import schema, checksum, strict validation, secret redaction and preview are designed.
 

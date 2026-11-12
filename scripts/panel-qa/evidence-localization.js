@@ -40,5 +40,23 @@ for (const lang of ['fa', 'en']) {
     console.error(`FAIL ${lang} diag.session.pass peer_id interpolation`); failed++;
   }
 }
+// Detect duplicate translation properties before JavaScript object evaluation silently shadows them.
+const rawI18n = fs.readFileSync('panel/i18n.js', 'utf8');
+for (const lang of ['fa', 'en']) {
+  const start = rawI18n.indexOf('    ' + lang + ': {');
+  const end = rawI18n.indexOf(lang === 'fa' ? '    en: {' : '  };', start);
+  const languageBlock = rawI18n.slice(start, end);
+  const keys = [...languageBlock.matchAll(/['"]([A-Za-z0-9_.-]+)['"]\s*:/g)].map(match => match[1]);
+  const seen = new Set();
+  const duplicate = new Set();
+  for (const key of keys) {
+    if (seen.has(key)) duplicate.add(key);
+    seen.add(key);
+  }
+  if (duplicate.size) {
+    console.error('FAIL ' + lang + ' duplicate translation keys: ' + [...duplicate].join(', '));
+    failed++;
+  }
+}
 if (failed) process.exit(1);
 console.log(`EVIDENCE_LOCALIZATION=PASS (${codes.length} codes × fa/en)`);
