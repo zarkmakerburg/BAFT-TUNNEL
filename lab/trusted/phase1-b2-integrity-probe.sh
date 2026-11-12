@@ -49,7 +49,7 @@ validate_port "$IRAN_PORT" && validate_port "$ABROAD_PORT" || { echo 'invalid LA
 RUN_ID="${GITHUB_RUN_ID:-$$}"
 [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo 'invalid workflow run ID' >&2; exit 2; }
 INSTANCE="b2lab-$RUN_ID"
-REMOTE_BASE="/run/baft-b2-lab-$RUN_ID"
+REMOTE_BASE="/opt/baft-b2-lab-$RUN_ID"
 REMOTE_BIN="$REMOTE_BASE/baft-tunnel"
 ECHO_STATE="$REMOTE_BASE/echo-state"
 LOCAL_TMP="$(mktemp -d)"
@@ -164,12 +164,12 @@ for side in iran abroad; do
     test "$(uname -m)" = x86_64
     command -v timeout >/dev/null
     command -v findmnt >/dev/null
-    test -d /run && test ! -L /run
-    test \$(stat -c '%U:%G' /run) = root:root
-    run_mode=\$(stat -c '%a' /run)
-    python3 -c 'import sys; assert int(sys.argv[1], 8) & 0o022 == 0' \$run_mode
-    run_options=\$(findmnt -n -o OPTIONS --target /run)
-    case \",\$run_options,\" in *,noexec,*) echo \"/run is mounted noexec; refusing candidate execution\" >&2; exit 2 ;; esac
+    test -d /opt && test ! -L /opt
+    test \$(stat -c '%U:%G' /opt) = root:root
+    opt_mode=\$(stat -c '%a' /opt)
+    python3 -c 'import sys; assert int(sys.argv[1], 8) & 0o022 == 0' \$opt_mode
+    opt_options=\$(findmnt -n -o OPTIONS --target /opt)
+    case \",\$opt_options,\" in *,noexec,*) echo \"/opt is mounted noexec; refusing candidate execution\" >&2; exit 2 ;; esac
     id baft-tunnel >/dev/null
     id baft-tunnel-agent >/dev/null
     id nobody >/dev/null
@@ -279,7 +279,7 @@ if received != payload:
 print(f"DATA_PATH_OK bytes={len(received)} sha256={hashlib.sha256(received).hexdigest()}")
 PY
 
-# Create ephemeral /run-only trees and stage the candidate executable (root-owned, read-only to
+# Create a unique ephemeral /opt workspace and stage the candidate executable (root-owned, read-only to
 # service users). No candidate script, installer or other PR-controlled file is executed.
 for side in iran abroad; do
   [[ "$side" == iran ]] && PREPARED_IRAN=1 || PREPARED_ABROAD=1

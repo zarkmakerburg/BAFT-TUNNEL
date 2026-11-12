@@ -12,15 +12,15 @@ grep -F 'unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS' "$harness" >/dev/null
 grep -F 'GlobalKnownHostsFile=/dev/null' "$harness" >/dev/null
 grep -F 'StrictHostKeyChecking=yes' "$harness" >/dev/null
 grep -F 'runuser -u baft-tunnel --' "$harness" >/dev/null
-grep -F 'REMOTE_BASE="/run/baft-b2-lab-$RUN_ID"' "$harness" >/dev/null
+grep -F 'REMOTE_BASE="/opt/baft-b2-lab-$RUN_ID"' "$harness" >/dev/null
 grep -F 'command -v findmnt >/dev/null' "$harness" >/dev/null
-grep -F 'run_options=\$(findmnt -n -o OPTIONS --target /run)' "$harness" >/dev/null
+grep -F 'opt_options=\$(findmnt -n -o OPTIONS --target /opt)' "$harness" >/dev/null
 python3 - "$harness" <<'PYCASE'
 from pathlib import Path
 import sys
-line = next(line for line in Path(sys.argv[1]).read_text().splitlines() if 'noexec' in line and 'run_options' in line)
+line = next(line for line in Path(sys.argv[1]).read_text().splitlines() if 'noexec' in line and 'opt_options' in line)
 bs = chr(92)
-assert 'case '+bs+'",' + bs + '$run_options,' + bs + '"' in line, line
+assert 'case '+bs+'",' + bs + '$opt_options,' + bs + '"' in line, line
 PYCASE
 grep -F 'ECHO_STATE="$REMOTE_BASE/echo-state"' "$harness" >/dev/null
 grep -F 'ReadWritePaths=$ECHO_STATE' "$harness" >/dev/null
@@ -59,8 +59,8 @@ from pathlib import Path
 import sys
 bs = chr(92)
 source = Path(sys.argv[1]).read_text()
-assert "test "+bs+"$(stat -c '%U:%G' /run) = root:root" in source
-assert "run_mode="+bs+"$(stat -c '%a' /run)" in source
+assert "test "+bs+"$(stat -c '%U:%G' /opt) = root:root" in source
+assert "opt_mode="+bs+"$(stat -c '%a' /opt)" in source
 assert "int(sys.argv[1], 8) & 0o022 == 0" in source
 PYRUN
 grep -F 'mkdir -m 0755' "$harness" >/dev/null
