@@ -178,3 +178,9 @@ Before implementation:
 4. The implementation plan demonstrates that unsupported firewall state remains Unknown and does not block unrelated tunnel operations.
 
 B3 acceptance requires all unit, systemd, installer and read-only LAB evidence above. No firewall mutation is authorized as part of B3. B3 completion does not authorize B2 implementation, Phase 2, or a production release.
+
+## References
+
+- [nftables manual — ruleset listing and JSON output](https://netfilter.org/projects/nftables/manpage.html#RULESET): the proposed fixed `list ruleset` operation is observational; it is distinct from ruleset mutation commands.
+- [nftables manual — verdict statements](https://netfilter.org/projects/nftables/manpage.html#VERDICT_STATEMENT): accept, drop, return, jump and goto change packet-evaluation control flow.
+- [Netfilter nftables documentation — base-chain configuration](https://wiki.nftables.org/wiki-nftables/index.php/Configuring_chains): base chains attach to hooks and are ordered by priority; multiple chains can participate in a hook.
