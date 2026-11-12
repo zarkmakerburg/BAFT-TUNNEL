@@ -33,6 +33,12 @@ grep -F 'root:baft-tunnel:770' "$harness" >/dev/null
 grep -F 'SystemCallFilter=@system-service' "$harness" >/dev/null
 grep -F 'CapabilityBoundingSet=' "$harness" >/dev/null
 grep -F 'MemoryDenyWriteExecute=yes' "$harness" >/dev/null
+test "$(grep -o 'IPAddressDeny=any' "$harness" | wc -l | tr -d ' ')" -ge 4
+grep -F 'IPAddressAllow=127.0.0.0/8 ::1/128 $IRAN_CIDR' "$harness" >/dev/null
+grep -F 'IPAddressAllow=127.0.0.0/8 ::1/128 $ABROAD_CIDR' "$harness" >/dev/null
+grep -F 'IPAddressAllow=127.0.0.0/8 ::1/128' "$harness" >/dev/null
+grep -F 'NETWORK_EGRESS_POLICY_READY' "$harness" >/dev/null
+grep -F 'denied in ({"any"},{"0.0.0.0/0","::/0"})' "$harness" >/dev/null
 test "$(grep -c 'InaccessiblePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-agent -/run/baft-tunnel/control' "$harness")" = 3
 if grep -Eq 'bash .*scripts/|bash .*lab/|sudo |install\.sh|quick-install' "$harness"; then
   echo 'B2 harness attempted to execute candidate-controlled scripts or installers' >&2; exit 1
