@@ -128,6 +128,7 @@ fn validate_response(response: &ProbeControlResponse) -> Result<()> {
             if response.reason.is_some()
                 || response.bytes != crate::integrity_probe::PROBE_BYTES
                 || !response.sha256_match
+                || response.timestamp == 0
                 || response
                     .duration_ms
                     .is_none_or(|duration| duration > 10_000)
@@ -750,6 +751,27 @@ mod tests {
         assert!(request(&path).await.is_err());
         assert!(server.await.unwrap().is_err());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn pass_receipt_requires_exact_payload_digest_flag_and_bounded_duration() {
+        let valid = ProbeControlResponse {
+            result: "pass".into(),
+            reason: None,
+            bytes: crate::integrity_probe::PROBE_BYTES,
+            sha256_match: true,
+            duration_ms: Some(9_999),
+            timestamp: 1,
+        };
+        validate_response(&valid).unwrap();
+
+        let mut missing_timestamp = valid.clone();
+        missing_timestamp.timestamp = 0;
+        assert!(validate_response(&missing_timestamp).is_err());
+
+        let mut over_deadline = valid;
+        over_deadline.duration_ms = Some(10_001);
+        assert!(validate_response(&over_deadline).is_err());
     }
 
     #[test]
