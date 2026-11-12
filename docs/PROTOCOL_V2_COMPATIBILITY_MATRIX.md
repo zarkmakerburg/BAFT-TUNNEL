@@ -1,8 +1,8 @@
 # Protocol v1/v2 Peer Compatibility and Upgrade Matrix
 
-**Status:** Owner decision recorded — Option A (strict coordinated peer-pair upgrade) selected on 2026-11-12. Documentation only; this does not authorize B2 runtime implementation.  
+**Status:** Option A owner decision recorded and pre-implementation contract-test gate satisfied on 2026-11-12. B2 runtime implementation is tracked in PR #177; B2 feature acceptance remains pending.  
 **Scope:** ADR-0028 B2 implementation-start prerequisite.  
-**Baseline:** `main` at `7bf0b9ab1ae7c905d2ae8b1c6d3b369ed2a59b0a` (2026-11-12).  
+**Runtime baseline:** protocol-v1 source at `7bf0b9ab1ae7c905d2ae8b1c6d3b369ed2a59b0a`; test-only Option A contract vectors were later merged in PR #176 at `74b8ba33b2144c7537f710c720e70e6c25ebfca1` without changing runtime negotiation.  
 **Related:** [ADR-0028](ADR-0028-authenticated-integrity-probe.md), [ADR-0011](ADR-0011-authorization.md), [ADR-0024](ADR-0024-operations-evidence.md), [Readiness contract](READINESS_CONTRACT.md).
 
 ## 1. Verified current protocol baseline
@@ -108,16 +108,18 @@ Record exact source SHA, test command, test result and logs. A written test plan
 
 ## 7. Gate interpretation
 
-This document records the owner-accepted compatibility policy. It is a documentation decision, not implementation or test evidence.
+This document records the owner-accepted compatibility policy and the completed pre-implementation test gate.
 
-The ADR-0028 B2 implementation-start gate remains **BLOCKED** until:
+**Gate status (2026-11-12): SATISFIED.** The exact-SHA Option A contract tests passed on `babdb7f5bb82d8235f8f9e8f1145f843c2f8b735` with all required CI groups green and were merged in PR #176. Independent F0 design-level approval is recorded, and U7/B1 remain accepted. B2 runtime implementation is tracked in PR #177.
+
+The ADR-0028 B2 implementation-start gate is therefore **SATISFIED**; B2 feature acceptance is still pending.
 
 1. The accepted Option A decision remains recorded in ADR-0028 and this matrix.
 2. The pre-implementation contract tests above are implemented and pass on an exact SHA.
 3. The independent F0 trust-boundary/security review is approved, including UDS lifecycle, safe stale-socket handling, exact `SO_PEERCRED` UID enforcement, bounded framing and fail-closed behavior.
 4. U7 and merged B1 remain accepted.
 
-This document does not authorize B2 runtime/API/panel implementation, protocol migration, LAB, host changes, release, deployment, or Phase 2 work.
+This matrix does not claim B2 feature acceptance and does not authorize Phase 2, release or deployment. Real two-host LAB and the remaining B2 acceptance evidence are still required.
 
 ## 8. Evidence references
 
