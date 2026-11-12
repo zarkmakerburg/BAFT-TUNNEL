@@ -1,6 +1,5 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
-#[cfg(test)]
 use crate::authorization::PROTOCOL_V1;
 use crate::session_status::Stage;
 
@@ -121,10 +120,18 @@ fn yamux_config(max: usize) -> YamuxConfig {
     }
 }
 
-fn configured_control_server() -> Result<Option<crate::control_socket::ControlServer>> {
+fn configured_control_server() -> Option<crate::control_socket::ControlServer> {
     match std::env::var_os("BAFT_TUNNEL_CONTROL_SOCKET") {
-        Some(path) => crate::control_socket::ControlServer::bind(PathBuf::from(path)).map(Some),
-        None => Ok(None),
+        Some(path) => match crate::control_socket::ControlServer::bind(PathBuf::from(path)) {
+            Ok(server) => Some(server),
+            Err(_) => {
+                // The probe control plane is optional: a missing agent account or unsafe socket
+                // path disables probes without taking down an otherwise healthy data plane.
+                eprintln!("integrity probe control socket unavailable; data plane remains active");
+                None
+            }
+        },
+        None => None,
     }
 }
 
@@ -285,7 +292,7 @@ async fn queue_when_session_present(
     }
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 pub async fn serve(options: ServerOptions) -> Result<()> {
     serve_versioned(options, PROTOCOL_V1).await
 }
@@ -342,7 +349,7 @@ pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> R
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("bind {listen}"))?;
-    let control_server = configured_control_server()?;
+    let control_server = configured_control_server();
     let sessions = Arc::new(Semaphore::new(MAX_SESSIONS));
     let pending = Arc::new(Semaphore::new(MAX_PENDING_HANDSHAKES));
     let pending_per_ip = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -695,7 +702,7 @@ async fn closed_without_data(socket: &TcpStream) -> bool {
     )
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 async fn connect_peer(options: &ForwardOptions) -> Result<Session<BoxedSecureStream>> {
     connect_peer_versioned(options, PROTOCOL_V1).await
 }
@@ -778,7 +785,7 @@ fn tls_alert(error: &anyhow::Error) -> bool {
     })
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 async fn run_forward_session(
     session: Session<BoxedSecureStream>,
     receiver: &mut Receiver<TcpStream>,
@@ -1178,7 +1185,7 @@ async fn supervise_reverse_service(
     }
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 pub async fn forward(options: ForwardOptions) -> Result<()> {
     forward_versioned(options, PROTOCOL_V1).await
 }
@@ -1188,7 +1195,7 @@ pub async fn forward_versioned(options: ForwardOptions, protocol_version: u16) -
     let probe_control = Arc::new(crate::integrity_probe::ProbeControl::default());
     let probe_limiter = Arc::new(crate::integrity_probe::ProbeLimiter::default());
     if options.target.is_some() {
-        let control_server = configured_control_server()?;
+        let control_server = configured_control_server();
         return reverse_service_versioned_with_control(
             options,
             protocol_version,
@@ -1202,7 +1209,7 @@ pub async fn forward_versioned(options: ForwardOptions, protocol_version: u16) -
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("bind {listen}"))?;
-    let control_server = configured_control_server()?;
+    let control_server = configured_control_server();
     let (sender, receiver) = mpsc::channel(options.max_streams);
     let slots = Arc::new(Semaphore::new(options.max_streams));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);

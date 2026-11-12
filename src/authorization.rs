@@ -44,7 +44,7 @@ pub fn capabilities_for_version(version: u16) -> Result<&'static [StreamCapabili
     }
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 pub fn authorize_session(
     authenticated_peer: &str,
     expected_peer: &str,
@@ -106,7 +106,7 @@ pub fn authorize_session_versioned(
     Ok(())
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 pub fn authorize_stream(
     requested_tunnel: &str,
     expected_tunnel: &str,

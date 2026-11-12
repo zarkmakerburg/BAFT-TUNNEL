@@ -1,4 +1,3 @@
-#[cfg(test)]
 use crate::authorization::PROTOCOL_V1;
 
 use crate::authorization::{
@@ -11,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-#[cfg(test)]
+#[allow(dead_code)]
 const VERSION: u16 = PROTOCOL_V1;
 const MAX_MESSAGE: usize = 2048;
 const NONCE_BYTES: usize = 32;
@@ -120,7 +119,7 @@ async fn read_message<S: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     serde_json::from_slice(&bytes).context("decode handshake")
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     local: &str,
@@ -175,7 +174,7 @@ pub async fn client_handshake_versioned<S: AsyncRead + AsyncWrite + Unpin>(
     Ok(())
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 pub async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     local: &str,
@@ -243,7 +242,7 @@ struct StreamOpen {
     capability: StreamCapability,
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 pub async fn client_stream_open<S: AsyncWrite + Unpin>(
     stream: &mut S,
     tunnel: &str,
@@ -273,7 +272,7 @@ pub async fn client_stream_open_versioned<S: AsyncWrite + Unpin>(
     .await
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 pub async fn server_stream_open<S: AsyncRead + Unpin>(
     stream: &mut S,
     expected_tunnel: &str,

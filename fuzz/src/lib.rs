@@ -14,12 +14,16 @@ pub mod baft_engine;
 pub mod capabilities;
 #[path = "../../src/config.rs"]
 pub mod config;
+#[path = "../../src/control_socket.rs"]
+pub mod control_socket;
 #[path = "../../src/engine.rs"]
 pub mod engine;
 #[path = "../../src/engine_store.rs"]
 pub mod engine_store;
 #[path = "../../src/handshake.rs"]
 pub mod handshake;
+#[path = "../../src/integrity_probe.rs"]
+pub mod integrity_probe;
 #[path = "../../src/key_custody.rs"]
 pub mod key_custody;
 #[path = "../../src/noise.rs"]
