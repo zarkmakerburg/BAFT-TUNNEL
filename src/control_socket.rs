@@ -688,6 +688,7 @@ mod tests {
         std::fs::write(&victim, b"do not replace").unwrap();
         assert!(prepare_socket_path_under(&victim, &root, uid, gid).is_err());
         assert_eq!(std::fs::read(&victim).unwrap(), b"do not replace");
+        std::fs::remove_file(&victim).unwrap();
         let target = root.join("target");
         std::fs::write(&target, b"preserve target").unwrap();
         let link_path = node.join("control.sock");
