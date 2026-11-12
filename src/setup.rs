@@ -14,12 +14,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::{authorization::ConnectionDirection, config::EngineKind, handshake::validate_identity};
+use crate::{authorization::{ConnectionDirection, PROTOCOL_V1, PROTOCOL_V2}, config::EngineKind, handshake::validate_identity};
 
 /// Placeholder written where pairing has not provided the peer's trust material yet.
 pub const PEER_KEY_PLACEHOLDER: &str = "SET_BY_PAIRING";
 
 pub const DEFAULT_TUNNEL_PORT: u16 = 8443;
+
+fn default_protocol_version() -> u16 {
+    PROTOCOL_V1
+}
+
+fn is_default_protocol_version(version: &u16) -> bool {
+    *version == PROTOCOL_V1
+}
+
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum, Serialize, Deserialize)]
 #[value(rename_all = "kebab-case")]
@@ -36,6 +45,8 @@ pub struct PlanRequest {
     pub engine: EngineKind,
     pub role: Role,
     pub direction: ConnectionDirection,
+    /// Both peers must be initialized with the same protocol generation; mixed versions are rejected.
+    pub protocol_version: u16,
     pub node_id: String,
     pub peer_id: String,
     pub tunnel_id: String,
@@ -74,6 +85,12 @@ fn check_port(value: u16, what: &str) -> Result<()> {
 }
 
 pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
+    if ![PROTOCOL_V1, PROTOCOL_V2].contains(&req.protocol_version) {
+        bail!("protocol version must be 1 or 2");
+    }
+    if req.engine == EngineKind::Baft && req.protocol_version == PROTOCOL_V2 {
+        bail!("protocol v2 is not supported by the external BAFT engine");
+    }
     if req.engine == EngineKind::Baft {
         bail!(
             "baft is a Preview engine, Direct only: this setup cannot create its configuration yet (ADR-0019 phase F); it is installed from the signed Engine Store path"
@@ -130,6 +147,7 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
     let mut config = json!({
         "engine": engine_name(req.engine),
         "direction": req.direction.as_str(),
+        "protocol_version": req.protocol_version,
         "local_id": req.node_id,
         "peer_id": req.peer_id,
         "tunnel_id": req.tunnel_id,
@@ -280,6 +298,9 @@ pub struct Bundle {
     pub tunnel_id: String,
     pub engine: String,
     pub direction: String,
+    /// Omitted for v1 so legacy pairing bundle checksums remain byte-for-byte compatible.
+    #[serde(default = "default_protocol_version", skip_serializing_if = "is_default_protocol_version")]
+    pub protocol_version: u16,
     pub role: Role,
     pub node_id: String,
     pub peer_id: String,
@@ -322,6 +343,8 @@ pub(crate) fn same_checksum(a: &str, b: &str) -> bool {
 struct State {
     engine: String,
     direction: String,
+    #[serde(default = "default_protocol_version")]
+    protocol_version: u16,
     role: Role,
     node_id: String,
     peer_id: String,
@@ -405,6 +428,7 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
         tunnel_id: req.tunnel_id.clone(),
         engine: engine.into(),
         direction: req.direction.as_str().into(),
+        protocol_version: req.protocol_version,
         role: req.role,
         node_id: req.node_id.clone(),
         peer_id: req.peer_id.clone(),
@@ -612,6 +636,9 @@ pub fn join(dir: &Path, bundle_path: &Path, checksum: &str) -> Result<PathBuf> {
     if bundle.direction != state.direction {
         return Err(mismatch("direction"));
     }
+    if bundle.protocol_version != state.protocol_version {
+        return Err(mismatch("protocol generation; both nodes must use the same version"));
+    }
     if bundle.tunnel_id != state.tunnel_id {
         return Err(mismatch("tunnel id"));
     }
@@ -656,6 +683,7 @@ pub fn join(dir: &Path, bundle_path: &Path, checksum: &str) -> Result<PathBuf> {
         } else {
             ConnectionDirection::Direct
         },
+        protocol_version: state.protocol_version,
         node_id: state.node_id,
         peer_id: state.peer_id,
         tunnel_id: state.tunnel_id,
@@ -692,6 +720,7 @@ mod tests {
             engine,
             role,
             direction: ConnectionDirection::Direct,
+            protocol_version: PROTOCOL_V1,
             node_id: "iran".into(),
             peer_id: "abroad".into(),
             tunnel_id: "demo".into(),
