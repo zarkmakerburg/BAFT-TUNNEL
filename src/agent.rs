@@ -4343,6 +4343,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn latest_probe_wins_when_audit_events_share_the_same_second() {
+        let dir = state_dir("same-second-probe");
+        let ctx = Ctx::new(sample(), TOKEN.into(), Some(dir.clone()));
+        let event = |result: &str, detail: &str| {
+            json!({
+                "ts": 1_800_000_000_u64,
+                "action": "integrity_probe",
+                "result": result,
+                "detail": detail,
+            })
+            .to_string()
+        };
+        std::fs::write(
+            dir.join(AUDIT_FILE),
+            format!(
+                "{}\n{}\n",
+                event("pass", "sha256_verified"),
+                event("unknown", "rate_limited")
+            ),
+        )
+        .unwrap();
+        let last = last_integrity_probe(&ctx).unwrap();
+        assert_eq!(last["timestamp"], 1_800_000_000_u64);
+        assert_eq!(last["result"], "unknown");
+        assert_eq!(last["reason"], "rate_limited");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn audit_log_rotates_and_the_endpoint_reads_only_a_bounded_tail() {
         let dir = state_dir("auditrot");
