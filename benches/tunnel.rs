@@ -247,7 +247,6 @@ mod handshake_bench {
         let pin = "ab".repeat(32);
         handshake::validate_fingerprint(black_box(&pin)).unwrap();
     }
-
 }
 
 mod peer_certificate_bench {
