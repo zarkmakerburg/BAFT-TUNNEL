@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: Exact current head SHA of open PR #177
+        description: Exact code SHA of merged PR #177
         required: true
         type: string
       confirm:
@@ -30,7 +30,12 @@ jobs:
     outputs:
       candidate_sha: ${{ steps.candidate.outputs.sha }}
     steps:
-      - name: Require explicit approval and exact PR #177 head
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require explicit approval, merged PR #177, and required exact-SHA checks
         id: candidate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -43,21 +48,48 @@ jobs:
           [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate_sha must be a full lowercase 40-character SHA' >&2; exit 2; }
           gh api "repos/$REPOSITORY/pulls/177" > "$RUNNER_TEMP/candidate-pr.json"
           gh api "repos/$REPOSITORY/commits/$REQUESTED_SHA/check-runs" > "$RUNNER_TEMP/candidate-checks.json"
-          jq -e '.total_count > 0 and all(.check_runs[]; .status == "completed" and .conclusion == "success")' "$RUNNER_TEMP/candidate-checks.json" >/dev/null || {
-            echo 'all candidate SHA checks must be completed successfully before LAB' >&2
+          jq -e '.total_count > 0' "$RUNNER_TEMP/candidate-checks.json" >/dev/null || {
+            echo 'candidate SHA has no check runs' >&2
             exit 2
           }
+          # These are the exact required contexts configured by main branch protection.
+          # CodSpeed is advisory and may fail on cross-hardware comparisons without blocking the merge.
+          required_checks=(rust ubuntu-2204-baseline lab-config)
+          for required in "${required_checks[@]}"; do
+            jq -e --arg name "$required" '
+              ([.check_runs[] | select(.name == $name)] | length) > 0 and
+              ([.check_runs[] | select(.name == $name) | select(.status != "completed" or .conclusion != "success")] | length) == 0
+            ' "$RUNNER_TEMP/candidate-checks.json" >/dev/null || {
+              echo "required exact-SHA check did not pass: $required" >&2
+              exit 2
+            }
+          done
           jq -e --arg sha "$REQUESTED_SHA" --arg repo "$REPOSITORY" '
-            .state == "open" and
+            .state == "closed" and
+            .merged == true and
             .base.ref == "main" and
+            .base.repo.full_name == $repo and
             .head.repo.full_name == $repo and
-            .head.sha == $sha
+            .head.sha == $sha and
+            .merge_commit_sha != null
           ' "$RUNNER_TEMP/candidate-pr.json" >/dev/null || {
-            echo 'candidate SHA must exactly match the open same-repository PR #177 head targeting main' >&2
+            echo 'candidate SHA must exactly match merged same-repository PR #177 targeting main' >&2
+            exit 2
+          }
+          merge_sha="$(jq -r '.merge_commit_sha' "$RUNNER_TEMP/candidate-pr.json")"
+          git cat-file -e "$REQUESTED_SHA^{commit}"
+          git cat-file -e "$merge_sha^{commit}"
+          git merge-base --is-ancestor "$REQUESTED_SHA" "$merge_sha" || {
+            echo 'candidate SHA is not contained in PR #177 merge commit' >&2
+            exit 2
+          }
+          git merge-base --is-ancestor "$merge_sha" "$GITHUB_SHA" || {
+            echo 'PR #177 merge commit is not contained in current main history' >&2
             exit 2
           }
           echo "sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
           echo "B2_CANDIDATE_SHA=$REQUESTED_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "B2_MERGE_SHA=$merge_sha" >> "$GITHUB_STEP_SUMMARY"
 
   build-candidate:
     needs: validate-candidate
