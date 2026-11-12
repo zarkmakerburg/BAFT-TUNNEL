@@ -20,6 +20,19 @@ The project owner approved the following B2 design choices:
 
 These are approved design decisions, not evidence that the feature is implemented or accepted. The prerequisites for starting B2 implementation and the overall Phase 1 closeout gate are separated below; completing B2 cannot be a prerequisite to starting B2 itself.
 
+## Accepted peer-upgrade policy (owner decision, 2026-11-12)
+
+The project owner selected **Option A — strict coordinated peer-pair upgrade** from `docs/PROTOCOL_V2_COMPATIBILITY_MATRIX.md`.
+
+- Existing v1↔v1 sessions may continue while both running endpoints remain on v1.
+- New sessions require matching protocol generations: v1↔v1 or v2↔v2.
+- Any new mixed v1↔v2 session is rejected. There is no automatic fallback and no optional legacy-v1 compatibility mode.
+- Both endpoints of each tunnel pair must be upgraded in one coordinated maintenance window.
+- If one endpoint restarts or is rolled back to v1 while its peer is v2, a new session is unavailable until both endpoints are restored to the same protocol generation.
+- This decision does not claim zero-downtime rolling upgrades and does not change the current implementation baseline: main remains protocol v1 until a separately gated v2 implementation is completed.
+
+The compatibility matrix and pre-implementation contract tests must implement this accepted policy. This decision closes the owner-policy choice only; it does **not** satisfy the compatibility-test prerequisite or F0 approval and does not authorize B2 runtime implementation.
+
 ## 1. Dedicated capability; no reuse of TCP forwarding
 
 - Add a distinct `IntegrityProbe` stream capability. It must never open the configured service destination, enter the TCP-forward relay path, or be accepted as `TcpForward`.
