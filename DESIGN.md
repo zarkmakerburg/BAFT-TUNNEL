@@ -205,6 +205,39 @@ The local Agent panel remains dependency-free unless a separate, evidence-backed
 
 ## 9. Persian RTL and English LTR
 
+Persian RTL and English LTR are complete application-shell modes, not text-alignment variants.
+
+### Application direction and navigation
+
+- Set the root document attributes together: Persian uses `<html lang="fa" dir="rtl">`; English uses `<html lang="en" dir="ltr">`. Apply direction before rendering the application shell to prevent layout flashes.
+- In Persian RTL, the primary desktop sidebar is anchored to the **right**. The mobile menu/hamburger trigger is placed at the **top-right** of the page header; opening it reveals the navigation drawer from the right. In English LTR, these positions are mirrored to the left.
+- Mirror the complete navigation composition: sidebar edge, drawer entry/exit direction, header control order, breadcrumbs, back/forward affordances, pagination direction, and directional disclosure indicators. Do not mirror icons whose meaning is not directional.
+- The drawer close control must remain at the drawer's leading/top edge and reachable by keyboard, touch, and screen reader. Lock background scrolling while a modal drawer is open, manage focus, close on Escape, and restore focus to its trigger.
+- Keep the same information architecture and feature hierarchy in both languages. Do not create separate, divergent navigation trees.
+
+### Layout implementation
+
+- Prefer CSS logical properties: `margin-inline-start/end`, `padding-inline-start/end`, `inset-inline-start/end`, `border-inline-start/end`, `text-align: start/end`, and `inline-size` / `block-size`.
+- Avoid hard-coded `left` / `right`, `margin-left/right`, `padding-left/right`, and layout-wide `row-reverse` as RTL fixes. Use direction-aware grid/flex composition and logical properties so one implementation supports both directions.
+- Define component placement relative to the inline axis. Verify sidebar width, page gutters, popovers, dropdown alignment, tooltips, menus, toast placement, dialogs, and floating controls in both directions.
+- Use `dir="auto"` only for genuinely user-generated unknown-direction text; explicitly isolate known LTR technical values.
+
+### Bidirectional content and data visualization
+
+- Mirror directional layout and navigation where appropriate, but do not mirror logos, icons with intrinsic meaning, charts/data semantics, code, IP addresses, ports, or technical identifiers.
+- Keep command lines, IP addresses, hostnames, fingerprints, hashes, UUIDs, URLs, and protocol tokens in LTR isolated runs (for example, `<bdi dir="ltr">` or an equivalent isolated code component).
+- Use locale-aware dates and numbers while retaining unambiguous machine-readable values in detail views. Prevent punctuation, parentheses, and adjacent Latin tokens from reordering Persian sentences.
+- Charts must preserve the semantic meaning of axes, chronological order, legends, and series. Direction may change label alignment and surrounding layout, but must not silently reverse the data or imply a different time sequence.
+- Test mixed Persian/English strings, punctuation, parentheses, numeric tables, copy/paste, validation messages, and narrow layouts.
+
+### RTL acceptance checks
+
+- At mobile and desktop breakpoints, the Persian hamburger/menu trigger is visibly on the right and the navigation drawer opens from the right; English mirrors this on the left.
+- Sidebar, header, breadcrumbs, tabs, pagination, menus, dialogs, form adornments, and notification placement follow the active direction without overlap or clipped content.
+- Keyboard focus order follows the visual/logical reading order; screen-reader names and announcements remain correct.
+- Switching language updates `lang`, `dir`, layout, and typography as one atomic change without stale directional styles.
+- No production layout depends on one-off left/right offsets or duplicated RTL-only component markup.
+
 - Persian is the primary product language; English is fully supported.
 - Set document direction and language at the application boundary, not with ad hoc per-component overrides.
 - Mirror directional layout and navigation where appropriate, but do not mirror logos, icons with intrinsic meaning, charts, code, IP addresses, ports, or technical identifiers.
