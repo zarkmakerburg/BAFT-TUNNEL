@@ -343,7 +343,7 @@ verify_unit_network_policy() {
   local side="$1" unit="$2" expected_allow="$3" properties
   properties="$(ssh_host "$side" "systemctl show '$unit' -p ActiveState -p IPAddressDeny -p IPAddressAllow --no-pager")"
   printf '%s\n' "$properties" | grep -Eq '^ActiveState=active$' || { echo "LAB unit is not active: $side/$unit" >&2; return 1; }
-  printf '%s\n' "$properties" | grep -Eq '^IPAddressDeny=any$' || { echo "LAB unit has no IPAddressDeny=any: $side/$unit" >&2; return 1; }
+  printf '%s\n' "$properties" | python3 -c 'import sys; lines=dict(line.split("=",1) for line in sys.stdin.read().splitlines() if "=" in line); denied=set(lines.get("IPAddressDeny","").split()); assert denied in ({"any"},{"0.0.0.0/0","::/0"}), lines' || { echo "LAB unit has no full IPv4+IPv6 IPAddressDeny policy: $side/$unit" >&2; return 1; }
   printf '%s\n' "$properties" | python3 -c 'import sys; lines=dict(line.split("=",1) for line in sys.stdin.read().splitlines() if "=" in line); allow=set(lines.get("IPAddressAllow","").split()); expected={"127.0.0.0/8","::1/128",sys.argv[1]}; assert expected <= allow, {"expected": sorted(expected), "actual": sorted(allow)}' "$expected_allow"
   echo "NETWORK_EGRESS_POLICY_READY host=$side unit=$unit allow=localhost,$expected_allow"
 }
@@ -361,7 +361,7 @@ done
 for side in iran abroad; do
   properties="$(ssh_host "$side" "systemctl show '$(agent_unit_for "$side")' -p ActiveState -p IPAddressDeny -p IPAddressAllow --no-pager")"
   printf '%s\n' "$properties" | grep -Eq '^ActiveState=active$' || { echo "Agent unit is not active: $side" >&2; exit 1; }
-  printf '%s\n' "$properties" | grep -Eq '^IPAddressDeny=any$' || { echo "Agent has no IPAddressDeny=any: $side" >&2; exit 1; }
+  printf '%s\n' "$properties" | python3 -c 'import sys; lines=dict(line.split("=",1) for line in sys.stdin.read().splitlines() if "=" in line); denied=set(lines.get("IPAddressDeny","").split()); assert denied in ({"any"},{"0.0.0.0/0","::/0"}), lines' || { echo "Agent has no full IPv4+IPv6 IPAddressDeny policy: $side" >&2; exit 1; }
   printf '%s\n' "$properties" | python3 -c 'import sys; lines=dict(line.split("=",1) for line in sys.stdin.read().splitlines() if "=" in line); assert set(lines.get("IPAddressAllow","").split()) == {"127.0.0.0/8","::1/128"}, lines'
 done
 
