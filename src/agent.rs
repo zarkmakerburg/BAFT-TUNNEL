@@ -814,8 +814,16 @@ impl PlanBody {
     }
 }
 
+fn check_code(id: &str, result: &str, evidence: String, code: String, params: Value) -> Value {
+    json!({"id": id, "result": result, "evidence": evidence, "code": code, "params": params})
+}
+
+fn check_with_params(id: &str, result: &str, evidence: String, params: Value) -> Value {
+    check_code(id, result, evidence, format!("pf.{id}.{result}"), params)
+}
+
 fn check(id: &str, result: &str, evidence: String) -> Value {
-    json!({"id": id, "result": result, "evidence": evidence})
+    check_with_params(id, result, evidence, json!({}))
 }
 
 async fn port_accepting(port: u16) -> bool {
@@ -861,19 +869,21 @@ async fn preflight(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_default();
         if crate::capabilities::supports_direction(req.engine.as_str(), &direction) {
-            checks.push(check(
+            checks.push(check_with_params(
                 "direction_support",
                 "pass",
                 format!(
                     "{} supports the {direction} direction in this build",
                     req.engine.as_str()
                 ),
+                json!({"engine": req.engine.as_str(), "direction": direction}),
             ));
         } else {
-            checks.push(check(
+            checks.push(check_with_params(
                 "direction_support",
                 "blocked",
                 format!("the {direction} direction is not operational for {} in this build (no real data path has been proven for it)", req.engine.as_str()),
+                json!({"engine": req.engine.as_str(), "direction": direction}),
             ));
         }
     }
@@ -901,12 +911,13 @@ async fn preflight(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
         // Installed instance: root writes the files through the setup helper (ADR-0026).
         let name = req.instance.as_deref().unwrap_or_default();
         checks.push(match ctx.setup.available(name) {
-            Ok(()) => check(
+            Ok(()) => check_with_params(
                 "setup_helper",
                 "pass",
                 format!("the root setup helper for {name} is installed; it writes the files with the service owners"),
+                json!({"instance": name}),
             ),
-            Err(why) => check("setup_helper", "blocked", why),
+            Err(why) => check_with_params("setup_helper", "blocked", why, json!({"instance": name})),
         });
     } else {
         checks.push(directory_writable_check(dir));
@@ -934,12 +945,13 @@ async fn preflight(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             )
         } else {
             match ctx.pki.available(name) {
-                Ok(()) => check(
+                Ok(()) => check_with_params(
                     "pki_helper",
                     "pass",
                     "the root PKI CSR helper is installed for this instance".into(),
+                    json!({"instance": name}),
                 ),
-                Err(why) => check("pki_helper", "blocked", why),
+                Err(why) => check_with_params("pki_helper", "blocked", why, json!({"instance": name})),
             }
         });
     }
@@ -982,13 +994,14 @@ async fn preflight(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
                             "certificate set is not installed yet; create or recover this node's CSR and import the signed certificate, CA and CRL in the panel before Init".into(),
                         ));
                     } else {
-                        checks.push(check(
+                        checks.push(check_with_params(
                             "pki_files",
                             "blocked",
                             format!(
                                 "partial or incomplete credentials; missing: {}",
                                 missing.join(", ")
                             ),
+                            json!({"missing": missing.join(", ")}),
                         ));
                     }
                 }
@@ -1010,26 +1023,28 @@ async fn preflight(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
     let serve = req.role == crate::setup::Role::Serve;
     let service_up = port_accepting(req.service_port).await;
     match (serve, service_up) {
-        (true, true) => checks.push(check("service_port", "pass", format!("something accepts connections on 127.0.0.1:{}", req.service_port))),
-        (true, false) => checks.push(check("service_port", "warning", format!("nothing accepts connections on 127.0.0.1:{} yet; start the service before users connect", req.service_port))),
-        (false, true) => checks.push(check("service_port", "warning", format!("127.0.0.1:{} is already in use on this host", req.service_port))),
-        (false, false) => checks.push(check("service_port", "pass", format!("127.0.0.1:{} is free", req.service_port))),
+        (true, true) => checks.push(check_code("service_port", "pass", format!("something accepts connections on 127.0.0.1:{}", req.service_port), "pf.service_port.serve_accepting".into(), json!({"port": req.service_port}))),
+        (true, false) => checks.push(check_code("service_port", "warning", format!("nothing accepts connections on 127.0.0.1:{} yet; start the service before users connect", req.service_port), "pf.service_port.serve_waiting".into(), json!({"port": req.service_port}))),
+        (false, true) => checks.push(check_code("service_port", "warning", format!("127.0.0.1:{} is already in use on this host", req.service_port), "pf.service_port.forward_busy".into(), json!({"port": req.service_port}))),
+        (false, false) => checks.push(check_code("service_port", "pass", format!("127.0.0.1:{} is free", req.service_port), "pf.service_port.forward_free".into(), json!({"port": req.service_port}))),
     }
     if serve {
         if port_accepting(req.tunnel_port).await {
-            checks.push(check(
+            checks.push(check_with_params(
                 "tunnel_port",
                 "warning",
                 format!(
                     "port {} already accepts connections here (possibly a running tunnel)",
                     req.tunnel_port
                 ),
+                json!({"port": req.tunnel_port}),
             ));
         } else {
-            checks.push(check(
+            checks.push(check_with_params(
                 "tunnel_port",
                 "pass",
                 format!("port {} is not in use on loopback", req.tunnel_port),
+                json!({"port": req.tunnel_port}),
             ));
         }
     }
@@ -1078,10 +1093,11 @@ async fn preflight(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
 /// something answers; it says nothing about who answers.
 async fn probe_peer(host: &str, port: u16) -> Value {
     let Ok(ip) = host.parse::<std::net::IpAddr>() else {
-        return check(
+        return check_with_params(
             "peer_reachability",
             "unknown",
             "the peer address is not an IP address; not probed".into(),
+            json!({"port": port}),
         );
     };
     match timeout(
@@ -1090,30 +1106,35 @@ async fn probe_peer(host: &str, port: u16) -> Value {
     )
     .await
     {
-        Ok(Ok(_)) => check(
+        Ok(Ok(_)) => check_with_params(
             "peer_reachability",
             "pass",
             format!(
                 "a TCP connection to the peer on port {port} was accepted (who answered is not verified)"
             ),
+            json!({"port": port}),
         ),
-        Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => check(
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => check_with_params(
             "peer_reachability",
             "warning",
             format!("the peer host answered but nothing listens on port {port} yet"),
+            json!({"port": port}),
         ),
-        Ok(Err(e)) => check(
+        Ok(Err(e)) => check_code(
             "peer_reachability",
             "blocked",
             format!("cannot reach the peer on port {port}: {e}"),
+            "pf.peer_reachability.error".into(),
+            json!({"port": port}),
         ),
-        Err(_) => check(
+        Err(_) => check_with_params(
             "peer_reachability",
             "blocked",
             format!(
                 "no answer from the peer on port {port} within {} s",
                 PEER_PROBE_TIMEOUT.as_secs()
             ),
+            json!({"port": port, "timeout_seconds": PEER_PROBE_TIMEOUT.as_secs()}),
         ),
     }
 }
@@ -1131,35 +1152,39 @@ fn directory_writable_check(dir: &std::path::Path) -> Value {
         dir.parent().filter(|p| p.is_dir())
     };
     let Some(target) = target else {
-        return check(
+        return check_with_params(
             "directory_writable",
             "unknown",
             "neither the setup directory nor its parent exists, so write access could not be checked".into(),
+            json!({"path": dir.display().to_string()}),
         );
     };
     let Ok(c_path) = std::ffi::CString::new(target.as_os_str().as_encoded_bytes()) else {
-        return check(
+        return check_with_params(
             "directory_writable",
             "blocked",
             "the setup path contains a NUL byte".into(),
+            json!({"path": dir.display().to_string()}),
         );
     };
     // SAFETY: c_path is a valid NUL-terminated string; access(2) only reads it.
     let ok = unsafe { libc::access(c_path.as_ptr(), libc::W_OK | libc::X_OK) } == 0;
     if ok {
-        check(
+        check_with_params(
             "directory_writable",
             "pass",
             format!("the agent can create files in {}", target.display()),
+            json!({"path": target.display().to_string()}),
         )
     } else {
-        check(
+        check_with_params(
             "directory_writable",
             "blocked",
             format!(
                 "the agent user cannot create files in {}; Apply cannot run here. Run the printed setup commands as root instead",
                 target.display()
             ),
+            json!({"path": target.display().to_string()}),
         )
     }
 }
@@ -1225,7 +1250,12 @@ fn preflight_report(checks: Vec<Value>) -> Value {
             let id = c["id"].as_str().unwrap_or("").to_string();
             let result = c["result"].as_str().unwrap_or("").to_string();
             let (scope, source) = check_meta(&id, &result);
-            c["code"] = json!(format!("pf.{id}.{result}"));
+            if c.get("code").is_none() {
+                c["code"] = json!(format!("pf.{id}.{result}"));
+            }
+            if c.get("params").is_none() {
+                c["params"] = json!({});
+            }
             c["scope"] = json!(scope);
             c["source"] = json!(source);
             c["checked_at"] = json!(now);
@@ -2630,8 +2660,19 @@ fn get_diagnostics(ctx: &Ctx) -> (u16, Value) {
     }
 }
 
+fn tier_with_params(
+    id: &str,
+    result: &str,
+    source: &str,
+    evidence: String,
+    params: Value,
+) -> Value {
+    json!({"id": id, "result": result, "source": source, "evidence": evidence,
+           "code": format!("diag.{id}.{result}"), "params": params})
+}
+
 fn tier(id: &str, result: &str, source: &str, evidence: String) -> Value {
-    json!({"id": id, "result": result, "source": source, "evidence": evidence})
+    tier_with_params(id, result, source, evidence, json!({}))
 }
 
 const STAGES: [&str; 4] = ["tcp", "secure_channel", "identity", "authorization"];
@@ -2673,27 +2714,29 @@ fn tier_next(id: &str, result: &str, dials_peer: bool) -> Option<&'static str> {
 fn report_next(unit: &Value, tiers: &[Value], verified: bool) -> Value {
     match unit["result"].as_str() {
         Some("inactive") => {
-            return json!({"action": "start", "text": "the tunnel unit is not running: press Start (it is then enabled at boot)"});
+            return json!({"action": "start", "code": "diag.next.start", "params": {}, "text": "the tunnel unit is not running: press Start (it is then enabled at boot)"});
         }
         Some("unknown") | None => {
-            return json!({"action": "check", "text": "the unit state could not be read: check baft-tunnel@NAME with systemctl status on this host, then run diagnostics again"});
+            return json!({"action": "check", "code": "diag.next.check", "params": {}, "text": "the unit state could not be read: check baft-tunnel@NAME with systemctl status on this host, then run diagnostics again"});
         }
         _ => {}
     }
     if verified {
-        return json!({"action": "none", "text": "nothing to do: the data path was observed; integrity stays Unknown (Verify/LAB only)"});
+        return json!({"action": "none", "code": "diag.next.none", "params": {}, "text": "nothing to do: the data path was observed; integrity stays Unknown (Verify/LAB only)"});
     }
     let blocker = tiers.iter().find(|t| {
         t["id"] != "integrity" && !matches!(t["result"].as_str(), Some("pass" | "not_applicable"))
     });
     match blocker {
         Some(t) if t.get("next").is_some() => {
-            json!({"action": "fix", "tier": t["id"], "text": t["next"]})
+            json!({"action": "fix", "tier": t["id"], "code": t["next_code"], "params": t["next_params"], "text": t["next"]})
         }
         Some(t) => {
-            json!({"action": "rerun", "tier": t["id"], "text": "no evidence for this tier yet: wait a minute (or start the peer), then run diagnostics again"})
+            json!({"action": "rerun", "tier": t["id"], "code": "diag.next.rerun_tier", "params": {"tier": t["id"]}, "text": "no evidence for this tier yet: wait a minute (or start the peer), then run diagnostics again"})
         }
-        None => json!({"action": "rerun", "text": "run diagnostics again in a minute"}),
+        None => {
+            json!({"action": "rerun", "code": "diag.next.rerun", "params": {}, "text": "run diagnostics again in a minute"})
+        }
     }
 }
 
@@ -2733,14 +2776,12 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
                     Some("unknown") | None => "unknown",
                     _ => "fail",
                 };
-                tier(
+                tier_with_params(
                     "tcp_reachability",
                     result,
                     "active_tcp_probe",
-                    format!(
-                        "{} (who answers is not verified)",
-                        c["evidence"].as_str().unwrap_or("")
-                    ),
+                    format!("{} (who answers is not verified)", c["evidence"].as_str().unwrap_or("")),
+                    json!({"port": addr.port()}),
                 )
             }
             Err(_) => tier(
@@ -2753,11 +2794,10 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
         (None, None) => match failed {
             // Only a client that got past the secure channel (a CA-issued certificate or the
             // enrolled Noise key) counts; an anonymous connection can come from anyone.
-            Some(i) if i >= 2 => tier(
-                "tcp_reachability",
-                "pass",
-                "last_failure",
+            Some(i) if i >= 2 => tier_with_params(
+                "tcp_reachability", "pass", "last_failure",
                 format!("an enrolled client reached this node over TCP at {failed_at}; a later stage failed"),
+                json!({"at_unix": failed_at}),
             ),
             _ => tier(
                 "tcp_reachability",
@@ -2787,17 +2827,19 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
                         "an inbound connection failed the handshake at {failed_at}; the sender is not identified"
                     ),
                 ),
-                Some(f) if f == i => tier(
+                Some(f) if f == i => tier_with_params(
                     id,
                     "fail",
                     "last_failure",
                     format!("the latest connection attempt failed at this stage at {failed_at}"),
+                    json!({"at_unix": failed_at}),
                 ),
-                Some(f) if f > i => tier(
+                Some(f) if f > i => tier_with_params(
                     id,
                     "pass",
                     "last_failure",
                     format!("passed in the attempt at {failed_at}; a later stage failed"),
+                    json!({"at_unix": failed_at}),
                 ),
                 Some(_) => tier(
                     id,
@@ -2817,16 +2859,10 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
     }
     let running = unit["result"] == "active" || ev.counters.is_some();
     tiers.push(match session {
-        Some(s) => tier(
-            "session",
-            "pass",
-            "unit_session",
-            format!(
-                "{} authorized session(s) with peer {} since {}",
-                s["authorized_sessions"],
-                s["peer_id"].as_str().unwrap_or("?"),
-                since
-            ),
+        Some(s) => tier_with_params(
+            "session", "pass", "unit_session",
+            format!("{} authorized session(s) with peer {} since {}", s["authorized_sessions"], s["peer_id"].as_str().unwrap_or("?"), since),
+            json!({"sessions": s["authorized_sessions"], "peer_id": s["peer_id"], "since_unix": since}),
         ),
         None if running => tier(
             "session",
@@ -2844,8 +2880,8 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
     let last_bidi = crate::observe::last_bidirectional(&samples);
     tiers.push(match (session, last_bidi) {
         (None, _) => tier("data_path", "unknown", "none", "not reached: no authorized session".into()),
-        (Some(_), Some(t)) if now.saturating_sub(t) <= DATA_WINDOW_S => tier("data_path", "pass", "unit_counters", format!("payload bytes were relayed in both directions at {t}")),
-        (Some(_), _) => tier("data_path", "unknown", "unit_counters", format!("no payload in both directions within {DATA_WINDOW_S} s; send traffic through the tunnel and run again")),
+        (Some(_), Some(t)) if now.saturating_sub(t) <= DATA_WINDOW_S => tier_with_params("data_path", "pass", "unit_counters", format!("payload bytes were relayed in both directions at {t}"), json!({"at_unix": t})),
+        (Some(_), _) => tier_with_params("data_path", "unknown", "unit_counters", format!("no payload in both directions within {DATA_WINDOW_S} s; send traffic through the tunnel and run again"), json!({"window_seconds": DATA_WINDOW_S})),
     });
     tiers.push(tier(
         "integrity",
@@ -2871,6 +2907,10 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
             remote,
         ) {
             t["next"] = json!(n);
+            let id = t["id"].as_str().unwrap_or("");
+            let result = t["result"].as_str().unwrap_or("");
+            t["next_code"] = json!(format!("diag.next.{id}.{result}"));
+            t["next_params"] = t["params"].clone();
         }
     }
     // Sending traffic only helps once a session exists; before that the session tier is the blocker.
@@ -3225,6 +3265,15 @@ mod tests {
         };
         assert_eq!(result("planner").as_deref(), Some("pass"));
         assert_eq!(result("directory").as_deref(), Some("warning"));
+        for check in v["checks"].as_array().unwrap() {
+            assert!(
+                check["code"]
+                    .as_str()
+                    .is_some_and(|code| code.starts_with("pf.")),
+                "{check}"
+            );
+            assert!(check["params"].is_object(), "{check}");
+        }
         for id in ["peer_reachability", "peer_identity", "firewall"] {
             assert_eq!(result(id).as_deref(), Some("unknown"), "{id}");
         }
@@ -3341,6 +3390,7 @@ mod tests {
         assert_eq!(up["scope"], "peer");
         assert_eq!(up["source"], "network-probe");
         assert_eq!(up["code"], "pf.peer_reachability.pass");
+        assert_eq!(up["params"]["port"], open);
         assert!(up["checked_at"].as_u64().unwrap() > 0);
         let down = run(closed).await;
         assert_eq!(down["result"], "warning", "{down}");
@@ -3819,6 +3869,18 @@ mod tests {
         );
         assert_eq!(d["highest_passed_tier"], "data_path");
         assert_eq!(d["verified"], true);
+        for tier in d["tiers"].as_array().unwrap() {
+            assert!(
+                tier["code"]
+                    .as_str()
+                    .is_some_and(|code| code.starts_with("diag.")),
+                "{tier}"
+            );
+            assert!(tier["params"].is_object(), "{tier}");
+        }
+        assert_eq!(d["tiers"][4]["code"], "diag.session.pass");
+        assert_eq!(d["tiers"][4]["params"]["peer_id"], "iran");
+        assert_eq!(d["next_action"]["code"], "diag.next.check"); // The test unit has no readable systemd state; never hide that Unknown.
         assert_eq!(
             get_json(&ctx, "/v1/diagnostics").await.1["at_unix"],
             d["at_unix"]
@@ -3869,6 +3931,9 @@ mod tests {
             ]
         );
         assert_eq!(d["highest_passed_tier"], "secure_channel");
+        assert_eq!(d["tiers"][2]["code"], "diag.identity.fail");
+        assert_eq!(d["tiers"][2]["next_code"], "diag.next.identity.fail");
+        assert_eq!(d["next_action"]["code"], "diag.next.check"); // Unit state is Unknown, so the unit-level action takes precedence.
         // An anonymous handshake failure on the listening node is not blamed on the peer.
         std::fs::write(
             run.join("last_failure.json"),

@@ -1,8 +1,8 @@
 # ADR-0017: remote CRL distribution and CA/pin rollover
 
-- **Status:** ACCEPTED (owner approved 2026-11-07; recommended A1+B1). Nothing here is implemented yet.
+- **Status:** ACCEPTED. Implementation correction (2026-11-11): A1 operator CRL push and B1 multi-CA/per-CA-CRL/dual-pin trust primitives are implemented and unit/mock tested. Real two-host U1 CRL renewal/push passed in [run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521); the complete CA+pin rollover sequence has **not** been exercised end-to-end on real LAB hosts. The original design-time status below is historical.
 - **Date:** 2026-11-07
-- **Scope:** Phase 1 two-node deployment, offline CA (ADR-0012, ADR-0015). Closes the open gates "remote CRL distribution" and "CA/pin rollover" as design only.
+- **Scope:** Phase 1 two-node deployment, offline CA (ADR-0012, ADR-0015). The approved design is implemented in local CLI/PKI helpers; distribution remains operator-initiated and nodes do not fetch trust material.
 
 ## Context
 
@@ -28,7 +28,7 @@ Constraints: the CA key stays offline; nodes must not gain signing authority; no
 | B2 Flag-day replacement | Stop both ends, replace CA, certs, pins, restart | Simplest code | Guaranteed outage; partial rollout leaves the tunnel down |
 | B3 Cross-signing | New CA cross-signed by old CA | Standard PKI pattern | Extra chain complexity; rustls path handling and CRL for the intermediate path need new code and tests |
 
-**Recommendation: B1.** Required changes (not yet built):
+**Recommendation: B1.** Required changes at the 2026-11-07 design checkpoint (implementation status superseded by the 2026-11-11 addendum below):
 1. Accept a bundle of CA certificates and a CRL per CA; revocation is checked against the CRL of the issuing CA.
 2. Accept up to two pins per peer (`peer_fingerprints`) during rollover; reject more than two.
 3. Rollover sequence: (a) issue new CA offline; (b) on both nodes add new CA + its CRL (activation helper, one node at a time); (c) issue new node certs, install, add new pins; (d) verify handshakes with the new certs on both directions; (e) remove old pins, then old CA, after a stated deadline. Each step has a rollback to the previous state.
@@ -38,10 +38,18 @@ Constraints: the CA key stays offline; nodes must not gain signing authority; no
 ## Consequences
 
 - With A1+B1 the CA never goes online and nodes never fetch trust material.
-- B1 adds new trust-parsing code and so needs the same adversarial testing as the existing TLS path; until implemented, CA/pin rollover remains an **open gate** and flag-day replacement is the only supported procedure.
+- At the design checkpoint, B1 trust parsing was an open gate. The multi-CA/per-CA-CRL/dual-pin primitives are now implemented and unit/mock tested; full CA/pin rollover remains unaccepted until exercised end-to-end on real two-host LAB.
 - Independent security review of B1 is recommended before release beyond pre-release; it was waived for the current pre-release, not performed.
 
 ## Decision requested
 
 1. Approve A1 for CRL distribution? (default: yes)
 2. Approve B1 for CA/pin rollover and the implementation work above? (default: yes)
+
+
+## 2026-11-11 implementation/evidence addendum
+
+- `scripts/pki/baft-pki.sh renew-crl`, `crl-status.sh`, `push-crl.sh` and guarded node-side activation implement A1. Real two-host evidence: [run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521), product-code SHA `8be74376176442106669f4a81293f0865629ecaf` (ancestor of current main): 30-day CRL, CRL number `0x1002→0x1003`, both nodes `crl_state=ok`, 2 MiB recovery/integrity, short/replayed CRLs refused.
+- B1 trust primitives are implemented: 1–4 CA certificates with one CRL per issuer, up to two peer pins, bundle validation and guarded activation/rollback. Unit/mock tests cover parsing and refusal cases.
+- The full CA+pin certificate rollover has not yet been executed end-to-end on the real two-host LAB. Do not describe the entire operational rollover as LAB accepted.
+- The original option analysis and "not yet built" statements above record the 2026-11-07 design checkpoint and are superseded only where this addendum states verified implementation.

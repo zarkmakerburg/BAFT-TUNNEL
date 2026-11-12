@@ -409,7 +409,7 @@ PR #109 merged as main `4852ecf`. What the agent (`--instance NAME`) now serves:
 | Exact-SHA CI, main `4852ecf` | phase1-rust run 42545957126: success |
 | Real-host LAB, main `4852ecf` (local build, binary sha256 `6160c9be…d5e4`) | phase1-two-host-e2e run 42545941726, mvp=1: PASS. Both hosts `p1_evidence=1`: traffic from_peer = to_peer = 2,162,825 bytes (64 KiB + 2 MiB sent), all tiers pass up to data_path, integrity unknown, state `carrying_traffic` with the correct peer id, audit with actor and no token. After revocation the dialing node reports `secure_channel: fail` (`p1_revoked_tier=secure_channel`). Cleanup: uninstall proven, listeners/units unchanged, no BAFT firewall rules; unrelated nft address-set drift on abroad (as in P0-5) |
 
-Open: remote Job receipts (need the P1-1 enrollment ADR); counter history beyond the agent's one-hour memory; Preflight evidence codes, read-only firewall inspection and "Add from Link" (P1 items 6 to 8).
+Open at this historical snapshot: remote Job receipts (need the P1-1 enrollment ADR); counter history beyond the agent's one-hour memory; read-only firewall inspection and "Add from Link" (P1 items 7 to 8). B1 structured localized evidence was implemented and its exact-head CI passed later (recorded below).
 
 ## 2026-11-11 — Current main acceptance addendum (U1 + D2)
 
@@ -423,6 +423,23 @@ Current repository baseline: `main` `b2c8ab5020754cad15485371a1f062de4092229f`.
 
 ## 2026-11-11 — U7 harness correction on current main
 
-- Current main advanced to `1219f547e6d9c2fe9605385f37a7d5dd8dab2995` through PR #162. The change corrects the two remote installation checksum commands to execute on the LAB hosts; it does not change the product runtime.
-- Trusted U7 run [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) is tied to this main SHA. `validate-release-tags` and `verify-release-assets` completed successfully. `two-host-u7-lab` is still in progress; no two-host acceptance result is claimed yet.
+- Historical product parent `1219f547e6d9c2fe9605385f37a7d5dd8dab2995` includes PR #162's U7 host-side checksum correction. Main subsequently advanced through U8 documentation PR #165 to `52a2825254f8254386f71af7220c7cb244200fc2`.
+- At the time of this note, trusted U7 run [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) had passed release-tag and asset checks while the two-host stage was still running. The final accepted outcome is recorded in the following U7 addendum.
 - This addendum preserves the prior evidence and does not close or reopen product acceptance gates by itself.
+
+
+## 2026-11-11 — TRUSTED U7 SIGNED RC.7 TWO-HOST ACCEPTANCE PASS
+
+- Workflow: [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428), pinned to product parent SHA `1219f547e6d9c2fe9605385f37a7d5dd8dab2995`. All three jobs passed: release-tag ancestry, signed RC.7/RC.5 asset verification, and real two-host U7 acceptance.
+- Package: signed `v0.1.0-rc.7`; previous signed prerelease RC.5 used for cross-version upgrade. The release package and binary were verified by the workflow before transfer to the LAB runner.
+- Two-host result: `PHASE1_TWO_HOST_E2E=PASS`. `OPS_RESULT` recorded `integrity_64k_2m=1`, `cross_version_update=1`, `backup_restore=1`, `bad_update_rolled_back=1`, `revoked_refused=1`, `uninstalled=1`, `soak_s=3600`, `rounds=264`, `failed_probes=0`, `max_probe_s=5`, `restarts=0->0/0->0`, and `baft_fw_rules=0`.
+- The run exercised clean install and guided Direct setup, Apply start on serve and forward, diagnostics/status/traffic/audit, 64 KiB and 2 MiB matching SHA-256 payloads, RC.5→RC.7 upgrade, a one-hour traffic soak, SIGKILL/restart and Apply recovery, backup/simulated loss/restore with owner/mode preservation, guarded update and automatic rollback of a failing binary, certificate revocation refusal, uninstall and cleanup.
+- Limits: `ready` and diagnostics `integrity` remained Unknown by design. U7 ran Direct only; `crl_push=0` (U1 has separate two-host evidence in run 42656507521). No Reverse, BAFT, Noise, Stable or production claim. `unrelated_fw_drift=abroad` recorded a six-line address-set delta; no BAFT-TUNNEL firewall rules existed, but the external source remains unknown (S10).
+
+
+## 2026-11-11 — B1 STRUCTURED LOCALIZED EVIDENCE EXACT-HEAD CI PASS
+
+- Draft implementation was first tested at `cc37f48bbfe96542c5c657715d0b9c01370de365` in [PR #164](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/164). All four workflow groups passed: phase1-rust, phase0, fuzz-smoke and same-SHA package/signature verification.
+- Linux Rust exact-head checks passed dependency audit, license policy, formatting, focused tests, Clippy, release build, staged installer/credential/rollback, signed one-line installer, Persian/English interactive menu/PTY, encrypted credential delivery, installed systemd lifecycle, and CRL activation/rollback. Ubuntu 22.04 baseline, panel UI, offline CA and fuzz-smoke all passed.
+- Two earlier assertions were corrected without weakening Unknown handling: unreadable systemd unit state keeps the unit-level check action as next step; the identity-tier `next_code` is asserted separately.
+- The original PR #164 branch is behind main after U8 PR #165 merged and was closed as superseded. B1 was synchronized onto post-U8 main in [PR #168](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/168). All four exact-head workflow groups passed on code-bearing head `ec730c3559a0d81a180c9051183fc0ff3dfe4052`: Rust, Ubuntu 22.04/systemd 249, panel UI, offline CA, phase0, fuzz-smoke and same-SHA package/signature. A final static review then found duplicate `diag.next.*` entries in both language maps which shadowed explanatory translations. The latest PR revision removes those duplicates and adds a regression assertion; exact-head CI on that revision is required before merge. No LAB or runtime operation was performed for B1.
