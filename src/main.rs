@@ -176,6 +176,9 @@ enum SetupCommand {
         role: setup::Role,
         #[arg(long, value_enum)]
         direction: ConnectionDirection,
+        /// Protocol generation; both nodes must select the same value (1 or 2).
+        #[arg(long, default_value_t = 1)]
+        protocol_version: u16,
         #[arg(long)]
         node_id: String,
         #[arg(long)]
@@ -208,6 +211,9 @@ enum SetupCommand {
         role: setup::Role,
         #[arg(long, value_enum)]
         direction: ConnectionDirection,
+        /// Protocol generation; both nodes must select the same value (1 or 2).
+        #[arg(long, default_value_t = 1)]
+        protocol_version: u16,
         #[arg(long)]
         node_id: String,
         #[arg(long)]
@@ -463,6 +469,7 @@ async fn run() -> Result<()> {
                     engine,
                     role,
                     direction,
+                    protocol_version,
                     node_id,
                     peer_id,
                     tunnel_id,
@@ -479,6 +486,7 @@ async fn run() -> Result<()> {
                 engine,
                 role,
                 direction,
+                protocol_version,
                 node_id,
                 peer_id,
                 tunnel_id,
@@ -511,6 +519,7 @@ async fn run() -> Result<()> {
                     engine,
                     role,
                     direction,
+                    protocol_version,
                     node_id,
                     peer_id,
                     tunnel_id,
@@ -527,6 +536,7 @@ async fn run() -> Result<()> {
                     engine,
                     role,
                     direction,
+                    protocol_version,
                     node_id,
                     peer_id,
                     tunnel_id,
