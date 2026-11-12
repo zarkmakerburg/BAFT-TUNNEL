@@ -537,8 +537,6 @@ fn safe_reason(error: &anyhow::Error) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "linux")]
-    use std::os::unix::fs::MetadataExt;
 
     #[test]
     fn probe_failures_are_distinct_from_unknown_transport_outcomes() {
@@ -577,7 +575,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn socket_stale_cleanup_restart_and_instance_isolation() {
-        use std::{os::unix::fs::PermissionsExt, time::Duration};
+        use std::{os::unix::fs::{MetadataExt, PermissionsExt}, time::Duration};
         use tokio::net::UnixListener;
 
         let root = std::env::temp_dir().join(format!(
