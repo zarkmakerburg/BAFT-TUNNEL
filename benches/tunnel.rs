@@ -16,12 +16,16 @@ mod baft_engine;
 mod capabilities;
 #[path = "../src/config.rs"]
 mod config;
+#[path = "../src/control_socket.rs"]
+mod control_socket;
 #[path = "../src/engine.rs"]
 mod engine;
 #[path = "../src/engine_store.rs"]
 mod engine_store;
 #[path = "../src/handshake.rs"]
 mod handshake;
+#[path = "../src/integrity_probe.rs"]
+mod integrity_probe;
 #[path = "../src/key_custody.rs"]
 mod key_custody;
 #[path = "../src/noise.rs"]
@@ -86,6 +90,7 @@ mod setup_bench {
             engine: config::EngineKind::TcpTls,
             role: setup::Role::Forward,
             direction: ConnectionDirection::Direct,
+            protocol_version: authorization::PROTOCOL_V1,
             node_id: "node-iran".into(),
             peer_id: "node-abroad".into(),
             tunnel_id: "demo-tunnel".into(),
@@ -104,6 +109,7 @@ mod setup_bench {
             tunnel_id: "demo-tunnel".into(),
             engine: "tcp-tls".into(),
             direction: "direct".into(),
+            protocol_version: authorization::PROTOCOL_V1,
             role: setup::Role::Serve,
             node_id: "node-abroad".into(),
             peer_id: "node-iran".into(),

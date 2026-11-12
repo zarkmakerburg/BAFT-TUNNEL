@@ -97,3 +97,7 @@ echo "  token:  /var/lib/baft-tunnel-agent/token (read it as root: sudo cat ...;
 echo "  helper: the agent can request start, stop, enable --now and disable --now of baft-tunnel@$INSTANCE only,"
 echo "          setup init/join and bounded PKI CSR/certificate import for $INSTANCE in /etc/baft-tunnel (panel enrollment)."
 echo "The tunnel itself was not started."
+if [[ "$STAGING" == "0" ]] && systemctl is-active --quiet "baft-tunnel@$INSTANCE.service"; then
+  echo "  note: the tunnel is already active; restart it once to enable integrity probes."
+  echo "        It was not restarted automatically to avoid interrupting traffic."
+fi

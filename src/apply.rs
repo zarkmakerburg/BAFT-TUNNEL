@@ -1001,6 +1001,7 @@ mod tests {
                 engine: EngineKind::NoiseTcp,
                 role,
                 direction: ConnectionDirection::Direct,
+                protocol_version: crate::authorization::PROTOCOL_V1,
                 node_id: if role == Role::Serve {
                     "abroad"
                 } else {

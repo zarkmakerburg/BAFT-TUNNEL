@@ -541,6 +541,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/engines"
             | "/v1/traffic"
             | "/v1/diagnostics"
+            | "/v1/verify"
             | "/v1/tunnel/lifecycle"
             | "/v1/setup/bundle"
             | "/v1/setup/bundle/inspect"
@@ -564,6 +565,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         ("GET", "/v1/traffic") => (200, traffic(ctx)),
         ("GET", "/v1/diagnostics") => get_diagnostics(ctx),
         ("POST", "/v1/diagnostics") => (200, run_diagnostics(ctx, config).await),
+        ("POST", "/v1/verify") => verify_integrity(ctx, config, body).await,
         ("GET", "/v1/history") => (200, history(ctx)),
         ("GET", "/v1/security") => (200, security(config)),
         ("GET", "/v1/audit") => get_audit(ctx),
@@ -773,12 +775,18 @@ fn inspect_bundle(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
     )
 }
 
+fn default_setup_protocol_version() -> u16 {
+    crate::authorization::PROTOCOL_V1
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PlanBody {
     engine: crate::config::EngineKind,
     role: crate::setup::Role,
     direction: crate::authorization::ConnectionDirection,
+    #[serde(default = "default_setup_protocol_version")]
+    protocol_version: u16,
     node_id: String,
     peer_id: String,
     tunnel_id: String,
@@ -796,6 +804,7 @@ impl PlanBody {
             engine: self.engine,
             role: self.role,
             direction: self.direction,
+            protocol_version: self.protocol_version,
             node_id: self.node_id.clone(),
             peer_id: self.peer_id.clone(),
             tunnel_id: self.tunnel_id.clone(),
@@ -2167,7 +2176,8 @@ fn setup_plan(body: &[u8]) -> (u16, Value) {
         let role = enum_arg(&serde_json::to_value(req.role)?);
         let direction = enum_arg(&serde_json::to_value(req.direction)?);
         let mut init = format!(
-            "baft-tunnel setup init --engine {engine} --role {role} --direction {direction} --node-id {} --peer-id {} --tunnel-id {} --service-port {} --tunnel-port {} --dir {dir}",
+            "baft-tunnel setup init --engine {engine} --role {role} --direction {direction} --protocol-version {} --node-id {} --peer-id {} --tunnel-id {} --service-port {} --tunnel-port {} --dir {dir}",
+            req.protocol_version,
             shell_quote(&req.node_id)?,
             shell_quote(&req.peer_id)?,
             shell_quote(&req.tunnel_id)?,
@@ -2273,6 +2283,274 @@ fn crl_state(remaining: Option<i64>) -> &'static str {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IntegrityVerifyBody {
+    idempotency_key: String,
+}
+
+const INTEGRITY_RECEIPTS_FILE: &str = "integrity-probe-receipts.json";
+const INTEGRITY_RECEIPTS_MAX: usize = 64;
+
+fn integrity_request_hash(key: &str, config: &RuntimeConfig) -> String {
+    let material = json!({
+        "operation": "integrity_probe",
+        "idempotency_key": key,
+        "node_id": config.ids().0,
+        "peer_id": config.ids().1,
+        "tunnel_id": config.ids().2,
+        "direction": config.direction_name(),
+    });
+    hex::encode(Sha256::digest(material.to_string().as_bytes()))
+}
+
+fn load_integrity_receipts(dir: &Path) -> Result<Value> {
+    match std::fs::read(dir.join(INTEGRITY_RECEIPTS_FILE)) {
+        Ok(bytes) => {
+            let store: Value = serde_json::from_slice(&bytes)?;
+            if store["version"] != 1 || !store["entries"].is_array() {
+                bail!("integrity receipt store has an unsupported schema");
+            }
+            Ok(store)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(json!({"version": 1, "entries": []}))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn save_integrity_receipts(dir: &Path, store: &Value) -> Result<()> {
+    write_private(
+        dir,
+        INTEGRITY_RECEIPTS_FILE,
+        serde_json::to_string(store)?.as_bytes(),
+    )
+}
+
+/// A process restart can leave an in-progress receipt behind. After 60 seconds no original
+/// operation can still be active; close it as Unknown so retries never silently launch a second
+/// operation using the same idempotency key.
+fn expire_stale_integrity_receipts(store: &mut Value, now: u64) -> bool {
+    let Some(entries) = store["entries"].as_array_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    for entry in entries {
+        if entry["state"] != "in_progress" {
+            continue;
+        }
+        let created = entry["created_unix"].as_u64().unwrap_or(0);
+        if created > now || now.saturating_sub(created) <= 60 {
+            continue;
+        }
+        let key = entry["key"].as_str().unwrap_or_default().to_owned();
+        entry["state"] = json!("completed");
+        entry["completed_unix"] = json!(now);
+        entry["http_status"] = json!(200);
+        entry["response"] = json!({
+            "result": "unknown",
+            "reason": "request_interrupted",
+            "bytes": 0,
+            "sha256_match": false,
+            "timestamp": now,
+            "receipt_id": key,
+            "replayed": false,
+        });
+        changed = true;
+    }
+    changed
+}
+
+async fn verify_integrity(ctx: &Ctx, config: &RuntimeConfig, body: &[u8]) -> (u16, Value) {
+    let Some(state_dir) = ctx.state_dir.as_deref() else {
+        return (
+            409,
+            json!({"result":"unknown","reason":"audit_unavailable"}),
+        );
+    };
+    let request: IntegrityVerifyBody = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(_) => return (422, json!({"error":"invalid request"})),
+    };
+    if !crate::apply::valid_key(&request.idempotency_key) {
+        return (
+            422,
+            json!({"error":"idempotency_key must be 8-64 characters of A-Z a-z 0-9 - _"}),
+        );
+    }
+
+    // Serialize probe operations so the durable receipt journal cannot double-start on retry.
+    let _guard = ctx.lock.lock().await;
+    let request_sha256 = integrity_request_hash(&request.idempotency_key, config);
+    let mut receipts = match load_integrity_receipts(state_dir) {
+        Ok(receipts) => receipts,
+        Err(_) => {
+            return (
+                500,
+                json!({"result":"unknown","reason":"receipt_store_unavailable"}),
+            );
+        }
+    };
+    if expire_stale_integrity_receipts(&mut receipts, unix_now())
+        && save_integrity_receipts(state_dir, &receipts).is_err()
+    {
+        return (
+            500,
+            json!({"result":"unknown","reason":"receipt_store_unavailable"}),
+        );
+    }
+
+    let existing_index = receipts["entries"].as_array().and_then(|entries| {
+        entries
+            .iter()
+            .position(|entry| entry["key"].as_str() == Some(request.idempotency_key.as_str()))
+    });
+    if let Some(index) = existing_index {
+        let entry = &receipts["entries"][index];
+        if entry["request_sha256"].as_str() != Some(request_sha256.as_str()) {
+            return (409, json!({"error":"idempotency_conflict"}));
+        }
+        if entry["state"] == "completed" && entry["response"].is_object() {
+            let mut replay = entry["response"].clone();
+            if let Some(fields) = replay.as_object_mut() {
+                fields.insert("replayed".into(), json!(true));
+            }
+            let status = entry["http_status"].as_u64().unwrap_or(200) as u16;
+            return (status, replay);
+        }
+        return (
+            409,
+            json!({
+                "result": "unknown",
+                "reason": "request_in_progress",
+                "receipt_id": request.idempotency_key,
+            }),
+        );
+    }
+
+    {
+        let entries = receipts["entries"]
+            .as_array_mut()
+            .expect("validated receipt entries");
+        if entries.len() >= INTEGRITY_RECEIPTS_MAX {
+            if let Some(index) = entries
+                .iter()
+                .position(|entry| entry["state"] == "completed")
+            {
+                entries.remove(index);
+            } else {
+                return (
+                    503,
+                    json!({"result":"unknown","reason":"receipt_store_full"}),
+                );
+            }
+        }
+        entries.push(json!({
+            "key": request.idempotency_key.clone(),
+            "request_sha256": request_sha256,
+            "state": "in_progress",
+            "created_unix": unix_now(),
+            "response": null,
+        }));
+    }
+    if save_integrity_receipts(state_dir, &receipts).is_err() {
+        return (
+            500,
+            json!({"result":"unknown","reason":"receipt_store_unavailable"}),
+        );
+    }
+
+    let probe = match ctx.runtime_dir.as_deref() {
+        Some(runtime_dir) => {
+            match crate::control_socket::request(&runtime_dir.join("control.sock")).await {
+                Ok(response) => response,
+                Err(_) => crate::control_socket::ProbeControlResponse {
+                    result: "unknown".into(),
+                    reason: Some("control_unavailable".into()),
+                    bytes: 0,
+                    sha256_match: false,
+                    duration_ms: None,
+                    timestamp: unix_now(),
+                },
+            }
+        }
+        None => crate::control_socket::ProbeControlResponse {
+            result: "unknown".into(),
+            reason: Some("control_unavailable".into()),
+            bytes: 0,
+            sha256_match: false,
+            duration_ms: None,
+            timestamp: unix_now(),
+        },
+    };
+
+    let resource = format!(
+        "integrity_probe/tunnel/{}/peer/{}/direction/{}",
+        config.ids().2,
+        config.ids().1,
+        config.direction_name()
+    );
+    let audit_result = audit(
+        state_dir,
+        ctx,
+        AuditEvent {
+            action: "integrity_probe",
+            result: probe.result.as_str(),
+            resource,
+            node: Some(config.ids().0),
+            instance: ctx.instance.as_deref(),
+            sha256: &request_sha256,
+            detail: probe.reason.as_deref().unwrap_or("sha256_verified"),
+            receipt_id: Some(&request.idempotency_key),
+        },
+    );
+
+    let mut response = serde_json::to_value(probe)
+        .unwrap_or_else(|_| json!({"result":"unknown","reason":"response_encoding_failed"}));
+    if let Some(fields) = response.as_object_mut() {
+        fields.insert("peer_id".into(), json!(config.ids().1));
+        fields.insert("tunnel_id".into(), json!(config.ids().2));
+        fields.insert("direction".into(), json!(config.direction_name()));
+        fields.insert("receipt_id".into(), json!(request.idempotency_key.clone()));
+        fields.insert("replayed".into(), json!(false));
+    }
+    let status = if audit_result.is_err() {
+        response = json!({
+            "result":"unknown",
+            "reason":"audit_failed",
+            "bytes":0,
+            "sha256_match":false,
+            "timestamp":unix_now(),
+            "peer_id":config.ids().1,
+            "tunnel_id":config.ids().2,
+            "direction":config.direction_name(),
+            "receipt_id":request.idempotency_key.clone(),
+            "replayed":false,
+        });
+        500
+    } else {
+        200
+    };
+
+    let entries = receipts["entries"].as_array_mut().expect("receipt entries");
+    if let Some(entry) = entries
+        .iter_mut()
+        .find(|entry| entry["key"].as_str() == Some(request.idempotency_key.as_str()))
+    {
+        entry["state"] = json!("completed");
+        entry["completed_unix"] = json!(unix_now());
+        entry["http_status"] = json!(status);
+        entry["response"] = response.clone();
+    }
+    if save_integrity_receipts(state_dir, &receipts).is_err() {
+        return (
+            500,
+            json!({"result":"unknown","reason":"receipt_store_unavailable"}),
+        );
+    }
+    (status, response)
+}
 fn get_audit(ctx: &Ctx) -> (u16, Value) {
     let Some(dir) = &ctx.state_dir else {
         return (404, json!({"error": "desired state is disabled"}));
@@ -2551,7 +2829,79 @@ fn stored_diagnostics(ctx: &Ctx) -> Option<Value> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
-const INTEGRITY_UNKNOWN: &str = "payload integrity is measured only by an end-to-end echo probe (Verify/LAB); the agent never reads tunnel payload";
+fn last_integrity_probe(ctx: &Ctx) -> Option<Value> {
+    let dir = ctx.state_dir.as_ref()?;
+    let mut latest: Option<Value> = None;
+    for name in [AUDIT_ROTATED, AUDIT_FILE] {
+        for line in audit_tail(&dir.join(name)).lines() {
+            let Ok(event) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if event["action"] != "integrity_probe" {
+                continue;
+            }
+            let timestamp = event["ts"].as_u64().unwrap_or(0);
+            if latest
+                .as_ref()
+                .and_then(|value| value["timestamp"].as_u64())
+                .is_none_or(|current| timestamp >= current)
+            {
+                let Some(result) = event["result"].as_str() else {
+                    continue;
+                };
+                if !matches!(result, "pass" | "fail" | "unknown") {
+                    continue;
+                }
+                latest = Some(json!({
+                    "result": result,
+                    "reason": event["detail"],
+                    "timestamp": timestamp,
+                    "source": "in_product_probe",
+                }));
+            }
+        }
+    }
+    latest
+}
+
+const INTEGRITY_UNKNOWN: &str =
+    "no recent in-product integrity probe; run Test tunnel explicitly (ready remains Unknown)";
+
+fn integrity_tier(last_probe: Option<Value>, now: u64) -> Value {
+    let timestamp = last_probe
+        .as_ref()
+        .and_then(|probe| probe["timestamp"].as_u64());
+    let age = timestamp.map(|at| now.saturating_sub(at));
+    let fresh = timestamp.is_some_and(|at| at <= now)
+        && age.is_some_and(|seconds| seconds <= DATA_WINDOW_S);
+    let result = if fresh {
+        last_probe
+            .as_ref()
+            .and_then(|probe| probe["result"].as_str())
+            .unwrap_or("unknown")
+    } else {
+        "unknown"
+    };
+    let reason = if fresh {
+        last_probe
+            .as_ref()
+            .and_then(|probe| probe["reason"].as_str())
+            .unwrap_or("probe_result_unavailable")
+    } else if last_probe.is_some() {
+        "stale_probe"
+    } else {
+        INTEGRITY_UNKNOWN
+    };
+    json!({
+        "result": result,
+        "reason": reason,
+        "source": if fresh { Some("in_product_probe") } else { None },
+        "timestamp": if fresh { timestamp } else { None },
+        "age_s": age,
+        "freshness_s": DATA_WINDOW_S,
+        "last_probe": last_probe,
+    })
+}
 
 /// End-to-end tunnel state as separate evidence tiers (ADR-0024). The summary `state` is the
 /// highest tier actually observed; it never says "ready" and never implies integrity.
@@ -2584,6 +2934,7 @@ async fn tunnel_status(ctx: &Ctx, config: &RuntimeConfig, listening: bool) -> Va
         "down"
     };
     let stored = stored_diagnostics(ctx);
+    let last_probe = last_integrity_probe(ctx);
     json!({
         "state": state,
         "observed_unix": now,
@@ -2606,7 +2957,7 @@ async fn tunnel_status(ctx: &Ctx, config: &RuntimeConfig, listening: bool) -> Va
                 "window_s": DATA_WINDOW_S,
                 "last_bidirectional_unix": last_bidi,
             }),
-            "integrity": {"result": "unknown", "reason": INTEGRITY_UNKNOWN},
+            "integrity": integrity_tier(last_probe, now),
         },
         "last_failure": ev.failure,
         "last_verified_unix": stored.as_ref().and_then(|d| d["verified_unix"].as_u64()),
@@ -2722,7 +3073,28 @@ fn report_next(unit: &Value, tiers: &[Value], verified: bool) -> Value {
         _ => {}
     }
     if verified {
-        return json!({"action": "none", "code": "diag.next.none", "params": {}, "text": "nothing to do: the data path was observed; integrity stays Unknown (Verify/LAB only)"});
+        let integrity_result = tiers
+            .iter()
+            .find(|item| item["id"] == "integrity")
+            .and_then(|item| item["result"].as_str())
+            .unwrap_or("unknown");
+        let text = match integrity_result {
+            "pass" => {
+                "the in-product 64 KiB integrity probe passed for this peer, tunnel and time; Apply ready remains Unknown"
+            }
+            "fail" => {
+                "the latest integrity probe failed; inspect the reported reason and test again after correcting the path"
+            }
+            _ => {
+                "the data path was observed; integrity is Unknown or stale—use the explicit Test tunnel action"
+            }
+        };
+        let code = match integrity_result {
+            "pass" => "diag.next.integrity_pass",
+            "fail" => "diag.next.integrity_fail",
+            _ => "diag.next.integrity_unknown",
+        };
+        return json!({"action": "none", "code": code, "params": {}, "text": text});
     }
     let blocker = tiers.iter().find(|t| {
         t["id"] != "integrity" && !matches!(t["result"].as_str(), Some("pass" | "not_applicable"))
@@ -2883,11 +3255,21 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
         (Some(_), Some(t)) if now.saturating_sub(t) <= DATA_WINDOW_S => tier_with_params("data_path", "pass", "unit_counters", format!("payload bytes were relayed in both directions at {t}"), json!({"at_unix": t})),
         (Some(_), _) => tier_with_params("data_path", "unknown", "unit_counters", format!("no payload in both directions within {DATA_WINDOW_S} s; send traffic through the tunnel and run again"), json!({"window_seconds": DATA_WINDOW_S})),
     });
-    tiers.push(tier(
+    let integrity = integrity_tier(last_integrity_probe(ctx), now);
+    tiers.push(tier_with_params(
         "integrity",
-        "unknown",
-        "none",
-        INTEGRITY_UNKNOWN.into(),
+        integrity["result"].as_str().unwrap_or("unknown"),
+        integrity["source"].as_str().unwrap_or("none"),
+        integrity["reason"]
+            .as_str()
+            .unwrap_or(INTEGRITY_UNKNOWN)
+            .to_owned(),
+        json!({
+            "timestamp": integrity["timestamp"],
+            "age_s": integrity["age_s"],
+            "freshness_s": integrity["freshness_s"],
+            "last_probe": integrity["last_probe"],
+        }),
     ));
 
     let mut highest = Value::Null;
@@ -2898,7 +3280,7 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
             _ => break,
         }
     }
-    let verified = highest == "data_path";
+    let verified = highest == "data_path" || highest == "integrity";
     let remote = config.remote().is_some();
     for t in &mut tiers {
         if let Some(n) = tier_next(
@@ -2935,7 +3317,7 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
         "verified": verified,
         "verified_unix": if verified { Some(now) } else { previous },
         "next_action": next_action,
-        "note": "each tier is separate evidence; TCP reachability alone never means a working tunnel, and integrity stays unknown",
+        "note": "each tier is separate evidence; TCP reachability alone never means a working tunnel; integrity is Pass only for a recent explicit authenticated probe, and ready remains unknown",
     });
     if let Some(dir) = &ctx.state_dir {
         let _ = write_private(dir, DIAGNOSTICS_FILE, report.to_string().as_bytes());
@@ -3589,8 +3971,31 @@ mod tests {
         let (code, out) = call(None, "POST", "/v1/setup/plan", Some(TOKEN), &body).await;
         assert_eq!(code, 200, "{out}");
         assert!(out.contains("setup init --engine noise-tcp --role serve --direction direct"));
+        assert!(out.contains("--protocol-version 1"));
+        let response_body = out.split("\r\n\r\n").nth(1).unwrap();
+        let plan: Value = serde_json::from_str(response_body).unwrap();
+        assert_eq!(plan["config"]["protocol_version"], 1);
         assert!(out.contains("\"applied\":false"));
         assert!(!std::path::Path::new("/etc/baft-tunnel/config.json").exists());
+    }
+
+    #[tokio::test]
+    async fn wizard_plan_propagates_protocol_v2_and_rejects_external_baft_v2() {
+        let body = json!({
+            "engine": "noise-tcp", "role": "serve", "direction": "direct", "protocol_version": 2,
+            "node_id": "node-a", "peer_id": "node-b", "tunnel_id": "tunnel-1", "service_port": 8080
+        })
+        .to_string();
+        let (code, out) = call(None, "POST", "/v1/setup/plan", Some(TOKEN), &body).await;
+        assert_eq!(code, 200, "{out}");
+        assert!(out.contains("--protocol-version 2"));
+        let response_body = out.split("\r\n\r\n").nth(1).unwrap();
+        let plan: Value = serde_json::from_str(response_body).unwrap();
+        assert_eq!(plan["config"]["protocol_version"], 2);
+
+        let external_baft = body.replace("noise-tcp", "baft");
+        let (code, _) = call(None, "POST", "/v1/setup/plan", Some(TOKEN), &external_baft).await;
+        assert_eq!(code, 422);
     }
 
     #[tokio::test]
@@ -3751,14 +4156,220 @@ mod tests {
             "diag.col.next",
             "diag.next",
             "diag.next.start",
+            "verify.title",
+            "verify.run",
+            "verify.pass",
+            "verify.pass.prefix",
+            "verify.pass.bytes",
+            "verify.pass.duration",
+            "verify.reason.unsupported_protocol",
+            "verify.reason.request_interrupted",
+            "verify.reason.audit_failed",
+            "diag.next.integrity_pass",
+            "diag.next.integrity_fail",
+            "diag.next.integrity_unknown",
+            "verify.reason.control_unavailable",
+            "verify.fail",
+            "verify.last",
+            "verify.result.pass",
+            "verify.result.fail",
+            "verify.result.unknown",
         ] {
             let needle = format!("'{key}':");
             assert!(fa.contains(&needle), "fa missing {key}");
             assert!(en.contains(&needle), "en missing {key}");
         }
         let pages = include_str!("../panel/pages.js");
+        assert!(pages.contains("'/v1/verify'"));
+        assert!(pages.contains("verify.title"));
         assert!(pages.contains("'/v1/tunnel/lifecycle'"));
         assert!(pages.contains("window.confirm(t('life.confirm.' + action))"));
+    }
+
+    #[test]
+    fn stale_in_progress_integrity_receipts_become_unknown_without_restarting_probe() {
+        let mut store = json!({
+            "version": 1,
+            "entries": [
+                {"key":"old-key-0001","state":"in_progress","created_unix":100,"response":null},
+                {"key":"new-key-0001","state":"in_progress","created_unix":195,"response":null},
+                {"key":"done-key-0001","state":"completed","created_unix":50,"response":{"result":"pass"}}
+            ]
+        });
+        assert!(expire_stale_integrity_receipts(&mut store, 200));
+        assert_eq!(store["entries"][0]["state"], "completed");
+        assert_eq!(store["entries"][0]["response"]["result"], "unknown");
+        assert_eq!(
+            store["entries"][0]["response"]["reason"],
+            "request_interrupted"
+        );
+        assert_eq!(store["entries"][0]["http_status"], 200);
+        assert_eq!(store["entries"][1]["state"], "in_progress");
+        assert_eq!(store["entries"][2]["response"]["result"], "pass");
+        assert!(!expire_stale_integrity_receipts(&mut store, 200));
+    }
+
+    #[test]
+    fn integrity_tier_passes_only_for_a_recent_probe_and_preserves_history_when_stale() {
+        let recent = json!({
+            "result": "pass",
+            "reason": "sha256_verified",
+            "timestamp": 950,
+            "source": "in_product_probe"
+        });
+        let fresh = integrity_tier(Some(recent.clone()), 1_000);
+        assert_eq!(fresh["result"], "pass");
+        assert_eq!(fresh["source"], "in_product_probe");
+        assert_eq!(fresh["age_s"], 50);
+        assert_eq!(fresh["freshness_s"], DATA_WINDOW_S);
+        assert_eq!(fresh["last_probe"]["result"], "pass");
+
+        let stale = integrity_tier(Some(recent), 1_011);
+        assert_eq!(stale["result"], "unknown");
+        assert_eq!(stale["reason"], "stale_probe");
+        assert_eq!(stale["source"], Value::Null);
+        assert_eq!(stale["last_probe"]["result"], "pass");
+
+        let failed = integrity_tier(
+            Some(json!({"result":"fail","reason":"integrity_mismatch","timestamp":999})),
+            1_000,
+        );
+        assert_eq!(failed["result"], "fail");
+        let missing = integrity_tier(None, 1_000);
+        assert_eq!(missing["result"], "unknown");
+        assert_eq!(missing["reason"], INTEGRITY_UNKNOWN);
+    }
+
+    #[tokio::test]
+    async fn integrity_verify_route_is_authenticated_idempotent_and_audits_unknown_without_a_control_socket()
+     {
+        let dir = state_dir("verify");
+        let runtime = dir.join("runtime");
+        std::fs::create_dir(&runtime).unwrap();
+        let ctx = Ctx::new(sample(), TOKEN.into(), Some(dir.clone()))
+            .with_unit(Some("verify-node".into()), Some(runtime));
+        let request_body = json!({"idempotency_key":"verify-test-0001"}).to_string();
+        let (status, response) = route(&post("/v1/verify"), request_body.as_bytes(), &ctx).await;
+        assert_eq!(status, 200);
+        assert_eq!(response["result"], "unknown");
+        assert_eq!(response["reason"], "control_unavailable");
+        assert_eq!(response["bytes"], 0);
+        assert_eq!(response["sha256_match"], false);
+        assert_eq!(response["peer_id"], sample().ids().1);
+        assert_eq!(response["tunnel_id"], sample().ids().2);
+        assert_eq!(response["direction"], sample().direction_name());
+
+        let audit_path = dir.join(AUDIT_FILE);
+        let lines = std::fs::read_to_string(&audit_path).unwrap();
+        let event: Value = serde_json::from_str(lines.lines().next().unwrap()).unwrap();
+        assert_eq!(event["action"], "integrity_probe");
+        assert_eq!(event["result"], "unknown");
+        assert_eq!(event["detail"], "control_unavailable");
+        assert_eq!(
+            event["resource"],
+            "integrity_probe/tunnel/t/peer/b/direction/direct"
+        );
+        assert!(
+            event["sha256"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64)
+        );
+        assert!(event["receipt_id"].as_str().is_some());
+        assert!(response.get("sha256").is_none());
+
+        let (replay_status, replay) =
+            route(&post("/v1/verify"), request_body.as_bytes(), &ctx).await;
+        assert_eq!(replay_status, 200);
+        assert_eq!(replay["result"], "unknown");
+        assert_eq!(replay["replayed"], true);
+        let lines_after_replay = std::fs::read_to_string(&audit_path).unwrap();
+        assert_eq!(lines_after_replay.lines().count(), 1);
+        assert!(!lines_after_replay.contains(TOKEN));
+
+        let no_runtime_dir = state_dir("verify-no-runtime");
+        let no_runtime = Ctx::new(sample(), TOKEN.into(), Some(no_runtime_dir.clone()))
+            .with_unit(Some("verify-node".into()), None);
+        let no_runtime_body = json!({"idempotency_key":"verify-no-run-0001"}).to_string();
+        let (status, response) =
+            route(&post("/v1/verify"), no_runtime_body.as_bytes(), &no_runtime).await;
+        assert_eq!(status, 200);
+        assert_eq!(response["result"], "unknown");
+        assert_eq!(response["reason"], "control_unavailable");
+        let event: Value = serde_json::from_str(
+            std::fs::read_to_string(no_runtime_dir.join(AUDIT_FILE))
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(event["action"], "integrity_probe");
+        assert_eq!(event["result"], "unknown");
+        let _ = std::fs::remove_dir_all(&no_runtime_dir);
+
+        let bare = Ctx::new(sample(), TOKEN.into(), None);
+        assert_eq!(
+            route("POST /v1/verify HTTP/1.1\r\n\r\n", b"", &bare)
+                .await
+                .0,
+            401
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn latest_probe_audit_is_exposed_as_historical_evidence() {
+        let dir = state_dir("last-probe");
+        let ctx = Ctx::new(sample(), TOKEN.into(), Some(dir.clone()));
+        audit(
+            &dir,
+            &ctx,
+            AuditEvent {
+                action: "integrity_probe",
+                result: "pass",
+                resource: "tunnel/demo".into(),
+                node: None,
+                instance: None,
+                sha256: "test-digest",
+                detail: "sha256_verified",
+                receipt_id: None,
+            },
+        )
+        .unwrap();
+        let last = last_integrity_probe(&ctx).unwrap();
+        assert_eq!(last["result"], "pass");
+        assert_eq!(last["source"], "in_product_probe");
+        assert!(last["timestamp"].as_u64().is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn latest_probe_wins_when_audit_events_share_the_same_second() {
+        let dir = state_dir("same-second-probe");
+        let ctx = Ctx::new(sample(), TOKEN.into(), Some(dir.clone()));
+        let event = |result: &str, detail: &str| {
+            json!({
+                "ts": 1_800_000_000_u64,
+                "action": "integrity_probe",
+                "result": result,
+                "detail": detail,
+            })
+            .to_string()
+        };
+        std::fs::write(
+            dir.join(AUDIT_FILE),
+            format!(
+                "{}\n{}\n",
+                event("pass", "sha256_verified"),
+                event("unknown", "rate_limited")
+            ),
+        )
+        .unwrap();
+        let last = last_integrity_probe(&ctx).unwrap();
+        assert_eq!(last["timestamp"], 1_800_000_000_u64);
+        assert_eq!(last["result"], "unknown");
+        assert_eq!(last["reason"], "rate_limited");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
@@ -3836,8 +4447,20 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+        let fake_units = Arc::new(AgentFake {
+            st: std::sync::Mutex::new(crate::apply::UnitState {
+                active: "unknown".into(),
+                sub: "unknown".into(),
+                result: "unknown".into(),
+                main_pid: me,
+                enabled: "unknown".into(),
+                ..Default::default()
+            }),
+            log: std::sync::Mutex::new(vec![]),
+        });
         let ctx = Ctx::new(serve_config(), TOKEN.into(), Some(state.clone()))
-            .with_unit(None, Some(run.clone()));
+            .with_unit(Some("diag".into()), Some(run.clone()))
+            .with_units(fake_units, state.clone());
         for (t, a, b) in [(now - 10, 0, 0), (now - 5, 100, 50)] {
             ctx.record_traffic(TrafficSample {
                 t,
@@ -4647,6 +5270,7 @@ mod tests {
                 engine: crate::config::EngineKind::NoiseTcp,
                 role: crate::setup::Role::Forward,
                 direction: crate::authorization::ConnectionDirection::Direct,
+                protocol_version: crate::authorization::PROTOCOL_V1,
                 node_id: "iran".into(),
                 peer_id: "abroad".into(),
                 tunnel_id: "pairdemo".into(),

@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::{
-    authorization::ConnectionDirection,
+    authorization::{ConnectionDirection, PROTOCOL_V1, PROTOCOL_V2},
     engine::NoiseSettings,
     handshake::{validate_fingerprint, validate_identity},
     tls, tunnel,
@@ -61,6 +61,10 @@ pub(crate) fn default_max_streams() -> usize {
     8
 }
 
+fn default_protocol_version() -> u16 {
+    PROTOCOL_V1
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum RuntimeConfig {
@@ -79,6 +83,9 @@ pub enum RuntimeConfig {
         peer_id: String,
         tunnel_id: String,
         direction: ConnectionDirection,
+        /// Protocol generation; upgrade both peers together.
+        #[serde(default = "default_protocol_version")]
+        protocol_version: u16,
         #[serde(default)]
         peer_fingerprint: String,
         #[serde(default)]
@@ -113,6 +120,9 @@ pub enum RuntimeConfig {
         peer_id: String,
         tunnel_id: String,
         direction: ConnectionDirection,
+        /// Protocol generation; upgrade both peers together.
+        #[serde(default = "default_protocol_version")]
+        protocol_version: u16,
         #[serde(default)]
         peer_fingerprint: String,
         #[serde(default)]
@@ -162,6 +172,7 @@ impl RuntimeConfig {
                 peer_id,
                 tunnel_id,
                 direction,
+                protocol_version,
                 peer_fingerprint,
                 ca,
                 crl,
@@ -174,6 +185,7 @@ impl RuntimeConfig {
                 baft,
             } => {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
+                validate_protocol_version(*protocol_version, *engine)?;
                 parse_socket(listen, "listen")?;
                 // The baft engine keeps its previous behaviour (direction is a label there; it
                 // is not part of the Rust Reverse mode, ADR-0021 Amendment 1).
@@ -243,6 +255,7 @@ impl RuntimeConfig {
                 peer_id,
                 tunnel_id,
                 direction,
+                protocol_version,
                 peer_fingerprint,
                 ca,
                 crl,
@@ -256,6 +269,7 @@ impl RuntimeConfig {
                 baft,
             } => {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
+                validate_protocol_version(*protocol_version, *engine)?;
                 let reverse =
                     *direction == ConnectionDirection::Reverse && *engine != EngineKind::Baft;
                 match reverse {
@@ -331,6 +345,17 @@ impl RuntimeConfig {
     fn engine(&self) -> EngineKind {
         match self {
             Self::Serve { engine, .. } | Self::Forward { engine, .. } => *engine,
+        }
+    }
+
+    pub fn protocol_version(&self) -> u16 {
+        match self {
+            Self::Serve {
+                protocol_version, ..
+            }
+            | Self::Forward {
+                protocol_version, ..
+            } => *protocol_version,
         }
     }
 
@@ -539,6 +564,7 @@ impl RuntimeConfig {
                 "tunnel_id": tunnel_id,
                 "direction": direction,
                 "max_streams": max_streams,
+                "protocol_version": self.protocol_version(),
                 "peer_certificate_pin_configured": !peer_fingerprint.is_empty(),
                 "ca_file_present": ca.is_file(),
                 "certificate_file_present": cert.is_file(),
@@ -578,6 +604,7 @@ impl RuntimeConfig {
                 peer_id,
                 tunnel_id,
                 direction,
+                protocol_version,
                 peer_fingerprint,
                 ca,
                 crl,
@@ -591,22 +618,25 @@ impl RuntimeConfig {
             } => {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 let noise = noise_settings(engine, &key, noise_peer_public);
-                tunnel::serve(ServerOptions {
-                    ingress: (!ingress.is_empty()).then_some(ingress),
-                    listen,
-                    target,
-                    local_id,
-                    peer_id,
-                    tunnel_id,
-                    direction,
-                    peer_fingerprint,
-                    ca,
-                    crl,
-                    cert,
-                    key,
-                    noise,
-                    max_streams,
-                })
+                tunnel::serve_versioned(
+                    ServerOptions {
+                        ingress: (!ingress.is_empty()).then_some(ingress),
+                        listen,
+                        target,
+                        local_id,
+                        peer_id,
+                        tunnel_id,
+                        direction,
+                        peer_fingerprint,
+                        ca,
+                        crl,
+                        cert,
+                        key,
+                        noise,
+                        max_streams,
+                    },
+                    protocol_version,
+                )
                 .await
             }
             Self::Forward {
@@ -618,6 +648,7 @@ impl RuntimeConfig {
                 peer_id,
                 tunnel_id,
                 direction,
+                protocol_version,
                 peer_fingerprint,
                 ca,
                 crl,
@@ -632,23 +663,26 @@ impl RuntimeConfig {
             } => {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 let noise = noise_settings(engine, &key, noise_peer_public);
-                tunnel::forward(ForwardOptions {
-                    target: (!target.is_empty()).then_some(target),
-                    listen,
-                    remote,
-                    server_name,
-                    local_id,
-                    peer_id,
-                    tunnel_id,
-                    direction,
-                    peer_fingerprint,
-                    ca,
-                    crl,
-                    cert,
-                    key,
-                    noise,
-                    max_streams,
-                })
+                tunnel::forward_versioned(
+                    ForwardOptions {
+                        target: (!target.is_empty()).then_some(target),
+                        listen,
+                        remote,
+                        server_name,
+                        local_id,
+                        peer_id,
+                        tunnel_id,
+                        direction,
+                        peer_fingerprint,
+                        ca,
+                        crl,
+                        cert,
+                        key,
+                        noise,
+                        max_streams,
+                    },
+                    protocol_version,
+                )
                 .await
             }
         }
@@ -808,6 +842,16 @@ fn validate_noise(
     .validate()
 }
 
+fn validate_protocol_version(version: u16, engine: EngineKind) -> Result<()> {
+    if ![PROTOCOL_V1, PROTOCOL_V2].contains(&version) {
+        bail!("protocol_version must be 1 or 2");
+    }
+    if version == PROTOCOL_V2 && engine == EngineKind::Baft {
+        bail!("protocol v2 is not supported by the external BAFT engine");
+    }
+    Ok(())
+}
+
 fn validate_common(local: &str, peer: &str, tunnel: &str, streams: usize) -> Result<()> {
     validate_identity(local)?;
     validate_identity(peer)?;
@@ -856,6 +900,26 @@ mod tests {
         let without_crl = valid.replace("\"crl\":\"ca.crl\",", "");
         let parsed: RuntimeConfig = serde_json::from_str(&without_crl).unwrap();
         assert!(parsed.validate().is_err());
+    }
+
+    #[test]
+    fn protocol_generation_defaults_to_v1_and_v2_is_explicit_and_bounded() {
+        let valid = r#"{
+            "mode":"serve","direction":"direct","listen":"127.0.0.1:9443","target":"127.0.0.1:8080",
+            "local_id":"abroad","peer_id":"iran","tunnel_id":"demo",
+            "peer_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ca":"ca.pem","crl":"ca.crl","cert":"server.pem","key":"server-key.pem"
+        }"#;
+        let v1: RuntimeConfig = serde_json::from_str(valid).unwrap();
+        assert_eq!(v1.protocol_version(), PROTOCOL_V1);
+        let v2_json = valid.replace(
+            "\"mode\":\"serve\"",
+            "\"mode\":\"serve\",\"protocol_version\":2",
+        );
+        let v2: RuntimeConfig = serde_json::from_str(&v2_json).unwrap();
+        assert_eq!(v2.protocol_version(), PROTOCOL_V2);
+        assert!(validate_protocol_version(3, EngineKind::TcpTls).is_err());
+        assert!(validate_protocol_version(PROTOCOL_V2, EngineKind::Baft).is_err());
     }
 
     #[test]

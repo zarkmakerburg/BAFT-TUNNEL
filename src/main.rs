@@ -5,9 +5,11 @@ mod authorization;
 mod baft_engine;
 mod capabilities;
 mod config;
+mod control_socket;
 mod engine;
 mod engine_store;
 mod handshake;
+mod integrity_probe;
 pub mod key_custody;
 mod noise;
 mod observe;
@@ -174,6 +176,9 @@ enum SetupCommand {
         role: setup::Role,
         #[arg(long, value_enum)]
         direction: ConnectionDirection,
+        /// Protocol generation; both nodes must select the same value (1 or 2).
+        #[arg(long, default_value_t = 1)]
+        protocol_version: u16,
         #[arg(long)]
         node_id: String,
         #[arg(long)]
@@ -206,6 +211,9 @@ enum SetupCommand {
         role: setup::Role,
         #[arg(long, value_enum)]
         direction: ConnectionDirection,
+        /// Protocol generation; both nodes must select the same value (1 or 2).
+        #[arg(long, default_value_t = 1)]
+        protocol_version: u16,
         #[arg(long)]
         node_id: String,
         #[arg(long)]
@@ -370,6 +378,7 @@ async fn run() -> Result<()> {
                 peer_id,
                 tunnel_id,
                 direction,
+                protocol_version: authorization::PROTOCOL_V1,
                 peer_fingerprint,
                 ca,
                 crl,
@@ -409,6 +418,7 @@ async fn run() -> Result<()> {
                 peer_id,
                 tunnel_id,
                 direction,
+                protocol_version: authorization::PROTOCOL_V1,
                 peer_fingerprint,
                 ca,
                 crl,
@@ -459,6 +469,7 @@ async fn run() -> Result<()> {
                     engine,
                     role,
                     direction,
+                    protocol_version,
                     node_id,
                     peer_id,
                     tunnel_id,
@@ -475,6 +486,7 @@ async fn run() -> Result<()> {
                 engine,
                 role,
                 direction,
+                protocol_version,
                 node_id,
                 peer_id,
                 tunnel_id,
@@ -507,6 +519,7 @@ async fn run() -> Result<()> {
                     engine,
                     role,
                     direction,
+                    protocol_version,
                     node_id,
                     peer_id,
                     tunnel_id,
@@ -523,6 +536,7 @@ async fn run() -> Result<()> {
                     engine,
                     role,
                     direction,
+                    protocol_version,
                     node_id,
                     peer_id,
                     tunnel_id,

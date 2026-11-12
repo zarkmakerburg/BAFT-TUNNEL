@@ -221,7 +221,7 @@ Loopback only; the output is the redacted support report plus `listener_acceptin
 
 Desired state (A2): add `--state-dir /var/lib/baft-tunnel/agent` (must exist). `PUT /v1/desired` with a JSON config validates it and stores `desired.json`; every attempt is logged in `audit.log` (hash and result only). The agent never applies it: review it, then run `baft-tunnel apply --config ... --confirm`.
 
-Operations evidence (ADR-0024): start the agent with `--instance NAME` to report on `baft-tunnel@NAME`. `GET /v1/status` then includes `tunnel` (unit, listener, authorized session with peer id, data path, integrity, last failure stage, `last_verified_unix` and a summary `state` that never says "ready"). `GET /v1/traffic` returns relayed payload bytes per direction, rates, sampling interval and freshness. `POST /v1/diagnostics` checks TCP reachability, secure channel, identity, authorization, session and data path as separate tiers; integrity always stays Unknown (only Verify/LAB measures it). Audit lines name the actor (token fingerprint), target node/instance and resource.
+Operations diagnostics checks TCP reachability, secure channel, identity, authorization, session and data path as separate tiers. The explicit Test tunnel action runs a protocol-v2 64 KiB integrity probe through the active authenticated session; a pass is fresh for 60 seconds only, and Apply ready remains Unknown.
 
 Automation only: `BAFT_PKI_PASSFILE=/path/to/file` makes `baft-pki.sh` read the CA passphrase from a file instead of prompting (used by the LAB stage with an ephemeral CA). Operators should leave it unset.
 
