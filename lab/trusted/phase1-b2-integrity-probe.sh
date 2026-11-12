@@ -166,8 +166,8 @@ for side in iran abroad; do
     command -v findmnt >/dev/null
     test -d /var/tmp && test ! -L /var/tmp
     python3 -c 'import os,stat; s=os.stat("/var/tmp", follow_symlinks=False); assert stat.S_ISDIR(s.st_mode) and s.st_uid == 0 and s.st_mode & stat.S_ISVTX and s.st_mode & 0o002'
-    mount_options=$(findmnt -n -o OPTIONS --target /var/tmp)
-    case ",$mount_options," in *,noexec,*) echo "/var/tmp is mounted noexec; refusing candidate execution" >&2; exit 2 ;; esac
+    mount_options=\$(findmnt -n -o OPTIONS --target /var/tmp)
+    case ",\$mount_options," in *,noexec,*) echo "/var/tmp is mounted noexec; refusing candidate execution" >&2; exit 2 ;; esac
     id baft-tunnel >/dev/null
     id baft-tunnel-agent >/dev/null
     id nobody >/dev/null
@@ -281,7 +281,7 @@ PY
 # service users). No candidate script, installer or other PR-controlled file is executed.
 for side in iran abroad; do
   [[ "$side" == iran ]] && PREPARED_IRAN=1 || PREPARED_ABROAD=1
-  ssh_host "$side" "mkdir -m 0755 '$REMOTE_BASE' && test -d '$REMOTE_BASE' && test ! -L '$REMOTE_BASE' && test \\$(stat -c '%U:%G:%a' '$REMOTE_BASE') = root:root:755"
+  ssh_host "$side" "mkdir -m 0755 '$REMOTE_BASE' && test -d '$REMOTE_BASE' && test ! -L '$REMOTE_BASE' && test \$(stat -c '%U:%G:%a' '$REMOTE_BASE') = root:root:755"
   if [[ ! -e "$LOCAL_TMP/baft-tunnel" ]]; then install -m 0755 "$CANDIDATE_BINARY" "$LOCAL_TMP/baft-tunnel"; fi
   copy_to_host "$side" "$LOCAL_TMP/baft-tunnel" "$LOCAL_TMP/echo.py" "$LOCAL_TMP/payload.py"
   ssh_host "$side" "set -eu

@@ -14,9 +14,11 @@ grep -F 'StrictHostKeyChecking=yes' "$harness" >/dev/null
 grep -F 'runuser -u baft-tunnel --' "$harness" >/dev/null
 grep -F 'REMOTE_BASE="/var/tmp/baft-b2-lab-$RUN_ID"' "$harness" >/dev/null
 grep -F 'command -v findmnt >/dev/null' "$harness" >/dev/null
+grep -F 'mount_options=\$(findmnt -n -o OPTIONS --target /var/tmp)' "$harness" >/dev/null
+grep -F 'case ",\$mount_options," in *,noexec,*' "$harness" >/dev/null
 grep -F 'stat.S_ISDIR(s.st_mode)' "$harness" >/dev/null
 grep -F 'mkdir -m 0755' "$harness" >/dev/null
-grep -F 'case ",$mount_options," in *,noexec,*' "$harness" >/dev/null
+grep -F '&& test \$(stat -c' "$harness" >/dev/null
 grep -F 'runuser -u baft-tunnel-agent --' "$harness" >/dev/null
 grep -F -- '--property=User=baft-tunnel ' "$harness" >/dev/null
 grep -F -- '--property=User=baft-tunnel-agent ' "$harness" >/dev/null
