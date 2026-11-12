@@ -15,7 +15,33 @@ grep -F 'runuser -u baft-tunnel --' "$harness" >/dev/null
 grep -F 'REMOTE_BASE="/var/tmp/baft-b2-lab-$RUN_ID"' "$harness" >/dev/null
 grep -F 'command -v findmnt >/dev/null' "$harness" >/dev/null
 grep -F 'mount_options=\$(findmnt -n -o OPTIONS --target /var/tmp)' "$harness" >/dev/null
-grep -F 'case ",\$mount_options," in *,noexec,*' "$harness" >/dev/null
+python3 - "$harness" <<'PYCASE'
+from pathlib import Path
+import sys
+line = next(line for line in Path(sys.argv[1]).read_text().splitlines() if 'noexec' in line and 'mount_options' in line)
+bs = chr(92)
+assert 'case '+bs+'",'+bs+'$mount_options,'+bs+'"' in line, line
+PYCASE
+capture_tmp=$(mktemp -d)
+trap 'rm -rf "$capture_tmp"' EXIT
+mkdir -p "$capture_tmp/bin"
+cat > "$capture_tmp/bin/ssh" <<'MOCKSSH'
+#!/usr/bin/env bash
+for arg in "$@"; do last="$arg"; done
+printf '%s' "$last" > "$CAPTURE_REMOTE_COMMAND"
+exit 99
+MOCKSSH
+chmod +x "$capture_tmp/bin/ssh"
+printf '#!/bin/sh\nexit 0\n' > "$capture_tmp/candidate"
+chmod 0755 "$capture_tmp/candidate"
+set +e
+PATH="$capture_tmp/bin:$PATH" CAPTURE_REMOTE_COMMAND="$capture_tmp/remote-command" LAB_IRAN_HOST=192.0.2.1 LAB_ABROAD_HOST=198.51.100.2 LAB_SSH_PRIVATE_KEY=dummy LAB_SSH_KNOWN_HOSTS=dummy CANDIDATE_SHA=b15b0a3f49e0e5b7c4fcaaec3b3da49cd22514c6 CANDIDATE_BINARY="$capture_tmp/candidate" GITHUB_RUN_ID=999 bash "$harness" >/dev/null 2>&1
+capture_rc=$?
+set -e
+test "$capture_rc" = 99
+test -s "$capture_tmp/remote-command"
+bash -n -c "$(cat "$capture_tmp/remote-command")"
+echo 'Remote SSH preflight command parse: PASS (mock SSH only)'
 grep -F 'stat.S_ISDIR(s.st_mode)' "$harness" >/dev/null
 python3 - "$harness" <<'PYQUOTE'
 from pathlib import Path
