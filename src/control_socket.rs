@@ -536,6 +536,8 @@ fn safe_reason(error: &anyhow::Error) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::MetadataExt;
 
     #[test]
     fn probe_failures_are_distinct_from_unknown_transport_outcomes() {
