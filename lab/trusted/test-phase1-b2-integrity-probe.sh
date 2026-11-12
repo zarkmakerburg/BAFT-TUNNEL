@@ -50,6 +50,10 @@ grep -F 'PROBE_COOLDOWN_PASS' "$harness" >/dev/null
 grep -F 'IDEMPOTENCY_REPLAY_PERSISTED_PASS' "$harness" >/dev/null
 grep -F 'AUDIT_REPLAY_SINGLE_EVENT_PASS' "$harness" >/dev/null
 grep -F 'systemctl restart' "$harness" >/dev/null
+if grep -E "systemd-run --quiet --collect --unit=.*agent_unit" "$harness" >/dev/null; then
+  echo 'Agent transient unit must remain restartable for the persisted-idempotency check' >&2; exit 1
+fi
+
 grep -F 'request_sha256' "$harness" >/dev/null
 grep -F 'INTEGRITY_PROBE_DID_NOT_TOUCH_TCP_TARGET=PASS' "$harness" >/dev/null
 grep -F 'DATA_PATH_OK' "$harness" >/dev/null
