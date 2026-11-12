@@ -18,7 +18,7 @@ The project owner approved the following B2 design choices:
 2. **Per-instance Unix-domain control socket with peer credentials.** Each tunnel unit exposes a narrowly scoped socket in its systemd `RuntimeDirectory`. The tunnel unit authenticates the connecting process using `SO_PEERCRED` and permits only the registered `baft-tunnel-agent` UID. Filesystem permissions/group membership are an additional restriction, not a substitute for peer-credential authorization. Missing credential support or an unexpected UID fails closed.
 3. **Fixed resource limits.** Each probe transfers exactly 64 KiB; at most one probe may be active per tunnel instance; a new probe may start no more than once per 60 seconds per tunnel instance; and the complete operation has a 10-second end-to-end deadline.
 
-These are approved design decisions, not evidence that the feature is implemented or accepted. Runtime implementation remains gated on Phase 1 B1–B6 acceptance and a separate F0 trust-boundary/security review.
+These are approved design decisions, not evidence that the feature is implemented or accepted. The prerequisites for starting B2 implementation and the overall Phase 1 closeout gate are separated below; completing B2 cannot be a prerequisite to starting B2 itself.
 
 ## 1. Dedicated capability; no reuse of TCP forwarding
 
@@ -100,13 +100,23 @@ The local agent API remains bearer-token protected and loopback-only. The panel 
 - No transparent stream migration, traffic shaping, padding, censorship-resistance or traffic-invisibility claim.
 - No Apply/rollback, firewall mutation, automatic remediation, stable release or production-readiness change.
 
-## Implementation gate
+## B2 implementation-start gate
 
-B2 remains design-only until all of the following are satisfied:
+B2 remains design-only until all of the following prerequisites are satisfied:
 
-1. Phase 1 B1–B6 acceptance is complete and evidenced.
-2. F0's trust-boundary/security review is approved, including the Agent-to-unit socket and process-identity boundary.
-3. The protocol-v2 peer compatibility and upgrade matrix is documented and tested.
-4. The required unit, protocol, integration and real two-host LAB evidence in this ADR passes.
+1. **U7 accepted:** the signed-RC.7 integrated MVP and trusted two-host acceptance remain the accepted product baseline.
+2. **B1 accepted and merged:** structured Preflight/Diagnostics evidence and bilingual localization are merged in main (PR #168, merge `311b706`) with all exact-head CI groups green.
+3. **F0 independently reviewed and approved:** a separate trust-boundary/security review must cover the Agent-to-unit socket and process-identity boundary, exact `SO_PEERCRED` UID enforcement, socket ownership/permissions and per-instance isolation, socket lifecycle/restart/stale-socket handling, bounded framing/backlog/deadline, concurrency/rate/resource exhaustion, fail-closed behavior, audit boundaries, local Agent API exposure, and confirmation that the probe grants no systemd/root-helper authority. A static self-review or this ADR alone does not satisfy F0.
+4. **Protocol-v2 compatibility plan accepted:** document the v1/v2 peer-upgrade matrix, mixed-version rejection behavior, no-downgrade guarantee, and impact on new versus already-established v1 sessions; define negative and two-version interoperability tests before implementation.
 
-Until then, no B2 runtime/API/panel implementation or host-side change is authorized by this ADR. The existing integrity tier remains Unknown except for separately recorded Verify/LAB evidence.
+Only after these prerequisites are accepted may B2 runtime/API/panel implementation begin. This gate deliberately does not require B2 itself to be complete.
+
+## B2 feature-acceptance gate
+
+After implementation, B2 is not accepted until all required unit, protocol, integration and real two-host LAB evidence in this ADR passes. Direct and Reverse evidence must be reported separately; Reverse remains unavailable until its independent implementation and acceptance gate under ADR-0021 passes. A successful probe proves only the measured probe and must never set global `ready`.
+
+## Overall Phase 1 closeout / Phase 2 gate
+
+The overall Phase 1 closeout and any Phase 2 implementation remain gated on **all B1–B6 items being accepted and evidenced**, including B2's own implementation and feature-acceptance tests above. This is the aggregate completion gate, not a prerequisite for starting B2.
+
+Until the B2 implementation-start prerequisites are satisfied, no B2 runtime/API/panel implementation or host-side change is authorized by this ADR. The existing integrity tier remains Unknown except for separately recorded Verify/LAB evidence.
