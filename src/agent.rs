@@ -565,7 +565,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         ("GET", "/v1/traffic") => (200, traffic(ctx)),
         ("GET", "/v1/diagnostics") => get_diagnostics(ctx),
         ("POST", "/v1/diagnostics") => (200, run_diagnostics(ctx, config).await),
-        ("POST", "/v1/verify") => verify_integrity(ctx, config).await,
+        ("POST", "/v1/verify") => verify_integrity(ctx, config, body).await,
         ("GET", "/v1/history") => (200, history(ctx)),
         ("GET", "/v1/security") => (200, security(config)),
         ("GET", "/v1/audit") => get_audit(ctx),
@@ -2275,27 +2275,137 @@ fn crl_state(remaining: Option<i64>) -> &'static str {
     }
 }
 
-async fn verify_integrity(ctx: &Ctx, config: &RuntimeConfig) -> (u16, Value) {
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IntegrityVerifyBody {
+    idempotency_key: String,
+}
+
+const INTEGRITY_RECEIPTS_FILE: &str = "integrity-probe-receipts.json";
+const INTEGRITY_RECEIPTS_MAX: usize = 64;
+
+fn integrity_request_hash(key: &str, config: &RuntimeConfig) -> String {
+    let material = json!({
+        "operation": "integrity_probe",
+        "idempotency_key": key,
+        "node_id": config.ids().0,
+        "peer_id": config.ids().1,
+        "tunnel_id": config.ids().2,
+        "direction": config.direction_name(),
+    });
+    hex::encode(Sha256::digest(material.to_string().as_bytes()))
+}
+
+fn load_integrity_receipts(dir: &Path) -> Result<Value> {
+    match std::fs::read(dir.join(INTEGRITY_RECEIPTS_FILE)) {
+        Ok(bytes) => {
+            let store: Value = serde_json::from_slice(&bytes)?;
+            if store["version"] != 1 || !store["entries"].is_array() {
+                bail!("integrity receipt store has an unsupported schema");
+            }
+            Ok(store)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(json!({"version": 1, "entries": []}))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn save_integrity_receipts(dir: &Path, store: &Value) -> Result<()> {
+    write_private(dir, INTEGRITY_RECEIPTS_FILE, serde_json::to_string(store)?.as_bytes())
+}
+
+async fn verify_integrity(
+    ctx: &Ctx,
+    config: &RuntimeConfig,
+    body: &[u8],
+) -> (u16, Value) {
     let Some(state_dir) = ctx.state_dir.as_deref() else {
+        return (409, json!({"result":"unknown","reason":"audit_unavailable"}));
+    };
+    let request: IntegrityVerifyBody = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(_) => return (422, json!({"error":"invalid request"})),
+    };
+    if !crate::apply::valid_key(&request.idempotency_key) {
+        return (
+            422,
+            json!({"error":"idempotency_key must be 8-64 characters of A-Z a-z 0-9 - _"}),
+        );
+    }
+
+    // Serialize probe operations so the durable receipt journal cannot double-start on retry.
+    let _guard = ctx.lock.lock().await;
+    let request_sha256 = integrity_request_hash(&request.idempotency_key, config);
+    let mut receipts = match load_integrity_receipts(state_dir) {
+        Ok(receipts) => receipts,
+        Err(_) => return (500, json!({"result":"unknown","reason":"receipt_store_unavailable"})),
+    };
+
+    let existing_index = receipts["entries"]
+        .as_array()
+        .and_then(|entries| {
+            entries.iter().position(|entry| {
+                entry["key"].as_str() == Some(request.idempotency_key.as_str())
+            })
+        });
+    if let Some(index) = existing_index {
+        let entry = &receipts["entries"][index];
+        if entry["request_sha256"].as_str() != Some(request_sha256.as_str()) {
+            return (409, json!({"error":"idempotency_conflict"}));
+        }
+        if entry["state"] == "completed" && entry["response"].is_object() {
+            let mut replay = entry["response"].clone();
+            if let Some(fields) = replay.as_object_mut() {
+                fields.insert("replayed".into(), json!(true));
+            }
+            let status = entry["http_status"].as_u64().unwrap_or(200) as u16;
+            return (status, replay);
+        }
         return (
             409,
-            json!({"result":"unknown","reason":"audit_unavailable"}),
+            json!({
+                "result": "unknown",
+                "reason": "request_in_progress",
+                "receipt_id": request.idempotency_key,
+            }),
         );
-    };
-    let response = match ctx.runtime_dir.as_deref() {
-        Some(runtime_dir) => {
-            match crate::control_socket::request(&runtime_dir.join("control.sock")).await {
-                Ok(response) => response,
-                Err(_) => crate::control_socket::ProbeControlResponse {
-                    result: "unknown".into(),
-                    reason: Some("control_unavailable".into()),
-                    bytes: 0,
-                    sha256_match: false,
-                    duration_ms: None,
-                    timestamp: unix_now(),
-                },
+    }
+
+    {
+        let entries = receipts["entries"].as_array_mut().expect("validated receipt entries");
+        if entries.len() >= INTEGRITY_RECEIPTS_MAX {
+            if let Some(index) = entries.iter().position(|entry| entry["state"] == "completed") {
+                entries.remove(index);
+            } else {
+                return (503, json!({"result":"unknown","reason":"receipt_store_full"}));
             }
         }
+        entries.push(json!({
+            "key": request.idempotency_key.clone(),
+            "request_sha256": request_sha256,
+            "state": "in_progress",
+            "created_unix": unix_now(),
+            "response": null,
+        }));
+    }
+    if save_integrity_receipts(state_dir, &receipts).is_err() {
+        return (500, json!({"result":"unknown","reason":"receipt_store_unavailable"}));
+    }
+
+    let probe = match ctx.runtime_dir.as_deref() {
+        Some(runtime_dir) => match crate::control_socket::request(&runtime_dir.join("control.sock")).await {
+            Ok(response) => response,
+            Err(_) => crate::control_socket::ProbeControlResponse {
+                result: "unknown".into(),
+                reason: Some("control_unavailable".into()),
+                bytes: 0,
+                sha256_match: false,
+                duration_ms: None,
+                timestamp: unix_now(),
+            },
+        },
         None => crate::control_socket::ProbeControlResponse {
             result: "unknown".into(),
             reason: Some("control_unavailable".into()),
@@ -2305,37 +2415,69 @@ async fn verify_integrity(ctx: &Ctx, config: &RuntimeConfig) -> (u16, Value) {
             timestamp: unix_now(),
         },
     };
-    let result = response.result.as_str();
-    let detail = response.reason.as_deref().unwrap_or("sha256_verified");
-    let resource = format!("tunnel/{}", config.ids().2);
-    if audit(
+
+    let resource = format!(
+        "integrity_probe/tunnel/{}/peer/{}/direction/{}",
+        config.ids().2,
+        config.ids().1,
+        config.direction_name()
+    );
+    let audit_result = audit(
         state_dir,
         ctx,
         AuditEvent {
             action: "integrity_probe",
-            result,
+            result: probe.result.as_str(),
             resource,
             node: Some(config.ids().0),
             instance: ctx.instance.as_deref(),
-            sha256: "",
-            detail,
-            receipt_id: None,
+            sha256: &request_sha256,
+            detail: probe.reason.as_deref().unwrap_or("sha256_verified"),
+            receipt_id: Some(&request.idempotency_key),
         },
-    )
-    .is_err()
-    {
-        return (500, json!({"result":"unknown","reason":"audit_failed"}));
-    }
-    let mut body = serde_json::to_value(response)
+    );
+
+    let mut response = serde_json::to_value(probe)
         .unwrap_or_else(|_| json!({"result":"unknown","reason":"response_encoding_failed"}));
-    if let Some(fields) = body.as_object_mut() {
+    if let Some(fields) = response.as_object_mut() {
         fields.insert("peer_id".into(), json!(config.ids().1));
         fields.insert("tunnel_id".into(), json!(config.ids().2));
         fields.insert("direction".into(), json!(config.direction_name()));
+        fields.insert("receipt_id".into(), json!(request.idempotency_key.clone()));
+        fields.insert("replayed".into(), json!(false));
     }
-    (200, body)
-}
+    let status = if audit_result.is_err() {
+        response = json!({
+            "result":"unknown",
+            "reason":"audit_failed",
+            "bytes":0,
+            "sha256_match":false,
+            "timestamp":unix_now(),
+            "peer_id":config.ids().1,
+            "tunnel_id":config.ids().2,
+            "direction":config.direction_name(),
+            "receipt_id":request.idempotency_key.clone(),
+            "replayed":false,
+        });
+        500
+    } else {
+        200
+    };
 
+    let entries = receipts["entries"].as_array_mut().expect("receipt entries");
+    if let Some(entry) = entries.iter_mut().find(|entry| {
+        entry["key"].as_str() == Some(request.idempotency_key.as_str())
+    }) {
+        entry["state"] = json!("completed");
+        entry["completed_unix"] = json!(unix_now());
+        entry["http_status"] = json!(status);
+        entry["response"] = response.clone();
+    }
+    if save_integrity_receipts(state_dir, &receipts).is_err() {
+        return (500, json!({"result":"unknown","reason":"receipt_store_unavailable"}));
+    }
+    (status, response)
+}
 fn get_audit(ctx: &Ctx) -> (u16, Value) {
     let Some(dir) = &ctx.state_dir else {
         return (404, json!({"error": "desired state is disabled"}));
@@ -3962,13 +4104,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn integrity_verify_route_is_authenticated_and_audits_unknown_without_a_control_socket() {
+    async fn integrity_verify_route_is_authenticated_idempotent_and_audits_unknown_without_a_control_socket() {
         let dir = state_dir("verify");
         let runtime = dir.join("runtime");
         std::fs::create_dir(&runtime).unwrap();
         let ctx = Ctx::new(sample(), TOKEN.into(), Some(dir.clone()))
             .with_unit(Some("verify-node".into()), Some(runtime));
-        let (status, response) = route(&post("/v1/verify"), b"", &ctx).await;
+        let request_body = json!({"idempotency_key":"verify-test-0001"}).to_string();
+        let (status, response) = route(&post("/v1/verify"), request_body.as_bytes(), &ctx).await;
         assert_eq!(status, 200);
         assert_eq!(response["result"], "unknown");
         assert_eq!(response["reason"], "control_unavailable");
@@ -3984,14 +4127,24 @@ mod tests {
         assert_eq!(event["action"], "integrity_probe");
         assert_eq!(event["result"], "unknown");
         assert_eq!(event["detail"], "control_unavailable");
-        assert_eq!(event["sha256"], "");
+        assert_eq!(event["resource"], "integrity_probe/tunnel/demo/peer/iran/direction/direct");
+        assert!(event["sha256"].as_str().is_some_and(|hash| hash.len() == 64));
+        assert!(event["receipt_id"].as_str().is_some());
         assert!(response.get("sha256").is_none());
-        assert!(!lines.contains(TOKEN));
+
+        let (replay_status, replay) = route(&post("/v1/verify"), request_body.as_bytes(), &ctx).await;
+        assert_eq!(replay_status, 200);
+        assert_eq!(replay["result"], "unknown");
+        assert_eq!(replay["replayed"], true);
+        let lines_after_replay = std::fs::read_to_string(&audit_path).unwrap();
+        assert_eq!(lines_after_replay.lines().count(), 1);
+        assert!(!lines_after_replay.contains(TOKEN));
 
         let no_runtime_dir = state_dir("verify-no-runtime");
         let no_runtime = Ctx::new(sample(), TOKEN.into(), Some(no_runtime_dir.clone()))
             .with_unit(Some("verify-node".into()), None);
-        let (status, response) = route(&post("/v1/verify"), b"", &no_runtime).await;
+        let no_runtime_body = json!({"idempotency_key":"verify-no-run-0001"}).to_string();
+        let (status, response) = route(&post("/v1/verify"), no_runtime_body.as_bytes(), &no_runtime).await;
         assert_eq!(status, 200);
         assert_eq!(response["result"], "unknown");
         assert_eq!(response["reason"], "control_unavailable");
