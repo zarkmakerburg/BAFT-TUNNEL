@@ -213,6 +213,41 @@ mod handshake_bench {
             })
         });
     }
+    /// Full client/server hello handshake only, without the follow-up StreamOpen frame.
+    #[divan::bench]
+    fn protocol_handshake_only(bencher: Bencher) {
+        let rt = runtime();
+        bencher.bench_local(|| {
+            rt.block_on(async {
+                let (mut client, mut server) = tokio::io::duplex(4096);
+                let server_side = handshake::server_handshake(
+                    &mut server,
+                    "node-abroad",
+                    "node-iran",
+                    "demo-tunnel",
+                    ConnectionDirection::Direct,
+                );
+                let client_side = handshake::client_handshake(
+                    &mut client,
+                    "node-iran",
+                    "node-abroad",
+                    "demo-tunnel",
+                    ConnectionDirection::Direct,
+                );
+                let (s, c) = tokio::join!(server_side, client_side);
+                s.unwrap();
+                c.unwrap();
+            })
+        });
+    }
+
+    /// Baseline validation for one SHA-256 peer pin, separate from rollover validation.
+    #[divan::bench]
+    fn validate_fingerprint_single_pin() {
+        let pin = "ab".repeat(32);
+        handshake::validate_fingerprint(black_box(&pin)).unwrap();
+    }
+
 }
 
 mod peer_certificate_bench {
