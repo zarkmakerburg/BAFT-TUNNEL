@@ -15,10 +15,17 @@ grep -F 'runuser -u baft-tunnel --' "$harness" >/dev/null
 grep -F 'REMOTE_BASE="/var/tmp/baft-b2-lab-$RUN_ID"' "$harness" >/dev/null
 grep -F 'command -v findmnt >/dev/null' "$harness" >/dev/null
 grep -F 'mount_options=\$(findmnt -n -o OPTIONS --target /var/tmp)' "$harness" >/dev/null
-grep -F 'case \",\$mount_options,\" in *,noexec,*' "$harness" >/dev/null
+grep -F 'case \\\",\\$mount_options,\\\" in *,noexec,*' "$harness" >/dev/null
+python3 - "$harness" <<'PYCASE'
+from pathlib import Path
+import sys
+line = next(line for line in Path(sys.argv[1]).read_text().splitlines() if 'noexec' in line and 'mount_options' in line)
+bs = chr(92)
+assert 'case '+bs+'\",'+bs+'$mount_options,'+bs+'\"' in line, line
+PYCASE
 grep -F 'ECHO_STATE="/run/baft-b2-echo-$RUN_ID"' "$harness" >/dev/null
 grep -F 'ReadWritePaths=$ECHO_STATE' "$harness" >/dev/null
-grep -F "rm -rf '\$REMOTE_BASE' '\$ECHO_STATE'" "$harness" >/dev/null
+grep -F "rm -rf '\\$REMOTE_BASE' '\\$ECHO_STATE'" "$harness" >/dev/null
 grep -F 'B2_LAB_START_ECHO_FIXTURE' "$harness" >/dev/null
 grep -F 'B2_LAB_START_TUNNEL host=iran' "$harness" >/dev/null
 grep -F 'B2_LAB_START_TUNNEL host=abroad' "$harness" >/dev/null
