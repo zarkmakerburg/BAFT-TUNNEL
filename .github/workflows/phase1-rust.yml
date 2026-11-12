@@ -110,6 +110,7 @@ jobs:
         run: |
           node --check panel/pages.js
           node --check panel/i18n.js
+          node scripts/panel-qa/evidence-localization.js
           bash -n lab/real-hosts/panel-pairing-stage.sh
           bash scripts/pki/test-panel-tls-lab-stage.sh
       - name: Exercise panel PKI enrollment in English and Persian
