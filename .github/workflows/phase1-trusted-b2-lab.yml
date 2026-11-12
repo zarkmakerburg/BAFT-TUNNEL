@@ -1,0 +1,129 @@
+name: Phase 1 trusted B2 two-host integrity-probe LAB
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact current head SHA of open PR #177
+        required: true
+        type: string
+      confirm:
+        description: Type RUN_TRUSTED_B2_INTEGRITY_LAB to authorize the isolated two-host test
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+
+concurrency:
+  group: baft-tunnel-trusted-lab-hosts
+  cancel-in-progress: false
+
+jobs:
+  validate-candidate:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      candidate_sha: ${{ steps.candidate.outputs.sha }}
+    steps:
+      - name: Require explicit approval and exact PR #177 head
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONFIRM: ${{ inputs.confirm }}
+          REQUESTED_SHA: ${{ inputs.candidate_sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == RUN_TRUSTED_B2_INTEGRITY_LAB ]] || { echo 'Explicit confirmation is required' >&2; exit 2; }
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate_sha must be a full lowercase 40-character SHA' >&2; exit 2; }
+          gh api "repos/$REPOSITORY/pulls/177" > "$RUNNER_TEMP/candidate-pr.json"
+          gh api "repos/$REPOSITORY/commits/$REQUESTED_SHA/check-runs" > "$RUNNER_TEMP/candidate-checks.json"
+          jq -e '.total_count > 0 and all(.check_runs[]; .status == "completed" and .conclusion == "success")' "$RUNNER_TEMP/candidate-checks.json" >/dev/null || {
+            echo 'all candidate SHA checks must be completed successfully before LAB' >&2
+            exit 2
+          }
+          jq -e --arg sha "$REQUESTED_SHA" --arg repo "$REPOSITORY" '
+            .state == "open" and
+            .base.ref == "main" and
+            .head.repo.full_name == $repo and
+            .head.sha == $sha
+          ' "$RUNNER_TEMP/candidate-pr.json" >/dev/null || {
+            echo 'candidate SHA must exactly match the open same-repository PR #177 head targeting main' >&2
+            exit 2
+          }
+          echo "sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
+          echo "B2_CANDIDATE_SHA=$REQUESTED_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  build-candidate:
+    needs: validate-candidate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ needs.validate-candidate.outputs.candidate_sha }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build candidate without LAB credentials
+        run: cargo +1.88.0 build --locked --release
+      - name: Stage candidate executable and checksum
+        run: |
+          set -euo pipefail
+          test -s target/release/baft-tunnel
+          test ! -L target/release/baft-tunnel
+          test "$(wc -c < target/release/baft-tunnel)" -le 104857600
+          mkdir -p "$RUNNER_TEMP/baft-tunnel-b2-artifact"
+          install -m 0755 target/release/baft-tunnel "$RUNNER_TEMP/baft-tunnel-b2-artifact/baft-tunnel"
+          (cd "$RUNNER_TEMP/baft-tunnel-b2-artifact" && sha256sum baft-tunnel > candidate.sha256)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4.6.2
+        with:
+          name: baft-tunnel-b2-candidate-${{ needs.validate-candidate.outputs.candidate_sha }}
+          path: ${{ runner.temp }}/baft-tunnel-b2-artifact/
+          if-no-files-found: error
+          retention-days: 1
+
+  two-host-b2-lab:
+    needs: [validate-candidate, build-candidate]
+    runs-on: ubuntu-22.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 35
+    steps:
+      # Trusted orchestration is always loaded from the protected main commit that dispatched this run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # actions/download-artifact v4.3.0
+        with:
+          name: baft-tunnel-b2-candidate-${{ needs.validate-candidate.outputs.candidate_sha }}
+          path: ${{ runner.temp }}/baft-tunnel-b2-candidate
+      - name: Verify downloaded candidate artifact
+        env:
+          EXPECTED_SHA: ${{ needs.validate-candidate.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/baft-tunnel-b2-candidate"
+          test -s baft-tunnel
+          test ! -L baft-tunnel
+          sha256sum --check candidate.sha256
+          install -m 0755 baft-tunnel "$RUNNER_TEMP/baft-tunnel-b2-candidate-bin"
+          echo "Candidate source SHA: $EXPECTED_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Run trusted bounded B2 LAB orchestration
+        env:
+          LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+          LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
+          LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          LAB_SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+          LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+          LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+          LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+          LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+          CANDIDATE_SHA: ${{ needs.validate-candidate.outputs.candidate_sha }}
+          CANDIDATE_BINARY: ${{ runner.temp }}/baft-tunnel-b2-candidate-bin
+        run: bash lab/trusted/phase1-b2-integrity-probe.sh

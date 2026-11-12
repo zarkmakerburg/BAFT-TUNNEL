@@ -99,4 +99,19 @@ for line in hash_lines:
     assert line.count('$(sha256sum') == 1, line
     assert line.count(r'\$(sha256sum') == 1, line
 PYOPS
-echo 'Trusted Phase 1 workflow boundary tests: PASS'
+# B2 accepts only exact open PR #177 head, then uses trusted main orchestration.
+b2="$root/.github/workflows/phase1-trusted-b2-lab.yml"
+grep -F 'github.ref == ' "$b2" >/dev/null
+grep -F 'gh api "repos/$REPOSITORY/pulls/177"' "$b2" >/dev/null
+grep -F '.head.sha == $sha' "$b2" >/dev/null
+grep -F 'environment: baft-tunnel-lab' "$b2" >/dev/null
+grep -F 'github.sha' "$b2" >/dev/null
+grep -F 'run: bash lab/trusted/phase1-b2-integrity-probe.sh' "$b2" >/dev/null
+if awk '/^  build-candidate:/{inside=1} /^  two-host-b2-lab:/{inside=0} inside && /secrets\./{found=1} END{exit !found}' "$b2"; then
+  echo 'B2 candidate build job has access to LAB secrets' >&2; exit 1
+fi
+test "$(grep -c 'secrets\.' "$b2")" = 4
+grep -F 'unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS' "$root/lab/trusted/phase1-b2-integrity-probe.sh" >/dev/null
+grep -F 'candidate_unprivileged=1 ssh_key_exposed_to_candidate=0' "$root/lab/trusted/phase1-b2-integrity-probe.sh" >/dev/null
+
+echo 'Trusted workflow secret-boundary tests: PASS'
