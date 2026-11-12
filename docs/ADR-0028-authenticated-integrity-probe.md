@@ -1,6 +1,6 @@
 # ADR-0028: Authenticated in-product integrity probe
 
-**Status:** Design approved by the project owner; runtime implementation is gated on Phase 1 acceptance and the F0 trust-boundary review.
+**Status:** Design approved; B2 implementation-start gate satisfied on 2026-11-12; B2 feature acceptance remains pending.
 **Scope:** Phase 1 B2, the panel's **Test tunnel** action and the integrity evidence tier.
 **Builds on:** ADR-0011 (authorization), ADR-0021 (Direct/Reverse topology), ADR-0022 (Apply/Verify/Receipt), ADR-0023 (agent control boundary), ADR-0024 (operations evidence), and `docs/READINESS_CONTRACT.md`.
 
@@ -31,7 +31,7 @@ The project owner selected **Option A — strict coordinated peer-pair upgrade**
 - If one endpoint restarts or is rolled back to v1 while its peer is v2, a new session is unavailable until both endpoints are restored to the same protocol generation.
 - This decision does not claim zero-downtime rolling upgrades and does not change the current implementation baseline: main remains protocol v1 until a separately gated v2 implementation is completed.
 
-The compatibility matrix and pre-implementation contract tests must implement this accepted policy. This decision closes the owner-policy choice only; it does **not** satisfy the compatibility-test prerequisite or F0 approval and does not authorize B2 runtime implementation.
+The compatibility matrix and pre-implementation contract tests must implement this accepted policy. The implementation-start prerequisites are now satisfied: U7 and B1 are accepted, the independent F0 reviewer approved the design-level trust boundary, and the Option A contract tests passed on exact head `babdb7f5bb82d8235f8f9e8f1145f843c2f8b735` and merged as PR #176 (`74b8ba33b2144c7537f710c720e70e6c25ebfca1`). B2 runtime implementation is tracked in PR #177. This does **not** constitute B2 feature acceptance; real two-host LAB and the remaining acceptance evidence are still required.
 
 ## 1. Dedicated capability; no reuse of TCP forwarding
 
@@ -115,14 +115,14 @@ The local agent API remains bearer-token protected and loopback-only. The panel 
 
 ## B2 implementation-start gate
 
-B2 remains design-only until all of the following prerequisites are satisfied:
+The following prerequisites defined the B2 implementation-start gate:
 
 1. **U7 accepted:** the signed-RC.7 integrated MVP and trusted two-host acceptance remain the accepted product baseline.
 2. **B1 accepted and merged:** structured Preflight/Diagnostics evidence and bilingual localization are merged in main (PR #168, merge `311b706`) with all exact-head CI groups green.
 3. **F0 independently reviewed and approved:** a separate trust-boundary/security review must cover the Agent-to-unit socket and process-identity boundary, exact `SO_PEERCRED` UID enforcement, socket ownership/permissions and per-instance isolation, socket lifecycle/restart/stale-socket handling, bounded framing/backlog/deadline, concurrency/rate/resource exhaustion, fail-closed behavior, audit boundaries, local Agent API exposure, and confirmation that the probe grants no systemd/root-helper authority. A static self-review or this ADR alone does not satisfy F0.
 4. **Protocol-v2 compatibility plan accepted:** document the v1/v2 peer-upgrade matrix, mixed-version rejection behavior, no-downgrade guarantee, and impact on new versus already-established v1 sessions; define negative and two-version interoperability tests before implementation.
 
-Only after these prerequisites are accepted may B2 runtime/API/panel implementation begin. This gate deliberately does not require B2 itself to be complete.
+**Gate status (2026-11-12): SATISFIED.** The prerequisites above have been met and B2 runtime/API/panel implementation is in progress in PR #177. This gate deliberately does not imply that B2 itself is complete or accepted.
 
 ## B2 feature-acceptance gate
 
@@ -132,4 +132,4 @@ After implementation, B2 is not accepted until all required unit, protocol, inte
 
 The overall Phase 1 closeout and any Phase 2 implementation remain gated on **all B1–B6 items being accepted and evidenced**, including B2's own implementation and feature-acceptance tests above. This is the aggregate completion gate, not a prerequisite for starting B2.
 
-Until the B2 implementation-start prerequisites are satisfied, no B2 runtime/API/panel implementation or host-side change is authorized by this ADR. The existing integrity tier remains Unknown except for separately recorded Verify/LAB evidence.
+B2 runtime implementation may proceed under the approved design. This ADR does not authorize host mutation, real-host LAB, release, deployment or Phase 2. Until B2 feature acceptance, the integrity tier remains Unknown except for separately recorded probe/Verify/LAB evidence.
