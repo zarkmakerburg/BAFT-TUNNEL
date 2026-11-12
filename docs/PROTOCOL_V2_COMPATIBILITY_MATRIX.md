@@ -112,14 +112,14 @@ This document records the owner-accepted compatibility policy and the completed 
 
 **Gate status (2026-11-12): SATISFIED.** The exact-SHA Option A contract tests passed on `babdb7f5bb82d8235f8f9e8f1145f843c2f8b735` with all required CI groups green and were merged in PR #176. Independent F0 design-level approval is recorded, and U7/B1 remain accepted. B2 runtime implementation is tracked in PR #177.
 
-The ADR-0028 B2 implementation-start gate is therefore **SATISFIED**; B2 feature acceptance is still pending.
+The gate is satisfied because:
 
-1. The accepted Option A decision remains recorded in ADR-0028 and this matrix.
-2. The pre-implementation contract tests above are implemented and pass on an exact SHA.
-3. The independent F0 trust-boundary/security review is approved, including UDS lifecycle, safe stale-socket handling, exact `SO_PEERCRED` UID enforcement, bounded framing and fail-closed behavior.
+1. The accepted Option A decision is recorded in ADR-0028 and this matrix.
+2. The pre-implementation contract tests passed on exact head SHA `babdb7f5bb82d8235f8f9e8f1145f843c2f8b735` and were merged in PR #176.
+3. The independent F0 trust-boundary/security reviewer approved the design-level UDS lifecycle, safe stale-socket handling, exact `SO_PEERCRED` UID enforcement, bounded framing and fail-closed behavior.
 4. U7 and merged B1 remain accepted.
 
-This matrix does not claim B2 feature acceptance and does not authorize Phase 2, release or deployment. Real two-host LAB and the remaining B2 acceptance evidence are still required.
+B2 feature acceptance is still pending. This matrix does not authorize Phase 2, release or deployment. Real two-host LAB and the remaining B2 acceptance evidence are still required.
 
 ## 8. Evidence references
 
