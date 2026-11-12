@@ -2629,9 +2629,11 @@ fn last_integrity_probe(ctx: &Ctx) -> Option<Value> {
             if latest
                 .as_ref()
                 .and_then(|value| value["timestamp"].as_u64())
-                .is_none_or(|current| timestamp > current)
+                .is_none_or(|current| timestamp >= current)
             {
-                let result = event["result"].as_str()?;
+                let Some(result) = event["result"].as_str() else {
+                    continue;
+                };
                 if !matches!(result, "pass" | "fail" | "unknown") {
                     continue;
                 }
@@ -2647,7 +2649,37 @@ fn last_integrity_probe(ctx: &Ctx) -> Option<Value> {
     latest
 }
 
-const INTEGRITY_UNKNOWN: &str = "payload integrity is measured only by an end-to-end echo probe (Verify/LAB); the agent never reads tunnel payload";
+const INTEGRITY_UNKNOWN: &str = "no recent in-product integrity probe; run Test tunnel explicitly (ready remains Unknown)";
+
+fn integrity_tier(last_probe: Option<Value>, now: u64) -> Value {
+    let timestamp = last_probe
+        .as_ref()
+        .and_then(|probe| probe["timestamp"].as_u64());
+    let age = timestamp.map(|at| now.saturating_sub(at));
+    let fresh = timestamp.is_some_and(|at| at <= now)
+        && age.is_some_and(|seconds| seconds <= DATA_WINDOW_S);
+    let result = if fresh {
+        last_probe.as_ref().and_then(|probe| probe["result"].as_str()).unwrap_or("unknown")
+    } else {
+        "unknown"
+    };
+    let reason = if fresh {
+        last_probe.as_ref().and_then(|probe| probe["reason"].as_str()).unwrap_or("probe_result_unavailable")
+    } else if last_probe.is_some() {
+        "stale_probe"
+    } else {
+        INTEGRITY_UNKNOWN
+    };
+    json!({
+        "result": result,
+        "reason": reason,
+        "source": if fresh { Some("in_product_probe") } else { None },
+        "timestamp": if fresh { timestamp } else { None },
+        "age_s": age,
+        "freshness_s": DATA_WINDOW_S,
+        "last_probe": last_probe,
+    })
+}
 
 /// End-to-end tunnel state as separate evidence tiers (ADR-0024). The summary `state` is the
 /// highest tier actually observed; it never says "ready" and never implies integrity.
@@ -2703,7 +2735,7 @@ async fn tunnel_status(ctx: &Ctx, config: &RuntimeConfig, listening: bool) -> Va
                 "window_s": DATA_WINDOW_S,
                 "last_bidirectional_unix": last_bidi,
             }),
-            "integrity": {"result": "unknown", "reason": INTEGRITY_UNKNOWN, "last_probe": last_probe},
+            "integrity": integrity_tier(last_probe, now),
         },
         "last_failure": ev.failure,
         "last_verified_unix": stored.as_ref().and_then(|d| d["verified_unix"].as_u64()),
@@ -2819,7 +2851,22 @@ fn report_next(unit: &Value, tiers: &[Value], verified: bool) -> Value {
         _ => {}
     }
     if verified {
-        return json!({"action": "none", "code": "diag.next.none", "params": {}, "text": "nothing to do: the data path was observed; integrity stays Unknown (Verify/LAB only)"});
+        let integrity_result = tiers
+            .iter()
+            .find(|item| item["id"] == "integrity")
+            .and_then(|item| item["result"].as_str())
+            .unwrap_or("unknown");
+        let text = match integrity_result {
+            "pass" => "the in-product 64 KiB integrity probe passed for this peer, tunnel and time; Apply ready remains Unknown",
+            "fail" => "the latest integrity probe failed; inspect the reported reason and test again after correcting the path",
+            _ => "the data path was observed; integrity is Unknown or stale—use the explicit Test tunnel action",
+        };
+        let code = match integrity_result {
+            "pass" => "diag.next.integrity_pass",
+            "fail" => "diag.next.integrity_fail",
+            _ => "diag.next.integrity_unknown",
+        };
+        return json!({"action": "none", "code": code, "params": {}, "text": text});
     }
     let blocker = tiers.iter().find(|t| {
         t["id"] != "integrity" && !matches!(t["result"].as_str(), Some("pass" | "not_applicable"))
@@ -2980,11 +3027,18 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
         (Some(_), Some(t)) if now.saturating_sub(t) <= DATA_WINDOW_S => tier_with_params("data_path", "pass", "unit_counters", format!("payload bytes were relayed in both directions at {t}"), json!({"at_unix": t})),
         (Some(_), _) => tier_with_params("data_path", "unknown", "unit_counters", format!("no payload in both directions within {DATA_WINDOW_S} s; send traffic through the tunnel and run again"), json!({"window_seconds": DATA_WINDOW_S})),
     });
-    tiers.push(tier(
+    let integrity = integrity_tier(last_integrity_probe(ctx), now);
+    tiers.push(tier_with_params(
         "integrity",
-        "unknown",
-        "none",
-        INTEGRITY_UNKNOWN.into(),
+        integrity["result"].as_str().unwrap_or("unknown"),
+        integrity["source"].as_str().unwrap_or("none"),
+        integrity["reason"].as_str().unwrap_or(INTEGRITY_UNKNOWN).to_owned(),
+        json!({
+            "timestamp": integrity["timestamp"],
+            "age_s": integrity["age_s"],
+            "freshness_s": integrity["freshness_s"],
+            "last_probe": integrity["last_probe"],
+        }),
     ));
 
     let mut highest = Value::Null;
@@ -2995,7 +3049,7 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
             _ => break,
         }
     }
-    let verified = highest == "data_path";
+    let verified = highest == "data_path" || highest == "integrity";
     let remote = config.remote().is_some();
     for t in &mut tiers {
         if let Some(n) = tier_next(
@@ -3032,7 +3086,7 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
         "verified": verified,
         "verified_unix": if verified { Some(now) } else { previous },
         "next_action": next_action,
-        "note": "each tier is separate evidence; TCP reachability alone never means a working tunnel, and integrity stays unknown",
+        "note": "each tier is separate evidence; TCP reachability alone never means a working tunnel; integrity is Pass only for a recent explicit authenticated probe, and ready remains unknown",
     });
     if let Some(dir) = &ctx.state_dir {
         let _ = write_private(dir, DIAGNOSTICS_FILE, report.to_string().as_bytes());
@@ -3855,6 +3909,9 @@ mod tests {
             "verify.pass.bytes",
             "verify.pass.duration",
             "verify.reason.unsupported_protocol",
+            "diag.next.integrity_pass",
+            "diag.next.integrity_fail",
+            "diag.next.integrity_unknown",
             "verify.reason.control_unavailable",
             "verify.fail",
             "verify.last",
@@ -3871,6 +3928,37 @@ mod tests {
         assert!(pages.contains("verify.title"));
         assert!(pages.contains("'/v1/tunnel/lifecycle'"));
         assert!(pages.contains("window.confirm(t('life.confirm.' + action))"));
+    }
+
+    #[test]
+    fn integrity_tier_passes_only_for_a_recent_probe_and_preserves_history_when_stale() {
+        let recent = json!({
+            "result": "pass",
+            "reason": "sha256_verified",
+            "timestamp": 950,
+            "source": "in_product_probe"
+        });
+        let fresh = integrity_tier(Some(recent.clone()), 1_000);
+        assert_eq!(fresh["result"], "pass");
+        assert_eq!(fresh["source"], "in_product_probe");
+        assert_eq!(fresh["age_s"], 50);
+        assert_eq!(fresh["freshness_s"], DATA_WINDOW_S);
+        assert_eq!(fresh["last_probe"]["result"], "pass");
+
+        let stale = integrity_tier(Some(recent), 1_011);
+        assert_eq!(stale["result"], "unknown");
+        assert_eq!(stale["reason"], "stale_probe");
+        assert_eq!(stale["source"], Value::Null);
+        assert_eq!(stale["last_probe"]["result"], "pass");
+
+        let failed = integrity_tier(
+            Some(json!({"result":"fail","reason":"integrity_mismatch","timestamp":999})),
+            1_000,
+        );
+        assert_eq!(failed["result"], "fail");
+        let missing = integrity_tier(None, 1_000);
+        assert_eq!(missing["result"], "unknown");
+        assert_eq!(missing["reason"], INTEGRITY_UNKNOWN);
     }
 
     #[tokio::test]
