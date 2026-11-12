@@ -41,7 +41,7 @@ Add a dedicated firewall inspection helper, separate from lifecycle, setup and P
 
 1. The local Agent accepts an authenticated, instance-bound read request (proposed API: `GET /v1/firewall`). The request carries no command, port, family, address, file path or firewall-manager choice.
 2. The Agent derives the registered instance name from its own bound configuration. It writes one bounded request file, `/run/baft-tunnel/control/NAME.firewall`.
-3. A dedicated root-owned `baft-tunnel-control-firewall@NAME.path` triggers one oneshot service. Its only application command is the fixed executable and arguments defined in this ADR; it does not call `systemctl`, a shell, sudo, a package manager, or any firewall write operation.
+3. A dedicated root-owned `baft-tunnel-control-firewall@NAME.path` triggers one oneshot service whose only `ExecStart` is `/usr/local/bin/baft-tunnel firewall helper --instance NAME`. That closed CLI subcommand validates the request and registered instance, then invokes the single fixed nftables subprocess in §4. Neither the service nor the helper invokes `systemctl`, a shell, sudo, a package manager, or any firewall write operation.
 4. The helper reads the installed, service-owned configuration for exactly `NAME`; it does not trust caller-supplied configuration or a caller-selected port.
 5. The helper writes a bounded result receipt, `NAME.firewall-result`, using the same symlink refusal, regular-file, ownership, mode and per-instance binding protections used by the existing setup / PKI helper paths.
 6. The Agent reads and validates the receipt, then exposes the evidence through the existing authenticated loopback API. No raw ruleset is exposed.
