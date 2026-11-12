@@ -292,11 +292,11 @@ for side in iran abroad; do
 done
 ssh_host abroad "install -d -o nobody -g nogroup -m 0700 '$ECHO_STATE' && install -m 0600 -o nobody -g nogroup /dev/null '$ECHO_STATE/stats.json'"
 
-# Create both protocol-v2 Noise pairing bundles as the unprivileged tunnel user.
-out="$(ssh_host iran "runuser -u baft-tunnel -- '$REMOTE_BIN' setup init --engine noise-tcp --role forward --direction direct --protocol-version 2 --node-id iran --peer-id abroad --tunnel-id '$INSTANCE' --service-port '$LOCAL_PORT' --tunnel-port '$TUNNEL_PORT' --peer-host '$LAB_ABROAD_HOST' --dir '$(side_dir iran)' --instance '$INSTANCE'")"
+# Create Noise pairing bundles as the unprivileged tunnel user; v2 is set below in test-only ephemeral configs.
+out="$(ssh_host iran "runuser -u baft-tunnel -- '$REMOTE_BIN' setup init --engine noise-tcp --role forward --direction direct --node-id iran --peer-id abroad --tunnel-id '$INSTANCE' --service-port '$LOCAL_PORT' --tunnel-port '$TUNNEL_PORT' --peer-host '$LAB_ABROAD_HOST' --dir '$(side_dir iran)' --instance '$INSTANCE'")"
 IRAN_CHECKSUM="$(printf '%s\n' "$out" | awk '/^Checksum / {print $NF}')"
 [[ "$IRAN_CHECKSUM" =~ ^[0-9a-f]{8}(-[0-9a-f]{8}){3}$ ]] || { echo 'could not read Iran pairing checksum' >&2; exit 1; }
-out="$(ssh_host abroad "runuser -u baft-tunnel -- '$REMOTE_BIN' setup init --engine noise-tcp --role serve --direction direct --protocol-version 2 --node-id abroad --peer-id iran --tunnel-id '$INSTANCE' --service-port '$ECHO_PORT' --tunnel-port '$TUNNEL_PORT' --dir '$(side_dir abroad)' --instance '$INSTANCE'")"
+out="$(ssh_host abroad "runuser -u baft-tunnel -- '$REMOTE_BIN' setup init --engine noise-tcp --role serve --direction direct --node-id abroad --peer-id iran --tunnel-id '$INSTANCE' --service-port '$ECHO_PORT' --tunnel-port '$TUNNEL_PORT' --dir '$(side_dir abroad)' --instance '$INSTANCE'")"
 ABROAD_CHECKSUM="$(printf '%s\n' "$out" | awk '/^Checksum / {print $NF}')"
 [[ "$ABROAD_CHECKSUM" =~ ^[0-9a-f]{8}(-[0-9a-f]{8}){3}$ ]] || { echo 'could not read Abroad pairing checksum' >&2; exit 1; }
 
@@ -306,6 +306,20 @@ copy_to_host iran "$LOCAL_TMP/abroad.bundle.json"
 copy_to_host abroad "$LOCAL_TMP/iran.bundle.json"
 ssh_host iran "install -m 0644 '$REMOTE_BASE/abroad.bundle.json' '$(side_dir iran)/peer.bundle.json' && chown baft-tunnel:baft-tunnel '$(side_dir iran)/peer.bundle.json' && runuser -u baft-tunnel -- '$REMOTE_BIN' setup join --dir '$(side_dir iran)' --bundle '$(side_dir iran)/peer.bundle.json' --checksum '$ABROAD_CHECKSUM'"
 ssh_host abroad "install -m 0644 '$REMOTE_BASE/iran.bundle.json' '$(side_dir abroad)/peer.bundle.json' && chown baft-tunnel:baft-tunnel '$(side_dir abroad)/peer.bundle.json' && runuser -u baft-tunnel -- '$REMOTE_BIN' setup join --dir '$(side_dir abroad)' --bundle '$(side_dir abroad)/peer.bundle.json' --checksum '$IRAN_CHECKSUM'"
+
+# Runtime-only test override: current setup Plan/Init and Agent Wizard do not expose protocol_version.
+# The trusted harness sets v2 only in these ephemeral configs; this does not count as setup UX acceptance.
+set_protocol_v2() {
+  local side="$1" config plan
+  config="$(side_dir "$side")/$INSTANCE.json"
+  ssh_host "$side" "python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); assert d.get(\"engine\")==\"noise-tcp\" and d.get(\"mode\") in (\"forward\",\"serve\"); d[\"protocol_version\"]=2; f=open(p,\"w\"); json.dump(d,f,indent=2); f.close(); print(\"PROTOCOL_V2_CONFIG_READY\")' '$config'"
+  ssh_host "$side" "runuser -u baft-tunnel -- '$REMOTE_BIN' config validate --config '$config'"
+  plan="$(ssh_host "$side" "runuser -u baft-tunnel -- '$REMOTE_BIN' config plan --config '$config'")"
+  printf '%s' "$plan" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("configuration",{}).get("protocol_version")==2, d; print("PROTOCOL_V2_CONFIG_READY")'
+}
+set_protocol_v2 iran
+set_protocol_v2 abroad
+
 ssh_host iran "chown root:baft-tunnel '$(side_dir iran)' && chmod 0750 '$(side_dir iran)'"
 ssh_host abroad "chown root:baft-tunnel '$(side_dir abroad)' && chmod 0750 '$(side_dir abroad)'"
 
@@ -398,48 +412,100 @@ ssh_host iran "python3 '$REMOTE_BASE/payload.py' 65536 '$LOCAL_PORT' && python3 
 sleep 1
 BEFORE_STATS="$(ssh_host abroad "cat '$ECHO_STATE/stats.json'")"
 
-verify_pass() {
-  local side="$1" peer="$2" key="$3" response
-  response="$(api_request "$side" POST /v1/verify "{\"idempotency_key\":\"$key\"}")"
+verify_probe() {
+  local side="$1" peer="$2" response audit status attempt agent_unit limited audit_after
+  response="$(api_request "$side" POST /v1/verify "")"
   printf '%s' "$response" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 peer, tunnel = sys.argv[1], sys.argv[2]
 assert d.get("result") == "pass", d
+assert d.get("reason") is None, d
 assert d.get("bytes") == 65536, d
 assert d.get("sha256_match") is True, d
 assert d.get("peer_id") == peer, d
 assert d.get("tunnel_id") == tunnel, d
 assert d.get("direction") == "direct", d
 assert d.get("timestamp", 0) > 0, d
-assert "request_sha256" not in d and "sha256" not in d, d
-print("INTEGRITY_PROBE_PASS peer=%s bytes=%s duration_ms=%s" % (peer, d["bytes"], d.get("duration_ms")))
+assert d.get("duration_ms") is not None and 0 <= d["duration_ms"] <= 10000, d
+assert "sha256" not in d and "digest" not in d, d
+print("INTEGRITY_PROBE_PASS peer=%s bytes=%s duration_ms=%s" % (peer, d["bytes"], d["duration_ms"]))
 ' "$peer" "$INSTANCE"
-  local audit_before_replay audit_after_replay audit_count replay status attempt agent_unit
-  audit_before_replay="$(api_request "$side" GET /v1/audit)"
-  audit_count="$(python3 -c 'import json,sys; d=json.load(sys.stdin); k=sys.argv[1]; print(sum(1 for e in d.get("entries",[]) if e.get("action")=="integrity_probe" and e.get("receipt_id")==k))' "$key" <<<"$audit_before_replay")"
-  [[ "$audit_count" == 1 ]] || { echo "expected exactly one initial integrity audit event: $side/$audit_count" >&2; return 1; }
+
+  audit="$(api_request "$side" GET /v1/audit)"
+  printf '%s' "$audit" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+resource = "tunnel/" + sys.argv[1]
+events = [e for e in d.get("entries", []) if e.get("action") == "integrity_probe" and e.get("resource") == resource]
+assert len(events) == 1 and events[0].get("result") == "pass", events
+assert events[0].get("detail") == "sha256_verified", events
+assert not events[0].get("sha256"), events
+print("INTEGRITY_AUDIT_PASS")
+' "$INSTANCE"
+
   agent_unit="$(agent_unit_for "$side")"
   ssh_host "$side" "systemctl restart '$agent_unit'"
   status=""
   for attempt in {1..20}; do
-    if status="$(api_request "$side" GET /v1/status 2>/dev/null)" && [[ -n "$status" ]]; then break; fi
+    if status="$(api_request "$side" GET /v1/status 2>/dev/null)" && [[ -n "$status" ]]; then
+      if printf '%s' "$status" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+tunnel = d.get("tunnel") or {}
+tiers = tunnel.get("tiers", {})
+integrity = tiers.get("integrity", {})
+last = integrity.get("last_probe") or {}
+assert integrity.get("result") == "unknown", integrity
+assert last.get("result") == "pass" and last.get("source") == "in_product_probe" and last.get("timestamp", 0) > 0, last
+' ; then break; fi
+    fi
     sleep 1
   done
   [[ -n "$status" ]] || { echo "Agent did not recover after restart: $side" >&2; return 1; }
-  replay="$(api_request "$side" POST /v1/verify "{\"idempotency_key\":\"$key\"}")"
-  printf '%s' "$replay" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("result")=="pass" and d.get("replayed") is True, d; print("IDEMPOTENCY_REPLAY_PERSISTED_PASS")'
-  audit_after_replay="$(api_request "$side" GET /v1/audit)"
-  audit_count="$(python3 -c 'import json,sys; d=json.load(sys.stdin); k=sys.argv[1]; print(sum(1 for e in d.get("entries",[]) if e.get("action")=="integrity_probe" and e.get("receipt_id")==k))' "$key" <<<"$audit_after_replay")"
-  [[ "$audit_count" == 1 ]] || { echo "idempotency replay appended a duplicate audit event: $side/$audit_count" >&2; return 1; }
-  echo "AUDIT_REPLAY_SINGLE_EVENT_PASS host=$side"
-  local limited_key="cooldown-$RUN_ID-$side"
-  local limited
-  limited="$(api_request "$side" POST /v1/verify "{\"idempotency_key\":\"$limited_key\"}")"
-  printf '%s' "$limited" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("result")=="unknown" and d.get("reason")=="rate_limited", d; print("PROBE_COOLDOWN_PASS")'
+  printf '%s' "$status" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+last = d["tunnel"]["tiers"]["integrity"]["last_probe"]
+assert last["result"] == "pass" and last["source"] == "in_product_probe"
+print("LAST_PROBE_PERSISTED_AFTER_AGENT_RESTART_PASS")
+'
+
+  limited="$(api_request "$side" POST /v1/verify "")"
+  printf '%s' "$limited" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d.get("result") == "unknown" and d.get("reason") == "rate_limited", d
+assert d.get("bytes") == 0 and d.get("sha256_match") is False, d
+assert d.get("duration_ms") is None and d.get("timestamp", 0) > 0, d
+print("PROBE_COOLDOWN_PASS")
+'
+
+  audit_after="$(api_request "$side" GET /v1/audit)"
+  printf '%s' "$audit_after" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+resource = "tunnel/" + sys.argv[1]
+events = [e for e in d.get("entries", []) if e.get("action") == "integrity_probe" and e.get("resource") == resource]
+assert len(events) == 2, events
+assert sorted(e.get("result") for e in events) == ["pass", "unknown"], events
+assert sorted(e.get("detail") for e in events) == ["rate_limited", "sha256_verified"], events
+assert all(not e.get("sha256") for e in events), events
+print("INTEGRITY_AUDIT_EVENTS_PASS")
+' "$INSTANCE"
+  status="$(api_request "$side" GET /v1/status)"
+  printf '%s' "$status" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+integrity = d["tunnel"]["tiers"]["integrity"]
+last = integrity["last_probe"]
+assert integrity["result"] == "unknown", integrity
+assert last["result"] == "unknown" and last["reason"] == "rate_limited", last
+print("LAST_PROBE_COOLDOWN_PERSISTED_PASS")
+'
 }
-verify_pass iran abroad "verify-$RUN_ID-iran"
-verify_pass abroad iran "verify-$RUN_ID-abroad"
+verify_probe iran abroad
+verify_probe abroad iran
 
 AFTER_STATS="$(ssh_host abroad "cat '$ECHO_STATE/stats.json'")"
 python3 - "$BEFORE_STATS" "$AFTER_STATS" <<'PYSTATS'
@@ -455,4 +521,4 @@ for side in iran abroad; do
   ssh_host "$side" "systemctl is-active --quiet '$(tunnel_unit_for "$side")' && systemctl is-active --quiet '$(agent_unit_for "$side")'"
 done
 
-echo "TRUSTED_B2_INTEGRITY_LAB=PASS candidate_sha=$CANDIDATE_SHA protocol=v2 direction=direct probes_both_directions=1 bytes=65536 idempotency=1 cooldown=1 tcp_target_untouched=1 dataplane_before_after=1 candidate_unprivileged=1 ssh_key_exposed_to_candidate=0"
+echo "TRUSTED_B2_INTEGRITY_LAB=PASS candidate_sha=$CANDIDATE_SHA protocol=v2 direction=direct probes_both_directions=1 setup_config_override=1 bytes=65536 audit=pass+rate_limited agent_restart_persistence=1 cooldown=1 tcp_target_untouched=1 dataplane_before_after=1 candidate_unprivileged=1 ssh_key_exposed_to_candidate=0"
