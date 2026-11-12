@@ -30,7 +30,7 @@
 ۴. **U2/U3/U5a/U4/U6:** پیاده‌سازی شده‌اند؛ شواهد و جزئیات در Roadmap.
 ۵. **U7:** با اجرای [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) پذیرفته شد؛ Soak دقیقاً ۳۶۰۰ ثانیه، ۲۶۴ دور و صفر Probe ناموفق بود. Backup/Restore، Update/Rollback، Revocation، Uninstall و پاک‌سازی نیز موفق شدند.
 ۶. **U8:** تکمیل و ادغام شد؛ [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165)، Commit ادغام `52a2825`؛ تمام CIها PASS.
-۷. **B1:** کدهای ساختاریافته و ترجمه در [PR #168](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/168)؛ تمام چهار گروه CI روی Head `1272dcac` PASS شدند. فقط Merge پس از کنترل آخرین وضعیت باقی مانده است.
+۷. **B1:** کدهای ساختاریافته و ترجمه در [PR #168](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/168)؛ روی Head `bd784300...` گروه‌های phase0، fuzz-smoke، package/signature و Jobهای panel-ui، Ubuntu 22.04 و offline-CA موفق شدند؛ Job مربوط به Rust هنوز در حال اجراست. Merge پس از CI کامل و بازبینی نهایی.
 ۸. **B2–B6:** پس از U8 و طبق Roadmap؛ بدون افزودن پروتکل یا Fleet قبل از تکمیل این گیت‌ها.
 
 **موارد باز:** منشأ Drift شش‌خطی Address Set روی میزبان خارج در U7 (S10؛ هیچ قانون BAFT-TUNNEL وجود نداشت)، آزمون پنل روی گوشی واقعی، B1–B6 و گیت‌های انتشار. بازبینی امنیتی مستقل فعلاً به درخواست مالک متوقف است. Soak بیش از یک ساعت برنامه‌ریزی نمی‌شود. (بررسی حقوقی AGPL موتور BAFT حذف شد: BAFT متعلق به مالک است و استفاده از آن به‌صورت باینری جدا طبق ADR-0019 مجاز است؛ تأیید مالک 2026-11-09.)
