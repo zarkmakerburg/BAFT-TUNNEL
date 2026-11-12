@@ -26,4 +26,9 @@ zeroize = "1.9.1"
 x509-parser = "=0.16.0"
 
 [dev-dependencies]
+divan = { version = "6.0.0", package = "codspeed-divan-compat" }
 rcgen = "=0.14.4"
+
+[[bench]]
+name = "tunnel"
+harness = false
