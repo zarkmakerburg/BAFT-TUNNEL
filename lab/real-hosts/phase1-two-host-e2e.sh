@@ -60,6 +60,13 @@ if (( PANEL_PAIRING == 1 )); then
   command -v docker >/dev/null 2>&1 || [[ "$PANEL_ENGINE" != tcp-tls ]] || { echo "tcp-tls panel enrollment LAB needs Docker for the network-isolated offline CA" >&2; exit 2; }
   [[ "$MVP" == 0 && "$REVERSE_ACCEPT" == 0 && "$OPS_SOAK" == 0 && "$AGENT_SVC" == 0 ]] || { echo "LAB_PANEL_PAIRING is a separate run from LAB_MVP, LAB_REVERSE_ACCEPT, LAB_OPS and LAB_AGENT_SVC" >&2; exit 2; }
 fi
+B2="${LAB_B2:-0}"
+[[ "$B2" == 0 || "$B2" == 1 ]] || { echo "LAB_B2 must be 0 or 1" >&2; exit 2; }
+if (( B2 == 1 )); then
+  [[ -x "$MVP_BINARY_PATH" ]] || { echo "LAB_B2 needs MVP_BINARY" >&2; exit 2; }
+  [[ "$MVP" == 0 && "$REVERSE_ACCEPT" == 0 && "$OPS_SOAK" == 0 && "$AGENT_SVC" == 0 && "$PANEL_PAIRING" == 0 ]] ||
+    { echo "LAB_B2 is a separate run from LAB_MVP, LAB_REVERSE_ACCEPT, LAB_OPS, LAB_AGENT_SVC and LAB_PANEL_PAIRING" >&2; exit 2; }
+fi
 [[ "$REVERSE_R3" =~ ^[0-9]+$ ]] && (( REVERSE_R3 <= 3600 )) || { echo "LAB_REVERSE_R3 must be 0-3600 (Reverse R3 soak seconds; 0 = off)" >&2; exit 2; }
 [[ "$REVERSE" == 0 || "$REVERSE" == 1 ]] || { echo "LAB_REVERSE must be 0 or 1" >&2; exit 2; }
 BAFT="${LAB_BAFT:-0}"
@@ -1126,4 +1133,9 @@ if (( PANEL_PAIRING == 1 )); then
   . "$(dirname "${BASH_SOURCE[0]}")/panel-pairing-stage.sh"
 fi
 
-echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE reverse_r3=$REVERSE_R3 mvp=$MVP agent_svc=$AGENT_SVC reboot=$AGENT_REBOOT panel_pairing=$PANEL_PAIRING panel_engine=$PANEL_ENGINE (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
+if (( B2 == 1 )); then
+  # shellcheck source=lab/real-hosts/b2-integrity-stage.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/b2-integrity-stage.sh"
+fi
+
+echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE reverse_r3=$REVERSE_R3 mvp=$MVP agent_svc=$AGENT_SVC reboot=$AGENT_REBOOT panel_pairing=$PANEL_PAIRING panel_engine=$PANEL_ENGINE b2=$B2 (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"

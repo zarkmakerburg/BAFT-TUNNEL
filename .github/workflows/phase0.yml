@@ -45,6 +45,8 @@ jobs:
         run: bash lab/real-hosts/test-preflight-matrix.sh
       - name: Test Phase 1 two-host E2E orchestration (mock SSH/SCP only)
         run: bash lab/real-hosts/test-phase1-two-host-e2e.sh
+      - name: Test the B2 protocol-v2 and integrity-probe LAB stage (offline)
+        run: bash lab/real-hosts/test-b2-integrity-stage.sh
       - name: Test signed operator-package extraction for the Direct operations LAB stage
         run: |
           bash -n lab/real-hosts/prepare-ops-package.sh lab/real-hosts/test-prepare-ops-package.sh
