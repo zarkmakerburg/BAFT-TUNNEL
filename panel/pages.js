@@ -243,9 +243,12 @@
     }
     var diagBtn = h('button', { type: 'button', onclick: function () { runDiag(diagBtn); }, text: t('diag.run') });
     var verifyOut = h('div', { class: 'sub', 'aria-live': 'polite' });
+    var verifyIdempotencyKey = null;
     function runVerify(btn) {
       btn.disabled = true; verifyOut.textContent = t('verify.running');
-      BAFT.api('POST', '/v1/verify').then(function (r) {
+      if (!verifyIdempotencyKey) { verifyIdempotencyKey = lifeKey().replace('ui-life-', 'ui-verify-'); }
+      BAFT.api('POST', '/v1/verify', { idempotency_key: verifyIdempotencyKey }).then(function (r) {
+        if (r.status === 200) { verifyIdempotencyKey = null; }
         btn.disabled = false;
         var v = r.body || {};
         var when = v.timestamp ? BAFT.ago(v.timestamp) : t('unknown');
