@@ -277,7 +277,7 @@
         [t('f.peerconn'), tn ? tierPill((tn.tiers.authorized_session || {}).result) : pill('unknown', t('state.unknown'))],
         [t('f.peer'), tn && tn.tiers.authorized_session && tn.tiers.authorized_session.peer_id ? BAFT.ltr(tn.tiers.authorized_session.peer_id) : null],
         [t('tier.data_path'), tn ? tierPill((tn.tiers.data_path || {}).result) : pill('unknown', t('state.unknown'))],
-        [t('tier.integrity'), pill('unknown', t('state.unknown'))],
+        [t('tier.integrity'), tn ? tierPill((tn.tiers.integrity || {}).result) : pill('unknown', t('state.unknown'))],
         [t('verify.last'), tn && tn.tiers.integrity && tn.tiers.integrity.last_probe
           ? pill(tn.tiers.integrity.last_probe.result, t('verify.result.' + tn.tiers.integrity.last_probe.result)) + ' · ' + BAFT.ago(tn.tiers.integrity.last_probe.timestamp)
           : t('never')],
