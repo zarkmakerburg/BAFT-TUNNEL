@@ -128,11 +128,15 @@ A heartbeat, TCP connection, successful API response, process-running state, or 
 
 ## 7. Visual language and design tokens
 
-### Direction
+### Selected direction
 
-Use a **quiet technical / premium operations** visual direction: precise, restrained, information-dense without feeling crowded. Start with a light theme as the primary design target; support a coherent dark theme without changing semantic meaning.
+**Approved: Modern Minimal.** This is the selected visual direction for the Central Fleet Console. Hybrid Operations and Premium Infrastructure were comparison concepts only and are not the implementation target.
 
-Do not finalize brand colors or typography by guesswork. Define tokens first, then validate three distinct visual directions with representative screens before selecting the final visual identity.
+Use a light-first, calm, precise, uncluttered enterprise interface. Prioritize whitespace with disciplined density, clear typography, neutral surfaces, subtle borders, restrained semantic color, and strong information hierarchy. Avoid decorative gradients, excessive glass effects, oversized hero areas, ornamental motion, and visual noise. A coherent dark theme may be supported later, but it must preserve the same semantic hierarchy and accessibility.
+
+The selected direction must be demonstrated consistently across the Overview, Server Details, and Add Server journeys before implementation acceptance. Do not treat approval of the visual direction as authorization to begin gated implementation.
+
+The information architecture must remain categorized and tabbed. Use dedicated entity cards and detail pages for Servers, Tunnels, and Nodes. The Overview must support operational charts for inbound/outbound throughput, bandwidth usage, latency, packet loss, CPU/RAM/disk, tunnel availability, connection history, and fleet health. Charts must include units, time range, source, freshness, and accessible text summaries.
 
 ### Token categories
 
@@ -273,7 +277,7 @@ Each state must say what happened, what is known, what remains unknown, and what
 
 Before a screen is accepted:
 1. Validate the target operator task and information hierarchy.
-2. Review three visual directions on representative screens before committing to a final look.
+2. Validate the approved Modern Minimal direction consistently on Overview, Server Details, and Add Server; do not reopen visual-direction selection without a new owner decision.
 3. Test Persian RTL and English LTR, including mixed technical strings.
 4. Test desktop, tablet, and mobile layouts.
 5. Test keyboard-only and screen-reader flows for core tasks.
