@@ -165,15 +165,22 @@
     var tbl = h('div', { class: 'table-wrap' }, h('table', { class: 'cards' },
       h('thead', null, h('tr', null, ['diag.col.tier', 'diag.col.result', 'diag.col.source', 'diag.col.evidence', 'diag.col.next'].map(function (k) { return h('th', { scope: 'col', text: t(k) }); }))),
       h('tbody', null, tiers.map(function (x) {
+        var evidenceKey = x.code || '';
+        var evidenceText = evidenceKey && t(evidenceKey, x.params || {}) !== evidenceKey ? t(evidenceKey, x.params || {}) : x.evidence;
+        var nextText = x.next_code && t(x.next_code, x.next_params || {}) !== x.next_code ? t(x.next_code, x.next_params || {}) : x.next;
         return h('tr', null, h('td', { 'data-label': t('diag.col.tier'), text: t('tier.' + x.id) === 'tier.' + x.id ? x.id : t('tier.' + x.id) }),
           h('td', { 'data-label': t('diag.col.result') }, tierPill(x.result)),
-          h('td', { 'data-label': t('diag.col.source') }, BAFT.ltr(x.source)),
-          h('td', { 'data-label': t('diag.col.evidence') }, BAFT.ltr(x.evidence)),
-          h('td', { 'data-label': t('diag.col.next') }, x.next ? BAFT.ltr(x.next) : '—'));
+          h('td', { 'data-label': t('diag.col.source') }, t('diag.source.' + x.source) === 'diag.source.' + x.source ? BAFT.ltr(x.source) : t('diag.source.' + x.source)),
+          h('td', { 'data-label': t('diag.col.evidence') }, BAFT.lang === 'fa' ? evidenceText : BAFT.ltr(evidenceText)),
+          h('td', { 'data-label': t('diag.col.next') }, x.next ? (BAFT.lang === 'fa' ? nextText : BAFT.ltr(nextText)) : '—'));
       }))));
     var na = rep.next_action || null;
+    var nextKey = na && (na.code || ('diag.next.' + na.action));
+    var nextParams = Object.assign({}, na && na.params || {});
+    if (na && na.code === 'diag.next.rerun_tier' && nextParams.tier) { nextParams.tier = t('tier.' + nextParams.tier); }
+    var nextLabel = nextKey ? t(nextKey, nextParams) : '';
     var next = na ? h('p', { class: 'next-action', role: 'status' }, h('strong', { text: t('diag.next') + ' ' }),
-      t('diag.next.' + na.action) === 'diag.next.' + na.action ? '' : t('diag.next.' + na.action) + ' · ', BAFT.ltr(na.text || '')) : null;
+      nextLabel !== nextKey ? nextLabel : (t('diag.next.' + na.action) === 'diag.next.' + na.action ? '' : t('diag.next.' + na.action) + ' · ' + (na.text || ''))) : null;
     return h('div', null, head, next, tbl, h('p', { class: 'sub', text: t('diag.integrity') }));
   }
 
@@ -390,12 +397,16 @@
     function stepPreflight() {
       var pf = w.pf;
       var list = pf ? h('ul', { class: 'pf' }, pf.checks.map(function (c) {
-        var ev = c.result === 'unknown' && BAFT_I18N.en['pfu.' + c.id] ? t('pfu.' + c.id)
-          : c.id === 'pki_files' && c.result === 'warning' && BAFT_I18N.en['pfe.pki_files'] ? t('pfe.pki_files') : c.evidence;
+        var ev = c.code ? t(c.code, c.params || {}) : c.evidence;
+        if (!c.code || ev === c.code) {
+          ev = c.result === 'unknown' && BAFT_I18N.en['pfu.' + c.id] ? t('pfu.' + c.id)
+            : c.id === 'pki_files' && c.result === 'warning' && BAFT_I18N.en['pfe.pki_files'] ? t('pfe.pki_files') : c.evidence;
+        }
         var fix = c.result !== 'pass' && c.remediation ? (BAFT_I18N.en['pfr.' + c.id] ? t('pfr.' + c.id) : c.remediation) : null;
+        var evNode = c.result === 'unknown' || BAFT.lang === 'fa' ? ev : BAFT.ltr(ev);
         return h('li', null, h('strong', { text: t('pfc.' + c.id) === 'pfc.' + c.id ? c.id : t('pfc.' + c.id) }),
           h('span', { class: 'muted', text: ' · ' + t(c.scope === 'peer' ? 'pf.scope.peer' : 'pf.scope.local') + ' ' }),
-          pill({ pass: 'ok', warning: 'warn', blocked: 'bad', unknown: 'unknown' }[c.result], t('res.' + c.result)), h('span', { class: 'ev' }, c.result === 'unknown' ? ev : BAFT.ltr(ev)),
+          pill({ pass: 'ok', warning: 'warn', blocked: 'bad', unknown: 'unknown' }[c.result], t('res.' + c.result)), h('span', { class: 'ev' }, evNode),
           fix ? h('span', { class: 'muted', text: ' ' + t('pf.fix') + ': ' + fix }) : null);
       })) : null;
       return h('div', null, h('h2', { text: t('pf.title') }), h('p', { class: 'sub', text: t('pf.note') }),

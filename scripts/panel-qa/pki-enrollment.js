@@ -66,7 +66,10 @@ function serve() {
           { id: 'noise-tcp', status: 'experimental', guided_setup: { available: true }, directions: ['direct'], evidence: { lab_two_host: { direct: 'pass' } } },
           { id: 'baft', status: 'preview', guided_setup: { available: false }, directions: ['direct'] }
         ] } });
-        if (request.method() === 'POST' && url.pathname === '/v1/setup/preflight') return route.fulfill({ json: { overall: 'warning', checks: [{ id: 'pki_files', result: 'warning', scope: 'local', evidence: 'certificate set is not installed yet', remediation: 'complete enrollment' }], apply_available: true } });
+        if (request.method() === 'POST' && url.pathname === '/v1/setup/preflight') return route.fulfill({ json: { overall: 'warning', checks: [
+          { id: 'pki_files', result: 'warning', scope: 'local', code: 'pf.pki_files.warning', params: {}, evidence: 'certificate set is not installed yet', remediation: 'complete enrollment' },
+          { id: 'service_port', result: 'pass', scope: 'local', code: 'pf.service_port.forward_free', params: { port: 18080 }, evidence: '127.0.0.1:18080 is free' }
+        ], apply_available: true } });
         if (request.method() === 'POST' && url.pathname === '/v1/setup/plan') return route.fulfill({ json: { files: [], pending: [], commands: ['sudo baft-tunnel setup init'], config: { engine: 'tcp-tls' } } });
         if (request.method() === 'POST' && url.pathname === '/v1/pki/csr/create') return route.fulfill({ status: 201, json: { result: 'created', request_id: body.request_id, node_id: body.node_id, expected_server_san: 'DNS:node.example.net', csr_pem: CSR, public_key_sha256: 'a'.repeat(64), private_key_exported: false } });
         if (request.method() === 'POST' && url.pathname === '/v1/pki/csr/read') return route.fulfill({ status: 200, json: { result: 'retrieved', request_id: body.request_id, node_id: body.node_id, expected_server_san: 'DNS:node.example.net', csr_pem: CSR, public_key_sha256: 'a'.repeat(64), private_key_exported: false } });
@@ -98,7 +101,9 @@ function serve() {
       await next().click(); // Preflight
       await page.locator('.card button.primary').first().click();
       await page.waitForTimeout(100);
-      ok(lang + ' treats missing pre-enrollment certificates as a warning, not a dead-end', /not installed yet|هنوز نصب نشده/.test(await page.locator('#main').innerText()));
+      const preflightText = await page.locator('#main').innerText();
+      ok(lang + ' localizes code-based missing-certificate evidence', lang === 'en' ? /certificate is not installed yet/.test(preflightText) : /گواهی این گره هنوز نصب نشده/.test(preflightText));
+      ok(lang + ' interpolates structured port params in localized evidence', lang === 'en' ? /Local service port 18080 is free/.test(preflightText) : /درگاه سرویس محلی 18080 آزاد است/.test(preflightText));
       await next().click(); // Preview
       await page.waitForTimeout(150);
       await next().click(); // Apply / pairing
