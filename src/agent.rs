@@ -2316,6 +2316,40 @@ fn save_integrity_receipts(dir: &Path, store: &Value) -> Result<()> {
     write_private(dir, INTEGRITY_RECEIPTS_FILE, serde_json::to_string(store)?.as_bytes())
 }
 
+/// A process restart can leave an in-progress receipt behind. After 60 seconds no original
+/// operation can still be active; close it as Unknown so retries never silently launch a second
+/// operation using the same idempotency key.
+fn expire_stale_integrity_receipts(store: &mut Value, now: u64) -> bool {
+    let Some(entries) = store["entries"].as_array_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    for entry in entries {
+        if entry["state"] != "in_progress" {
+            continue;
+        }
+        let created = entry["created_unix"].as_u64().unwrap_or(0);
+        if created > now || now.saturating_sub(created) <= 60 {
+            continue;
+        }
+        let key = entry["key"].as_str().unwrap_or_default().to_owned();
+        entry["state"] = json!("completed");
+        entry["completed_unix"] = json!(now);
+        entry["http_status"] = json!(200);
+        entry["response"] = json!({
+            "result": "unknown",
+            "reason": "request_interrupted",
+            "bytes": 0,
+            "sha256_match": false,
+            "timestamp": now,
+            "receipt_id": key,
+            "replayed": false,
+        });
+        changed = true;
+    }
+    changed
+}
+
 async fn verify_integrity(
     ctx: &Ctx,
     config: &RuntimeConfig,
@@ -2342,6 +2376,11 @@ async fn verify_integrity(
         Ok(receipts) => receipts,
         Err(_) => return (500, json!({"result":"unknown","reason":"receipt_store_unavailable"})),
     };
+    if expire_stale_integrity_receipts(&mut receipts, unix_now())
+        && save_integrity_receipts(state_dir, &receipts).is_err()
+    {
+        return (500, json!({"result":"unknown","reason":"receipt_store_unavailable"}));
+    }
 
     let existing_index = receipts["entries"]
         .as_array()
@@ -4070,6 +4109,26 @@ mod tests {
         assert!(pages.contains("verify.title"));
         assert!(pages.contains("'/v1/tunnel/lifecycle'"));
         assert!(pages.contains("window.confirm(t('life.confirm.' + action))"));
+    }
+
+    #[test]
+    fn stale_in_progress_integrity_receipts_become_unknown_without_restarting_probe() {
+        let mut store = json!({
+            "version": 1,
+            "entries": [
+                {"key":"old-key-0001","state":"in_progress","created_unix":100,"response":null},
+                {"key":"new-key-0001","state":"in_progress","created_unix":195,"response":null},
+                {"key":"done-key-0001","state":"completed","created_unix":50,"response":{"result":"pass"}}
+            ]
+        });
+        assert!(expire_stale_integrity_receipts(&mut store, 200));
+        assert_eq!(store["entries"][0]["state"], "completed");
+        assert_eq!(store["entries"][0]["response"]["result"], "unknown");
+        assert_eq!(store["entries"][0]["response"]["reason"], "request_interrupted");
+        assert_eq!(store["entries"][0]["http_status"], 200);
+        assert_eq!(store["entries"][1]["state"], "in_progress");
+        assert_eq!(store["entries"][2]["response"]["result"], "pass");
+        assert!(!expire_stale_integrity_receipts(&mut store, 200));
     }
 
     #[test]
