@@ -443,3 +443,12 @@ Current repository baseline: `main` `b2c8ab5020754cad15485371a1f062de4092229f`.
 - Linux Rust exact-head checks passed dependency audit, license policy, formatting, focused tests, Clippy, release build, staged installer/credential/rollback, signed one-line installer, Persian/English interactive menu/PTY, encrypted credential delivery, installed systemd lifecycle, and CRL activation/rollback. Ubuntu 22.04 baseline, panel UI, offline CA and fuzz-smoke all passed.
 - Two earlier assertions were corrected without weakening Unknown handling: unreadable systemd unit state keeps the unit-level check action as next step; the identity-tier `next_code` is asserted separately.
 - The original PR #164 branch was superseded after U8 PR #165 merged. B1 was synchronized onto post-U8 main in [PR #168](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/168), merged at `311b706a836ca5aa6a4629c16cb845427e699392`. All four exact-head workflow groups passed on final tested head `62d7ee67f65ae6c08cfa21bf87786c25d05cbe1a`: Rust, Ubuntu 22.04/systemd 249, panel UI, offline CA, phase0, fuzz-smoke and same-SHA package/signature. The final revision also fixed `diag.session.pass` peer_id interpolation, removed duplicate `diag.next.*` translation keys, and added regression coverage. No new LAB or runtime host operation was performed for B1.
+
+## 2026-11-12 — Current main after B1 and design/benchmark documentation merges
+
+- Current main: `7bf0b9ab1ae7c905d2ae8b1c6d3b369ed2a59b0a`.
+- B1 remains accepted and merged in PR #168 at `311b706`; exact tested head `62d7ee6` passed all four workflow groups.
+- Central Fleet Design System PR #172 merged at `0e66077`; this is a design standard only, not a Central Fleet UI or backend implementation.
+- Consolidated Divan/CodSpeed PR #167 merged at `7bf0b9a`; all 16 simulation benchmarks were measured and uploaded on its final PR head. These are baseline measurements, not production performance guarantees.
+- B2–B6 remain the open Phase 1 product queue. B2 stays design-only behind its merged ADR-0028 implementation-start gate and independent F0 review. B3 read-only firewall inspection is proposed in PR #174; it has no implementation and no firewall command or host mutation has been run.
+- No release or production deployment was performed by these merges. `ready` remains Unknown unless independently proven under the readiness contract.
