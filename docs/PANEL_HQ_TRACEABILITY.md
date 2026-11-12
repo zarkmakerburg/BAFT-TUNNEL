@@ -53,7 +53,7 @@ State column: I = implemented, P = partial, M = missing (backend gap, hidden or 
 ## 2026-11-11 status reconciliation
 
 - This matrix began at `650e955`; the original browser evidence and historical Before/After observations above are preserved, not represented as current-head test results.
-- Current main at this documentation update is `52a2825254f8254386f71af7220c7cb244200fc2` (U8 PR #165 merged). The local Agent lifecycle now includes start/stop/restart and boot persistence; audit v2 and traffic counters are implemented. `ready` remains Unknown by design.
+- Current main at this documentation update is `311b706a836ca5aa6a4629c16cb845427e699392` (B1 PR #168 merged after U8 PR #165). The local Agent lifecycle includes start/stop/restart and boot persistence; audit v2, traffic counters and B1 structured localized evidence are implemented. `ready` remains Unknown by design.
 - The trusted D2 panel/PKI two-host repeat passed on the immutable RC.7 candidate (run [42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181)).
 - The trusted U7 integrated acceptance run [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) passed release-tag, signed-asset and real two-host acceptance. U7 is accepted within the bounded Direct scope.
 - Remaining product gaps in this matrix are remote fleet inventory (G1), complete remote preflight contract (G3), read-only firewall visibility (G7), and BAFT guided configuration (G9/B4). G8/B1 is implemented, CI-accepted and merged. Formal accessibility audit and physical-phone testing have not been run.
