@@ -587,21 +587,23 @@ async fn serve_streams_versioned<S>(
                     let tunnel = tunnel.clone();
                     let version = protocol_version;
                     stream_tasks.spawn(async move {
-                        let result: Result<crate::integrity_probe::ProbeResult> = async {
+                        let result = async {
                             if version != crate::authorization::PROTOCOL_V2 {
                                 bail!("integrity probe requires protocol v2 on both peers");
                             }
-                            let mut stream = timeout(CONNECT_TIMEOUT, stream_control.open_stream())
-                                .await
-                                .context("opening integrity probe stream timed out")??;
-                            handshake::client_stream_open_versioned(
-                                &mut stream,
-                                &tunnel,
-                                direction,
-                                StreamCapability::IntegrityProbe,
-                                version,
-                            ).await.context("authorize IntegrityProbe stream")?;
-                            crate::integrity_probe::run_initiator(&mut stream).await
+                            crate::integrity_probe::run_on_session(|| async {
+                                let mut stream = timeout(CONNECT_TIMEOUT, stream_control.open_stream())
+                                    .await
+                                    .context("opening integrity probe stream timed out")??;
+                                handshake::client_stream_open_versioned(
+                                    &mut stream,
+                                    &tunnel,
+                                    direction,
+                                    StreamCapability::IntegrityProbe,
+                                    version,
+                                ).await.context("authorize IntegrityProbe stream")?;
+                                Ok(stream)
+                            }).await
                         }.await;
                         let _ = request.reply.send(result.map_err(|error| format!("{error:#}")));
                     });
@@ -890,22 +892,24 @@ async fn run_forward_session_versioned(
         tokio::select! {
             probe = probe_rx.recv() => {
                 if let Some(request) = probe {
-                    let result: Result<crate::integrity_probe::ProbeResult> = async {
+                    let mut stream_control = control.clone();
+                    let result = async {
                         if protocol_version != crate::authorization::PROTOCOL_V2 {
                             bail!("integrity probe requires protocol v2 on both peers");
                         }
-                        let mut stream_control = control.clone();
-                        let mut stream = timeout(CONNECT_TIMEOUT, stream_control.open_stream())
-                            .await
-                            .context("opening integrity probe stream timed out")??;
-                        handshake::client_stream_open_versioned(
-                            &mut stream,
-                            tunnel,
-                            direction,
-                            StreamCapability::IntegrityProbe,
-                            protocol_version,
-                        ).await.context("authorize IntegrityProbe stream")?;
-                        crate::integrity_probe::run_initiator(&mut stream).await
+                        crate::integrity_probe::run_on_session(|| async {
+                            let mut stream = timeout(CONNECT_TIMEOUT, stream_control.open_stream())
+                                .await
+                                .context("opening integrity probe stream timed out")??;
+                            handshake::client_stream_open_versioned(
+                                &mut stream,
+                                tunnel,
+                                direction,
+                                StreamCapability::IntegrityProbe,
+                                protocol_version,
+                            ).await.context("authorize IntegrityProbe stream")?;
+                            Ok(stream)
+                        }).await
                     }.await;
                     let _ = request.reply.send(result.map_err(|error| format!("{error:#}")));
                 }
