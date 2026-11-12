@@ -27,7 +27,7 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 
 ## Project status
 
-<sub>Updated: 11 November 2026 · source baseline: `main` `52a2825` · roadmap: [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
+<sub>Updated: 12 November 2026 · source baseline: `main` `311b706` · roadmap: [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
 
 > **Active development — signed pre-release `v0.1.0-rc.7`; not production-ready.** Trusted U7 acceptance passed on the signed RC.7 package in [run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428): both LAB hosts completed setup, Direct traffic integrity, 3600-second soak, backup/restore, update/rollback, revocation and uninstall. U8 operator documentation is merged in [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165). B1 structured localized Preflight/Diagnostics evidence is implemented and merged in [PR #168](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/168), merge commit `311b706a836ca5aa6a4629c16cb845427e699392`; all four exact-head workflow groups passed on tested head `62d7ee67f65ae6c08cfa21bf87786c25d05cbe1a` (Rust, Ubuntu 22.04/systemd 249, panel UI, offline CA, phase0, fuzz-smoke and same-SHA package/signature).
 
