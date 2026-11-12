@@ -151,7 +151,25 @@
       h('div', { class: 'brand' }, h('span', { class: 'brand-mark', text: 'B' }), h('span', { text: t('app') })),
       h('label', { class: 'field' }, h('span', { text: t('token') }), input),
       h('button', { class: 'primary', id: 'connect', onclick: go, text: t('connect') }), err,
+      installHint(),
       h('p', { class: 'muted' }, langButton()))));
+  }
+  var INSTALL_CMD = 'curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/main/scripts/quick-install.sh | sudo bash -s -- --register NAME';
+  function installHint() {
+    var btn = h('button', { class: 'ghost', type: 'button', text: t('install.copy') });
+    btn.addEventListener('click', function () {
+      if (!navigator.clipboard) { return; }
+      navigator.clipboard.writeText(INSTALL_CMD).then(function () {
+        btn.textContent = t('install.copied');
+        setTimeout(function () { btn.textContent = t('install.copy'); }, 1500);
+      }, function () {});
+    });
+    return h('div', { class: 'install' },
+      h('strong', { text: t('install.title') }),
+      h('p', { class: 'muted', text: t('install.body') }),
+      h('pre', { dir: 'ltr', text: INSTALL_CMD }),
+      h('p', { class: 'muted', text: t('install.name') }),
+      btn);
   }
   function langButton() {
     var other = BAFT.lang === 'fa' ? 'en' : 'fa';

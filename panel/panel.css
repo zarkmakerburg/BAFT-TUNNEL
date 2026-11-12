@@ -157,7 +157,10 @@ pre{direction:ltr;text-align:left;overflow-x:auto;white-space:pre-wrap;word-brea
 .topbar button svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7}
 /* login */
 .login{min-height:100vh;display:grid;place-items:center;padding:var(--s4)}
-.login .card{width:100%;max-width:380px}
+.login .card{width:100%;max-width:420px}
+.install{border-top:1px solid var(--line);margin-top:var(--s3);padding-top:var(--s3)}
+.install strong{display:block;margin-bottom:4px;font-size:.95rem}
+.install pre{font-size:.72rem;margin:var(--s2) 0}
 
 /* tablet and below: sidebar becomes a bottom tab bar, tables become cards */
 @media (max-width:899px){
