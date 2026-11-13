@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # One-step install of the agent service on real systemd (U2, U3, SA-09): `install.sh --register`,
 # root `setup init/join --instance` with no manual chown, the agent started by its path unit under
 # its own user, and Start / Restart / Stop through the agent API with boot persistence
@@ -71,7 +70,7 @@ TOK=/var/lib/baft-tunnel-agent/token
 if sudo -u baft-tunnel cat "$TOK" >/dev/null 2>&1; then die "the tunnel user can read the agent token (SA-09)"; fi
 id -nG baft-tunnel-agent | tr ' ' '\n' | grep -qx baft-tunnel || die "agent user is not in group baft-tunnel"
 if id -nG baft-tunnel | tr ' ' '\n' | grep -qx baft-tunnel-agent; then die "tunnel user is in the agent group"; fi
-[[ "$(sudo stat -c '%U:%G %a' /run/baft-tunnel/control)" == "root:baft-tunnel 770" ]] || die "control dir is not root:baft-tunnel 0770"
+[[ "$(sudo stat -c '%U:%G %a' /run/baft-tunnel/control)" == "root:baft-tunnel-agent 770" ]] || die "control dir is not root:baft-tunnel-agent 0770"
 
 step "2 setup init/join as root sets owners and modes itself (no chown/chgrp)"
 mkdir -p "$TMP/peer"; chmod 700 "$TMP/peer"
