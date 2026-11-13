@@ -109,6 +109,9 @@ if grep -E 'set_protocol_v2|setup_config_override|PROTOCOL_V2_CONFIG_READY|confi
 fi
 grep -F '^[0-9a-f]{8}(-[0-9a-f]{8}){3}$' "$harness" >/dev/null
 test "$(grep -c '^verify_probe ' "$harness")" = 2
+grep -F 'WAITING_FOR_INTER_DIRECTION_PROBE_COOLDOWN seconds=61' "$harness" >/dev/null
+grep -F 'sleep 61' "$harness" >/dev/null
+grep -F 'INTER_DIRECTION_PROBE_COOLDOWN_ELAPSED=1' "$harness" >/dev/null
 grep -F 'CONTROL_SOCKET_READY' "$harness" >/dev/null
 grep -F 'id -u baft-tunnel-agent' "$harness" >/dev/null
 grep -F 'id -gn baft-tunnel-agent' "$harness" >/dev/null
