@@ -435,13 +435,13 @@ print("INTEGRITY_PROBE_PASS peer=%s bytes=%s duration_ms=%s" % (peer, d["bytes"]
   printf '%s' "$audit" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
-resource = "tunnel/" + sys.argv[1]
+resource = "integrity_probe/tunnel/{}/peer/{}/direction/direct".format(sys.argv[2], sys.argv[1])
 events = [e for e in d.get("entries", []) if e.get("action") == "integrity_probe" and e.get("resource") == resource]
 assert len(events) == 1 and events[0].get("result") == "pass", events
 assert events[0].get("detail") == "sha256_verified", events
 assert not events[0].get("sha256"), events
 print("INTEGRITY_AUDIT_PASS")
-' "$INSTANCE"
+' "$peer" "$INSTANCE"
 
   agent_unit="$(agent_unit_for "$side")"
   ssh_host "$side" "systemctl restart '$agent_unit'"
@@ -485,14 +485,14 @@ print("PROBE_COOLDOWN_PASS")
   printf '%s' "$audit_after" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
-resource = "tunnel/" + sys.argv[1]
+resource = "integrity_probe/tunnel/{}/peer/{}/direction/direct".format(sys.argv[2], sys.argv[1])
 events = [e for e in d.get("entries", []) if e.get("action") == "integrity_probe" and e.get("resource") == resource]
 assert len(events) == 2, events
 assert sorted(e.get("result") for e in events) == ["pass", "unknown"], events
 assert sorted(e.get("detail") for e in events) == ["rate_limited", "sha256_verified"], events
 assert all(not e.get("sha256") for e in events), events
 print("INTEGRITY_AUDIT_EVENTS_PASS")
-' "$INSTANCE"
+' "$peer" "$INSTANCE"
   status="$(api_request "$side" GET /v1/status)"
   printf '%s' "$status" | python3 -c '
 import json, sys
