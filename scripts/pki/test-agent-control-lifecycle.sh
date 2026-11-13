@@ -31,7 +31,7 @@ cleanup() {
   local status=$?
   trap - EXIT
   if [[ -n "$AGENT_PID" ]]; then sudo kill "$AGENT_PID" >/dev/null 2>&1 || true; fi
-  if [[ -n "${OBS_PID:-}" ]]; then sudo pkill -TERM -u baft-tunnel -f -- '--listen 127.0.0.1:18091' >/dev/null 2>&1 || true; fi
+  if [[ -n "${OBS_PID:-}" ]]; then sudo pkill -TERM -u baft-tunnel-agent -f -- '--listen 127.0.0.1:18091' >/dev/null 2>&1 || true; fi
   [[ -n "$ECHO_PID" ]] && kill "$ECHO_PID" >/dev/null 2>&1 || true
   for i in "$SERVE" "$FWD" "$POS_S" "$POS_C"; do
     sudo "$ROOT/scripts/install-agent-control.sh" --remove --instance "$i" >/dev/null 2>&1 || true
@@ -172,7 +172,7 @@ sudo "$ROOT/scripts/install-agent-control.sh" --instance "$FWD" --listen 127.0.0
 for k in start stop enable disable; do
   sudo systemctl is-active --quiet "baft-tunnel-control-$k@$SERVE.path" || die "path unit $k for $SERVE is not active"
 done
-[[ "$(sudo stat -c '%U:%G %a' /run/baft-tunnel/control)" == "root:baft-tunnel-agent 770" ]] || die "control dir is not root:baft-tunnel 0770"
+[[ "$(sudo stat -c '%U:%G %a' /run/baft-tunnel/control)" == "root:baft-tunnel-agent 770" ]] || die "control dir is not root:baft-tunnel-agent 0770"
 
 # 2. The agent user can request a start, and only for an instance that has a path unit.
 sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/$SERVE.start" || die "agent user cannot write a request"
@@ -235,20 +235,21 @@ wait_state "$SERVE" inactive || die "stop request did not stop $SERVE"
 
 step "3 Apply start"
 # 3. Apply start through the agent API: success with verify, then rollback of a failing start.
-sudo install -d -o baft-tunnel -g baft-tunnel -m 0700 /var/lib/baft-tunnel/agent
-sudo -u baft-tunnel "$RUNTIME_BIN" agent-token --out /var/lib/baft-tunnel/agent/token >/dev/null
-TOKEN="$(sudo cat /var/lib/baft-tunnel/agent/token)"
+AGENT_STATE=/var/lib/baft-tunnel-agent/lifecycle-test
+AGENT_TOKEN=/var/lib/baft-tunnel-agent/token
+sudo install -d -o baft-tunnel-agent -g baft-tunnel-agent -m 0700 "$AGENT_STATE"
+TOKEN="$(sudo cat "$AGENT_TOKEN")"
 # The agent itself validates its config outside systemd, so give it a file-key variant.
-sudo install -o baft-tunnel -g baft-tunnel -m 0600 "$NODE/node.key" /var/lib/baft-tunnel/agent/agent.key
+sudo install -o baft-tunnel-agent -g baft-tunnel-agent -m 0600 "$NODE/node.key" "$AGENT_STATE/agent.key"
 python3 - "$TMP/$SERVE.json" "$TMP/agent-config.json" <<'PY'
 import json, sys
-c = json.load(open(sys.argv[1])); c.pop("key_credential"); c["key"] = "/var/lib/baft-tunnel/agent/agent.key"
+c = json.load(open(sys.argv[1])); c.pop("key_credential"); c["key"] = "/var/lib/baft-tunnel-agent/lifecycle-test/agent.key"
 c["listen"] = "127.0.0.1:18444"
 json.dump(c, open(sys.argv[2], "w"))
 PY
-sudo install -o baft-tunnel -g baft-tunnel -m 0600 "$TMP/agent-config.json" /var/lib/baft-tunnel/agent/config.json
-sudo -u baft-tunnel "$RUNTIME_BIN" agent --config /var/lib/baft-tunnel/agent/config.json --token-file /var/lib/baft-tunnel/agent/token \
-  --state-dir /var/lib/baft-tunnel/agent --listen 127.0.0.1:18090 >"$TMP/agent.log" 2>&1 &
+sudo install -o baft-tunnel-agent -g baft-tunnel-agent -m 0600 "$TMP/agent-config.json" "$AGENT_STATE/config.json"
+sudo -u baft-tunnel-agent "$RUNTIME_BIN" agent --config "$AGENT_STATE/config.json" --token-file "$AGENT_TOKEN" \
+  --state-dir "$AGENT_STATE" --listen 127.0.0.1:18090 >"$TMP/agent.log" 2>&1 &
 AGENT_PID=$!
 for n in $(seq 1 40); do curl -fs http://127.0.0.1:18090/v1/health >/dev/null 2>&1 && break; sleep 0.25; done
 curl -fs http://127.0.0.1:18090/v1/health >/dev/null || { cat "$TMP/agent.log" >&2; die "agent did not start"; }
@@ -352,16 +353,17 @@ spid="$(sudo systemctl show -p MainPID --value "baft-tunnel@$POS_S.service")"
 [[ "$(sudo python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["state"], d["pid"])' "/run/baft-tunnel/$POS_S/session.json")" == "authorized $spid" ]] || die "serve session file does not match its main PID"
 step "4b P1 operations evidence: agent bound to the serve instance (ADR-0024)"
 # A second agent reports on the serve unit: session, counters and failure stage from its runtime dir.
-sudo install -o baft-tunnel -g baft-tunnel -m 0600 "$NODE/possrv.key" /var/lib/baft-tunnel/agent/pos.key
-sudo install -d -o baft-tunnel -g baft-tunnel -m 0700 /var/lib/baft-tunnel/agent-obs
+OBS_STATE=/var/lib/baft-tunnel-agent/observer-test
+sudo install -o baft-tunnel-agent -g baft-tunnel-agent -m 0600 "$NODE/possrv.key" "$AGENT_STATE/pos.key"
+sudo install -d -o baft-tunnel-agent -g baft-tunnel-agent -m 0700 "$OBS_STATE"
 python3 - "$TMP/pos-srv.json" "$TMP/obs-config.json" <<'PY'
 import json, sys
-c = json.load(open(sys.argv[1])); c.pop("key_credential"); c["key"] = "/var/lib/baft-tunnel/agent/pos.key"
+c = json.load(open(sys.argv[1])); c.pop("key_credential"); c["key"] = "/var/lib/baft-tunnel-agent/lifecycle-test/pos.key"
 json.dump(c, open(sys.argv[2], "w"))
 PY
-sudo install -o baft-tunnel -g baft-tunnel -m 0600 "$TMP/obs-config.json" /var/lib/baft-tunnel/agent-obs/config.json
-sudo -u baft-tunnel "$RUNTIME_BIN" agent --config /var/lib/baft-tunnel/agent-obs/config.json --token-file /var/lib/baft-tunnel/agent/token \
-  --state-dir /var/lib/baft-tunnel/agent-obs --listen 127.0.0.1:18091 --instance "$POS_S" >"$TMP/obs.log" 2>&1 &
+sudo install -o baft-tunnel-agent -g baft-tunnel-agent -m 0600 "$TMP/obs-config.json" "$OBS_STATE/config.json"
+sudo -u baft-tunnel-agent "$RUNTIME_BIN" agent --config "$OBS_STATE/config.json" --token-file "$AGENT_TOKEN" \
+  --state-dir "$OBS_STATE" --listen 127.0.0.1:18091 --instance "$POS_S" >"$TMP/obs.log" 2>&1 &
 OBS_PID=$!
 for n in $(seq 1 40); do curl -fs http://127.0.0.1:18091/v1/health >/dev/null 2>&1 && break; sleep 0.25; done
 obs() { curl -s --max-time 30 -X "$1" "http://127.0.0.1:18091$2" -H "Authorization: Bearer $TOKEN"; }
@@ -432,16 +434,16 @@ assert r["session"] == "fail" and r["data_path"] == "unknown" and d["verified"] 
 assert isinstance(d["verified_unix"], int), d
 PY
 # Audit: actor fingerprint, target node and resource; never the token.
-sudo python3 - /var/lib/baft-tunnel/agent-obs/audit.log <<'PY' || die "audit lines miss actor/target/resource"
+sudo python3 - "$OBS_STATE/audit.log" <<'PY' || die "audit lines miss actor/target/resource"
 import json, sys
 lines = [json.loads(l) for l in open(sys.argv[1])]
 assert len(lines) >= 2 and all(l["audit_version"] == 2 and l["actor"]["kind"] == "api_token" and len(l["actor"]["fingerprint"]) == 16
                                and l["target"]["node"] == "possrv" and l["resource"] == "diagnostics" for l in lines), lines
 PY
-! sudo grep -q -- "$TOKEN" /var/lib/baft-tunnel/agent-obs/audit.log /var/lib/baft-tunnel/agent/audit.log || die "an audit log contains the token"
+! sudo grep -q -- "$TOKEN" "$OBS_STATE/audit.log" "$AGENT_STATE/audit.log" || die "an audit log contains the token"
 # sudo does not relay a signal sent from the script's own process group, so stop the agent itself
 # (only processes of the baft-tunnel user match; the pattern names this agent's unique port).
-sudo pkill -TERM -u baft-tunnel -f -- '--listen 127.0.0.1:18091' 2>/dev/null || true
+sudo pkill -TERM -u baft-tunnel-agent -f -- '--listen 127.0.0.1:18091' 2>/dev/null || true
 wait "$OBS_PID" 2>/dev/null || true; OBS_PID=""
 # Wait until the observing agent has released its port, so the side-effect snapshot is clean.
 for n in $(seq 1 40); do curl -fs --max-time 1 http://127.0.0.1:18091/v1/health >/dev/null 2>&1 || break; sleep 0.25; done
@@ -449,12 +451,12 @@ for n in $(seq 1 40); do curl -fs --max-time 1 http://127.0.0.1:18091/v1/health 
 sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/$POS_S.stop"; wait_state "$POS_S" inactive || die "could not stop $POS_S"
 kill "$ECHO_PID" 2>/dev/null || true; ECHO_PID=""
 step "3 receipts and side effects"
-nrec="$(sudo find /var/lib/baft-tunnel/agent/receipts -name '*.json' | wc -l)"
+nrec="$(sudo find "$AGENT_STATE/receipts" -name '*.json' | wc -l)"
 [[ "$nrec" -ge 2 ]] || die "expected receipts, found $nrec"
-! sudo grep -rq -- "$TOKEN" /var/lib/baft-tunnel/agent/receipts || die "a receipt contains the token"
+! sudo grep -rq -- "$TOKEN" "$AGENT_STATE/receipts" || die "a receipt contains the token"
 # Nothing else changed: firewall hash, listeners and unrelated units match the baseline.
 sudo kill "$AGENT_PID" 2>/dev/null || true; sleep 2; AGENT_PID=""; step "3 agent stopped"
 snapshot after >"$TMP/side-after.txt"
 diff "$TMP/side-before.txt" "$TMP/side-after.txt" >&2 || { diff "$TMP/fw-before.txt" "$TMP/fw-after.txt" >&2 || true; die "firewall, listeners or unrelated units changed"; }
 
-echo "AGENT_CONTROL_LIFECYCLE=PASS (systemd $v: path units active, control dir root:baft-tunnel 0770, request starts and stops only baft-tunnel@NAME, no direct rights for the agent user, Apply start verified and replayed, running unit refused, failing start rolled back, real authorized session observed between two nodes with 64 KiB and 2 MiB intact, agent diagnostics/status/traffic/audit tiers matched the unit evidence, malformed/unregistered/duplicate/stale/symlink requests harmless, no firewall/listener/unit side effects)"
+echo "AGENT_CONTROL_LIFECYCLE=PASS (systemd $v: path units active, control dir root:baft-tunnel-agent 0770, request starts and stops only baft-tunnel@NAME, no direct rights for the agent user, Apply start verified and replayed, running unit refused, failing start rolled back, real authorized session observed between two nodes with 64 KiB and 2 MiB intact, agent diagnostics/status/traffic/audit tiers matched the unit evidence, malformed/unregistered/duplicate/stale/symlink requests harmless, no firewall/listener/unit side effects)"
