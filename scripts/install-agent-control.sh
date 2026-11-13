@@ -116,19 +116,20 @@ if [[ "$STAGING" == "0" ]]; then
     # observed state. Never auto-restart writers/watchers while the directory has old perms.
     stop_snapshot_units() {
       local label="$1"; shift
-      local unit failed=0
-      local state
+      local unit failed=0 stop_rc state
       for unit in "$@"; do
-        if ! systemctl stop "$unit"; then
-          state="$(systemctl is-active "$unit" 2>/dev/null || true)"
-          case "$state" in
-            inactive|failed) ;; # Already quiescent despite the stop command's nonzero result.
-            *)
-              echo "install-agent-control: failed to stop $label unit $unit (state: ${state:-unknown})" >&2
-              failed=1
-              ;;
-          esac
-        fi
+        stop_rc=0
+        systemctl stop "$unit" || stop_rc=$?
+        # Verify the resulting state even when systemctl reports success. A successful
+        # stop request is not sufficient evidence that a writer/watcher is quiescent.
+        state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+        case "$state" in
+          inactive|failed) ;; # Quiescent, including already-stopped units.
+          *)
+            echo "install-agent-control: could not quiesce $label unit $unit (stop_rc=$stop_rc, state: ${state:-unknown})" >&2
+            failed=1
+            ;;
+        esac
       done
       return "$failed"
     }
