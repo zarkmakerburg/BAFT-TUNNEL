@@ -153,6 +153,8 @@ grep -qx 'd /run/baft-tunnel/control 0770 root baft-tunnel-agent -' "$STAGE/etc/
 grep -qx 'z /run/baft-tunnel/control 0770 root baft-tunnel-agent -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
 ! grep -qx 'd /run/baft-tunnel/control 0770 root baft-tunnel -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
 grep -Fq '"${CTL_PATHS[@]}" >/dev/null 2>&1 || true' "$ROOT/scripts/install-agent-control.sh"
+grep -Fq 'if systemctl is-active --quiet "$unit.path"; then' "$ROOT/scripts/install-agent-control.sh"
+grep -Fq 'group $AGENT_USER must be exclusive to the dedicated agent account' "$ROOT/scripts/install-agent-control.sh"
 grep -Fq 'pending control request exists at $request' "$ROOT/scripts/install-agent-control.sh"
 grep -Fq 'control request appeared during directory migration' "$ROOT/scripts/install-agent-control.sh"
 grep -Fq 'root:baft-tunnel-agent 770' "$ROOT/scripts/install-agent-control.sh"
