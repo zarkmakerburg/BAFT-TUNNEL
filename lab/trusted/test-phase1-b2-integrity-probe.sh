@@ -116,6 +116,8 @@ grep -F 'PROBE_COOLDOWN_PASS' "$harness" >/dev/null
 grep -F 'LAST_PROBE_PERSISTED_AFTER_AGENT_RESTART_PASS' "$harness" >/dev/null
 grep -F 'LAST_PROBE_COOLDOWN_PERSISTED_PASS' "$harness" >/dev/null
 grep -F 'INTEGRITY_AUDIT_EVENTS_PASS' "$harness" >/dev/null
+grep -F 'ADR-0024 requires a request hash in audit v2' "$harness" >/dev/null
+grep -F 're.fullmatch(r"[0-9a-f]{64}"' "$harness" >/dev/null
 grep -F 'integrity_probe/tunnel/{}/peer/{}/direction/direct' "$harness" >/dev/null
 grep -F 'integrity.get("result") == "unknown"' "$harness" >/dev/null
 grep -F 'systemctl restart' "$harness" >/dev/null

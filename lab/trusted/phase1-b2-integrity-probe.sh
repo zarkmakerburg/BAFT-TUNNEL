@@ -433,13 +433,14 @@ print("INTEGRITY_PROBE_PASS peer=%s bytes=%s duration_ms=%s" % (peer, d["bytes"]
 
   audit="$(api_request "$side" GET /v1/audit)"
   printf '%s' "$audit" | python3 -c '
-import json, sys
+import json, re, sys
 d = json.load(sys.stdin)
 resource = "integrity_probe/tunnel/{}/peer/{}/direction/direct".format(sys.argv[2], sys.argv[1])
 events = [e for e in d.get("entries", []) if e.get("action") == "integrity_probe" and e.get("resource") == resource]
 assert len(events) == 1 and events[0].get("result") == "pass", events
 assert events[0].get("detail") == "sha256_verified", events
-assert not events[0].get("sha256"), events
+# ADR-0024 requires a request hash in audit v2; this is not the probe payload digest.
+assert isinstance(events[0].get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", events[0]["sha256"]), events
 print("INTEGRITY_AUDIT_PASS")
 ' "$peer" "$INSTANCE"
 
@@ -483,14 +484,15 @@ print("PROBE_COOLDOWN_PASS")
 
   audit_after="$(api_request "$side" GET /v1/audit)"
   printf '%s' "$audit_after" | python3 -c '
-import json, sys
+import json, re, sys
 d = json.load(sys.stdin)
 resource = "integrity_probe/tunnel/{}/peer/{}/direction/direct".format(sys.argv[2], sys.argv[1])
 events = [e for e in d.get("entries", []) if e.get("action") == "integrity_probe" and e.get("resource") == resource]
 assert len(events) == 2, events
 assert sorted(e.get("result") for e in events) == ["pass", "unknown"], events
 assert sorted(e.get("detail") for e in events) == ["rate_limited", "sha256_verified"], events
-assert all(not e.get("sha256") for e in events), events
+# Both entries carry the ADR-0024 request hash, never the integrity payload digest.
+assert all(isinstance(e.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", e["sha256"]) for e in events), events
 print("INTEGRITY_AUDIT_EVENTS_PASS")
 ' "$peer" "$INSTANCE"
   status="$(api_request "$side" GET /v1/status)"
