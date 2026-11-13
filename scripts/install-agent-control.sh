@@ -92,7 +92,8 @@ if [[ "$STAGING" == "0" ]]; then
   fi
   # The request group is a privilege boundary: it must not contain the tunnel account or
   # any supplementary members. The agent receives it only as its primary group.
-  if [[ -n "$(getent group "$AGENT_USER" | awk -F: '{print $4}')" ]] ||
+  if [[ "$(id -gn "$AGENT_USER")" != "$AGENT_USER" ]] ||
+     [[ -n "$(getent group "$AGENT_USER" | awk -F: '{print $4}')" ]] ||
      id -nG "$SERVICE_GROUP" | tr ' ' '\n' | grep -qx "$AGENT_USER"; then
     die "group $AGENT_USER must be exclusive to the dedicated agent account"
   fi
