@@ -175,7 +175,10 @@ function serve() {
         sessionStorage.setItem('lang', locale);
       }, ['test-token', lang]);
       await baftPage.route('**/v1/**', routeApi);
+      const baftEnginesLoaded = baftPage.waitForResponse(response =>
+        response.request().method() === 'GET' && new URL(response.url()).pathname === '/v1/engines' && response.status() === 200);
       await baftPage.goto(base + '/#/setup');
+      await baftEnginesLoaded;
       await baftPage.waitForSelector('.shell');
       const baftReverse = baftPage.locator('input[type="radio"][name="direction"][value="reverse"]');
       ok(lang + ' keeps Reverse disabled for the BAFT Direct-only capability',
