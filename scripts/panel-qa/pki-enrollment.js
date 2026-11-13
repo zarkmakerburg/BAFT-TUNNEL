@@ -188,6 +188,7 @@ function serve() {
       if (baftChoiceCount) await baftChoice.click();
       await page.locator('.nav-row button:not(.primary)').first().click(); // Back to Servers with BAFT selected
       ok(lang + ' derives BAFT listener identity and hides separate local/peer DNS fields',
+        await page.locator('input[name="node"]').count() === 1 &&
         await page.locator('input[name="localServerName"]').count() === 0 &&
         await page.locator('input[name="serverName"]').count() === 0);
       await next().click(); // Method
