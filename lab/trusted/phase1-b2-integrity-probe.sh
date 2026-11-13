@@ -508,6 +508,11 @@ print("LAST_PROBE_COOLDOWN_PERSISTED_PASS")
 '
 }
 verify_probe iran abroad
+# ProbeLimiter is scoped to the tunnel instance, so let its 60-second window expire
+# before exercising the opposite direction on the paired endpoint.
+echo "WAITING_FOR_INTER_DIRECTION_PROBE_COOLDOWN seconds=61"
+sleep 61
+echo "INTER_DIRECTION_PROBE_COOLDOWN_ELAPSED=1"
 verify_probe abroad iran
 
 AFTER_STATS="$(ssh_host abroad "cat '$ECHO_STATE/stats.json'")"
