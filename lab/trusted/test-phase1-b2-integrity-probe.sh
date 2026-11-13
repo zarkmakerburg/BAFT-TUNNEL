@@ -89,6 +89,9 @@ grep -F 'MemoryDenyWriteExecute=yes' "$harness" >/dev/null
 test "$(grep -o 'IPAddressDeny=any' "$harness" | wc -l | tr -d ' ')" -ge 4
 grep -F 'IPAddressAllow=127.0.0.0/8 ::1/128 $IRAN_CIDR' "$harness" >/dev/null
 grep -F 'IPAddressAllow=127.0.0.0/8 ::1/128 $ABROAD_CIDR' "$harness" >/dev/null
+if grep -F -- '--property="IPAddressAllow=' "$harness" >/dev/null; then
+  echo 'Tunnel IPAddressAllow property must remain one remote-shell argument' >&2; exit 1
+fi
 grep -F 'IPAddressAllow=127.0.0.0/8 ::1/128' "$harness" >/dev/null
 grep -F 'NETWORK_EGRESS_POLICY_READY' "$harness" >/dev/null
 grep -F 'denied in ({"any"},{"0.0.0.0/0","::/0"})' "$harness" >/dev/null
