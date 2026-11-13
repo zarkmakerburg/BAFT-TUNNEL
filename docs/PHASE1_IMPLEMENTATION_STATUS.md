@@ -446,8 +446,16 @@ Current repository baseline: `main` `b2c8ab5020754cad15485371a1f062de4092229f`.
 
 ## 2026-11-12 — B1 merged; B2 implementation-start gate satisfied
 
-- **Current repository baseline:** `main` `32bf85f10d75efafc0d5f7a45a25d060f7f7c9b6` (65 commits after the U8 merge `52a2825254f8254386f71af7220c7cb244200fc2`).
+- **Baseline at this entry:** `main` `32bf85f10d75efafc0d5f7a45a25d060f7f7c9b6` (65 commits after the U8 merge `52a2825254f8254386f71af7220c7cb244200fc2`).
 - **B1 merged:** `311b706` adds the localized structured Preflight/Diagnostics evidence (`code` + typed `params`, fa/en evidence, source, remediation and next action), and `62d7ee6` removes the duplicate `diag.next.*` translations that shadowed explanatory messages, with a regression assertion. The earlier exact-head evidence on `cc37f48` / `ec730c3` (PR #164 / PR #168) remains historical; the merge is a code-merge event, not new LAB or runtime evidence.
 - **B2 prerequisites:** [ADR-0028](ADR-0028-authenticated-integrity-probe.md) merged; the owner accepted **Option A** strict coordinated peer-pair upgrade in [PROTOCOL_V2_COMPATIBILITY_MATRIX.md](PROTOCOL_V2_COMPATIBILITY_MATRIX.md) on 2026-11-12; the pre-implementation contract vectors merged in `tests/protocol_v2_contract.rs` (PR #176, `74b8ba3`).
-- **B2 runtime is not implemented:** `src/handshake.rs` still pins `VERSION: u16 = 1` and `src/` contains no `IntegrityProbe`. Runtime work is tracked in PR #177; no B2 acceptance evidence (unit, LAB, tampered-path failure) exists yet, so the `integrity` tier stays Unknown.
+- **B2 runtime (at this entry, not yet implemented):** `src/handshake.rs` still pinned `VERSION: u16 = 1` and `src/` contained no `IntegrityProbe`; runtime work was tracked in PR #177. The runtime has since merged — see the 2026-11-13 entry below.
 - Limits: this update produced no new LAB run, tag, release or deploy.
+
+## 2026-11-13 — B2 runtime merged; feature acceptance still pending
+
+- **Current repository baseline:** `main` `fbac1dbd5f0b553f8d7210bf60864302487fe408` (2026-11-13; 136 commits after the U8 merge `52a2825254f8254386f71af7220c7cb244200fc2`).
+- **B2 runtime merged:** [PR #177](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/177) landed through PR #179 (merge `e224e6d`, runtime commit `4c8dffd`). `src/integrity_probe.rs`, `src/control_socket.rs`, the protocol-generation-2 setup flow and the panel's explicit **Verify / Test tunnel** action (`verify.*` and `proto.v2` strings in fa/en) are on `main`. The typed-error and socket-mode hardening from the F0 boundary review (`826e5b5`) is part of that merged history.
+- **Trusted B2 harness merged:** [PR #178](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/178) added `lab/trusted/phase1-b2-integrity-probe.sh` plus its offline test. Harness fixes followed as merged PRs #179–#191: fixtures outside `noexec` and private tmp, remote quoting, idempotency keys and the audit resource/hash contract, and restart freshness.
+- **B2 feature acceptance is NOT achieved:** the trusted run on `fbac1db` ([run 43396756185](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43396756185), 2026-11-13T08:53Z) failed in `two-host-b2-lab` at "Run trusted bounded B2 LAB orchestration"; both `validate-candidate` and `build-candidate` passed. [PR #192](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/192) is open for the shared 60-second cooldown between directions. The `integrity` tier therefore passes only for a separately recorded probe, and `ready` remains Unknown.
+- Limits: this documentation update produced no LAB run, tag, release or deploy. No tampered-path failure is evidenced yet, and there is no two-host mixed-version evidence beyond the unit and contract tests.
