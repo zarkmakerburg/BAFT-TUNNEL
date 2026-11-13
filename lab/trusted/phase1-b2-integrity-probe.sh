@@ -516,11 +516,18 @@ echo "INTER_DIRECTION_PROBE_COOLDOWN_ELAPSED=1"
 verify_probe abroad iran
 
 AFTER_STATS="$(ssh_host abroad "cat '$ECHO_STATE/stats.json'")"
+# The Agent's five-second listener sampler and /v1/status readiness check deliberately
+# open empty TCP connections to the configured listen address. On a forward endpoint
+# those can traverse the tunnel, so connection count is not a probe-specific signal.
+# The echo fixture's byte counter isolates the property under test: IntegrityProbe must
+# never send its payload to the configured TCP destination.
 python3 - "$BEFORE_STATS" "$AFTER_STATS" <<'PYSTATS'
 import json, sys
 before, after = map(json.loads, sys.argv[1:])
-assert before == after, (before, after)
-print("INTEGRITY_PROBE_DID_NOT_TOUCH_TCP_TARGET=PASS")
+assert after["bytes"] == before["bytes"], {"before": before, "after": after}
+assert after["connections"] >= before["connections"], {"before": before, "after": after}
+zero_payload_connections_delta = after["connections"] - before["connections"]
+print(f"INTEGRITY_PROBE_NO_TARGET_PAYLOAD=PASS zero_payload_connections_delta={zero_payload_connections_delta}")
 PYSTATS
 
 # Both B2 probes must leave ordinary forwarding operational.
@@ -529,4 +536,4 @@ for side in iran abroad; do
   ssh_host "$side" "systemctl is-active --quiet '$(tunnel_unit_for "$side")' && systemctl is-active --quiet '$(agent_unit_for "$side")'"
 done
 
-echo "TRUSTED_B2_INTEGRITY_LAB=PASS candidate_sha=$CANDIDATE_SHA protocol=v2 direction=direct probes_both_directions=1 setup_v2_selection=1 bytes=65536 audit=pass+rate_limited agent_restart_persistence=1 cooldown=1 tcp_target_untouched=1 dataplane_before_after=1 candidate_unprivileged=1 ssh_key_exposed_to_candidate=0"
+echo "TRUSTED_B2_INTEGRITY_LAB=PASS candidate_sha=$CANDIDATE_SHA protocol=v2 direction=direct probes_both_directions=1 setup_v2_selection=1 bytes=65536 audit=pass+rate_limited agent_restart_persistence=1 cooldown=1 tcp_target_payload_unchanged=1 dataplane_before_after=1 candidate_unprivileged=1 ssh_key_exposed_to_candidate=0"
