@@ -163,6 +163,9 @@ ln -sf ../baft-tunnel-control-start@.path "$STAGE/etc/systemd/system/multi-user.
 ln -sf ../baft-tunnel-agent@.path "$STAGE/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@iran.path"
 [[ -f "$STAGE/etc/systemd/system/baft-tunnel-control-start@.path" && -f "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf" ]]
 grep -qx 'd /var/lib/baft-tunnel-control 0700 root root -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
+# The tunnel engine user must not share the group that can submit root setup requests.
+grep -qx 'd /run/baft-tunnel/control 0770 root baft-tunnel-agent -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
+! grep -qx 'd /run/baft-tunnel/control 0770 root baft-tunnel -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
 if "$UNINSTALL" --destdir "$STAGE" --purge-config >/dev/null 2>&1; then
   echo "uninstall accepted config purge without --yes" >&2
   exit 1
