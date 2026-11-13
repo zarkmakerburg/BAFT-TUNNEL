@@ -411,8 +411,9 @@ sleep 1
 BEFORE_STATS="$(ssh_host abroad "cat '$ECHO_STATE/stats.json'")"
 
 verify_probe() {
-  local side="$1" peer="$2" response audit status attempt agent_unit limited audit_after
-  response="$(api_request "$side" POST /v1/verify "")"
+  local side="$1" peer="$2" response audit status attempt agent_unit limited audit_after probe_body cooldown_body
+  probe_body="{\"idempotency_key\":\"b2-${RUN_ID}-${side}-initial\"}"
+  response="$(api_request "$side" POST /v1/verify "$probe_body")"
   printf '%s' "$response" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
@@ -469,7 +470,8 @@ assert last["result"] == "pass" and last["source"] == "in_product_probe"
 print("LAST_PROBE_PERSISTED_AFTER_AGENT_RESTART_PASS")
 '
 
-  limited="$(api_request "$side" POST /v1/verify "")"
+  cooldown_body="{\"idempotency_key\":\"b2-${RUN_ID}-${side}-cooldown\"}"
+  limited="$(api_request "$side" POST /v1/verify "$cooldown_body")"
   printf '%s' "$limited" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)

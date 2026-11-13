@@ -122,9 +122,11 @@ if grep -E "systemd-run --quiet --collect --unit=.*agent_unit" "$harness" >/dev/
   echo 'Agent transient unit must remain restartable for the last-probe persistence check' >&2; exit 1
 fi
 
-grep -F 'POST /v1/verify ""' "$harness" >/dev/null
-if grep -E 'idempotency_key|replayed|IDEMPOTENCY' "$harness" >/dev/null; then
-  echo 'current PR #177 verify API has no idempotency request body' >&2; exit 1
+grep -F 'idempotency_key' "$harness" >/dev/null
+grep -F 'POST /v1/verify "$probe_body"' "$harness" >/dev/null
+grep -F 'POST /v1/verify "$cooldown_body"' "$harness" >/dev/null
+if grep -F 'POST /v1/verify ""' "$harness" >/dev/null; then
+  echo 'integrity verify requests must include a unique idempotency key' >&2; exit 1
 fi
 grep -F 'INTEGRITY_PROBE_DID_NOT_TOUCH_TCP_TARGET=PASS' "$harness" >/dev/null
 grep -F 'DATA_PATH_OK' "$harness" >/dev/null
@@ -154,4 +156,4 @@ if awk '/^  build-candidate:/{inside=1} /^  two-host-b2-lab:/{inside=0} inside &
   echo 'B2 candidate build job has access to LAB secrets' >&2; exit 1
 fi
 test "$(grep -c 'secrets\.' "$workflow")" = 4
-echo 'Trusted B2 LAB workflow boundary tests: PASS (current PR #177 API contract; static checks only; no hosts contacted)'
+echo 'Trusted B2 LAB workflow boundary tests: PASS (idempotent verify request contract; static checks only; no hosts contacted)'
