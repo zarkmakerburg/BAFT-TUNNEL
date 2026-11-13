@@ -83,19 +83,18 @@ if [[ "$STAGING" == "0" ]]; then
   [[ "$(stat -c '%U %a' "$STATE/token")" == "$AGENT_USER 600" ]] || die "$STATE/token must be $AGENT_USER, mode 0600"
   CONTROL_DIR=/run/baft-tunnel/control
   CONTROL_DIR_STATE="$(stat -c '%U:%G %a' "$CONTROL_DIR" 2>/dev/null || true)"
+  # Enforce the request-group boundary on every registration, not only on migration.
+  if [[ "$(id -gn "$AGENT_USER")" != "$AGENT_USER" ]] ||
+     [[ -n "$(getent group "$AGENT_USER" | awk -F: '{print $4}')" ]] ||
+     id -nG "$SERVICE_GROUP" | tr ' ' '\n' | grep -qx "$AGENT_USER"; then
+    die "group $AGENT_USER must be exclusive to the dedicated agent account"
+  fi
   if [[ "$CONTROL_DIR_STATE" != "root:baft-tunnel-agent 770" ]]; then
     # This is a one-time, host-wide migration because all instances share this directory.
     # Do not change its group while any root request watcher/helper can still consume an old
     # request. Stop every active watcher and agent, then restart the previously active units.
     if [[ -n "$(systemctl list-units --type=service --state=active --no-legend --plain 'baft-tunnel-control-*@*.service' | awk '{print $1}')" ]]; then
       die "a root control helper is active; retry registration after all helper operations finish"
-    fi
-    # The request group is a privilege boundary: it must not contain the tunnel account or
-    # any supplementary members. The agent receives it only as its primary group.
-    if [[ "$(id -gn "$AGENT_USER")" != "$AGENT_USER" ]] ||
-       [[ -n "$(getent group "$AGENT_USER" | awk -F: '{print $4}')" ]] ||
-       id -nG "$SERVICE_GROUP" | tr ' ' '\n' | grep -qx "$AGENT_USER"; then
-      die "group $AGENT_USER must be exclusive to the dedicated agent account"
     fi
     # Refuse known pending requests before taking any service offline.
     for v in "${VERBS[@]}"; do
