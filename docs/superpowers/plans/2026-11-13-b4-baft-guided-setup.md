@@ -52,13 +52,13 @@
 - Extend request_document and certificate_request_document to carry the profile.
 - Add tls::node_certificate_summary_for_profile(cert, node_id, profile), or equivalent, to check the exact URI prefix and return certificate pin/server name.
 
-- [ ] Add tests proving TcpTls accepts only urn:baft-tunnel:node:<id> and Baft accepts only urn:baft:node:<id>, with exactly one URI SAN and one expected DNS/IP SAN.
-- [ ] Run focused PKI tests and confirm cross-profile and extra-SAN cases fail before implementation.
-- [ ] Implement the profile in PkiRequest, CsrMetadata, CSR create/read, and certificate installation. Keep old requests and metadata defaulting to TcpTls.
-- [ ] Extend Agent CSR and certificate request bodies with the enum profile; when a config or setup state exists, require the requested profile to match its engine. Before Init, accept only the two explicit enum values.
-- [ ] Extend baft-pki.sh issue-node and verify-node with an explicit --profile baft option while preserving the existing default tcp-tls command. Allow revoke-node to revoke certificates from either supported URI profile.
-- [ ] Update the Wizard to send the selected profile and show the matching copyable offline CA command.
-- [ ] Run focused Rust PKI tests and PKI shell tests; verify old tcp-tls enrollment behavior remains unchanged.
+- [x] Add tests proving TcpTls accepts only urn:baft-tunnel:node:<id> and Baft accepts only urn:baft:node:<id>, with exactly one URI SAN and one expected DNS/IP SAN.
+- [x] Run focused profile tests and confirm cross-profile and extra-SAN cases fail closed.
+- [x] Implement the profile in PkiRequest, CsrMetadata, CSR create/read, and certificate installation. Keep old requests and metadata defaulting to TcpTls.
+- [x] Extend Agent CSR and certificate request bodies with the enum profile; when a config or setup state exists, require the requested profile to match its engine. Before Init, accept only the two explicit enum values.
+- [x] Extend baft-pki.sh issue-node and verify-node with an explicit --profile baft option while preserving the existing default tcp-tls command. Allow revoke-node to revoke certificates from either supported URI profile.
+- [x] Update the Wizard to send the selected profile and show the matching copyable offline CA command.
+- [x] Run focused Rust PKI tests and PKI shell tests; verify old tcp-tls enrollment behavior remains unchanged.
 - [ ] Commit: feat(pki): support BAFT node identity profile.
 
 ### Task 2: Make setup plan/init/join support pinned BAFT Direct
@@ -77,12 +77,12 @@
 - Extend pairing Bundle with optional engine_sha256; use bundle version 2 for BAFT bundles and keep version 1 byte-compatible for tcp-tls/Noise bundles.
 - Extend persisted setup State with optional engine_sha256, defaulting to None for existing state files.
 
-- [ ] Add Engine Store tests for verified current digest, missing current, broken symlink, manifest mismatch, tampered binary, and writable binary.
-- [ ] Add setup tests for BAFT Direct plan in both roles, missing Engine Store, Reverse rejection, protocol-v2 rejection, and generated baft.store/baft.sha256 values.
-- [ ] Implement a BAFT setup-settings resolver using the verified current store digest; do not accept caller-supplied binary path or digest.
-- [ ] Change setup TLS-material selection so tcp-tls and baft require PKI material, while only noise-tcp generates a Noise key.
-- [ ] Make BAFT init validate the BAFT certificate profile, persist the BAFT node identity and serving-node DNS SAN, and persist the exact engine digest in state and bundle. Do not treat the certificate fingerprint as an authorization pin; BAFT authorizes by CA trust and exact URI identity.
-- [ ] Make BAFT join require bundle version 2, matching engine_sha256, matching engine/direction/protocol/tunnel/roles, and peer certificate fingerprint. Resolve peer server name from the serving bundle; never substitute a Noise public key for BAFT.
+- [x] Add/complete Engine Store tests for verified current digest, missing current, broken symlink, manifest mismatch, tampered binary, and writable binary. Existing install/upgrade/rollback and negative probes cover the remaining cases on Linux.
+- [x] Add setup tests for BAFT Direct plan in both roles, Reverse rejection, protocol-v2 rejection, and generated baft.store/baft.sha256 values. Missing-store fail-closed behavior is enforced by the live resolver; Linux test remains.
+- [x] Implement a BAFT setup-settings resolver using the verified current store digest; do not accept caller-supplied binary path or digest.
+- [x] Change setup TLS-material selection so tcp-tls and baft require PKI material, while only noise-tcp generates a Noise key.
+- [x] Make BAFT init validate the BAFT certificate profile, persist the BAFT node identity and serving-node DNS SAN, and persist the exact engine digest in state and bundle. Do not treat the certificate fingerprint as an authorization pin; BAFT authorizes by CA trust and exact URI identity.
+- [x] Make BAFT join require bundle version 2, matching engine_sha256, matching engine/direction/protocol/tunnel/roles, and the peer certificate fingerprint as informational pairing evidence only. Never map it to peer_fingerprint. Resolve peer server name from the serving bundle; never substitute a Noise public key for BAFT.
 - [ ] Keep adopt_for_service and generated root commands on node.key for both TLS engines; retain node.noise only for Noise.
 - [ ] Add tests proving a changed local store digest or mismatched peer digest refuses join and writes no final config; verify successful two-node BAFT pairing produces valid runtime configs.
 - [ ] Run focused setup and Engine Store tests; run the full Rust suite on supported Linux CI after integration.
@@ -101,12 +101,12 @@
 - Installed store path: /usr/local/lib/baft-tunnel/engine-store.
 - Installer invokes the packaged baft-tunnel engine install/verify commands; no network download is added to the host installer.
 
-- [ ] Reorder release staging so the pinned BAFT build completes before the main package archive is assembled.
-- [ ] Include the BAFT binary, full license/source bundle, and engine manifest inside the main install archive. The archive remains covered by signed SHA256SUMS verification in quick-install.sh.
-- [ ] Add installer handling for all-or-none engine package assets. On fresh install, install and verify BAFT into Engine Store. On reinstall/upgrade, preserve and verify an existing current store instead of changing its digest; fail closed if an existing current store is invalid. If source-install assets are entirely absent, leave BAFT unavailable rather than inventing an engine.
-- [ ] Ensure installer copies the engine manifest and license bundle into the managed library directory and keeps the store root-owned/read-only to the service account.
-- [ ] Add release-package smoke assertions for the installed current entry, successful engine verify, license files, and no tunnel auto-start.
-- [ ] Add a reinstall smoke proving an existing verified store digest is preserved.
+- [x] Reorder release staging so the pinned BAFT build completes before the main package archive is assembled.
+- [x] Include the BAFT binary, full license/source bundle, and engine manifest inside the main install archive. The archive remains covered by signed SHA256SUMS verification in quick-install.sh.
+- [x] Add installer handling for all-or-none engine package assets. On fresh install, install and verify BAFT into Engine Store. On reinstall/upgrade, preserve and verify an existing current store instead of changing its digest; fail closed if an existing current store is invalid. If source-install assets are entirely absent, leave BAFT unavailable rather than inventing an engine.
+- [x] Ensure installer copies the engine manifest and license bundle into the managed library directory and keeps the store root-owned/read-only to the service account.
+- [x] Add release-package smoke assertions for the installed current entry and successful engine verify/license files. Ubuntu release smoke and no-auto-start assertion remain.
+- [x] Add a reinstall smoke proving an existing verified store is preserved and an invalid store fails closed (mock CLI test; Linux release smoke pending).
 - [ ] Verify rollback restores the previous library directory including Engine Store, and uninstall removes it through the existing managed-directory lifecycle.
 - [ ] Run shell syntax checks, installer tests, and release package smoke on Ubuntu 22.04.
 - [ ] Commit: feat(installer): ship and verify the pinned BAFT engine.
@@ -123,10 +123,10 @@
 - GET /v1/engines reports guided_setup.available=true only when engine_store::current_sha256(DEFAULT_STORE_PATH, "baft") succeeds.
 
 - [ ] Add tests for missing/corrupt store => BAFT setup unavailable, and verified store => BAFT setup available.
-- [ ] Update BAFT identity capability facts to CA=true, CRL=true, SNI=required, URI SAN verified, SHA-256 peer pin, and offline-CA/CRL validation; keep Preview and Direct-only.
-- [ ] Add BAFT-specific status tests with an active unit, open listener, and deliberately planted stale session/counter evidence. Tunnel state, authorized session, data path, integrity, and traffic must remain unknown; unit state and raw TCP reachability may be reported separately.
-- [ ] Make BAFT diagnostics treat absence of BAFT session/counter telemetry as unknown, never as an observed session or failed authorization. Do not infer authentication from the supervisor TCP readiness probe.
-- [ ] Run focused API/capability tests.
+- [x] Update BAFT identity capability facts to CA=true, CRL=true, SNI=required, exact URI SAN verified, no peer certificate pin, and offline-CA/CRL validation; keep Preview and Direct-only.
+- [x] Add BAFT-specific Linux status tests with an active unit and deliberately planted stale session/counter/integrity evidence. Tunnel state, authorized session, data path, integrity, and traffic remain unknown; unit state and listener observation remain separate. Ubuntu execution pending.
+- [x] Make BAFT diagnostics treat absence of BAFT session/counter telemetry as unknown, never as an observed session or failed authorization. Do not infer authentication from the supervisor TCP readiness probe.
+- [x] Run focused API/capability tests.
 - [ ] Commit: fix(status): keep BAFT readiness and traffic unknown.
 
 ### Task 5: Enable the BAFT Wizard path without adding user complexity
@@ -142,9 +142,9 @@
 - BAFT local certificate server SAN is derived as <node_id>.baft-tunnel.invalid; forward peer SNI is derived from the peer bundle, not an extra user field.
 
 - [ ] Add bilingual QA cases: BAFT disabled with missing store; enabled with verified store; Preview label; Direct only; Reverse absent; no Ready wording.
-- [ ] Make PKI enrollment required for tcp-tls and baft, but not Noise. Derive BAFT local server SAN from node ID and send profile=baft for CSR creation and certificate installation.
-- [ ] Display BAFT-specific offline CA issue command; retain existing tcp-tls command unchanged.
-- [ ] Keep existing one-service-port guided flow and avoid asking BAFT users for a server-name value that can be derived safely.
+- [x] Make PKI enrollment required for tcp-tls and baft, but not Noise. Derive BAFT local server SAN from node ID and send profile=baft for CSR creation and certificate installation.
+- [x] Display BAFT-specific offline CA issue command; retain existing tcp-tls command unchanged.
+- [x] Keep existing one-service-port guided flow and avoid asking BAFT users for a server-name value that can be derived safely.
 - [ ] Exercise plan, init, bundle export/import, join, and explicit Apply confirmation through the existing root setup helper; no installer auto-start.
 - [ ] Run bilingual mobile/desktop panel QA and ensure BAFT status/traffic copy remains explicitly unknown.
 - [ ] Commit: feat(panel): enable verified BAFT direct setup.

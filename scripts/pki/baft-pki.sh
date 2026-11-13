@@ -22,10 +22,10 @@ usage() {
 Usage:
   baft-pki.sh init-ca CA_DIR [CA_NAME]
   baft-pki.sh new-node NODE_ID NODE_DIR
-  baft-pki.sh issue-node CA_DIR NODE_ID CSR_FILE OUTPUT_DIR SERVER_NAME [VALID_DAYS]
+  baft-pki.sh issue-node [--profile baft] CA_DIR NODE_ID CSR_FILE OUTPUT_DIR SERVER_NAME [VALID_DAYS]
   baft-pki.sh revoke-node CA_DIR NODE_CERT OUTPUT_DIR
   baft-pki.sh renew-crl CA_DIR OUTPUT_DIR [VALID_DAYS]
-  baft-pki.sh verify-node CA_DIR CRL_FILE NODE_CERT NODE_ID SERVER_NAME
+  baft-pki.sh verify-node [--profile baft] CA_DIR CRL_FILE NODE_CERT NODE_ID SERVER_NAME
 
 Peers refuse every connection once the CRL has expired. Run renew-crl weekly
 (default validity 30 days, 2-90 allowed), check the result with crl-status.sh
@@ -135,7 +135,10 @@ new_node() {
 }
 
 issue_node() {
-  local ca_dir="$1" node_id="$2" csr="$3" out_dir="$4" server_dns="$5" days="${6:-90}"
+  local profile="$1" ca_dir="$2" node_id="$3" csr="$4" out_dir="$5" server_dns="$6" days="${7:-90}"
+  local node_uri_prefix="urn:baft-tunnel:node:"
+  [[ "$profile" == "tcp-tls" || "$profile" == "baft" ]] || die "unsupported certificate profile: $profile"
+  [[ "$profile" == "baft" ]] && node_uri_prefix="urn:baft:node:"
   validate_node_id "$node_id"
   local server_san
   server_san="$(server_san_entry "$server_dns")"
@@ -159,7 +162,7 @@ issue_node() {
 basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature
 extendedKeyUsage=serverAuth,clientAuth
-subjectAltName=URI:urn:baft-tunnel:node:$node_id,$server_san
+subjectAltName=URI:$node_uri_prefix$node_id,$server_san
 subjectKeyIdentifier=hash
 authorityKeyIdentifier=keyid,issuer
 EOF
@@ -184,7 +187,7 @@ revoke_node() {
     die "certificate is not issued by this CA"
   local san
   san="$(openssl x509 -in "$cert" -noout -ext subjectAltName)"
-  [[ "$san" == *"URI:urn:baft-tunnel:node:"* ]] || die "certificate has no BAFT-TUNNEL node URI SAN"
+  [[ "$san" == *"URI:urn:baft-tunnel:node:"* || "$san" == *"URI:urn:baft:node:"* ]] || die "certificate has no supported BAFT node URI SAN"
   mkdir -p "$out_dir"
   chmod 700 "$out_dir"
   TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/baft-pki.XXXXXX")"
@@ -222,7 +225,10 @@ renew_crl() {
 }
 
 verify_node() {
-  local ca_dir="$1" crl="$2" cert="$3" node_id="$4" server_dns="$5"
+  local profile="$1" ca_dir="$2" crl="$3" cert="$4" node_id="$5" server_dns="$6"
+  local node_uri_prefix="urn:baft-tunnel:node:"
+  [[ "$profile" == "tcp-tls" || "$profile" == "baft" ]] || die "unsupported certificate profile: $profile"
+  [[ "$profile" == "baft" ]] && node_uri_prefix="urn:baft:node:"
   validate_node_id "$node_id"
   local expected_server_san
   expected_server_san="$(server_san_entry "$server_dns")"
@@ -233,8 +239,8 @@ verify_node() {
   san="$(openssl x509 -in "$cert" -noout -ext subjectAltName | tr ',' '\n')"
   uri_sans="$(printf '%s\n' "$san" | sed -n 's/.*URI:\([^[:space:]]*\).*/\1/p')"
   server_sans="$(printf '%s\n' "$san" | sed -n -e 's/.*DNS:\([^[:space:]]*\).*/DNS:\1/p' -e 's/.*IP Address:\([^[:space:]]*\).*/IP:\1/p')"
-  [[ "$uri_sans" == "urn:baft-tunnel:node:$node_id" ]] ||
-    die "certificate must contain exactly one BAFT-TUNNEL node URI SAN matching $node_id"
+  [[ "$uri_sans" == "$node_uri_prefix$node_id" ]] ||
+    die "certificate must contain exactly one $profile node URI SAN matching $node_id"
   [[ "$server_sans" == "$expected_server_san" ]] ||
     die "certificate must contain exactly one server SAN matching $expected_server_san"
   openssl x509 -in "$cert" -noout -fingerprint -sha256
@@ -246,10 +252,24 @@ shift
 case "$command" in
   init-ca) [[ $# == 1 || $# == 2 ]] || { usage; exit 2; }; init_ca "$@" ;;
   new-node) [[ $# == 2 ]] || { usage; exit 2; }; new_node "$1" "$2" ;;
-  issue-node) [[ $# == 5 || $# == 6 ]] || { usage; exit 2; }; issue_node "$@" ;;
+  issue-node)
+    profile="tcp-tls"
+    if [[ "${1:-}" == "--profile" ]]; then
+      [[ "${2:-}" == "baft" ]] || die "only --profile baft is supported"
+      profile="baft"; shift 2
+    fi
+    [[ $# == 5 || $# == 6 ]] || { usage; exit 2; }
+    issue_node "$profile" "$@" ;;
   revoke-node) [[ $# == 3 ]] || { usage; exit 2; }; revoke_node "$@" ;;
   renew-crl) [[ $# == 2 || $# == 3 ]] || { usage; exit 2; }; renew_crl "$@" ;;
-  verify-node) [[ $# == 5 ]] || { usage; exit 2; }; verify_node "$@" ;;
+  verify-node)
+    profile="tcp-tls"
+    if [[ "${1:-}" == "--profile" ]]; then
+      [[ "${2:-}" == "baft" ]] || die "only --profile baft is supported"
+      profile="baft"; shift 2
+    fi
+    [[ $# == 5 ]] || { usage; exit 2; }
+    verify_node "$profile" "$@" ;;
   -h|--help|help) usage ;;
   *) usage; die "unknown command: $command" ;;
 esac

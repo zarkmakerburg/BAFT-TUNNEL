@@ -163,6 +163,21 @@ LIB_DEST="$ROOT_PREFIX/usr/local/lib/baft-tunnel"
 if [[ -z "$BINARY" ]]; then
   [[ -x "$BIN_DEST" && -f "$UNIT_DEST" ]] || die "binary/template not installed yet; pass --binary as well"
 fi
+ENGINE_STORE_SOURCE="$LIB_DEST/engine-store"
+ENGINE_PACKAGE_BINARY="$SCRIPT_DIR/../engines/baft"
+ENGINE_PACKAGE_MANIFEST="$SCRIPT_DIR/../release/engine-manifest.json"
+ENGINE_PACKAGE_LICENSES="$SCRIPT_DIR/../engines/licenses"
+if [[ -e "$ENGINE_STORE_SOURCE" || -L "$ENGINE_STORE_SOURCE" ]]; then
+  [[ -d "$ENGINE_STORE_SOURCE" && ! -L "$ENGINE_STORE_SOURCE" ]] || die "existing BAFT Engine Store path is not a real directory; refusing to replace it"
+  [[ -x "$BIN_DEST" ]] || die "an Engine Store exists but the installed CLI cannot verify it; refusing to replace the library"
+  "$BIN_DEST" engine verify --store "$ENGINE_STORE_SOURCE" --id baft >/dev/null \
+    || die "existing BAFT Engine Store failed verification; refusing to replace or overwrite it"
+fi
+if [[ -e "$ENGINE_PACKAGE_BINARY" || -d "$ENGINE_PACKAGE_LICENSES" ]]; then
+  [[ -f "$ENGINE_PACKAGE_BINARY" && -x "$ENGINE_PACKAGE_BINARY" \
+    && -f "$ENGINE_PACKAGE_MANIFEST" && -d "$ENGINE_PACKAGE_LICENSES" ]] \
+    || die "BAFT package assets are incomplete; expected executable, manifest and licenses together"
+fi
 
 if [[ -n "$INSTANCE" ]]; then
   CRED_ROOT="$CONFIG_DIR/credentials"
@@ -308,6 +323,22 @@ if [[ -n "$BINARY" ]]; then
     install -m 0755 "$f" "$LIB_DEST.new.$$/scripts/$rel"
   done
   cp -R "$SCRIPT_DIR/../systemd/." "$LIB_DEST.new.$$/systemd/"
+  if [[ -d "$ENGINE_STORE_SOURCE" ]]; then
+    cp -a "$ENGINE_STORE_SOURCE" "$LIB_DEST.new.$$/engine-store"
+    "$BIN_DEST" engine verify --store "$LIB_DEST.new.$$/engine-store" --id baft >/dev/null \
+      || die "preserved BAFT Engine Store failed verification in staged library"
+  elif [[ -e "$ENGINE_PACKAGE_BINARY" ]]; then
+    "$BIN_DEST" engine install --store "$LIB_DEST.new.$$/engine-store" \
+      --manifest "$ENGINE_PACKAGE_MANIFEST" --id baft --binary "$ENGINE_PACKAGE_BINARY" >/dev/null \
+      || die "could not install the packaged BAFT Engine Store"
+    current="$(basename "$(readlink "$LIB_DEST.new.$$/engine-store/baft/current")")"
+    [[ "$current" =~ ^[a-fA-F0-9]{64}$ ]] || die "installed BAFT Engine Store current pointer is invalid"
+    install -d -m 0755 "$LIB_DEST.new.$$/engine-store/baft/releases/$current/licenses"
+    cp -R "$ENGINE_PACKAGE_LICENSES/." "$LIB_DEST.new.$$/engine-store/baft/releases/$current/licenses/"
+    chmod -R u=rwX,go=rX "$LIB_DEST.new.$$/engine-store"
+    "$BIN_DEST" engine verify --store "$LIB_DEST.new.$$/engine-store" --id baft >/dev/null \
+      || die "newly installed BAFT Engine Store failed verification"
+  fi
   chmod -R u=rwX,go=rX "$LIB_DEST.new.$$"
   rm -rf "$LIB_DEST"
   mv -f "$LIB_DEST.new.$$" "$LIB_DEST"

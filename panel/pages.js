@@ -571,7 +571,8 @@
     }
     function pkiEnrollmentSection() {
       var out = [h('p', { class: 'sub', text: t('pki.intro') })];
-      var identityReady = !!(w.node.trim() && w.localServerName.trim());
+      var localSan = w.engine === 'baft' ? w.node.trim() + '.baft-tunnel.invalid' : w.localServerName.trim();
+      var identityReady = !!(w.node.trim() && localSan);
       if (!identityReady) {
         out.push(h('p', { class: 'fielderr', role: 'alert', text: t('pki.identityRequired') }));
         return h('div', null, out);
@@ -597,7 +598,7 @@
           document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 0);
         } })));
       out.push(h('h4', { text: t('pki.offlineTitle') }), h('p', { class: 'sub', text: t('pki.offlineBody') }),
-        h('pre', { dir: 'ltr', text: 'scripts/pki/baft-pki.sh issue-node CA_DIR ' + w.node.trim() + ' CSR_FILE OUTPUT_DIR ' + w.localServerName.trim() }));
+        h('pre', { dir: 'ltr', text: 'scripts/pki/baft-pki.sh issue-node ' + (w.engine === 'baft' ? '--profile baft ' : '') + 'CA_DIR ' + w.node.trim() + ' CSR_FILE OUTPUT_DIR ' + localSan }));
       out.push(h('h4', { text: t('pki.uploadTitle') }), h('p', { class: 'sub', text: t('pki.uploadBody') }));
       function pemInput(key, label, marker, maxBytes) {
         var input = h('input', { type: 'file', accept: '.pem,.crt,.cer,.crl,application/x-pem-file,text/plain', 'aria-label': label, onchange: function (e) {
@@ -639,7 +640,8 @@
     }
     function requestCsr(operation) {
       w.pkiBusy = true; w.pkiError = null; draw();
-      var req = { request_id: newKey('ui-csr-'), node_id: w.node.trim(), server_name: w.localServerName.trim() };
+      var localSan = w.engine === 'baft' ? w.node.trim() + '.baft-tunnel.invalid' : w.localServerName.trim();
+      var req = { request_id: newKey('ui-csr-'), node_id: w.node.trim(), server_name: localSan, profile: w.engine === 'baft' ? 'baft' : 'tcp_tls' };
       if (operation === 'create') { req.confirm = true; }
       BAFT.api('POST', '/v1/pki/csr/' + operation, req).then(function (r) {
         if ((r.status !== 200 && r.status !== 201) || !r.body || !r.body.csr_pem
@@ -653,7 +655,7 @@
     function installPki() {
       w.pkiBusy = true; w.pkiError = null; draw();
       var req = {
-        request_id: newKey('ui-cert-'), node_id: w.node.trim(), server_name: w.localServerName.trim(), confirm: true,
+        request_id: newKey('ui-cert-'), node_id: w.node.trim(), server_name: w.engine === 'baft' ? w.node.trim() + '.baft-tunnel.invalid' : w.localServerName.trim(), profile: w.engine === 'baft' ? 'baft' : 'tcp_tls', confirm: true,
         certificate_pem: w.certificatePem, ca_pem: w.caPem, crl_pem: w.crlPem
       };
       BAFT.api('POST', '/v1/pki/certificate/install', req).then(function (r) {
@@ -668,7 +670,7 @@
       var pr = st.pairing || {}, helper = st.setup_helper || {};
       var scopeOk = w.inst.trim() === (st.instance || '') && w.dir.trim() === (st.config_dir || '');
       var initDone = pr.initialized || (w.applyReceipt && w.applyReceipt.result === 'applied');
-      var pkiRequired = w.engine === 'tcp-tls';
+      var pkiRequired = w.engine === 'tcp-tls' || w.engine === 'baft';
       var pkiReady = !pkiRequired || (w.pkiReceipt && w.pkiReceipt.result === 'installed');
       if (initDone && !w.own && !w.ownLoading) { w.ownLoading = true; loadOwn(); }
       var out = [h('p', { class: 'sub', text: t('pair.intro') })];

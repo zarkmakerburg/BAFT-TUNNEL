@@ -533,6 +533,7 @@ fn remove_owned_socket(path: &Path) {
 
 /// Why the tunnel refused a control request. Typed so the logged reason never depends on text.
 #[cfg(any(target_os = "linux", test))]
+#[allow(dead_code)] // Used by the Linux control-socket backend and its platform-gated tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ControlRefusal {
     PeerIdentity,
@@ -557,6 +558,7 @@ impl std::fmt::Display for ControlRefusal {
 impl std::error::Error for ControlRefusal {}
 
 #[cfg(any(target_os = "linux", test))]
+#[allow(dead_code)] // Used by the Linux control-socket backend and its platform-gated tests.
 fn refusal(kind: ControlRefusal, context: &'static str) -> anyhow::Error {
     anyhow::Error::new(kind).context(context)
 }

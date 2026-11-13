@@ -117,6 +117,7 @@ mod setup_bench {
             tunnel_port: 8443,
             public: "ab".repeat(32),
             server_name: Some("tunnel.example.test".into()),
+            engine_sha256: None,
         }
     }
 

@@ -58,6 +58,8 @@ struct PkiRequest {
     operation: PkiOperation,
     node_id: String,
     server_name: String,
+    #[serde(default)]
+    profile: crate::tls::CertificateProfile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     certificate_pem: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -73,6 +75,8 @@ struct CsrMetadata {
     node_id: String,
     expected_server_san: String,
     public_key_sha256: String,
+    #[serde(default)]
+    profile: crate::tls::CertificateProfile,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -605,10 +609,11 @@ fn crl_number(path: &Path) -> Result<u64> {
     }
 }
 
-fn validate_leaf_policy(
+pub(crate) fn validate_leaf_policy(
     cert_der: &[u8],
     node_id: &str,
     expected_server_san: &str,
+    profile: crate::tls::CertificateProfile,
 ) -> Result<(String, String, i64)> {
     use x509_parser::extensions::GeneralName;
     let (remaining, cert) = x509_parser::parse_x509_certificate(cert_der)
@@ -658,7 +663,7 @@ fn validate_leaf_policy(
     let san = cert
         .subject_alternative_name()?
         .context("leaf certificate lacks subjectAltName")?;
-    let expected_uri = format!("urn:baft-tunnel:node:{node_id}");
+    let expected_uri = format!("{}{node_id}", profile.uri_prefix());
     let mut uri_count = 0usize;
     let mut server_count = 0usize;
     for name in &san.value.general_names {
@@ -752,12 +757,18 @@ fn install_certificate_at(
     let metadata: CsrMetadata =
         serde_json::from_slice(&metadata_bytes).context("stored CSR metadata is invalid")?;
     ensure!(
-        metadata.metadata_version == 1,
-        "unsupported CSR metadata version"
+        (metadata.metadata_version == 1 || metadata.metadata_version == 2)
+            && (metadata.metadata_version != 1
+                || metadata.profile == crate::tls::CertificateProfile::TcpTls),
+        "unsupported CSR metadata version or legacy profile mismatch"
     );
     ensure!(
         metadata.node_id == req.node_id,
         "certificate node ID does not match CSR metadata"
+    );
+    ensure!(
+        metadata.profile == req.profile,
+        "certificate profile does not match original CSR enrollment"
     );
     let expected_san = expected_server_san(&req.server_name)?;
     ensure!(
@@ -869,7 +880,7 @@ fn install_certificate_at(
         run_openssl(&openssl_args(&der_args))?;
         let cert_der = read_regular(&der_path, MAX_CERTIFICATE_BYTES as u64, false)?;
         let (fingerprint, cert_key_fingerprint, not_after) =
-            validate_leaf_policy(&cert_der, &req.node_id, &expected_san)?;
+            validate_leaf_policy(&cert_der, &req.node_id, &expected_san, req.profile)?;
         ensure!(
             cert_key_fingerprint == key_fingerprint,
             "leaf certificate public key does not match the local private key"
@@ -1198,6 +1209,12 @@ fn create_csr_at(config_dir: &Path, req: &PkiRequest, enforce_fixed: bool) -> Re
             staged_csr.to_str().context("non-UTF8 staged CSR path")?,
             "-subj",
             &format!("/CN={}", req.node_id),
+            "-addext",
+            &format!(
+                "subjectAltName=URI:{}{}",
+                req.profile.uri_prefix(),
+                req.node_id
+            ),
         ];
         run_openssl(&openssl_args(&req_args))?;
         fs::set_permissions(&staged_csr, fs::Permissions::from_mode(0o600))?;
@@ -1208,10 +1225,11 @@ fn create_csr_at(config_dir: &Path, req: &PkiRequest, enforce_fixed: bool) -> Re
         let server_san = expected_server_san(&req.server_name)?;
         apply_service_ownership(&staged_key, &staged_csr)?;
         let metadata = CsrMetadata {
-            metadata_version: 1,
+            metadata_version: 2,
             node_id: req.node_id.clone(),
             expected_server_san: server_san.clone(),
             public_key_sha256: fingerprint.clone(),
+            profile: req.profile,
         };
         let metadata_bytes = serde_json::to_vec(&metadata)?;
         let mut metadata_file = OpenOptions::new()
@@ -1293,12 +1311,18 @@ fn read_csr_at(config_dir: &Path, req: &PkiRequest, enforce_fixed: bool) -> Resu
     let metadata: CsrMetadata =
         serde_json::from_slice(&metadata_bytes).context("stored CSR metadata is invalid")?;
     ensure!(
-        metadata.metadata_version == 1,
-        "unsupported CSR metadata version"
+        (metadata.metadata_version == 1 || metadata.metadata_version == 2)
+            && (metadata.metadata_version != 1
+                || metadata.profile == crate::tls::CertificateProfile::TcpTls),
+        "unsupported CSR metadata version or legacy profile mismatch"
     );
     ensure!(
         metadata.node_id == req.node_id,
         "requested node ID does not match the stored CSR"
+    );
+    ensure!(
+        metadata.profile == req.profile,
+        "requested certificate profile does not match the stored CSR"
     );
     ensure!(
         metadata.expected_server_san == expected_server_san(&req.server_name)?,
@@ -1720,11 +1744,28 @@ impl PkiHelperClient for SystemPkiClient {
     }
 }
 
+#[allow(dead_code)] // Legacy TCP-TLS request builder retained for compatibility.
 pub fn request_document(
     request_id: &str,
     operation: PkiOperation,
     node_id: &str,
     server_name: &str,
+) -> Value {
+    request_document_for_profile(
+        request_id,
+        operation,
+        node_id,
+        server_name,
+        crate::tls::CertificateProfile::TcpTls,
+    )
+}
+
+pub fn request_document_for_profile(
+    request_id: &str,
+    operation: PkiOperation,
+    node_id: &str,
+    server_name: &str,
+    profile: crate::tls::CertificateProfile,
 ) -> Value {
     json!({
         "request_version": 1,
@@ -1732,12 +1773,14 @@ pub fn request_document(
         "operation": operation,
         "node_id": node_id,
         "server_name": server_name,
+        "profile": profile,
         "certificate_pem": null,
         "ca_pem": null,
         "crl_pem": null
     })
 }
 
+#[allow(dead_code)] // Legacy TCP-TLS request builder retained for compatibility.
 pub fn certificate_request_document(
     request_id: &str,
     node_id: &str,
@@ -1746,12 +1789,33 @@ pub fn certificate_request_document(
     ca_pem: &str,
     crl_pem: &str,
 ) -> Value {
+    certificate_request_document_for_profile(
+        request_id,
+        node_id,
+        server_name,
+        certificate_pem,
+        ca_pem,
+        crl_pem,
+        crate::tls::CertificateProfile::TcpTls,
+    )
+}
+
+pub fn certificate_request_document_for_profile(
+    request_id: &str,
+    node_id: &str,
+    server_name: &str,
+    certificate_pem: &str,
+    ca_pem: &str,
+    crl_pem: &str,
+    profile: crate::tls::CertificateProfile,
+) -> Value {
     json!({
         "request_version": 1,
         "request_id": request_id,
         "operation": PkiOperation::InstallCertificate,
         "node_id": node_id,
         "server_name": server_name,
+        "profile": profile,
         "certificate_pem": certificate_pem,
         "ca_pem": ca_pem,
         "crl_pem": crl_pem
@@ -1806,6 +1870,30 @@ mod tests {
 
     fn test_request(req: &Value) -> PkiRequest {
         serde_json::from_value(req.clone()).unwrap()
+    }
+
+    #[test]
+    fn legacy_pki_requests_default_to_tcp_tls_profile() {
+        let req = test_request(&request(
+            "legacy-profile",
+            PkiOperation::CreateCsr,
+            "abroad",
+            "abroad.lab",
+        ));
+        assert_eq!(req.profile, crate::tls::CertificateProfile::TcpTls);
+    }
+
+    #[test]
+    fn pki_requests_preserve_explicit_baft_profile() {
+        let mut value = request(
+            "baft-profile",
+            PkiOperation::CreateCsr,
+            "abroad",
+            "abroad.lab",
+        );
+        value["profile"] = json!("baft");
+        let req = test_request(&value);
+        assert_eq!(req.profile, crate::tls::CertificateProfile::Baft);
     }
 
     #[test]

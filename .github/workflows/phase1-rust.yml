@@ -41,6 +41,10 @@ jobs:
         run: cargo +1.88.0 build --locked --release
       - name: Validate staged installer, credential provisioning and rollback
         run: bash scripts/test-install.sh
+      - name: Validate BAFT and TCP-TLS certificate identity profiles (temporary CA only)
+        run: |
+          bash -n scripts/pki/test-baft-identity-profile.sh
+          bash scripts/pki/test-baft-identity-profile.sh
       - name: Validate the signed one-line installer interface
         run: bash scripts/test-quick-install.sh
       - name: Validate the interactive menu (staged, fa/en, arrow keys on a pty)
