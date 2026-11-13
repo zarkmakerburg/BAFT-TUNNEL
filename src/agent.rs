@@ -4826,7 +4826,8 @@ mod tests {
         });
         let config: RuntimeConfig = serde_json::from_value(value.clone()).unwrap();
         let diagnostics_config: RuntimeConfig = serde_json::from_value(value.clone()).unwrap();
-        let status_config: RuntimeConfig = serde_json::from_value(value).unwrap();
+        let status_config: RuntimeConfig = serde_json::from_value(value.clone()).unwrap();
+        let traffic_config: RuntimeConfig = serde_json::from_value(value).unwrap();
         let ctx = Ctx::new(config, TOKEN.into(), Some(state.clone()))
             .with_unit(Some("diag".into()), Some(run.clone()))
             .with_units(fake_units, state.clone());
@@ -4865,7 +4866,7 @@ mod tests {
         assert_eq!(status["tiers"]["authorized_session"]["result"], "unknown");
         assert_eq!(status["tiers"]["data_path"]["result"], "unknown");
         assert_eq!(status["tiers"]["integrity"]["result"], "unknown");
-        let counters = traffic(&ctx, &config);
+        let counters = traffic(&ctx, &traffic_config);
         assert_eq!(counters["available"], false);
         assert_eq!(counters["result"], "unknown");
         let _ = std::fs::remove_dir_all(&state);
