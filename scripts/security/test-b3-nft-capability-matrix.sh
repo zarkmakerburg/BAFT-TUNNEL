@@ -49,8 +49,27 @@ run_case() {
 timeout 10s sudo "$NFT" --json list ruleset >"$TMP/before.json"
 
 run_case unprivileged sudo -u nobody -- "$NFT" --json list ruleset
-run_case cap_net_admin_only sudo capsh --caps=cap_net_admin+ep -- -c "$NFT --json list ruleset"
+run_case cap_net_admin_only sudo capsh --caps=cap_net_admin+ep -- -c "grep '^CapEff:' /proc/self/status; $NFT --json list ruleset"
+run_case root_without_cap_net_admin sudo capsh --drop=cap_net_admin -- -c "grep '^CapEff:' /proc/self/status; $NFT --json list ruleset"
 run_case root_baseline sudo "$NFT" --json list ruleset
+
+CAP_ONLY_EFF="$(awk '/^CapEff:/ {print $2; exit}' "$TMP/cap_net_admin_only.stdout")"
+ROOT_NO_CAP_EFF="$(awk '/^CapEff:/ {print $2; exit}' "$TMP/root_without_cap_net_admin.stdout")"
+if [[ -z "$CAP_ONLY_EFF" || -z "$ROOT_NO_CAP_EFF" ]]; then
+  echo "ERROR: could not capture effective capability masks." >&2
+  exit 6
+fi
+echo
+echo "cap_net_admin_only_effective_mask=$CAP_ONLY_EFF"
+echo "root_without_cap_net_admin_effective_mask=$ROOT_NO_CAP_EFF"
+if (( 16#$CAP_ONLY_EFF != 0x1000 )); then
+  echo "ERROR: CAP_NET_ADMIN-only case did not run with exactly CAP_NET_ADMIN effective." >&2
+  exit 7
+fi
+if (( (16#$ROOT_NO_CAP_EFF & 0x1000) != 0 )); then
+  echo "ERROR: root-without-CAP_NET_ADMIN case still has CAP_NET_ADMIN effective." >&2
+  exit 8
+fi
 
 timeout 10s sudo "$NFT" --json list ruleset >"$TMP/after.json"
 BEFORE="$(sha256sum "$TMP/before.json" | awk '{print $1}')"
@@ -76,5 +95,5 @@ fi
 
 echo
 echo "B3_NFT_CAPABILITY_MATRIX=PASS"
-echo "Interpretation: compare unprivileged and CAP_NET_ADMIN-only exit codes above; root baseline succeeded; ruleset fingerprint stayed unchanged."
+echo "Interpretation: compare unprivileged and root-without-CAP_NET_ADMIN outcomes with CAP_NET_ADMIN-only and root baselines; ruleset fingerprint stayed unchanged."
 echo "No firewall rule, service, route, sysctl, or host configuration was intentionally changed."
