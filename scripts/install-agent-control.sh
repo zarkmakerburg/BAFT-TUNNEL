@@ -81,44 +81,75 @@ if [[ "$STAGING" == "0" ]]; then
       /usr/local/bin/baft-tunnel agent-token --out "$STATE/token" >/dev/null
   fi
   [[ "$(stat -c '%U %a' "$STATE/token")" == "$AGENT_USER 600" ]] || die "$STATE/token must be $AGENT_USER, mode 0600"
-  # Migrate the shared control directory safely: stop the agent and every root request watcher
-  # before changing the group. Never replay requests that may have been planted under the old
-  # root:baft-tunnel group; abort and require operator inspection if any are pending.
-  systemctl stop "baft-tunnel-agent@$INSTANCE.path" "baft-tunnel-agent@$INSTANCE.service" \
-    "${CTL_PATHS[@]}" >/dev/null 2>&1 || true
-  if systemctl is-active --quiet "baft-tunnel-agent@$INSTANCE.path" ||
-     systemctl is-active --quiet "baft-tunnel-agent@$INSTANCE.service"; then
-    die "agent path/service is still active; cannot safely migrate the control request directory"
+  CONTROL_DIR=/run/baft-tunnel/control
+  CONTROL_DIR_STATE="$(stat -c '%U:%G %a' "$CONTROL_DIR" 2>/dev/null || true)"
+  if [[ "$CONTROL_DIR_STATE" != "root:baft-tunnel-agent 770" ]]; then
+    # This is a one-time, host-wide migration because all instances share this directory.
+    # Do not change its group while any root request watcher/helper can still consume an old
+    # request. Stop every active watcher and agent, then restart the previously active units.
+    if [[ -n "$(systemctl list-units --type=service --state=active --no-legend --plain 'baft-tunnel-control-*@*.service' | awk '{print $1}')" ]]; then
+      die "a root control helper is active; retry registration after all helper operations finish"
+    fi
+    # The request group is a privilege boundary: it must not contain the tunnel account or
+    # any supplementary members. The agent receives it only as its primary group.
+    if [[ "$(id -gn "$AGENT_USER")" != "$AGENT_USER" ]] ||
+       [[ -n "$(getent group "$AGENT_USER" | awk -F: '{print $4}')" ]] ||
+       id -nG "$SERVICE_GROUP" | tr ' ' '\n' | grep -qx "$AGENT_USER"; then
+      die "group $AGENT_USER must be exclusive to the dedicated agent account"
+    fi
+    # Refuse known pending requests before taking any service offline.
+    for v in "${VERBS[@]}"; do
+      for request in "$CONTROL_DIR"/*."$v"; do
+        if [[ -e "$request" || -L "$request" ]]; then
+          die "pending control request exists at $request; inspect it as root before retrying registration"
+        fi
+      done
+    done
+    mapfile -t ACTIVE_CONTROL_PATHS < <(systemctl list-units --type=path --state=active --no-legend --plain 'baft-tunnel-control-*@*.path' | awk '{print $1}')
+    mapfile -t ACTIVE_AGENT_PATHS < <(systemctl list-units --type=path --state=active --no-legend --plain 'baft-tunnel-agent@*.path' | awk '{print $1}')
+    mapfile -t ACTIVE_AGENT_SERVICES < <(systemctl list-units --type=service --state=active --no-legend --plain 'baft-tunnel-agent@*.service' | awk '{print $1}')
+    # Stop path watchers first, then stop every agent that can create a request.
+    if (("${#ACTIVE_CONTROL_PATHS[@]}")); then
+      systemctl stop "${ACTIVE_CONTROL_PATHS[@]}" || die "could not stop all root control request watchers"
+    fi
+    if (("${#ACTIVE_AGENT_PATHS[@]}")); then
+      systemctl stop "${ACTIVE_AGENT_PATHS[@]}" || die "could not stop all agent path units"
+    fi
+    if (("${#ACTIVE_AGENT_SERVICES[@]}")); then
+      systemctl stop "${ACTIVE_AGENT_SERVICES[@]}" || die "could not stop all agent services"
+    fi
+    if [[ -n "$(systemctl list-units --type=path --state=active --no-legend --plain 'baft-tunnel-control-*@*.path' | awk '{print $1}')" ]] ||
+       [[ -n "$(systemctl list-units --type=service --state=active --no-legend --plain 'baft-tunnel-control-*@*.service' | awk '{print $1}')" ]]; then
+      die "root control units remain active; they and the agents remain stopped for inspection"
+    fi
+    # Recheck every instance after quiescing all writers/watchers; never replay old-group files.
+    for v in "${VERBS[@]}"; do
+      for request in "$CONTROL_DIR"/*."$v"; do
+        if [[ -e "$request" || -L "$request" ]]; then
+          die "pending control request appeared during migration; agents and watchers remain stopped for inspection"
+        fi
+      done
+    done
+    systemd-tmpfiles --create "$TMPF"
+    [[ "$(stat -c '%U:%G %a' "$CONTROL_DIR")" == "root:baft-tunnel-agent 770" ]] ||
+      die "control request directory must be root:baft-tunnel-agent mode 0770"
+    for v in "${VERBS[@]}"; do
+      for request in "$CONTROL_DIR"/*."$v"; do
+        if [[ -e "$request" || -L "$request" ]]; then
+          die "control request appeared during directory migration; agents and watchers remain stopped for inspection"
+        fi
+      done
+    done
+    systemctl daemon-reload
+    # Restore only units that were active before the migration; the current instance is
+    # enabled below regardless, preserving the installer's existing registration behavior.
+    if (("${#ACTIVE_CONTROL_PATHS[@]}")); then systemctl start "${ACTIVE_CONTROL_PATHS[@]}" || die "could not restore control path units"; fi
+    if (("${#ACTIVE_AGENT_PATHS[@]}")); then systemctl start "${ACTIVE_AGENT_PATHS[@]}" || die "could not restore agent path units"; fi
+    if (("${#ACTIVE_AGENT_SERVICES[@]}")); then systemctl start "${ACTIVE_AGENT_SERVICES[@]}" || die "could not restore agent services"; fi
+  else
+    systemd-tmpfiles --create "$TMPF"
+    systemctl daemon-reload
   fi
-  # The request group is a privilege boundary: it must not contain the tunnel account or
-  # any supplementary members. The agent receives it only as its primary group.
-  if [[ "$(id -gn "$AGENT_USER")" != "$AGENT_USER" ]] ||
-     [[ -n "$(getent group "$AGENT_USER" | awk -F: '{print $4}')" ]] ||
-     id -nG "$SERVICE_GROUP" | tr ' ' '\n' | grep -qx "$AGENT_USER"; then
-    die "group $AGENT_USER must be exclusive to the dedicated agent account"
-  fi
-  for v in "${VERBS[@]}"; do
-    unit="baft-tunnel-control-$v@$INSTANCE"
-    if systemctl is-active --quiet "$unit.path"; then
-      die "$unit.path is still active; cannot safely migrate the control request directory"
-    fi
-    if systemctl is-active --quiet "$unit.service"; then
-      die "$unit.service is still active; retry registration after it exits"
-    fi
-    request="/run/baft-tunnel/control/$INSTANCE.$v"
-    if [[ -e "$request" || -L "$request" ]]; then
-      die "pending control request exists at $request; inspect it as root before retrying registration"
-    fi
-  done
-  systemd-tmpfiles --create "$TMPF"
-  [[ "$(stat -c '%U:%G %a' /run/baft-tunnel/control)" == "root:baft-tunnel-agent 770" ]] ||
-    die "control request directory must be root:baft-tunnel-agent mode 0770"
-  for v in "${VERBS[@]}"; do
-    request="/run/baft-tunnel/control/$INSTANCE.$v"
-    if [[ -e "$request" || -L "$request" ]]; then
-      die "control request appeared during directory migration; request watchers remain stopped for inspection"
-    fi
-  done
   systemctl enable --now "${CTL_PATHS[@]}"
   # The agent starts now: in setup mode (panel pairing) until NAME.json exists, then normally.
   systemctl enable --now "baft-tunnel-agent@$INSTANCE.path"
