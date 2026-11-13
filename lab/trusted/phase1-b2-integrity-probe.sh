@@ -456,7 +456,8 @@ tunnel = d.get("tunnel") or {}
 tiers = tunnel.get("tiers", {})
 integrity = tiers.get("integrity", {})
 last = integrity.get("last_probe") or {}
-assert integrity.get("result") == "unknown", integrity
+# A persisted successful probe remains pass while it is inside the 60-second freshness window.
+assert integrity.get("result") == "pass", integrity
 assert last.get("result") == "pass" and last.get("source") == "in_product_probe" and last.get("timestamp", 0) > 0, last
 ' ; then break; fi
     fi

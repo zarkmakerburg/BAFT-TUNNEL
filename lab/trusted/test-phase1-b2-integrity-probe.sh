@@ -119,7 +119,8 @@ grep -F 'INTEGRITY_AUDIT_EVENTS_PASS' "$harness" >/dev/null
 grep -F 'ADR-0024 requires a request hash in audit v2' "$harness" >/dev/null
 grep -F 're.fullmatch(r"[0-9a-f]{64}"' "$harness" >/dev/null
 grep -F 'integrity_probe/tunnel/{}/peer/{}/direction/direct' "$harness" >/dev/null
-grep -F 'integrity.get("result") == "unknown"' "$harness" >/dev/null
+grep -F 'integrity.get("result") == "pass"' "$harness" >/dev/null
+grep -F 'persisted successful probe remains pass while it is inside the 60-second freshness window' "$harness" >/dev/null
 grep -F 'systemctl restart' "$harness" >/dev/null
 if grep -E "systemd-run --quiet --collect --unit=.*agent_unit" "$harness" >/dev/null; then
   echo 'Agent transient unit must remain restartable for the last-probe persistence check' >&2; exit 1
