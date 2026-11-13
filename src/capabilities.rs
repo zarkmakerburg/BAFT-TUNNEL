@@ -69,11 +69,11 @@ fn noise_tcp() -> Value {
     })
 }
 
-fn baft() -> Value {
+fn baft(guided_setup_available: bool) -> Value {
     json!({
         "id": "baft",
         "status": "preview",
-        "guided_setup": {"available": false, "reason": "setup cannot create a baft configuration yet (ADR-0019 phase F)"},
+        "guided_setup": if guided_setup_available { json!({"available": true}) } else { json!({"available": false, "reason": "a verified BAFT Engine Store release is not installed"}) },
         "directions": ["direct"],
         "reverse": {"state": "unavailable", "reason": "engine-has-no-reverse; its LAB reverse case only swaps which host dials"},
         "security": "BAFT h2 mutual TLS carrier (separate Go engine host, pinned release digest)",
@@ -82,12 +82,12 @@ fn baft() -> Value {
         "network": {"ipv4": "supported", "ipv6": "unknown", "dns": "unknown"},
         "identity": {
             "kind": "x509",
-            "requires_ca": "unknown",
-            "requires_crl": "unknown",
-            "sni": "unknown",
-            "san": "unknown",
-            "peer_pinning": "unknown",
-            "certificate_validation": "unknown"
+            "requires_ca": true,
+            "requires_crl": true,
+            "sni": "required",
+            "san": "exactly-one-urn-baft-node-uri",
+            "peer_pinning": false,
+            "certificate_validation": "offline-ca-chain-and-mandatory-crl"
         },
         "limits": {
             "traffic_counters": "unknown",
@@ -170,13 +170,19 @@ fn runtime_limits() -> Value {
 
 /// The `/v1/engines` document. Legacy keys (`id`, `status`, `directions`, `security`) are kept.
 pub fn catalog() -> Value {
+    let store = std::path::Path::new(crate::engine_store::DEFAULT_STORE_PATH);
+    let available = crate::engine_store::current_sha256(store, "baft").is_ok();
+    catalog_with_baft_setup(available)
+}
+
+fn catalog_with_baft_setup(guided_setup_available: bool) -> Value {
     json!({
         "contract_version": CONTRACT_VERSION,
         "agent_version": env!("CARGO_PKG_VERSION"),
         "platform": {"os": std::env::consts::OS, "arch": std::env::consts::ARCH},
         "direction_model": direction_model(),
         "runtime": runtime_limits(),
-        "engines": [tcp_tls(), noise_tcp(), baft()]
+        "engines": [tcp_tls(), noise_tcp(), baft(guided_setup_available)]
     })
 }
 
@@ -232,10 +238,21 @@ mod tests {
         assert_eq!(baft["reverse"]["state"], "unavailable");
         assert_eq!(baft["limits"]["traffic_counters"], "unknown");
         assert_eq!(baft["limits"]["end_to_end_status"], "unknown");
+        assert_eq!(baft["identity"]["requires_ca"], true);
+        assert_eq!(baft["identity"]["requires_crl"], true);
+        assert_eq!(baft["identity"]["sni"], "required");
+        assert_eq!(baft["identity"]["peer_pinning"], false);
         assert!(supports_direction("baft", "direct"));
         assert!(!supports_direction("baft", "reverse"));
         // Shown but not selectable in the Wizard until setup can write its config.
-        assert_eq!(baft["guided_setup"]["available"], false);
+        assert_eq!(
+            catalog_with_baft_setup(false)["engines"][2]["guided_setup"]["available"],
+            false
+        );
+        assert_eq!(
+            catalog_with_baft_setup(true)["engines"][2]["guided_setup"]["available"],
+            true
+        );
         for e in engines.iter().filter(|e| e["id"] != "baft") {
             assert_eq!(e["guided_setup"]["available"], true);
         }

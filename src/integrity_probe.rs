@@ -33,6 +33,7 @@ const REQUEST_MAGIC: &[u8; 4] = b"BTP2";
 const RESPONSE_MAGIC: &[u8; 4] = b"BTR2";
 
 /// A typed probe failure. A result is classified from this kind, never from message text.
+#[allow(dead_code)] // Stable public classification surface; some variants are platform-gated.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProbeFailure {
     IntegrityMismatch,
@@ -44,6 +45,7 @@ pub enum ProbeFailure {
     Timeout,
 }
 
+#[allow(dead_code)] // Stable classification helpers are consumed by platform-specific control code.
 impl ProbeFailure {
     /// The stable reason code exposed on the local control socket.
     pub fn reason(self) -> &'static str {

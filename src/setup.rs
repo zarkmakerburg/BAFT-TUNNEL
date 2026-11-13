@@ -88,16 +88,26 @@ fn check_port(value: u16, what: &str) -> Result<()> {
 }
 
 pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
+    let engine_digest = if req.engine == EngineKind::Baft {
+        Some(
+            crate::engine_store::current_sha256(
+                Path::new(crate::engine_store::DEFAULT_STORE_PATH),
+                "baft",
+            )
+            .context("BAFT guided setup requires a verified installed Engine Store release")?,
+        )
+    } else {
+        None
+    };
+    plan_with_engine_digest(req, engine_digest.as_deref())
+}
+
+fn plan_with_engine_digest(req: &PlanRequest, engine_digest: Option<&str>) -> Result<SetupPlan> {
     if ![PROTOCOL_V1, PROTOCOL_V2].contains(&req.protocol_version) {
         bail!("protocol version must be 1 or 2");
     }
     if req.engine == EngineKind::Baft && req.protocol_version == PROTOCOL_V2 {
         bail!("protocol v2 is not supported by the external BAFT engine");
-    }
-    if req.engine == EngineKind::Baft {
-        bail!(
-            "baft is a Preview engine, Direct only: this setup cannot create its configuration yet (ADR-0019 phase F); it is installed from the signed Engine Store path"
-        );
     }
     validate_identity(&req.node_id)?;
     validate_identity(&req.peer_id)?;
@@ -126,12 +136,18 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
     if reverse && req.engine == EngineKind::Baft {
         bail!("the baft engine does not support reverse");
     }
+    if req.engine == EngineKind::Baft && req.protocol_version != PROTOCOL_V1 {
+        bail!("the baft engine supports protocol v1 only");
+    }
     match (req.engine, req.role, req.server_name.as_deref()) {
-        (EngineKind::TcpTls, Role::Forward, Some(name)) => validate_identity(name)?,
-        (EngineKind::TcpTls, Role::Forward, None) => {
-            bail!("tcp-tls with role forward requires a server name")
+        (EngineKind::TcpTls | EngineKind::Baft, Role::Forward, Some(name)) => {
+            validate_identity(name)?
         }
-        (_, _, Some(_)) => bail!("server name is only used by tcp-tls with role forward"),
+        (EngineKind::TcpTls, Role::Forward, None) => {
+            bail!("tcp-tls with role forward requires the serving peer's server name")
+        }
+        (EngineKind::Baft, Role::Forward, None) => {}
+        (_, _, Some(_)) => bail!("server name is only used by TLS engines with role forward"),
         _ => {}
     }
 
@@ -196,6 +212,8 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
             map.insert("remote".into(), json!(remote));
             if let Some(name) = &req.server_name {
                 map.insert("server_name".into(), json!(name));
+            } else if req.engine == EngineKind::Baft {
+                map.insert("server_name".into(), json!("pending"));
             }
         }
     }
@@ -207,7 +225,32 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
     }];
     let mut pending = Vec::new();
     match req.engine {
-        EngineKind::Baft => unreachable!("plan() rejects engine baft before this point"),
+        EngineKind::Baft => {
+            let store = PathBuf::from(crate::engine_store::DEFAULT_STORE_PATH);
+            let digest = engine_digest
+                .context("BAFT guided setup requires a verified installed Engine Store release")?;
+            map.insert("key".into(), json!(text("node.key")));
+            map.insert("baft".into(), json!({"store": store, "sha256": digest}));
+            map.insert("ca".into(), json!(text("ca.crt")));
+            map.insert("crl".into(), json!(text("ca.crl")));
+            map.insert("cert".into(), json!(text("node.crt")));
+            for (name, mode, note) in [
+                ("ca.crt", "0644", "trusted CA certificate"),
+                ("ca.crl", "0644", "current certificate revocation list"),
+                ("node.crt", "0644", "this node's BAFT identity certificate"),
+                ("node.key", "0600", "this node's private key"),
+            ] {
+                files.push(PlannedFile {
+                    path: path(name),
+                    mode,
+                    note,
+                });
+            }
+            pending.push("peer certificate identity and verified Engine Store digest");
+            if req.role == Role::Forward && req.server_name.is_none() {
+                pending.push("serving peer SNI (read from the peer pairing bundle)");
+            }
+        }
         EngineKind::NoiseTcp => {
             map.insert("key".into(), json!(text("node.noise")));
             map.insert("noise_peer_public".into(), json!(PEER_KEY_PLACEHOLDER));
@@ -312,11 +355,22 @@ pub struct Bundle {
     pub peer_id: String,
     pub service_port: u16,
     pub tunnel_port: u16,
-    /// Noise public key, or the SHA-256 pin of the node certificate for tcp-tls.
+    /// Noise public key or TLS certificate SHA-256 fingerprint. For BAFT v2 this is
+    /// informational pairing evidence only; it is never configured as a peer certificate pin.
     pub public: String,
     /// tcp-tls serve nodes: the name the forwarding peer must verify.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_name: Option<String>,
+    /// BAFT peers must install the same verified external engine artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_sha256: Option<String>,
+}
+
+pub fn valid_bundle_version(version: u8, engine: &str) -> bool {
+    matches!(
+        (version, engine),
+        (1, "tcp-tls" | "noise-tcp") | (2, "baft")
+    )
 }
 
 impl Bundle {
@@ -359,6 +413,8 @@ struct State {
     tunnel_port: u16,
     peer_host: Option<String>,
     own_public: String,
+    #[serde(default)]
+    engine_sha256: Option<String>,
     #[serde(default = "default_config_file")]
     config_file: String,
 }
@@ -385,11 +441,22 @@ pub struct InitResult {
 /// the setup directory (`node.key`, `node.crt`, `ca.crt`, `ca.crl` from `baft-pki.sh`).
 pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> {
     let mut checked = req.clone();
-    let tls = req.engine == EngineKind::TcpTls;
+    let tls = matches!(req.engine, EngineKind::TcpTls | EngineKind::Baft);
     if tls && req.role == Role::Forward && checked.server_name.is_none() {
         checked.server_name = Some("pending".into()); // learned from the peer bundle at join
     }
-    plan(&checked)?; // full request validation, no side effects
+    let engine_digest = if req.engine == EngineKind::Baft {
+        Some(
+            crate::engine_store::current_sha256(
+                Path::new(crate::engine_store::DEFAULT_STORE_PATH),
+                "baft",
+            )
+            .context("BAFT setup requires a verified current Engine Store release")?,
+        )
+    } else {
+        None
+    };
+    plan_with_engine_digest(&checked, engine_digest.as_deref())?; // full request validation, no side effects
     let dir = &req.dir;
     let config_file = config_file_name(req.instance.as_deref())?;
     for name in [config_file.as_str(), STATE_FILE] {
@@ -408,7 +475,15 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
         );
     }
     let (public, server_name) = if tls {
-        tls_material(dir, &req.node_id)?
+        tls_material(
+            dir,
+            &req.node_id,
+            if req.engine == EngineKind::Baft {
+                crate::tls::CertificateProfile::Baft
+            } else {
+                crate::tls::CertificateProfile::TcpTls
+            },
+        )?
     } else {
         if dir.join(KEY_FILE).exists() {
             bail!(
@@ -430,7 +505,7 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
     };
     let engine = engine_name(req.engine);
     let bundle = Bundle {
-        version: 1,
+        version: if req.engine == EngineKind::Baft { 2 } else { 1 },
         tunnel_id: req.tunnel_id.clone(),
         engine: engine.into(),
         direction: req.direction.as_str().into(),
@@ -441,12 +516,22 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
         service_port: req.service_port,
         tunnel_port: req.tunnel_port,
         public: public.clone(),
+        engine_sha256: engine_digest.clone(),
         server_name: if req.role == Role::Serve {
             server_name
         } else {
             None
         },
     };
+    if let Some(expected) = engine_digest.as_deref() {
+        let current = crate::engine_store::current_sha256(
+            Path::new(crate::engine_store::DEFAULT_STORE_PATH),
+            "baft",
+        )?;
+        if current != expected {
+            bail!("BAFT Engine Store changed during setup init; no pairing state was written");
+        }
+    }
     let state = State {
         engine: engine.into(),
         direction: req.direction.as_str().into(),
@@ -459,6 +544,7 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
         tunnel_port: req.tunnel_port,
         peer_host: req.peer_host.clone(),
         own_public: public,
+        engine_sha256: engine_digest,
         config_file: config_file.clone(),
     };
     write_new(
@@ -550,6 +636,14 @@ pub fn adopt_for_service(dir: &Path, config_file: &str) -> Result<Vec<String>> {
     Ok(done)
 }
 
+fn should_pin_peer_certificate(engine: EngineKind) -> bool {
+    match engine {
+        EngineKind::TcpTls => true,
+        EngineKind::Baft => false,
+        EngineKind::NoiseTcp => false,
+    }
+}
+
 fn engine_name(engine: EngineKind) -> &'static str {
     match engine {
         EngineKind::TcpTls => "tcp-tls",
@@ -561,8 +655,12 @@ fn engine_name(engine: EngineKind) -> &'static str {
 /// Seconds of CRL validity setup requires; shorter fails closed before the runtime would warn.
 const MIN_CRL_SECONDS: i64 = 24 * 3600;
 
-/// Check existing offline-PKI output and return this node's certificate pin and server name.
-fn tls_material(dir: &Path, node_id: &str) -> Result<(String, Option<String>)> {
+/// Check existing offline-PKI output and return this node's certificate fingerprint and server name.
+fn tls_material(
+    dir: &Path,
+    node_id: &str,
+    profile: crate::tls::CertificateProfile,
+) -> Result<(String, Option<String>)> {
     use std::os::unix::fs::PermissionsExt;
     if !dir.is_dir() {
         bail!(
@@ -608,7 +706,28 @@ fn tls_material(dir: &Path, node_id: &str) -> Result<(String, Option<String>)> {
     if remaining < MIN_CRL_SECONDS {
         bail!("CRL has under 24 hours left (or is expired); issue a fresh CRL first");
     }
-    crate::tls::node_certificate_summary(&cert, node_id)
+    let summary = crate::tls::node_certificate_summary_for_profile(&cert, node_id, profile)?;
+    let server_name = summary
+        .1
+        .as_deref()
+        .context("node certificate has no DNS or IP server SAN")?;
+    let expected_san = if server_name.parse::<std::net::IpAddr>().is_ok() {
+        format!("IP:{server_name}")
+    } else {
+        format!("DNS:{server_name}")
+    };
+    if profile == crate::tls::CertificateProfile::Baft
+        && expected_san != format!("DNS:{node_id}.baft-tunnel.invalid")
+    {
+        bail!("BAFT certificate DNS SAN must match the listener SNI {node_id}.baft-tunnel.invalid");
+    }
+    // `server_config` above checks key correspondence and parses the material. Also verify
+    // both EKUs, CA chain, current validity and CRL revocation for the local leaf, then apply
+    // the same exact-one URI/SAN policy used by the certificate-install path. This prevents
+    // setup init from bypassing profile checks when an operator copied files manually.
+    crate::tls::validate_local_identity_profile(&ca, &crl, &cert, node_id, &expected_san, profile)
+        .context("node certificate chain, EKU, CRL or identity profile verification failed")?;
+    Ok(summary)
 }
 
 /// Verify the peer's bundle against this node's saved state and write the final config.
@@ -633,12 +752,25 @@ pub fn join(dir: &Path, bundle_path: &Path, checksum: &str) -> Result<PathBuf> {
     if !same_checksum(checksum, &bundle.checksum()) {
         bail!("bundle checksum does not match the value you provided; do not continue");
     }
-    if bundle.version != 1 {
-        bail!("unsupported bundle version");
+    if !valid_bundle_version(bundle.version, &bundle.engine) {
+        bail!("pairing bundle version does not match its engine profile");
     }
     let mismatch = |what: &str| anyhow::anyhow!("bundle {what} does not match this node's setup");
     if bundle.engine != state.engine {
         return Err(mismatch("engine"));
+    }
+    if bundle.engine_sha256 != state.engine_sha256 {
+        return Err(mismatch("verified engine artifact SHA-256"));
+    }
+    if state.engine == "baft" {
+        let current = crate::engine_store::current_sha256(
+            Path::new(crate::engine_store::DEFAULT_STORE_PATH),
+            "baft",
+        )
+        .context("the local BAFT Engine Store is no longer verifiable")?;
+        if state.engine_sha256.as_deref() != Some(current.as_str()) {
+            bail!("the local BAFT Engine Store changed since init; refuse to write final config");
+        }
     }
     if bundle.direction != state.direction {
         return Err(mismatch("direction"));
@@ -672,12 +804,14 @@ pub fn join(dir: &Path, bundle_path: &Path, checksum: &str) -> Result<PathBuf> {
     if bundle.public == state.own_public {
         bail!("bundle carries this node's own public key");
     }
-    let engine = if state.engine == "tcp-tls" {
-        EngineKind::TcpTls
-    } else {
-        EngineKind::NoiseTcp
+    let engine = match state.engine.as_str() {
+        "tcp-tls" => EngineKind::TcpTls,
+        "baft" => EngineKind::Baft,
+        _ => EngineKind::NoiseTcp,
     };
-    let server_name = if engine == EngineKind::TcpTls && state.role == Role::Forward {
+    let server_name = if matches!(engine, EngineKind::TcpTls | EngineKind::Baft)
+        && state.role == Role::Forward
+    {
         Some(bundle.server_name.clone().context(
             "the serving node's bundle has no server name (its certificate needs a DNS or IPv4 SAN)",
         )?)
@@ -704,17 +838,25 @@ pub fn join(dir: &Path, bundle_path: &Path, checksum: &str) -> Result<PathBuf> {
         instance: None,
     };
     let mut config = plan(&req)?.config;
-    let key = if engine == EngineKind::TcpTls {
-        "peer_fingerprint"
-    } else {
-        "noise_peer_public"
-    };
-    config[key] = json!(bundle.public);
+    if should_pin_peer_certificate(engine) {
+        config["peer_fingerprint"] = json!(bundle.public);
+    } else if engine == EngineKind::NoiseTcp {
+        config["noise_peer_public"] = json!(bundle.public);
+    }
     let runtime: crate::config::RuntimeConfig =
         serde_json::from_value(config.clone()).context("final configuration is invalid")?;
     runtime
         .validate()
         .context("final configuration failed validation")?;
+    if engine == EngineKind::Baft {
+        let current = crate::engine_store::current_sha256(
+            Path::new(crate::engine_store::DEFAULT_STORE_PATH),
+            "baft",
+        )?;
+        if state.engine_sha256.as_deref() != Some(current.as_str()) {
+            bail!("the BAFT Engine Store changed during pairing; refuse to write final config");
+        }
+    }
     write_new(&config_path, 0o640, &serde_json::to_vec_pretty(&config)?)?;
     Ok(config_path)
 }
@@ -765,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn protocol_v2_is_written_to_the_plan_for_supported_engines_and_external_baft_rejects_it() {
+    fn baft_setup_is_direct_only_v1_and_requires_a_verified_engine_digest() {
         for engine in [EngineKind::NoiseTcp, EngineKind::TcpTls] {
             let mut req = request(engine, Role::Forward);
             req.protocol_version = PROTOCOL_V2;
@@ -776,7 +918,24 @@ mod tests {
 
         let mut external_baft = request(EngineKind::Baft, Role::Forward);
         external_baft.protocol_version = PROTOCOL_V2;
-        assert!(plan(&external_baft).is_err());
+        assert!(plan_with_engine_digest(&external_baft, Some(&"a".repeat(64))).is_err());
+
+        for role in [Role::Serve, Role::Forward] {
+            let req = request(EngineKind::Baft, role);
+            let planned = plan_with_engine_digest(&req, Some(&"b".repeat(64))).unwrap();
+            assert_eq!(planned.config["engine"], "baft");
+            assert_eq!(planned.config["baft"]["sha256"], "b".repeat(64));
+            assert_eq!(
+                planned.config["baft"]["store"],
+                crate::engine_store::DEFAULT_STORE_PATH
+            );
+            parses_as_runtime_config(&planned);
+        }
+        let reverse = PlanRequest {
+            direction: ConnectionDirection::Reverse,
+            ..request(EngineKind::Baft, Role::Serve)
+        };
+        assert!(plan_with_engine_digest(&reverse, Some(&"b".repeat(64))).is_err());
     }
 
     #[test]
@@ -1084,6 +1243,23 @@ mod tests {
     }
 
     #[test]
+    fn certificate_pin_is_only_added_for_tcp_tls() {
+        assert!(should_pin_peer_certificate(EngineKind::TcpTls));
+        assert!(!should_pin_peer_certificate(EngineKind::Baft));
+        assert!(!should_pin_peer_certificate(EngineKind::NoiseTcp));
+    }
+
+    #[test]
+    fn pairing_bundle_versions_are_bound_to_engine_profiles() {
+        assert!(valid_bundle_version(1, "tcp-tls"));
+        assert!(valid_bundle_version(1, "noise-tcp"));
+        assert!(valid_bundle_version(2, "baft"));
+        assert!(!valid_bundle_version(1, "baft"));
+        assert!(!valid_bundle_version(2, "tcp-tls"));
+        assert!(!valid_bundle_version(2, "noise-tcp"));
+    }
+
+    #[test]
     fn checksum_comparison_ignores_case_and_separators_only() {
         let root = temp("sum");
         let (_sd, _fd, sb, _fb, sc, _fc) = paired(&root);
@@ -1110,7 +1286,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (cert, key) = crate::tls::tests::leaf(
             &dir,
-            &format!("{node}-gen"),
+            node,
             &format!("urn:baft-tunnel:node:{node}"),
             &ca.issuer,
         );

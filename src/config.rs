@@ -715,24 +715,16 @@ pub(crate) fn private_key_path(key: Option<&Path>, credential_id: Option<&str>) 
 fn validate_baft(
     paths: &[&PathBuf],
     peer_fingerprint: &str,
-    is_dialer: bool,
+    _is_dialer: bool,
     noise_peer_public: Option<&str>,
     baft: Option<&BaftSettings>,
 ) -> Result<()> {
     require_tls_paths(paths)?;
     reject_noise_fields(noise_peer_public)?;
     if !peer_fingerprint.is_empty() {
-        if !is_dialer {
-            bail!(
-                "peer_fingerprint is not used by a baft listener (it admits clients by CA, identity allowlist and revocation)"
-            );
-        }
-        if peer_fingerprint.contains(',') {
-            bail!(
-                "the baft engine pins exactly one listener certificate; a rollover list is not supported"
-            );
-        }
-        validate_fingerprint(peer_fingerprint)?;
+        bail!(
+            "peer_fingerprint is not supported by the baft engine; peers are authorized by CA trust, exact URI identity and revocation"
+        );
     }
     let settings = baft.context("engine baft requires a baft {binary, sha256} section")?;
     if !settings.binary.is_absolute() {
@@ -754,7 +746,7 @@ fn security_description(engine: EngineKind) -> &'static str {
             "Noise IK (X25519/ChaChaPoly/BLAKE2s) + pinned peer static key, no certificates"
         }
         EngineKind::Baft => {
-            "BAFT/1 over HTTP/2 + TLS 1.3 mutual auth + URI identity allowlist + revocation on both sides + optional single listener certificate pin, separate Go process"
+            "BAFT/1 over HTTP/2 + TLS 1.3 mutual auth + CA trust + exact URI identity allowlist + revocation on both sides, separate Go process"
         }
     }
 }

@@ -74,7 +74,15 @@ jobs:
           set -euo pipefail
           name="baft-tunnel-${TAG}-linux-x86_64"
           root="$RUNNER_TEMP/pkg/$name"
-          mkdir -p "$root/scripts/pki"
+          mkdir -p "$root/scripts/pki" "$root/engines/licenses" "$root/release"
+          # Bundle the exact pinned engine only after the reproducible build matches the manifest.
+          scripts/build-baft-engine.sh "$RUNNER_TEMP/baft-out" >/dev/null
+          want="$(python3 -c 'import json;m=json.load(open("release/engine-manifest.json"));print([e for e in m["engines"] if e["id"]=="baft"][0]["artifact_sha256"])')"
+          have="$(sha256sum "$RUNNER_TEMP/baft-out/baft" | cut -d' ' -f1)"
+          [ "$want" = "$have" ] || { echo "::error::engine build $have differs from engine-manifest.json $want"; exit 1; }
+          install -m 0755 "$RUNNER_TEMP/baft-out/baft" "$root/engines/baft"
+          cp -R "$RUNNER_TEMP/baft-out/licenses/." "$root/engines/licenses/"
+          install -m 0644 release/engine-manifest.json "$root/release/engine-manifest.json"
           install -m 0755 target/release/baft-tunnel "$root/baft-tunnel"
           # Same allowlist install.sh copies to /usr/local/lib/baft-tunnel: no tests or dev tooling.
           for f in scripts/*.sh scripts/pki/*.sh; do
@@ -93,6 +101,8 @@ jobs:
           bash "$x/$name/scripts/install.sh" --binary "$x/$name/baft-tunnel" \
             --destdir "$x/root" --systemd-version 249 >/dev/null
           cmp "$x/root/usr/local/bin/baft-tunnel" target/release/baft-tunnel
+          "$x/root/usr/local/bin/baft-tunnel" engine verify --store "$x/root/usr/local/lib/baft-tunnel/engine-store" --id baft
+          test -f "$x/root/usr/local/lib/baft-tunnel/engine-store/baft/current/licenses/LICENSE"
           for f in scripts/install.sh scripts/menu.sh scripts/uninstall.sh scripts/install-agent-control.sh scripts/quick-install.sh \
                    scripts/pki/baft-pki.sh scripts/pki/push-crl.sh systemd/baft-tunnel@.service; do
             test -f "$x/root/usr/local/lib/baft-tunnel/$f" || { echo "::error::package install lacks $f"; exit 1; }
@@ -104,7 +114,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="$TAG"
-          scripts/build-baft-engine.sh "$RUNNER_TEMP/baft-out" >/dev/null
+          test -x "$RUNNER_TEMP/baft-out/baft"
           want="$(python3 -c 'import json;m=json.load(open("release/engine-manifest.json"));print([e for e in m["engines"] if e["id"]=="baft"][0]["artifact_sha256"])')"
           have="$(sha256sum "$RUNNER_TEMP/baft-out/baft" | cut -d' ' -f1)"
           [ "$want" = "$have" ] || { echo "::error::engine build $have differs from engine-manifest.json $want"; exit 1; }

@@ -22,6 +22,20 @@ use std::path::{Path, PathBuf};
 
 const PLATFORM: &str = "linux-amd64";
 
+/// Canonical root-owned store path used by installer, setup and runtime availability checks.
+pub const DEFAULT_STORE_PATH: &str = "/usr/local/lib/baft-tunnel/engine-store";
+
+/// Return the verified SHA-256 of the active engine release, or fail closed.
+pub fn current_sha256(store: &Path, id: &str) -> Result<String> {
+    let dir = engine_dir(store, id)?;
+    let sha = read_link_name(&dir.join("current")).context("no current engine installed")?;
+    verify_release(&dir, id, &sha)?;
+    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("current engine release name is not a SHA-256 digest");
+    }
+    Ok(sha.to_ascii_lowercase())
+}
+
 fn engine_dir(store: &Path, id: &str) -> Result<PathBuf> {
     if id.is_empty()
         || id.len() > 32
@@ -227,6 +241,23 @@ mod tests {
         // ...and verifying a tampered current fails too.
         fs::write(dir.join("releases").join(&sha2).join("engine"), b"tampered").unwrap();
         assert!(verify_current(&store, "demo").is_err());
+    }
+
+    #[test]
+    fn current_sha256_fails_closed_when_no_current_release_exists() {
+        let t = Tmp::new();
+        assert!(current_sha256(&t.0, "baft").is_err());
+        assert!(current_sha256(&t.0, "../baft").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn broken_current_symlink_fails_closed() {
+        let t = Tmp::new();
+        let engine = t.0.join("baft");
+        fs::create_dir_all(&engine).unwrap();
+        symlink("releases/missing", engine.join("current")).unwrap();
+        assert!(current_sha256(&t.0, "baft").is_err());
     }
 
     #[test]

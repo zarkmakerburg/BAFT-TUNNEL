@@ -969,7 +969,7 @@ mod tests {
                 .validate()
                 .is_err()
         );
-        // a dialer may pin exactly one listener certificate; a listener cannot pin clients
+        // Pins are refused on both roles; BAFT uses CA trust, exact URI identity and CRL.
         let forward = |fingerprint: &str| -> RuntimeConfig {
             serde_json::from_value(json!({
                 "mode": "forward", "listen": "127.0.0.1:1443", "remote": "198.51.100.10:8443",
@@ -981,20 +981,14 @@ mod tests {
             }))
             .unwrap()
         };
-        // These paths do not exist, so validation stops at the key/TLS material check; the
-        // pin rules run before it and are what these assertions pin down.
         let message = |cfg: RuntimeConfig| format!("{:#}", cfg.validate().unwrap_err());
-        assert!(!message(forward(&"ab".repeat(32))).contains("pin"));
-        assert!(
-            message(forward(&format!("{},{}", "ab".repeat(32), "cd".repeat(32))))
-                .contains("exactly one")
-        );
-        assert!(message(forward("zz")).contains("SHA-256"));
+        assert!(message(forward(&"ab".repeat(32))).contains("peer_fingerprint is not supported"));
+        assert!(message(forward("zz")).contains("peer_fingerprint is not supported"));
         assert!(
             message(base(
                 json!({"baft": good_baft, "peer_fingerprint": "ab".repeat(32)})
             ))
-            .contains("listener")
+            .contains("peer_fingerprint is not supported")
         );
         // unknown field inside baft is refused
         assert!(

@@ -12,6 +12,28 @@ use rustls::{
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use zeroize::Zeroizing;
 
+use serde::{Deserialize, Serialize};
+
+/// Certificate identity namespace selected by the tunnel engine.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CertificateProfile {
+    /// Rust-native TLS engines retain their historical identity namespace.
+    #[default]
+    TcpTls,
+    /// The external BAFT engine requires its own URI identity namespace.
+    Baft,
+}
+
+impl CertificateProfile {
+    pub fn uri_prefix(self) -> &'static str {
+        match self {
+            Self::TcpTls => "urn:baft-tunnel:node:",
+            Self::Baft => "urn:baft:node:",
+        }
+    }
+}
+
 fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
     let file =
         File::open(path).with_context(|| format!("open certificate file {}", path.display()))?;
@@ -105,6 +127,25 @@ pub(crate) fn verify_local_certificate(
     client_verifier
         .verify_client_cert(leaf, intermediates, UnixTime::now())
         .context("leaf certificate failed TLS client-auth, chain, validity or CRL verification")?;
+    Ok(())
+}
+
+/// Verify local mTLS chain/revocation and the exact node identity/SAN policy for setup init.
+pub(crate) fn validate_local_identity_profile(
+    ca: &Path,
+    crl: &Path,
+    cert: &Path,
+    node_id: &str,
+    expected_server_san: &str,
+    profile: CertificateProfile,
+) -> Result<()> {
+    verify_local_certificate(ca, crl, cert, expected_server_san)?;
+    let chain = certificates(cert)?;
+    let leaf = chain
+        .first()
+        .context("certificate file contains no leaf certificate")?;
+    crate::pki_helper::validate_leaf_policy(leaf.as_ref(), node_id, expected_server_san, profile)
+        .context("node certificate does not satisfy the selected identity profile")?;
     Ok(())
 }
 
@@ -311,12 +352,25 @@ pub fn server_config(ca: &Path, crl: &Path, cert: &Path, key: &Path) -> Result<T
 }
 
 /// Setup helper: after checking the node identity URI SAN against `node_id`, return the
-/// certificate's SHA-256 pin (hex) and its first DNS or IPv4 server name, if any.
+/// certificate's SHA-256 fingerprint (hex) and its first DNS or IPv4 server name, if any.
+#[allow(dead_code)] // Legacy TCP-TLS wrapper; profile-aware callers use the explicit variant.
 pub fn node_certificate_summary(cert: &Path, node_id: &str) -> Result<(String, Option<String>)> {
+    node_certificate_summary_for_profile(cert, node_id, CertificateProfile::TcpTls)
+}
+
+pub fn node_certificate_summary_for_profile(
+    cert: &Path,
+    node_id: &str,
+    profile: CertificateProfile,
+) -> Result<(String, Option<String>)> {
     use sha2::{Digest, Sha256};
     use x509_parser::extensions::GeneralName;
     let certs = certificates(cert)?;
-    crate::handshake::verify_peer_identity(Some(&certs), node_id)?;
+    crate::handshake::verify_peer_identity_with_prefix(
+        Some(&certs),
+        node_id,
+        profile.uri_prefix(),
+    )?;
     let leaf = certs
         .first()
         .context("certificate file contains no certificates")?;
@@ -328,11 +382,32 @@ pub fn node_certificate_summary(cert: &Path, node_id: &str) -> Result<(String, O
         .subject_alternative_name()
         .context("parse subject alternative name")?
     {
+        let expected_baft_name = format!("{node_id}.baft-tunnel.invalid");
+        let mut uri_count = 0usize;
+        let mut server_name_count = 0usize;
         for entry in &san.value.general_names {
             match entry {
-                GeneralName::DNSName(dns) => {
+                GeneralName::URI(uri) if profile == CertificateProfile::Baft => {
+                    uri_count += 1;
+                    if *uri != format!("{}{}", profile.uri_prefix(), node_id) {
+                        bail!("BAFT certificate contains an unexpected URI SAN");
+                    }
+                }
+                GeneralName::DNSName(dns) if profile == CertificateProfile::Baft => {
+                    server_name_count += 1;
+                    if *dns != expected_baft_name {
+                        bail!("BAFT certificate DNS SAN must be exactly {expected_baft_name}");
+                    }
                     name = Some((*dns).to_owned());
-                    break;
+                }
+                GeneralName::DNSName(dns) => {
+                    name.get_or_insert_with(|| (*dns).to_owned());
+                }
+                GeneralName::IPAddress(bytes) if profile == CertificateProfile::Baft => {
+                    bail!(
+                        "BAFT certificate requires the derived DNS SAN, not an IP SAN ({} bytes)",
+                        bytes.len()
+                    );
                 }
                 GeneralName::IPAddress(bytes) if bytes.len() == 4 && name.is_none() => {
                     name = Some(format!(
@@ -340,8 +415,22 @@ pub fn node_certificate_summary(cert: &Path, node_id: &str) -> Result<(String, O
                         bytes[0], bytes[1], bytes[2], bytes[3]
                     ));
                 }
+                GeneralName::URI(_) if profile == CertificateProfile::TcpTls => {}
+                _ if profile == CertificateProfile::Baft => {
+                    bail!("BAFT certificate contains an unsupported SAN entry");
+                }
                 _ => {}
             }
+        }
+        if profile == CertificateProfile::Baft {
+            ensure!(
+                uri_count == 1,
+                "BAFT certificate must contain exactly one node URI SAN"
+            );
+            ensure!(
+                server_name_count == 1,
+                "BAFT certificate must contain exactly one DNS SAN"
+            );
         }
     }
     Ok((pin, name))
@@ -369,6 +458,61 @@ pub(crate) mod tests {
         time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
     };
     use tokio::{io::duplex, time::timeout};
+
+    #[test]
+    fn baft_certificate_summary_requires_one_exact_uri_and_derived_dns_san() {
+        let directory = std::env::temp_dir().join(format!(
+            "baft-profile-summary-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let make = |dns_names: Vec<String>| {
+            let mut params = CertificateParams::new(dns_names).unwrap();
+            params
+                .distinguished_name
+                .push(rcgen::DnType::CommonName, "node-1");
+            params.subject_alt_names.push(SanType::URI(
+                Ia5String::try_from("urn:baft:node:node-1").unwrap(),
+            ));
+            let key = KeyPair::generate().unwrap();
+            params.self_signed(&key).unwrap().pem()
+        };
+        let valid = directory.join("valid.pem");
+        fs::write(&valid, make(vec!["node-1.baft-tunnel.invalid".into()])).unwrap();
+        let summary =
+            node_certificate_summary_for_profile(&valid, "node-1", CertificateProfile::Baft)
+                .unwrap();
+        assert_eq!(summary.1.as_deref(), Some("node-1.baft-tunnel.invalid"));
+        assert!(
+            node_certificate_summary_for_profile(&valid, "node-1", CertificateProfile::TcpTls,)
+                .is_err()
+        );
+
+        let wrong_dns = directory.join("wrong-dns.pem");
+        fs::write(&wrong_dns, make(vec!["other.baft-tunnel.invalid".into()])).unwrap();
+        assert!(
+            node_certificate_summary_for_profile(&wrong_dns, "node-1", CertificateProfile::Baft,)
+                .is_err()
+        );
+        let extra_dns = directory.join("extra-dns.pem");
+        fs::write(
+            &extra_dns,
+            make(vec![
+                "node-1.baft-tunnel.invalid".into(),
+                "extra.invalid".into(),
+            ]),
+        )
+        .unwrap();
+        assert!(
+            node_certificate_summary_for_profile(&extra_dns, "node-1", CertificateProfile::Baft,)
+                .is_err()
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
 
     #[test]
     fn normalizes_p256_scalar_when_openssl_omits_leading_zero_octet() {
@@ -1077,6 +1221,10 @@ pub(crate) mod tests {
         issuer: &Issuer<'static, KeyPair>,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
         let mut params = CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, name);
+        params.is_ca = IsCa::ExplicitNoCa;
         params.key_usages.push(KeyUsagePurpose::DigitalSignature);
         params.extended_key_usages = vec![
             ExtendedKeyUsagePurpose::ServerAuth,

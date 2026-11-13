@@ -14,6 +14,10 @@ write_fake() {
   cat > "$FAKE" <<EOF
 #!/usr/bin/env sh
 [ "\${1:-}" = "--version" ] && { echo "baft-tunnel $version"; exit 0; }
+if [ "\${1:-}" = "engine" ] && [ "\${2:-}" = "verify" ]; then
+  [ "\${BAFT_TEST_ENGINE_VERIFY_FAIL:-0}" = "1" ] && exit 1
+  exit 0
+fi
 exit 0
 EOF
   chmod 755 "$FAKE"
@@ -36,17 +40,28 @@ grep -Fq 'ProtectSystem=strict' "$UNIT"
 grep -Fq 'CapabilityBoundingSet=' "$UNIT"
 grep -Fq 'apply --config' "$UNIT"
 
+mkdir -p "$STAGE/usr/local/lib/baft-tunnel/engine-store/baft/releases/mock"
+printf 'verified-store-marker\n' > "$STAGE/usr/local/lib/baft-tunnel/engine-store/baft/releases/mock/keep"
+ln -s releases/mock "$STAGE/usr/local/lib/baft-tunnel/engine-store/baft/current"
+
 mkdir -p "$STAGE/etc/baft-tunnel/pki" "$STAGE/var/lib/baft-tunnel"
 printf 'keep-config\n' > "$STAGE/etc/baft-tunnel/iran.json"
 printf 'keep-state\n' > "$STAGE/var/lib/baft-tunnel/state"
 write_fake 0.2.0
+if BAFT_TEST_ENGINE_VERIFY_FAIL=1 "$INSTALL" --binary "$FAKE" --destdir "$STAGE" >"$TMP/store-fail.log" 2>&1; then
+  echo "installer accepted an invalid existing Engine Store" >&2; exit 1
+fi
+[[ "$("$BIN" --version)" == "baft-tunnel 0.1.0" ]]
+grep -Fqx 'verified-store-marker' "$STAGE/usr/local/lib/baft-tunnel/engine-store/baft/releases/mock/keep"
 "$INSTALL" --binary "$FAKE" --destdir "$STAGE" >/dev/null
 BACKUP="$(ls -td "$STAGE"/var/backups/baft-tunnel-install.* | head -n 1)"
 [[ -f "$BACKUP/had-binary" && -f "$BACKUP/had-unit" ]]
 [[ "$("$BACKUP/baft-tunnel" --version)" == "baft-tunnel 0.1.0" ]]
 [[ "$("$BIN" --version)" == "baft-tunnel 0.2.0" ]]
+grep -Fqx 'verified-store-marker' "$STAGE/usr/local/lib/baft-tunnel/engine-store/baft/releases/mock/keep"
 "$ROLLBACK" --destdir "$STAGE" "$BACKUP" >/dev/null
 [[ "$("$BIN" --version)" == "baft-tunnel 0.1.0" ]]
+grep -Fqx 'verified-store-marker' "$STAGE/usr/local/lib/baft-tunnel/engine-store/baft/releases/mock/keep"
 
 # --- Baseline credential provisioning (LoadCredential=, systemd 249) ---
 fails() { if "$@" >"$TMP/fail.log" 2>&1; then echo "unexpected success: $*" >&2; exit 1; fi; }

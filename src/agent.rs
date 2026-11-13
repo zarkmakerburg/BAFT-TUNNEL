@@ -562,7 +562,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
     };
     match (method, path) {
         ("GET", "/v1/status") => (200, status(ctx, config).await),
-        ("GET", "/v1/traffic") => (200, traffic(ctx)),
+        ("GET", "/v1/traffic") => (200, traffic(ctx, config)),
         ("GET", "/v1/diagnostics") => get_diagnostics(ctx),
         ("POST", "/v1/diagnostics") => (200, run_diagnostics(ctx, config).await),
         ("POST", "/v1/verify") => verify_integrity(ctx, config, body).await,
@@ -732,6 +732,12 @@ fn inspect_bundle(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             );
         }
     };
+    if !crate::setup::valid_bundle_version(bundle.version, &bundle.engine) {
+        return (
+            422,
+            json!({"error": "pairing bundle version does not match its engine profile"}),
+        );
+    }
     let checksum = bundle.checksum();
     let checksum_match = req
         .checksum
@@ -759,6 +765,19 @@ fn inspect_bundle(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
         ] {
             if !ok {
                 problems.push(what);
+            }
+        }
+        if s["engine"] == "baft" {
+            if s["engine_sha256"] != json!(bundle.engine_sha256) {
+                problems.push("engine_sha256");
+            }
+            let current = crate::engine_store::current_sha256(
+                Path::new(crate::engine_store::DEFAULT_STORE_PATH),
+                "baft",
+            )
+            .ok();
+            if current.as_deref() != s["engine_sha256"].as_str() {
+                problems.push("local_engine_sha256");
             }
         }
     }
@@ -1450,6 +1469,8 @@ struct PkiCertificateBody {
     request_id: String,
     node_id: String,
     server_name: String,
+    #[serde(default)]
+    profile: crate::tls::CertificateProfile,
     confirm: bool,
     certificate_pem: String,
     ca_pem: String,
@@ -1520,13 +1541,14 @@ async fn pki_certificate_action(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             json!({"error": "certificate, CA or CRL PEM is empty or exceeds its individual size limit"}),
         );
     }
-    let request = crate::pki_helper::certificate_request_document(
+    let request = crate::pki_helper::certificate_request_document_for_profile(
         &req.request_id,
         &req.node_id,
         &req.server_name,
         &req.certificate_pem,
         &req.ca_pem,
         &req.crl_pem,
+        req.profile,
     );
     let request_bytes = match serde_json::to_vec(&request) {
         Ok(bytes) if bytes.len() as u64 <= crate::pki_helper::MAX_REQUEST_BYTES => bytes,
@@ -1699,6 +1721,8 @@ struct PkiCsrBody {
     node_id: String,
     server_name: String,
     #[serde(default)]
+    profile: crate::tls::CertificateProfile,
+    #[serde(default)]
     confirm: bool,
 }
 
@@ -1811,10 +1835,15 @@ async fn pki_csr_action(
                 json!({"error": "CSR generation is only available before Init"}),
             );
         }
-        if engine != crate::config::EngineKind::TcpTls || local_id != req.node_id {
+        let configured_profile = match engine {
+            crate::config::EngineKind::TcpTls => crate::tls::CertificateProfile::TcpTls,
+            crate::config::EngineKind::Baft => crate::tls::CertificateProfile::Baft,
+            _ => crate::tls::CertificateProfile::TcpTls,
+        };
+        if configured_profile != req.profile || local_id != req.node_id {
             return (
                 409,
-                json!({"error": "CSR retrieval is only available for this configured tcp-tls node"}),
+                json!({"error": "CSR retrieval profile or node identity does not match the configured engine"}),
             );
         }
     } else {
@@ -1880,10 +1909,14 @@ async fn pki_csr_action(
             }
         };
         if let Some(state) = state {
-            if state["engine"].as_str() != Some("tcp-tls") {
+            let expected_engine = match req.profile {
+                crate::tls::CertificateProfile::TcpTls => "tcp-tls",
+                crate::tls::CertificateProfile::Baft => "baft",
+            };
+            if state["engine"].as_str() != Some(expected_engine) {
                 return (
                     409,
-                    json!({"error": "PKI enrollment is only valid for tcp-tls"}),
+                    json!({"error": "PKI enrollment profile does not match the selected setup engine"}),
                 );
             }
             if state["node_id"].as_str() != Some(req.node_id.as_str()) {
@@ -1895,11 +1928,12 @@ async fn pki_csr_action(
         }
     }
 
-    let request = crate::pki_helper::request_document(
+    let request = crate::pki_helper::request_document_for_profile(
         &req.request_id,
         operation,
         &req.node_id,
         &req.server_name,
+        req.profile,
     );
     let request_bytes = match serde_json::to_vec(&request) {
         Ok(bytes) => bytes,
@@ -2909,20 +2943,31 @@ async fn tunnel_status(ctx: &Ctx, config: &RuntimeConfig, listening: bool) -> Va
     let now = unix_now();
     let (unit, pid) = unit_view(ctx).await;
     let ev = ctx.evidence(pid);
-    let samples = ctx.traffic_samples();
+    let baft = config.engine_name() == "baft";
+    // BAFT is a separate process with no accepted session/counter telemetry contract yet.
+    // Ignore even plausible planted Rust-engine files and keep these tiers Unknown.
+    let session_evidence = (!baft).then_some(ev.session.as_ref()).flatten();
+    let counters_evidence = (!baft).then_some(ev.counters.as_ref()).flatten();
+    let samples = if baft {
+        Vec::new()
+    } else {
+        ctx.traffic_samples()
+    };
     let last_bidi = crate::observe::last_bidirectional(&samples);
     let traffic_recent = last_bidi.is_some_and(|t| now.saturating_sub(t) <= DATA_WINDOW_S);
-    let counters_age = ev
-        .counters
+    let counters_age = counters_evidence
         .as_ref()
         .and_then(|c| c["sampled_unix"].as_u64())
         .map(|t| now.saturating_sub(t));
     let has_listener = !config.listen_addr().is_empty();
-    let session = ev.session.is_some();
-    let running = unit["result"] == "active"
-        || counters_age.is_some_and(|a| a <= 3 * crate::session_status::COUNTER_SECONDS)
-        || (has_listener && listening);
-    let state = if session && traffic_recent {
+    let session = session_evidence.is_some();
+    let running = !baft
+        && (unit["result"] == "active"
+            || counters_age.is_some_and(|a| a <= 3 * crate::session_status::COUNTER_SECONDS)
+            || (has_listener && listening));
+    let state = if baft {
+        "unknown"
+    } else if session && traffic_recent {
         "carrying_traffic"
     } else if session {
         "session_authorized"
@@ -2933,15 +2978,21 @@ async fn tunnel_status(ctx: &Ctx, config: &RuntimeConfig, listening: bool) -> Va
     } else {
         "down"
     };
-    let stored = stored_diagnostics(ctx);
-    let last_probe = last_integrity_probe(ctx);
+    let stored = if baft { None } else { stored_diagnostics(ctx) };
+    let last_probe = if baft {
+        None
+    } else {
+        last_integrity_probe(ctx)
+    };
     json!({
         "state": state,
         "observed_unix": now,
         "tiers": {
             "unit": unit,
             "listener": {"result": if !has_listener { "not_applicable" } else if listening { "pass" } else { "fail" }},
-            "authorized_session": match &ev.session {
+            "authorized_session": if baft {
+                json!({"result": "unknown", "reason": "BAFT session telemetry is not yet verified"})
+            } else { match &ev.session {
                 Some(s) => json!({
                     "result": "observed",
                     "peer_id": s["peer_id"],
@@ -2951,23 +3002,30 @@ async fn tunnel_status(ctx: &Ctx, config: &RuntimeConfig, listening: bool) -> Va
                 }),
                 None if ctx.runtime_dir.is_none() => json!({"result": "unknown", "reason": "no unit runtime evidence (--instance not set)"}),
                 None => json!({"result": "not_observed"}),
-            },
-            "data_path": json!({
+            }},
+            "data_path": if baft { json!({"result": "unknown", "reason": "BAFT payload telemetry is not yet verified"}) } else { json!({
                 "result": if !session { "unknown" } else if traffic_recent { "traffic_observed" } else { "no_recent_traffic" },
                 "window_s": DATA_WINDOW_S,
                 "last_bidirectional_unix": last_bidi,
-            }),
-            "integrity": integrity_tier(last_probe, now),
+            }) },
+            "integrity": integrity_tier(if baft { None } else { last_probe }, now),
         },
-        "last_failure": ev.failure,
+        "last_failure": if baft { None } else { ev.failure },
         "last_verified_unix": stored.as_ref().and_then(|d| d["verified_unix"].as_u64()),
         "last_diagnostics_unix": stored.as_ref().and_then(|d| d["at_unix"].as_u64()),
     })
 }
 
 /// Traffic counters of the running unit with units, sampling interval, provenance and freshness.
-fn traffic(ctx: &Ctx) -> Value {
+fn traffic(ctx: &Ctx, config: &RuntimeConfig) -> Value {
     let now = unix_now();
+    if config.engine_name() == "baft" {
+        return json!({
+            "available": false,
+            "result": "unknown",
+            "reason": "BAFT payload counters are not yet verified; no Rust-engine counters are used",
+        });
+    }
     let Some(c) = ctx.evidence(None).counters else {
         return json!({
             "available": false,
@@ -3119,13 +3177,21 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
     let now = unix_now();
     let (unit, pid) = unit_view(ctx).await;
     let ev = ctx.evidence(pid);
-    let samples = ctx.traffic_samples();
-    let session = ev.session.as_ref();
+    let baft = config.engine_name() == "baft";
+    let samples = if baft {
+        Vec::new()
+    } else {
+        ctx.traffic_samples()
+    };
+    let session = if baft { None } else { ev.session.as_ref() };
     let since = session.and_then(|s| s["since_unix"].as_u64()).unwrap_or(0);
-    let failure = ev
-        .failure
-        .as_ref()
-        .filter(|f| session.is_none() || f["at_unix"].as_u64().unwrap_or(0) > since);
+    let failure = if baft {
+        None
+    } else {
+        ev.failure
+            .as_ref()
+            .filter(|f| session.is_none() || f["at_unix"].as_u64().unwrap_or(0) > since)
+    };
     let failed_at = failure.and_then(|f| f["at_unix"].as_u64()).unwrap_or(0);
     let failed = failure
         .and_then(|f| f["stage"].as_str())
@@ -3229,7 +3295,7 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
         };
         tiers.push(t);
     }
-    let running = unit["result"] == "active" || ev.counters.is_some();
+    let running = !baft && (unit["result"] == "active" || ev.counters.is_some());
     tiers.push(match session {
         Some(s) => tier_with_params(
             "session", "pass", "unit_session",
@@ -3255,7 +3321,14 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
         (Some(_), Some(t)) if now.saturating_sub(t) <= DATA_WINDOW_S => tier_with_params("data_path", "pass", "unit_counters", format!("payload bytes were relayed in both directions at {t}"), json!({"at_unix": t})),
         (Some(_), _) => tier_with_params("data_path", "unknown", "unit_counters", format!("no payload in both directions within {DATA_WINDOW_S} s; send traffic through the tunnel and run again"), json!({"window_seconds": DATA_WINDOW_S})),
     });
-    let integrity = integrity_tier(last_integrity_probe(ctx), now);
+    let integrity = integrity_tier(
+        if baft {
+            None
+        } else {
+            last_integrity_probe(ctx)
+        },
+        now,
+    );
     tiers.push(tier_with_params(
         "integrity",
         integrity["result"].as_str().unwrap_or("unknown"),
@@ -3306,7 +3379,11 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
         }
     }
     let next_action = report_next(&unit, &tiers, verified);
-    let previous = stored_diagnostics(ctx).and_then(|d| d["verified_unix"].as_u64());
+    let previous = if baft {
+        None
+    } else {
+        stored_diagnostics(ctx).and_then(|d| d["verified_unix"].as_u64())
+    };
     let report = json!({
         "diagnostics_version": 1,
         "at_unix": now,
@@ -4699,6 +4776,101 @@ mod tests {
         let audit = std::fs::read_to_string(dir.join(AUDIT_FILE)).unwrap();
         assert!(audit.contains("\"resource\":\"tunnel/stop\""), "{audit}");
         assert!(!audit.contains(TOKEN));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn baft_status_ignores_planted_rust_session_and_counter_evidence() {
+        use crate::observe::TrafficSample;
+        let state = state_dir("baft-diag-state");
+        let run = state_dir("baft-diag-run");
+        let me = std::process::id();
+        let now = unix_now();
+        std::fs::write(
+            run.join("session.json"),
+            json!({"state": "authorized", "authorized_sessions": 1, "peer_id": "peer",
+                   "direction": "direct", "pid": me, "since_unix": now - 30})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            run.join("counters.json"),
+            json!({"counters_version": 1, "pid": me, "started_unix": now - 60, "sampled_unix": now,
+                   "bytes_from_peer": 100, "bytes_to_peer": 50, "streams_total": 1, "sessions_total": 1}).to_string(),
+        ).unwrap();
+        std::fs::write(
+            state.join(AUDIT_FILE),
+            format!(
+                "{}\n",
+                json!({"action": "integrity_probe", "ts": now, "result": "pass", "detail": "planted stale Rust receipt"})
+            ),
+        )
+        .unwrap();
+        let fake_units = Arc::new(AgentFake {
+            st: std::sync::Mutex::new(crate::apply::UnitState {
+                active: "active".into(),
+                sub: "running".into(),
+                result: "success".into(),
+                main_pid: me,
+                enabled: "enabled".into(),
+                ..Default::default()
+            }),
+            log: std::sync::Mutex::new(vec![]),
+        });
+        let value = json!({
+            "mode": "serve", "listen": "127.0.0.1:1", "target": "127.0.0.1:2",
+            "local_id": "abroad", "peer_id": "iran", "tunnel_id": "t",
+            "direction": "direct", "key": "/secret/key.pem", "engine": "baft",
+            "baft": {"binary": "/usr/local/lib/baft-tunnel/engine", "sha256": "a".repeat(64),
+                     "store": crate::engine_store::DEFAULT_STORE_PATH}
+        });
+        let config: RuntimeConfig = serde_json::from_value(value.clone()).unwrap();
+        let diagnostics_config: RuntimeConfig = serde_json::from_value(value.clone()).unwrap();
+        let status_config: RuntimeConfig = serde_json::from_value(value.clone()).unwrap();
+        let traffic_config: RuntimeConfig = serde_json::from_value(value).unwrap();
+        let ctx = Ctx::new(config, TOKEN.into(), Some(state.clone()))
+            .with_unit(Some("diag".into()), Some(run.clone()))
+            .with_units(fake_units, state.clone());
+        for (t, from, to) in [(now - 10, 0, 0), (now - 5, 100, 50)] {
+            ctx.record_traffic(TrafficSample {
+                t,
+                pid: u64::from(me),
+                from_peer: from,
+                to_peer: to,
+            });
+        }
+        let diagnostics = run_diagnostics(&ctx, &diagnostics_config).await;
+        for id in [
+            "secure_channel",
+            "identity",
+            "authorization",
+            "session",
+            "data_path",
+            "integrity",
+        ] {
+            let result = diagnostics["tiers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tier| tier["id"] == id)
+                .unwrap()["result"]
+                .as_str()
+                .unwrap();
+            assert_eq!(result, "unknown", "{id} must remain unknown for BAFT");
+        }
+        assert_eq!(diagnostics["verified"], false);
+        let status = tunnel_status(&ctx, &status_config, true).await;
+        assert_eq!(status["state"], "unknown");
+        assert_eq!(status["tiers"]["unit"]["result"], "active");
+        assert_eq!(status["tiers"]["listener"]["result"], "pass");
+        assert_eq!(status["tiers"]["authorized_session"]["result"], "unknown");
+        assert_eq!(status["tiers"]["data_path"]["result"], "unknown");
+        assert_eq!(status["tiers"]["integrity"]["result"], "unknown");
+        let counters = traffic(&ctx, &traffic_config);
+        assert_eq!(counters["available"], false);
+        assert_eq!(counters["result"], "unknown");
+        let _ = std::fs::remove_dir_all(&state);
+        let _ = std::fs::remove_dir_all(&run);
     }
 
     #[tokio::test]
