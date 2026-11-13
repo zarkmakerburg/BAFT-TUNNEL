@@ -180,6 +180,13 @@ function serve() {
       await baftPage.goto(base + '/#/setup');
       await baftEnginesLoaded;
       await baftPage.waitForSelector('.shell');
+      // waitForResponse fires at response arrival; BAFT.load still needs to consume the body
+      // and publish the complete data snapshot before the Wizard can render engine choices.
+      await baftPage.waitForFunction(() =>
+        window.BAFT && window.BAFT.data && window.BAFT.data.engines &&
+        Array.isArray(window.BAFT.data.engines.engines) &&
+        window.BAFT.data.engines.engines.some(engine =>
+          engine.id === 'baft' && engine.guided_setup && engine.guided_setup.available === true));
       const baftReverse = baftPage.locator('input[type="radio"][name="direction"][value="reverse"]');
       ok(lang + ' keeps Reverse disabled for the BAFT Direct-only capability',
         await baftReverse.count() === 1 && await baftReverse.isDisabled());
