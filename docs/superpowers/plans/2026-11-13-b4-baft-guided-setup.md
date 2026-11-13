@@ -15,7 +15,7 @@
 - BAFT remains a separate pinned AGPL-3.0 executable; do not import BAFT Go source into the Rust core or modify the upstream BAFT repository.
 - BAFT is Preview and Direct-only; Reverse and protocol v2 remain unavailable.
 - BAFT node certificates use exactly one URI SAN urn:baft:node:<node_id> plus exactly one configured DNS/IP server SAN; tcp-tls keeps urn:baft-tunnel:node:<node_id>.
-- BAFT setup requires the existing offline CA, current CRL, node private key mode 0600, mutual TLS, and the peer certificate SHA-256 pin.
+- BAFT setup requires the existing offline CA, current CRL, node private key mode 0600, mutual TLS, CA-chain validation, and exact BAFT peer URI identity (`urn:baft:node:<peer_id>`). BAFT does not support an enforced peer-certificate fingerprint pin (design risk R12); do not add one to the config.
 - The engine binary must match the exact SHA-256 in release/engine-manifest.json; the installed Engine Store is root-owned and not writable by the service account.
 - A repeated product install must preserve an already verified current engine release; it must not silently switch an active tunnel to a different engine digest. An invalid existing store fails closed.
 - The installer must not enable or start a tunnel. Starting remains an explicit Wizard/Apply action.
@@ -81,7 +81,7 @@
 - [ ] Add setup tests for BAFT Direct plan in both roles, missing Engine Store, Reverse rejection, protocol-v2 rejection, and generated baft.store/baft.sha256 values.
 - [ ] Implement a BAFT setup-settings resolver using the verified current store digest; do not accept caller-supplied binary path or digest.
 - [ ] Change setup TLS-material selection so tcp-tls and baft require PKI material, while only noise-tcp generates a Noise key.
-- [ ] Make BAFT init validate the BAFT certificate profile, publish the certificate fingerprint and serving-node DNS SAN, and persist the exact engine digest in state and bundle.
+- [ ] Make BAFT init validate the BAFT certificate profile, persist the BAFT node identity and serving-node DNS SAN, and persist the exact engine digest in state and bundle. Do not treat the certificate fingerprint as an authorization pin; BAFT authorizes by CA trust and exact URI identity.
 - [ ] Make BAFT join require bundle version 2, matching engine_sha256, matching engine/direction/protocol/tunnel/roles, and peer certificate fingerprint. Resolve peer server name from the serving bundle; never substitute a Noise public key for BAFT.
 - [ ] Keep adopt_for_service and generated root commands on node.key for both TLS engines; retain node.noise only for Noise.
 - [ ] Add tests proving a changed local store digest or mismatched peer digest refuses join and writes no final config; verify successful two-node BAFT pairing produces valid runtime configs.
@@ -188,3 +188,13 @@
 - PKI shell verification: bash scripts/pki/test-baft-identity-profile.sh (new focused test covering both profiles, mismatch rejection, and revocation). Installer verification: bash scripts/test-install.sh plus the release.yml package smoke on Ubuntu 22.04.
 - Panel verification: run the existing bilingual Wizard QA with its test Agent and token file; assert both missing-store and verified-store catalogue states, and do not click Apply on a real host during browser QA.
 - Final acceptance is the exact-SHA Linux CI suite plus BAFT conformance/package verification. A real two-host B4 LAB remains a separate owner-authorization gate.
+
+
+## Review Corrections (supersede conflicting wording above)
+
+- **BAFT identity is not the tcp-tls identity.** BAFT requires exactly `urn:baft:node:<node_id>`; tcp-tls remains `urn:baft-tunnel:node:<node_id>`. This is grounded in `docs/BAFT_ENGINE_INTEGRATION_DESIGN.md` R15 and BAFT's `internal/node/node.go`. The same CA can issue both profiles, but their URI SANs are distinct.
+- **Do not pin the BAFT peer certificate fingerprint.** BAFT's `validate_baft` explicitly rejects `peer_fingerprint` on a listener and design risk R12 states BAFT has no peer certificate pin; its trust model is CA chain + exact peer URI identity. A bundle field may retain an audit fingerprint only if its semantics are clearly non-authoritative; it must never be represented as a BAFT enforcement pin.
+- **Engine Store path is a product constant to define, not an existing CLI default.** `engine install/verify` currently requires an explicit `--store`, and `BaftSettings.store` is optional. Task 2 must define one canonical absolute path and use it consistently in installer, setup-generated `baft.store`, agent availability checks, and tests. The proposed `/usr/local/lib/baft-tunnel/engine-store` is acceptable only after checking it against the existing library swap lifecycle.
+- **Installer preservation is a first-class requirement.** `scripts/install.sh` currently stages and replaces the entire `/usr/local/lib/baft-tunnel` directory. If Engine Store lives under `LIB_DEST`, the installer must copy and verify the existing store into the staged replacement before swapping; otherwise every normal reinstall would erase it. Rollback must restore the prior library including the store.
+- **No certificate fingerprint is required in the BAFT pairing protocol.** `Bundle.public` currently has Noise/tcp-tls semantics. Task 2 must explicitly define a backward-compatible BAFT meaning or omit/replace that field only for BAFT bundle version 2; it must not accidentally map it to `peer_fingerprint`.
+- **`/v1/engines` already exposes BAFT as Preview/Direct-only; the missing capability is setup availability.** Task 4 should preserve current catalogue metadata and only gate `guided_setup.available` on a verified Engine Store. Status/traffic must remain `unknown`, as already required by `docs/BAFT_ENGINE_ACCEPTANCE.md` A11.
