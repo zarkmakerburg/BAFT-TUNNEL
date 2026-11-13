@@ -449,6 +449,65 @@ mod tests {
     use super::*;
     use tokio::io::duplex;
 
+    async fn relay<R, W>(
+        reader: &mut R,
+        writer: &mut W,
+        flip_at: Option<usize>,
+    ) -> std::io::Result<()>
+    where
+        R: AsyncRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        let mut offset = 0usize;
+        let mut buffer = [0u8; 8192];
+        loop {
+            let count = reader.read(&mut buffer).await?;
+            if count == 0 {
+                writer.shutdown().await?;
+                return Ok(());
+            }
+            if let Some(index) = flip_at {
+                if (offset..offset + count).contains(&index) {
+                    buffer[index - offset] ^= 0x01;
+                }
+            }
+            writer.write_all(&buffer[..count]).await?;
+            offset += count;
+        }
+    }
+
+    #[tokio::test]
+    async fn initiator_rejects_a_tampered_payload_on_the_integrity_path() {
+        let (mut initiator, client_side) = duplex(PROBE_BYTES + 1024);
+        let (peer_side, mut responder) = duplex(PROBE_BYTES + 1024);
+        let responder_task = tokio::spawn(async move { respond(&mut responder).await });
+        let relay_task = tokio::spawn(async move {
+            let (mut client_read, mut client_write) = tokio::io::split(client_side);
+            let (mut peer_read, mut peer_write) = tokio::io::split(peer_side);
+            let (forward, reverse) = tokio::join!(
+                relay(&mut client_read, &mut peer_write, Some(4 + 4 + NONCE_BYTES),),
+                relay(&mut peer_read, &mut client_write, None),
+            );
+            forward?;
+            reverse?;
+            Ok::<(), std::io::Error>(())
+        });
+
+        let error = run_initiator(&mut initiator).await.unwrap_err();
+        assert!(
+            format!("{error:#}").contains("SHA-256 mismatch"),
+            "tampered payload was not rejected by the integrity check: {error:#}"
+        );
+        relay_task
+            .await
+            .expect("tamper relay task panicked")
+            .unwrap();
+        responder_task
+            .await
+            .expect("integrity responder task panicked")
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn fixed_size_probe_round_trip_verifies_digest_and_nonce() {
         let (mut initiator, mut responder) = duplex(PROBE_BYTES + 1024);
