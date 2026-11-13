@@ -1,4 +1,4 @@
-# One-step install of the agent service on real systemd (U2, U3, SA-09): `install.sh --register`,
+#!/usr/bin/env bash
 # root `setup init/join --instance` with no manual chown, the agent started by its path unit under
 # its own user, and Start / Restart / Stop through the agent API with boot persistence
 # (`systemctl is-enabled`), refusals, diagnostics' next action, crash restart and a clean uninstall.
