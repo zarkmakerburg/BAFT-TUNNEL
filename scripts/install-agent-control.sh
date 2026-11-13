@@ -81,27 +81,33 @@ if [[ "$STAGING" == "0" ]]; then
       /usr/local/bin/baft-tunnel agent-token --out "$STATE/token" >/dev/null
   fi
   [[ "$(stat -c '%U %a' "$STATE/token")" == "$AGENT_USER 600" ]] || die "$STATE/token must be $AGENT_USER, mode 0600"
-  # Migrate the shared control directory safely: stop its only writer and setup watcher
-  # before changing the group. Never replay a request that may have been planted under the old
-  # root:baft-tunnel group; abort and require operator inspection if one is pending.
+  # Migrate the shared control directory safely: stop the agent and every root request watcher
+  # before changing the group. Never replay requests that may have been planted under the old
+  # root:baft-tunnel group; abort and require operator inspection if any are pending.
   systemctl stop "baft-tunnel-agent@$INSTANCE.path" "baft-tunnel-agent@$INSTANCE.service" \
-    "baft-tunnel-control-setup@$INSTANCE.path" >/dev/null 2>&1 || true
+    "${CTL_PATHS[@]}" >/dev/null 2>&1 || true
   if systemctl is-active --quiet "baft-tunnel-agent@$INSTANCE.service"; then
-    die "agent service is still active; cannot safely migrate the setup request directory"
+    die "agent service is still active; cannot safely migrate the control request directory"
   fi
-  if systemctl is-active --quiet "baft-tunnel-control-setup@$INSTANCE.service"; then
-    die "root setup helper is still active; retry registration after it exits"
-  fi
-  SETUP_REQUEST="/run/baft-tunnel/control/$INSTANCE.setup"
-  if [[ -e "$SETUP_REQUEST" || -L "$SETUP_REQUEST" ]]; then
-    die "pending setup request exists at $SETUP_REQUEST; inspect it as root before retrying registration"
-  fi
+  for v in "${VERBS[@]}"; do
+    unit="baft-tunnel-control-$v@$INSTANCE"
+    if systemctl is-active --quiet "$unit.service"; then
+      die "$unit.service is still active; retry registration after it exits"
+    fi
+    request="/run/baft-tunnel/control/$INSTANCE.$v"
+    if [[ -e "$request" || -L "$request" ]]; then
+      die "pending control request exists at $request; inspect it as root before retrying registration"
+    fi
+  done
   systemd-tmpfiles --create "$TMPF"
   [[ "$(stat -c '%U:%G %a' /run/baft-tunnel/control)" == "root:baft-tunnel-agent 770" ]] ||
-    die "setup request directory must be root:baft-tunnel-agent mode 0770"
-  if [[ -e "$SETUP_REQUEST" || -L "$SETUP_REQUEST" ]]; then
-    die "setup request appeared during directory migration; setup watcher remains stopped for inspection"
-  fi
+    die "control request directory must be root:baft-tunnel-agent mode 0770"
+  for v in "${VERBS[@]}"; do
+    request="/run/baft-tunnel/control/$INSTANCE.$v"
+    if [[ -e "$request" || -L "$request" ]]; then
+      die "control request appeared during directory migration; request watchers remain stopped for inspection"
+    fi
+  done
   systemctl daemon-reload
   systemctl enable --now "${CTL_PATHS[@]}"
   # The agent starts now: in setup mode (panel pairing) until NAME.json exists, then normally.
