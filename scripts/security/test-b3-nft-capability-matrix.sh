@@ -33,23 +33,29 @@ run_case() {
   echo "exit_code=$rc"
   echo "stdout_bytes=$(wc -c <"$out" | tr -d ' ')"
   echo "stderr_bytes=$(wc -c <"$err" | tr -d ' ')"
-  echo "stdout_begin"
-  head -c 4096 "$out" || true
-  echo
-  echo "stdout_end"
-  echo "stderr_begin"
-  head -c 2048 "$err" || true
-  echo
-  echo "stderr_end"
+  if grep -q '^CapEff:' "$out"; then
+    grep '^CapEff:' "$out"
+  fi
+  if [[ -s "$err" ]]; then
+    echo "stderr:"
+    head -c 512 "$err" || true
+    echo
+  fi
   printf '%s\n' "$rc" >"$TMP/$name.rc"
 }
 
-# These are read-only list operations. The before/after fingerprints detect
-# any unexpected ruleset change during the experiment.
+# All nft invocations below are list-only. The before/after fingerprints
+# detect any unexpected ruleset change. Never print the raw host ruleset.
 timeout 10s sudo "$NFT" --json list ruleset >"$TMP/before.json"
 
 run_case unprivileged sudo -u nobody -- "$NFT" --json list ruleset
-run_case cap_net_admin_only sudo capsh --caps=cap_net_admin+ep -- -c "grep '^CapEff:' /proc/self/status; $NFT --json list ruleset"
+
+# Drop every other capability from the bounding set, then grant only
+# CAP_NET_ADMIN effective/permitted to the command process.
+DROP_OTHER_CAPS="cap_chown,cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,cap_linux_immutable,cap_net_bind_service,cap_net_broadcast,cap_net_raw,cap_ipc_lock,cap_ipc_owner,cap_sys_module,cap_sys_rawio,cap_sys_chroot,cap_sys_ptrace,cap_sys_pacct,cap_sys_admin,cap_sys_boot,cap_sys_nice,cap_sys_resource,cap_sys_time,cap_sys_tty_config,cap_mknod,cap_lease,cap_audit_write,cap_audit_control,cap_setfcap,cap_mac_override,cap_mac_admin,cap_syslog,cap_wake_alarm,cap_block_suspend,cap_audit_read,cap_perfmon,cap_bpf,cap_checkpoint_restore"
+run_case cap_net_admin_only sudo capsh --drop="$DROP_OTHER_CAPS" --caps=cap_net_admin+ep -- -c "grep '^CapEff:' /proc/self/status; $NFT --json list ruleset"
+
+# Retain root but remove CAP_NET_ADMIN from its bounding/effective set.
 run_case root_without_cap_net_admin sudo capsh --drop=cap_net_admin -- -c "grep '^CapEff:' /proc/self/status; $NFT --json list ruleset"
 run_case root_baseline sudo "$NFT" --json list ruleset
 
@@ -95,5 +101,5 @@ fi
 
 echo
 echo "B3_NFT_CAPABILITY_MATRIX=PASS"
-echo "Interpretation: compare unprivileged and root-without-CAP_NET_ADMIN outcomes with CAP_NET_ADMIN-only and root baselines; ruleset fingerprint stayed unchanged."
+echo "Interpretation: the unprivileged, CAP_NET_ADMIN-only, root-without-CAP_NET_ADMIN and root-baseline results above determine the minimum observed privilege."
 echo "No firewall rule, service, route, sysctl, or host configuration was intentionally changed."
