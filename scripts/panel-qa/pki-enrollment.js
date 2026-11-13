@@ -177,11 +177,14 @@ function serve() {
       await baftFields.nth(3).fill('18080');
       await baftFields.nth(4).fill('192.0.2.20');
       await next().click(); // Method
-      const baftChoice = page.locator('.choice').filter({ hasText: /BAFT/ });
+      const baftChoice = page.locator('.choice').filter({ hasText: /baft/i });
       const baftChoiceCount = await baftChoice.count();
       const baftChoiceText = baftChoiceCount ? await baftChoice.innerText() : '';
+      const previewLabel = lang === 'en' ? /Preview/i : /پیش‌نمایش/;
+      const readyLabel = lang === 'en' ? /Ready/i : /آماده/;
       ok(lang + ' enables BAFT only as Preview when a verified Engine Store is advertised',
-        baftChoiceCount === 1 && /Preview/i.test(baftChoiceText) && !/Ready/i.test(baftChoiceText));
+        baftChoiceCount === 1 && previewLabel.test(baftChoiceText) && !readyLabel.test(baftChoiceText),
+        'choices=' + baftChoiceCount + '; text=' + baftChoiceText);
       if (baftChoiceCount) await baftChoice.click();
       await page.locator('.nav-row button:not(.primary)').first().click(); // Back to Servers with BAFT selected
       ok(lang + ' derives BAFT listener identity and hides separate local/peer DNS fields',
