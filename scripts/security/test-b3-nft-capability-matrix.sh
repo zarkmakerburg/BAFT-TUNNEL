@@ -27,7 +27,7 @@ run_case() {
   echo
   echo "--- CASE: $name ---"
   set +e
-  "$@" >"$out" 2>"$err"
+  timeout 10s "$@" >"$out" 2>"$err"
   rc=$?
   set -e
   echo "exit_code=$rc"
@@ -44,15 +44,15 @@ run_case() {
   printf '%s\n' "$rc" >"$TMP/$name.rc"
 }
 
-# Establish a before/after fingerprint using the root baseline. This command
-# only lists the ruleset; no firewall mutation command is invoked anywhere.
-sudo "$NFT" --json list ruleset >"$TMP/before.json"
+# These are read-only list operations. The before/after fingerprints detect
+# any unexpected ruleset change during the experiment.
+timeout 10s sudo "$NFT" --json list ruleset >"$TMP/before.json"
 
 run_case unprivileged sudo -u nobody -- "$NFT" --json list ruleset
 run_case cap_net_admin_only sudo capsh --caps=cap_net_admin+ep -- -c "$NFT --json list ruleset"
 run_case root_baseline sudo "$NFT" --json list ruleset
 
-sudo "$NFT" --json list ruleset >"$TMP/after.json"
+timeout 10s sudo "$NFT" --json list ruleset >"$TMP/after.json"
 BEFORE="$(sha256sum "$TMP/before.json" | awk '{print $1}')"
 AFTER="$(sha256sum "$TMP/after.json" | awk '{print $1}')"
 echo
