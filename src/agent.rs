@@ -4817,13 +4817,17 @@ mod tests {
             }),
             log: std::sync::Mutex::new(vec![]),
         });
-        let mut value = serde_json::to_value(serve_config()).unwrap();
-        value["engine"] = json!("baft");
-        value.as_object_mut().unwrap().remove("peer_fingerprint");
-        value["baft"] = json!({"binary": "/usr/local/lib/baft-tunnel/engine", "sha256": "a".repeat(64),
-                               "store": crate::engine_store::DEFAULT_STORE_PATH});
-        let config: RuntimeConfig = serde_json::from_value(value).unwrap();
-        let ctx = Ctx::new(config.clone(), TOKEN.into(), Some(state.clone()))
+        let value = json!({
+            "mode": "serve", "listen": "127.0.0.1:1", "target": "127.0.0.1:2",
+            "local_id": "abroad", "peer_id": "iran", "tunnel_id": "t",
+            "direction": "direct", "key": "/secret/key.pem", "engine": "baft",
+            "baft": {"binary": "/usr/local/lib/baft-tunnel/engine", "sha256": "a".repeat(64),
+                     "store": crate::engine_store::DEFAULT_STORE_PATH}
+        });
+        let config: RuntimeConfig = serde_json::from_value(value.clone()).unwrap();
+        let diagnostics_config: RuntimeConfig = serde_json::from_value(value.clone()).unwrap();
+        let status_config: RuntimeConfig = serde_json::from_value(value).unwrap();
+        let ctx = Ctx::new(config, TOKEN.into(), Some(state.clone()))
             .with_unit(Some("diag".into()), Some(run.clone()))
             .with_units(fake_units, state.clone());
         for (t, from, to) in [(now - 10, 0, 0), (now - 5, 100, 50)] {
@@ -4834,7 +4838,7 @@ mod tests {
                 to_peer: to,
             });
         }
-        let diagnostics = run_diagnostics(&ctx, &config).await;
+        let diagnostics = run_diagnostics(&ctx, &diagnostics_config).await;
         for id in [
             "secure_channel",
             "identity",
@@ -4854,7 +4858,7 @@ mod tests {
             assert_eq!(result, "unknown", "{id} must remain unknown for BAFT");
         }
         assert_eq!(diagnostics["verified"], false);
-        let status = tunnel_status(&ctx, &config, true).await;
+        let status = tunnel_status(&ctx, &status_config, true).await;
         assert_eq!(status["state"], "unknown");
         assert_eq!(status["tiers"]["unit"]["result"], "active");
         assert_eq!(status["tiers"]["listener"]["result"], "pass");
