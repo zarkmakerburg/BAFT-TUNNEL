@@ -199,6 +199,8 @@ function serve() {
       await baftFields.nth(2).fill('test-tunnel');
       await baftFields.nth(3).fill('18080');
       await baftFields.nth(4).fill('192.0.2.20');
+      await baftFields.nth(5).fill('node2.example.net');
+      await baftPage.locator('input[name="localServerName"]').fill('node.example.net');
       await baftNext().click(); // Method
       // Wait for the method-step DOM to be rendered from the loaded engine catalog.
       await baftPage.waitForFunction(() =>
