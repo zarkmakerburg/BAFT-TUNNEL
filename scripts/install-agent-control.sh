@@ -133,7 +133,7 @@ if [[ "$STAGING" == "0" ]]; then
       echo "install-agent-control: migration aborted before changing directory ownership; no units were restarted." >&2
       for unit in "${ACTIVE_CONTROL_PATHS[@]}" "${ACTIVE_AGENT_PATHS[@]}" "${ACTIVE_AGENT_SERVICES[@]}"; do
         state="$(systemctl is-active "$unit" 2>/dev/null || true)"
-        printf 'install-agent-control: snapshot unit state: %s=%s\\n' "$unit" "${state:-unknown}" >&2
+        printf 'install-agent-control: snapshot unit state: %s=%s\n' "$unit" "${state:-unknown}" >&2
       done
       die "one or more migration units could not be stopped; inspect the reported states, resolve the cause, and retry"
     fi
