@@ -84,8 +84,11 @@ if [[ "$STAGING" == "0" ]]; then
   CONTROL_DIR=/run/baft-tunnel/control
   CONTROL_DIR_STATE="$(stat -c '%U:%G %a' "$CONTROL_DIR" 2>/dev/null || true)"
   # Enforce the request-group boundary on every registration, not only on migration.
+  AGENT_GID="$(getent group "$AGENT_USER" | awk -F: '{print $3}')"
+  OTHER_PRIMARY_USERS="$(getent passwd | awk -F: -v gid="$AGENT_GID" -v agent="$AGENT_USER" '$4 == gid && $1 != agent { print $1 }')"
   if [[ "$(id -gn "$AGENT_USER")" != "$AGENT_USER" ]] ||
      [[ -n "$(getent group "$AGENT_USER" | awk -F: '{print $4}')" ]] ||
+     [[ -n "$OTHER_PRIMARY_USERS" ]] ||
      id -nG "$SERVICE_GROUP" | tr ' ' '\n' | grep -qx "$AGENT_USER"; then
     die "group $AGENT_USER must be exclusive to the dedicated agent account"
   fi
