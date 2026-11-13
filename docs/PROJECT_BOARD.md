@@ -2,9 +2,9 @@
 
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
-## وضعیت در 2026-11-12
+## وضعیت در 2026-11-13
 
-- **Baseline بررسی‌شده:** `main` در SHA `32bf85f10d75efafc0d5f7a45a25d060f7f7c9b6` (2026-11-12؛ ۶۵ کامیت بعد از ادغام U8 در `52a2825`). U7 روی والد محصول `1219f547` اجرا شد.
+- **Baseline بررسی‌شده:** `main` در SHA `82d77b3113ba6d966d1792f772940c70c0dfb4bc` (ادغام PR #194؛ اصلاح حسابداری اتصال‌های Health Check در Harness B2). U7 روی والد محصول `1219f547` اجرا شد.
 - **U7:** PASS — هر سه Job در اجرای trusted [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) موفق شدند؛ تست واقعی دو‌سروره روی RC.7 امضاشده تکمیل شد.
 - **U8:** PASS — [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165) با CI کامل ادغام شد؛ راهنمای فارسی/انگلیسی و مسیر واقعی tcp-tls از Wizard مستند شدند.
 - **وضعیت محصول:** توسعه فعال / Pre-release؛ **آماده Production نیست**. نسخهٔ امضاشدهٔ `v0.1.0-rc.7` منتشر شده؛ Release پایدار یا Deploy عملیاتی انجام نشده است.
@@ -31,10 +31,10 @@
 ۵. **U7:** با اجرای [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) پذیرفته شد؛ Soak دقیقاً ۳۶۰۰ ثانیه، ۲۶۴ دور و صفر Probe ناموفق بود. Backup/Restore، Update/Rollback، Revocation، Uninstall و پاک‌سازی نیز موفق شدند.
 ۶. **U8:** تکمیل و ادغام شد؛ [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165)، Commit ادغام `52a2825`؛ تمام CIها PASS.
 ۷. **B1:** انجام و ادغام شد؛ `311b706` (شواهد ساختاریافتهٔ محلی‌شده) و `62d7ee6` (حذف کلیدهای تکراری `diag.next.*` و تست جلوگیری از تکرار). شواهد تاریخی CI در [PR #168](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/168).
-۸. **B2:** پیش‌نیازهای شروع پیاده‌سازی کامل شده‌اند (ADR-0028، سیاست پذیرفته‌شدهٔ Option A برای ارتقای هم‌زمان v1/v2 و بردارهای قراردادی `tests/protocol_v2_contract.rs`؛ PR #176). اما رانتایم هنوز v1 است (`src/handshake.rs`: `VERSION: u16 = 1` و بدون `IntegrityProbe`) و کار در PR #177 است؛ پذیرش B2 هنوز انجام نشده.
-۹. **B3–B6:** پس از B2 و طبق Roadmap؛ بدون افزودن پروتکل یا Fleet قبل از تکمیل این گیت‌ها.
+۸. **B2:** پذیرش Direct انجام شد؛ اجرای trusted دو‌میزبانه [43407066796](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43407066796) با Candidate ثابت `b15b0a3f49e0e5b7c4fcaaec3b3da49cd22514c6` و SHA باینری `726e292afe323becd9cd6c4d79c7fb0cd4ae69013334369e304176b248c69e89` موفق شد. هر دو Probe، انتقال داده قبل/بعد، Audit، Restart و Cooldown تأیید شدند. تست منفی Tamper در PR #193 با Relay درون‌حافظه‌ای و خطای `SHA-256 mismatch` اثبات شده؛ این تست دو‌میزبانهٔ زنده نیست. `ready` همچنان Unknown است و Reverse جداگانه گیت دارد. جزئیات در [ADR-0028](ADR-0028-authenticated-integrity-probe.md) و [Roadmap](PRODUCT_ROADMAP.md).
+۹. **B3–B6:** باز هستند؛ طبق Roadmap و با حفظ ترتیب وابستگی‌ها.
 
-**موارد باز:** منشأ Drift شش‌خطی Address Set روی میزبان خارج در U7 (S10؛ هیچ قانون BAFT-TUNNEL وجود نداشت)، آزمون پنل روی گوشی واقعی، B2–B6 و گیت‌های انتشار. بازبینی امنیتی مستقل فعلاً به درخواست مالک متوقف است. Soak بیش از یک ساعت برنامه‌ریزی نمی‌شود. (بررسی حقوقی AGPL موتور BAFT حذف شد: BAFT متعلق به مالک است و استفاده از آن به‌صورت باینری جدا طبق ADR-0019 مجاز است؛ تأیید مالک 2026-11-09.)
+**موارد باز:** منشأ Drift شش‌خطی Address Set روی میزبان خارج در U7 (S10؛ هیچ قانون BAFT-TUNNEL وجود نداشت)، آزمون پنل روی گوشی واقعی، B3–B6 و گیت‌های انتشار. بازبینی امنیتی مستقل فعلاً به درخواست مالک متوقف است. Soak بیش از یک ساعت برنامه‌ریزی نمی‌شود. (بررسی حقوقی AGPL موتور BAFT حذف شد: BAFT متعلق به مالک است و استفاده از آن به‌صورت باینری جدا طبق ADR-0019 مجاز است؛ تأیید مالک 2026-11-09.)
 
 - **کارهای ادغام‌شدهٔ خارج از صف:** بنچمارک‌های CodSpeed برای مسیرهای داغ تونل (`7bf0b9a`) و سیستم طراحی Fleet مرکزی (`DESIGN.md`، `0e66077`)؛ هیچ‌کدام ادعای محصول نیستند و Fleet فقط طراحی مستند است.
 

@@ -1,6 +1,6 @@
 # ADR-0028: Authenticated in-product integrity probe
 
-**Status:** Design approved; B2 implementation-start gate satisfied on 2026-11-12; B2 feature acceptance remains pending.
+**Status:** Design approved; B2 Direct feature acceptance PASS on 2026-11-13. Reverse remains separately gated under ADR-0021.
 **Scope:** Phase 1 B2, the panel's **Test tunnel** action and the integrity evidence tier.
 **Builds on:** ADR-0011 (authorization), ADR-0021 (Direct/Reverse topology), ADR-0022 (Apply/Verify/Receipt), ADR-0023 (agent control boundary), ADR-0024 (operations evidence), and `docs/READINESS_CONTRACT.md`.
 
@@ -133,4 +133,17 @@ After implementation, B2 is not accepted until all required unit, protocol, inte
 
 The overall Phase 1 closeout and any Phase 2 implementation remain gated on **all B1–B6 items being accepted and evidenced**, including B2's own implementation and feature-acceptance tests above. This is the aggregate completion gate, not a prerequisite for starting B2.
 
-B2 runtime implementation may proceed under the approved design. This ADR does not authorize host mutation, real-host LAB, release, deployment or Phase 2. Until B2 feature acceptance, the integrity tier remains Unknown except for separately recorded probe/Verify/LAB evidence.
+B2 Direct feature acceptance is recorded below. The Direct integrity tier may show Pass only for a fresh, explicit authenticated probe and only for that peer/tunnel/direction/time; Apply `ready` remains Unknown. Reverse remains unavailable until its independent ADR-0021 implementation and acceptance gate passes. This ADR does not authorize a stable release, deployment or Phase 2.
+
+
+## B2 Direct feature-acceptance record (2026-11-13)
+
+**Result: PASS for Direct only.** Trusted two-host run [43407066796](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43407066796) passed on orchestration/main SHA `82d77b3113ba6d966d1792f772940c70c0dfb4bc` using fixed product candidate SHA `b15b0a3f49e0e5b7c4fcaaec3b3da49cd22514c6`. The candidate binary SHA-256 was independently verified from the uploaded artifact: `726e292afe323becd9cd6c4d79c7fb0cd4ae69013334369e304176b248c69e89`.
+
+Evidence on the two real LAB hosts: protocol-v2 Setup CLI selection; both tunnel and Agent services started; authenticated Direct sessions on both peers; ordinary 65,536-byte and 2,097,289-byte data paths before probing; successful 64 KiB in-product probes in both directions; audit receipts with the exact per-peer/tunnel/direction resource and valid ADR-0024 request hashes; successful probe persistence after Agent restart; expected rate-limit and persisted cooldown behavior; unchanged destination payload-byte count; and final ordinary data paths after both probes. The job and cleanup step completed successfully.
+
+Negative-path evidence: PR #193 merged at `2169ccf7facb46d9b6506868db2acda994202516` adds `initiator_rejects_a_tampered_payload_on_the_integrity_path`. Its controlled in-memory relay flips one payload byte while preserving framing and nonce; the production initiator rejects the altered exchange with `SHA-256 mismatch`. This is controlled test-harness/unit evidence against the same production integrity-probe implementation present in the fixed candidate. It is **not** live two-host tamper injection. The separate local authenticated-v2-session integration test exercises the active session/capability path, and the real two-host LAB proves the intact Direct path.
+
+The integrity probe does not promote Apply readiness: the probe updates only its integrity evidence; diagnostics explicitly state that Apply `ready` remains Unknown, and Apply lifecycle tests continue to assert `ready=unknown`. No production readiness or stable-release claim follows from B2. Reverse was not tested or accepted and remains unavailable until its independent ADR-0021 gate passes.
+
+Run #13 (`43401771939`) remains preserved as a failed harness-accounting attempt: the destination byte count was unchanged, while the connection counter included zero-payload connections from the Agent's periodic listener/status health checks. PR #194 corrected the harness to assert the probe-payload invariant rather than require the unrelated connection counter to remain fixed. The clean trusted rerun #14 is the acceptance run; the failure history is not erased.
