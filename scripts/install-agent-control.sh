@@ -86,11 +86,21 @@ if [[ "$STAGING" == "0" ]]; then
   # root:baft-tunnel group; abort and require operator inspection if any are pending.
   systemctl stop "baft-tunnel-agent@$INSTANCE.path" "baft-tunnel-agent@$INSTANCE.service" \
     "${CTL_PATHS[@]}" >/dev/null 2>&1 || true
-  if systemctl is-active --quiet "baft-tunnel-agent@$INSTANCE.service"; then
-    die "agent service is still active; cannot safely migrate the control request directory"
+  if systemctl is-active --quiet "baft-tunnel-agent@$INSTANCE.path" ||
+     systemctl is-active --quiet "baft-tunnel-agent@$INSTANCE.service"; then
+    die "agent path/service is still active; cannot safely migrate the control request directory"
+  fi
+  # The request group is a privilege boundary: it must not contain the tunnel account or
+  # any supplementary members. The agent receives it only as its primary group.
+  if [[ -n "$(getent group "$AGENT_USER" | awk -F: '{print $4}')" ]] ||
+     id -nG "$SERVICE_GROUP" | tr ' ' '\\n' | grep -qx "$AGENT_USER"; then
+    die "group $AGENT_USER must be exclusive to the dedicated agent account"
   fi
   for v in "${VERBS[@]}"; do
     unit="baft-tunnel-control-$v@$INSTANCE"
+    if systemctl is-active --quiet "$unit.path"; then
+      die "$unit.path is still active; cannot safely migrate the control request directory"
+    fi
     if systemctl is-active --quiet "$unit.service"; then
       die "$unit.service is still active; retry registration after it exits"
     fi
