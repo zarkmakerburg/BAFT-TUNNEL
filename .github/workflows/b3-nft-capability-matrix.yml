@@ -1,0 +1,35 @@
+name: b3-nft-capability-matrix
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/b3-nft-capability-matrix.yml"
+      - "scripts/security/test-b3-nft-capability-matrix.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b3-nft-capability-matrix-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  capability-matrix:
+    name: Ubuntu 22.04 / systemd 249 capability matrix
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact test revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install nftables and capability inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends nftables libcap2-bin util-linux
+
+      - name: Run read-only privilege comparison
+        run: bash scripts/security/test-b3-nft-capability-matrix.sh
