@@ -133,12 +133,32 @@ The `firewall` tier is independent of `listener`, `session`, `data_path`, `integ
 - No generic executable, subcommand, shell fragment, path, address, port, or family may be supplied by the Agent or user.
 - Per-instance request/result files must be bounded, regular, no-follow, single-consumption, ownership-checked and protected against cross-instance replay.
 - The helper runs with the minimum privilege demonstrated by Ubuntu 22.04 / systemd 249 tests. Any required capability must be explicitly justified; do not copy a broad capability set from another helper without evidence.
-- The helper must have no authority to modify firewall state, services, routes, sysctls, packages, tunnel config, certificates or node keys.
+- The helper's supported code path must never issue firewall mutation requests or modify services, routes, sysctls, packages, tunnel config, certificates or node keys. **This is an intended-code-path guarantee, not an absence-of-authority guarantee:** the verified nftables listing operation requires `CAP_NET_ADMIN`, and that capability also permits firewall administration if the helper is compromised.
 - Protect the helper with strict systemd sandboxing while preserving the narrowly required Netlink access; do not use `PrivateNetwork=true` if that hides the host ruleset from the helper.
 - Bound concurrency, request frequency, process lifetime, stdout/stderr, JSON depth, object count and parser work.
 - Do not log or export the full ruleset. Record only bounded reason codes and safe evidence metadata.
 - Read-only inspection must not require the Agent to run as root, join a privileged group, or expose its API beyond loopback.
 - Stale results are `unknown`; never present an old observation as current.
+
+
+### Empirical privilege boundary — 2026-11-13
+
+A focused, read-only capability matrix ran on an ephemeral GitHub-hosted **Ubuntu 22.04.5 / systemd 249.11-0ubuntu3.23** runner with nftables 1.0.2. Evidence: [workflow run 43418581447](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43418581447), test revision `ca3f128c6576a1d5b08a5f105a148c3301fc7cd8` (harness in draft PR #196).
+
+| Invocation | Effective capability state | Result |
+|---|---|---|
+| Unprivileged `nobody` | No elevated capability | Exit 1 — `Operation not permitted` |
+| `nft --json list ruleset` with only `CAP_NET_ADMIN` | Effective mask `0000000000001000` | Exit 0 |
+| Root with `CAP_NET_ADMIN` removed | Effective mask `000001ffffffefff` (bit 12 absent; other capabilities retained) | Exit 1 — `Operation not permitted` |
+| Root baseline | Full runner capability set | Exit 0 |
+
+The before/after ruleset SHA-256 was identical (`bd0847b270f0edf0ed0da7569b234ba4dc94e14c7b4b78254942389a0fdbf694`). The experiment invoked only `nft --json list ruleset`; it did not invoke a firewall mutation command or intentionally change rules, services, routes, sysctls or host configuration.
+
+**Conclusion for this tested baseline:** `CAP_NET_ADMIN` is required and sufficient for this exact listing operation. Removing it makes the command fail even while other root capabilities remain. The helper therefore necessarily holds a capability that can also mutate firewall state. A fixed argv, code-level command allowlist and sandbox reduce exposure but do not, by themselves, remove that kernel authority. No seccomp/LSM policy that permits listing while rejecting mutation has been demonstrated.
+
+**Evidence boundary:** this was an isolated hosted runner, not either two-host LAB machine. It establishes the command's privilege requirement on the stated Ubuntu 22.04/systemd 249 baseline; it does not prove that every kernel/vendor configuration is identical, nor that a particular service sandbox prevents mutation.
+
+Before implementation, the owner must explicitly accept or reject this residual compromise risk. If accepted, the security review must assess the exact helper boundary and compensating controls. The product must not describe the helper as technically incapable of firewall mutation.
 
 ## 9. Required verification before B3 acceptance
 
@@ -176,6 +196,7 @@ Before implementation:
 2. A focused security review approves the fixed root helper boundary, exact command/capabilities, path-unit file handling and parser fail-closed behavior.
 3. The supported nftables JSON schema and syntax subset are versioned with fixtures.
 4. The implementation plan demonstrates that unsupported firewall state remains Unknown and does not block unrelated tunnel operations.
+5. The owner explicitly accepts the documented residual risk that compromise of a helper holding `CAP_NET_ADMIN` can permit firewall mutation; a claim of kernel-enforced read-only Netlink access is prohibited unless separately proven.
 
 B3 acceptance requires all unit, systemd, installer and read-only LAB evidence above. No firewall mutation is authorized as part of B3. B3 completion does not authorize B2 implementation, Phase 2, or a production release.
 
