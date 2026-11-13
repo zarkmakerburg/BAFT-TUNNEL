@@ -200,6 +200,9 @@ function serve() {
       await baftFields.nth(3).fill('18080');
       await baftFields.nth(4).fill('192.0.2.20');
       await baftNext().click(); // Method
+      // Wait for the method-step DOM to be rendered from the loaded engine catalog.
+      await baftPage.waitForFunction(() =>
+        Array.from(document.querySelectorAll('.choice input[name="engine"]')).some(input => input.value === 'baft'));
       const baftChoice = baftPage.locator('.choice').filter({ hasText: /baft/i });
       const baftChoiceCount = await baftChoice.count();
       const baftChoiceText = baftChoiceCount ? await baftChoice.innerText() : '';
