@@ -111,14 +111,31 @@ if [[ "$STAGING" == "0" ]]; then
     mapfile -t ACTIVE_AGENT_PATHS < <(systemctl list-units --type=path --state=active --no-legend --plain 'baft-tunnel-agent@*.path' | awk '{print $1}')
     mapfile -t ACTIVE_AGENT_SERVICES < <(systemctl list-units --type=service --state=active --no-legend --plain 'baft-tunnel-agent@*.service' | awk '{print $1}')
     # Stop path watchers first, then stop every agent that can create a request.
-    if (("${#ACTIVE_CONTROL_PATHS[@]}")); then
-      systemctl stop "${ACTIVE_CONTROL_PATHS[@]}" || die "could not stop all root control request watchers"
-    fi
-    if (("${#ACTIVE_AGENT_PATHS[@]}")); then
-      systemctl stop "${ACTIVE_AGENT_PATHS[@]}" || die "could not stop all agent path units"
-    fi
-    if (("${#ACTIVE_AGENT_SERVICES[@]}")); then
-      systemctl stop "${ACTIVE_AGENT_SERVICES[@]}" || die "could not stop all agent services"
+    # Stop one unit per invocation: systemctl accepts a list, but a failed batch may have
+    # stopped only a prefix. Continue attempting the whole snapshot, then report the exact
+    # observed state. Never auto-restart writers/watchers while the directory has old perms.
+    stop_snapshot_units() {
+      local label="$1"; shift
+      local unit failed=0
+      for unit in "$@"; do
+        if ! systemctl stop "$unit"; then
+          echo "install-agent-control: failed to stop $label unit $unit" >&2
+          failed=1
+        fi
+      done
+      return "$failed"
+    }
+    STOP_FAILURE=0
+    stop_snapshot_units "root control watcher" "${ACTIVE_CONTROL_PATHS[@]}" || STOP_FAILURE=1
+    stop_snapshot_units "agent path" "${ACTIVE_AGENT_PATHS[@]}" || STOP_FAILURE=1
+    stop_snapshot_units "agent service" "${ACTIVE_AGENT_SERVICES[@]}" || STOP_FAILURE=1
+    if (( STOP_FAILURE )); then
+      echo "install-agent-control: migration aborted before changing directory ownership; no units were restarted." >&2
+      for unit in "${ACTIVE_CONTROL_PATHS[@]}" "${ACTIVE_AGENT_PATHS[@]}" "${ACTIVE_AGENT_SERVICES[@]}"; do
+        state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+        printf 'install-agent-control: snapshot unit state: %s=%s\\n' "$unit" "${state:-unknown}" >&2
+      done
+      die "one or more migration units could not be stopped; inspect the reported states, resolve the cause, and retry"
     fi
     if [[ -n "$(systemctl list-units --type=path --state=active --no-legend --plain 'baft-tunnel-control-*@*.path' | awk '{print $1}')" ]] ||
        [[ -n "$(systemctl list-units --type=service --state=active --no-legend --plain 'baft-tunnel-control-*@*.service' | awk '{print $1}')" ]]; then
