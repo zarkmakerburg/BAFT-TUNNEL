@@ -167,8 +167,9 @@ grep -qx 'd /var/lib/baft-tunnel-control 0700 root root -' "$STAGE/etc/tmpfiles.
 grep -qx 'd /run/baft-tunnel/control 0770 root baft-tunnel-agent -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
 ! grep -qx 'd /run/baft-tunnel/control 0770 root baft-tunnel -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
 grep -qx 'z /run/baft-tunnel/control 0770 root baft-tunnel-agent -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
-grep -Fq 'systemctl stop "baft-tunnel-agent@$INSTANCE.path" "baft-tunnel-agent@$INSTANCE.service"' "$ROOT/scripts/install-agent-control.sh"
-grep -Fq 'pending setup request exists at $SETUP_REQUEST' "$ROOT/scripts/install-agent-control.sh"
+grep -Fq '"${CTL_PATHS[@]}" >/dev/null 2>&1 || true' "$ROOT/scripts/install-agent-control.sh"
+grep -Fq 'pending control request exists at $request' "$ROOT/scripts/install-agent-control.sh"
+grep -Fq 'control request appeared during directory migration' "$ROOT/scripts/install-agent-control.sh"
 grep -Fq 'root:baft-tunnel-agent 770' "$ROOT/scripts/install-agent-control.sh"
 if "$UNINSTALL" --destdir "$STAGE" --purge-config >/dev/null 2>&1; then
   echo "uninstall accepted config purge without --yes" >&2
