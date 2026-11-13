@@ -50,6 +50,7 @@ function serve() {
       page.setDefaultTimeout(7000);
       const apiCalls = [];
       const pageErrors = [];
+      let baftAvailable = false;
       page.on('pageerror', e => pageErrors.push(String(e)));
       await page.addInitScript(([token, locale]) => {
         sessionStorage.setItem('token', token);
@@ -64,15 +65,15 @@ function serve() {
         if (request.method() === 'GET' && url.pathname === '/v1/engines') return route.fulfill({ json: { engines: [
           { id: 'tcp-tls', status: 'stable', guided_setup: { available: true }, directions: ['direct'], evidence: { lab_two_host: { direct: 'pass' } } },
           { id: 'noise-tcp', status: 'experimental', guided_setup: { available: true }, directions: ['direct'], evidence: { lab_two_host: { direct: 'pass' } } },
-          { id: 'baft', status: 'preview', guided_setup: { available: false }, directions: ['direct'] }
+          { id: 'baft', status: 'preview', guided_setup: { available: baftAvailable }, directions: ['direct'] }
         ] } });
         if (request.method() === 'POST' && url.pathname === '/v1/setup/preflight') return route.fulfill({ json: { overall: 'warning', checks: [
           { id: 'pki_files', result: 'warning', scope: 'local', code: 'pf.pki_files.warning', params: {}, evidence: 'certificate set is not installed yet', remediation: 'complete enrollment' },
           { id: 'service_port', result: 'pass', scope: 'local', code: 'pf.service_port.forward_free', params: { port: 18080 }, evidence: '127.0.0.1:18080 is free' }
         ], apply_available: true } });
-        if (request.method() === 'POST' && url.pathname === '/v1/setup/plan') return route.fulfill({ json: { files: [], pending: [], commands: ['sudo baft-tunnel setup init'], config: { engine: 'tcp-tls' } } });
-        if (request.method() === 'POST' && url.pathname === '/v1/pki/csr/create') return route.fulfill({ status: 201, json: { result: 'created', request_id: body.request_id, node_id: body.node_id, expected_server_san: 'DNS:node.example.net', csr_pem: CSR, public_key_sha256: 'a'.repeat(64), private_key_exported: false } });
-        if (request.method() === 'POST' && url.pathname === '/v1/pki/csr/read') return route.fulfill({ status: 200, json: { result: 'retrieved', request_id: body.request_id, node_id: body.node_id, expected_server_san: 'DNS:node.example.net', csr_pem: CSR, public_key_sha256: 'a'.repeat(64), private_key_exported: false } });
+        if (request.method() === 'POST' && url.pathname === '/v1/setup/plan') return route.fulfill({ json: { files: [], pending: [], commands: ['sudo baft-tunnel setup init'], config: { engine: body.engine || 'tcp-tls' } } });
+        if (request.method() === 'POST' && url.pathname === '/v1/pki/csr/create') return route.fulfill({ status: 201, json: { result: 'created', request_id: body.request_id, node_id: body.node_id, expected_server_san: body.profile === 'baft' ? 'DNS:' + body.node_id + '.baft-tunnel.invalid' : 'DNS:node.example.net', csr_pem: CSR, public_key_sha256: 'a'.repeat(64), private_key_exported: false } });
+        if (request.method() === 'POST' && url.pathname === '/v1/pki/csr/read') return route.fulfill({ status: 200, json: { result: 'retrieved', request_id: body.request_id, node_id: body.node_id, expected_server_san: body.profile === 'baft' ? 'DNS:' + body.node_id + '.baft-tunnel.invalid' : 'DNS:node.example.net', csr_pem: CSR, public_key_sha256: 'a'.repeat(64), private_key_exported: false } });
         if (request.method() === 'POST' && url.pathname === '/v1/pki/certificate/install') return route.fulfill({ status: 200, json: { result: 'installed', node_id: body.node_id, certificate_sha256: 'b'.repeat(64), certificate_not_after: 1800000000, crl_seconds_remaining: 864000, active_set: 'c'.repeat(64), service_restarted: false, private_key_exported: false } });
         if (request.method() === 'POST' && url.pathname === '/v1/setup/apply') return route.fulfill({ status: 200, json: { result: 'applied', id: 'apply-test', verification: [], changes: [], not_done: [] } });
         if (request.method() === 'GET' && url.pathname === '/v1/setup/bundle') return route.fulfill({ status: 200, json: { bundle: '{"version":1}', checksum: '11111111-22222222-33333333-44444444', fields: {} } });
@@ -158,6 +159,57 @@ function serve() {
       ok(lang + ' unlocks Init only after successful certificate install', await initButton.isEnabled());
       ok(lang + ' shows installed fingerprint and no service restart', /b{64}/.test(await mainText()) && /restart|راه‌اندازی مجدد/i.test(await mainText()));
       ok(lang + ' has no browser errors', pageErrors.length === 0, pageErrors.join('; '));
+
+      // Re-open the Wizard with a verified Engine Store and exercise the BAFT-specific path.
+      baftAvailable = true;
+      apiCalls.length = 0;
+      await page.reload();
+      await page.waitForSelector('.shell');
+      const baftReverse = page.locator('input[type="radio"][name="direction"][value="reverse"]');
+      ok(lang + ' keeps Reverse disabled for the BAFT Direct-only capability',
+        await baftReverse.count() === 1 && await baftReverse.isDisabled());
+      await page.locator('.choice').first().click(); // Direct
+      await next().click(); // Servers
+      const baftFields = page.locator('.form-grid input');
+      await baftFields.nth(0).fill('node1');
+      await baftFields.nth(1).fill('node2');
+      await baftFields.nth(2).fill('test-tunnel');
+      await baftFields.nth(3).fill('18080');
+      await baftFields.nth(4).fill('192.0.2.20');
+      await next().click(); // Method
+      const baftChoice = page.locator('.choice').filter({ hasText: /BAFT/ });
+      const baftChoiceCount = await baftChoice.count();
+      const baftChoiceText = baftChoiceCount ? await baftChoice.innerText() : '';
+      ok(lang + ' enables BAFT only as Preview when a verified Engine Store is advertised',
+        baftChoiceCount === 1 && /Preview/i.test(baftChoiceText) && !/Ready/i.test(baftChoiceText));
+      if (baftChoiceCount) await baftChoice.click();
+      await page.locator('.nav-row button:not(.primary)').first().click(); // Back to Servers with BAFT selected
+      ok(lang + ' derives BAFT listener identity and hides separate local/peer DNS fields',
+        await page.locator('input[name="localServerName"]').count() === 0 &&
+        await page.locator('input[name="serverName"]').count() === 0);
+      await next().click(); // Method
+      await next().click(); // Preflight
+      await page.locator('.card button.primary').first().click();
+      await page.waitForTimeout(100);
+      await next().click(); // Preview
+      await page.waitForTimeout(150);
+      const baftPlanCall = apiCalls.find(c => c.path === '/v1/setup/plan');
+      ok(lang + ' plans BAFT without caller-supplied peer SNI or certificate pin',
+        baftPlanCall?.body?.engine === 'baft' && !('server_name' in baftPlanCall.body) && !('peer_fingerprint' in baftPlanCall.body));
+      await next().click(); // Apply / pairing
+      await page.waitForTimeout(100);
+      const baftInitConfirm = page.locator('.pair-a-confirm input');
+      if (await baftInitConfirm.count()) await baftInitConfirm.check();
+      const baftCreate = page.locator('button').filter({ hasText: /Create CSR|ساخت CSR/ });
+      if (await baftCreate.count()) await baftCreate.click();
+      await page.waitForTimeout(100);
+      const baftCsrBody = apiCalls.find(c => c.path === '/v1/pki/csr/create')?.body;
+      ok(lang + ' binds BAFT CSR to urn:baft profile and derived node DNS SAN',
+        baftCsrBody?.profile === 'baft' && baftCsrBody?.node_id === 'node1' &&
+        baftCsrBody?.server_name === 'node1.baft-tunnel.invalid' && baftCsrBody?.confirm === true);
+      ok(lang + ' BAFT path never exports a private key',
+        !JSON.stringify(apiCalls).includes('PRIVATE KEY'));
+      ok(lang + ' BAFT path has no browser errors', pageErrors.length === 0, pageErrors.join('; '));
       await context.close();
     }
   } finally {

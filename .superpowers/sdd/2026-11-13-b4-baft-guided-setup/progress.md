@@ -18,6 +18,7 @@ Base: `b12f4a9f14da32d0c2cd0a351a31e231abb5f52c` on `work/b4-baft-engine-setup`.
 - Engine Store missing-current digest test passed; broken-current-link regression is Linux-only and added for CI.
 - `scripts/test-install.sh`: PASS, including mocked preservation of an existing store through upgrade and rollback, and fail-closed invalid-store behavior.
 - `scripts/pki/test-baft-identity-profile.sh`: PASS (BAFT/TCP-TLS profile issuance, cross-profile rejection, dual-profile revocation). Added to `phase1-rust` CI.
+- Extended `scripts/panel-qa/pki-enrollment.js` for English/Persian BAFT Wizard selection, Preview-only label, Direct-only/Reverse-disabled, derived SAN/no separate SNI fields, no peer fingerprint, and profile-bound CSR. Browser execution pending PR Playwright CI.
 - Linux-only BAFT status regression test added to prove planted live-PID Rust session/counter and stale integrity receipts do not promote BAFT tiers; not executable on macOS, scheduled for Ubuntu CI.
 - `cargo fmt --check`, `git diff --check`, `bash -n` for installer/PKI/test scripts, and `node --check panel/pages.js`: passed on latest relevant revisions.
 
@@ -26,4 +27,4 @@ Base: `b12f4a9f14da32d0c2cd0a351a31e231abb5f52c` on `work/b4-baft-engine-setup`.
 - No real BAFT certificate issuance/installation two-node setup or two-host LAB was run. Do not claim B4 acceptance or Apply readiness.
 - Add changed local/peer digest no-write pairing tests and full BAFT CSR→offline issue→install integration tests.
 - Execute Linux-only Engine Store and BAFT status regression tests in Ubuntu CI; complete bilingual panel QA, docs/acceptance reconciliation, and same-SHA release package review.
-- No PR update, merge, release, deploy, host mutation, or Phase transition has occurred. The current feature-branch changes are staged for an integration commit; no product main branch changes have been made.
+- Integration commit `8c062485c8e5094acdb58806b20956e2843fe1d2` is pushed and Draft PR #197 is open. The latest bilingual Wizard QA extension is a follow-up commit in progress. No merge, release, deploy, host mutation, or Phase transition has occurred.
