@@ -1,6 +1,6 @@
 # ADR-0028: Authenticated in-product integrity probe
 
-**Status:** Design approved; B2 implementation-start gate satisfied on 2026-11-12; B2 feature acceptance remains pending.
+**Status:** Design approved; B2 implementation-start gate satisfied on 2026-11-12; B2 runtime merged into `main` on 2026-11-12 (PR #177 through PR #179); B2 feature acceptance remains pending (the latest trusted B2 two-host run failed).
 **Scope:** Phase 1 B2, the panel's **Test tunnel** action and the integrity evidence tier.
 **Builds on:** ADR-0011 (authorization), ADR-0021 (Direct/Reverse topology), ADR-0022 (Apply/Verify/Receipt), ADR-0023 (agent control boundary), ADR-0024 (operations evidence), and `docs/READINESS_CONTRACT.md`.
 
@@ -31,7 +31,7 @@ The project owner selected **Option A — strict coordinated peer-pair upgrade**
 - If one endpoint restarts or is rolled back to v1 while its peer is v2, a new session is unavailable until both endpoints are restored to the same protocol generation.
 - This decision does not claim zero-downtime rolling upgrades and does not change the current implementation baseline: main remains protocol v1 until a separately gated v2 implementation is completed.
 
-The compatibility matrix and pre-implementation contract tests must implement this accepted policy. The implementation-start prerequisites are now satisfied: U7 and B1 are accepted, the independent F0 reviewer approved the design-level trust boundary, and the Option A contract tests passed on exact head `babdb7f5bb82d8235f8f9e8f1145f843c2f8b735` and merged as PR #176 (`74b8ba33b2144c7537f710c720e70e6c25ebfca1`). B2 runtime implementation is tracked in PR #177. This does **not** constitute B2 feature acceptance; real two-host LAB and the remaining acceptance evidence are still required.
+The compatibility matrix and pre-implementation contract tests must implement this accepted policy. The implementation-start prerequisites are now satisfied: U7 and B1 are accepted, the independent F0 reviewer approved the design-level trust boundary, and the Option A contract tests passed on exact head `babdb7f5bb82d8235f8f9e8f1145f843c2f8b735` and merged as PR #176 (`74b8ba33b2144c7537f710c720e70e6c25ebfca1`). B2 runtime implementation merged in PR #177 (through PR #179, `4c8dffd`), and the trusted two-host harness merged in PR #178. This does **not** constitute B2 feature acceptance; the trusted B2 run on `fbac1db` failed in its orchestration step, so the two-host LAB and the remaining acceptance evidence are still required.
 
 ## 1. Dedicated capability; no reuse of TCP forwarding
 
@@ -123,7 +123,7 @@ The following prerequisites defined the B2 implementation-start gate:
 3. **F0 independently reviewed and approved:** a separate trust-boundary/security review must cover the Agent-to-unit socket and process-identity boundary, exact `SO_PEERCRED` UID enforcement, socket ownership/permissions and per-instance isolation, socket lifecycle/restart/stale-socket handling, bounded framing/backlog/deadline, concurrency/rate/resource exhaustion, fail-closed behavior, audit boundaries, local Agent API exposure, and confirmation that the probe grants no systemd/root-helper authority. A static self-review or this ADR alone does not satisfy F0.
 4. **Protocol-v2 compatibility plan accepted:** document the v1/v2 peer-upgrade matrix, mixed-version rejection behavior, no-downgrade guarantee, and impact on new versus already-established v1 sessions; define negative and two-version interoperability tests before implementation.
 
-**Gate status (2026-11-12): SATISFIED.** The prerequisites above have been met and B2 runtime/API/panel implementation is in progress in PR #177. This gate deliberately does not imply that B2 itself is complete or accepted.
+**Gate status (2026-11-12): SATISFIED.** The prerequisites above have been met and B2 runtime/API/panel implementation merged into `main` (PR #177 through PR #179); the trusted B2 harness merged in PR #178. This gate deliberately does not imply that B2 itself is complete or accepted.
 
 ## B2 feature-acceptance gate
 
