@@ -1,6 +1,6 @@
 # ADR-0028: Authenticated in-product integrity probe
 
-**Status:** Design approved; B2 implementation-start gate satisfied on 2026-11-12; B2 runtime merged into `main` on 2026-11-12 (PR #177 through PR #179); B2 feature acceptance remains pending (the latest trusted B2 two-host run failed).
+**Status:** Design approved; B2 implementation-start gate satisfied on 2026-11-12; B2 runtime merged into `main` on 2026-11-12 (PR #177 through PR #179); B2 feature acceptance remains pending (the trusted two-host run failed; its fix merged as PR #192 at `169ba34` and a fresh run is required).
 **Scope:** Phase 1 B2, the panel's **Test tunnel** action and the integrity evidence tier.
 **Builds on:** ADR-0011 (authorization), ADR-0021 (Direct/Reverse topology), ADR-0022 (Apply/Verify/Receipt), ADR-0023 (agent control boundary), ADR-0024 (operations evidence), and `docs/READINESS_CONTRACT.md`.
 
