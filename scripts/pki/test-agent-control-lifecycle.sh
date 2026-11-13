@@ -172,24 +172,28 @@ sudo "$ROOT/scripts/install-agent-control.sh" --instance "$FWD" --listen 127.0.0
 for k in start stop enable disable; do
   sudo systemctl is-active --quiet "baft-tunnel-control-$k@$SERVE.path" || die "path unit $k for $SERVE is not active"
 done
-[[ "$(sudo stat -c '%U:%G %a' /run/baft-tunnel/control)" == "root:baft-tunnel 770" ]] || die "control dir is not root:baft-tunnel 0770"
+[[ "$(sudo stat -c '%U:%G %a' /run/baft-tunnel/control)" == "root:baft-tunnel-agent 770" ]] || die "control dir is not root:baft-tunnel 0770"
 
 # 2. The agent user can request a start, and only for an instance that has a path unit.
-sudo -u baft-tunnel touch "/run/baft-tunnel/control/$SERVE.start" || die "agent user cannot write a request"
+sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/$SERVE.start" || die "agent user cannot write a request"
 wait_state "$SERVE" active || die "request did not start $SERVE"
 [[ "$(sudo systemctl show -p User --value "baft-tunnel@$SERVE.service")" == baft-tunnel ]] || die "unit does not run as baft-tunnel"
 for n in $(seq 1 20); do [[ ! -e "/run/baft-tunnel/control/$SERVE.start" ]] && break; sleep 0.25; done
 [[ ! -e "/run/baft-tunnel/control/$SERVE.start" ]] || die "request file was not consumed"
-sudo -u baft-tunnel touch "/run/baft-tunnel/control/notinstalled.start"
+sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/notinstalled.start"
 sleep 3
 ! sudo systemctl is-active --quiet "baft-tunnel@notinstalled.service" || die "a request without a path unit started a unit"
 sudo rm -f /run/baft-tunnel/control/notinstalled.start
 step "2b malformed/unregistered requests"
 # 2b. Malformed, unregistered, duplicate, stale and symlinked requests (P0-1 acceptance).
 CTL=/run/baft-tunnel/control
+! sudo -u baft-tunnel touch "$CTL/$SERVE.start" 2>/dev/null || die "tunnel service user can write control requests"
+sudo -u baft-tunnel-agent touch "$CTL/$SERVE.start" || die "dedicated agent user cannot write control requests"
+for n in $(seq 1 20); do [[ ! -e "$CTL/$SERVE.start" ]] && break; sleep 0.25; done
+[[ ! -e "$CTL/$SERVE.start" ]] || die "authorization probe request was not consumed"
 units_before="$(systemctl list-units --all --plain --no-legend 'baft-tunnel*' | awk '{print $1}' | sort)"
 for bad in 'bad name' '-lead' 'a.b' 'UP..PER' "$(printf 'x%.0s' $(seq 1 70))" 'notinstalled' 'agentctl-other'; do
-  sudo -u baft-tunnel touch "$CTL/$bad.start" "$CTL/$bad.stop" 2>/dev/null || true
+  sudo -u baft-tunnel-agent touch "$CTL/$bad.start" "$CTL/$bad.stop" 2>/dev/null || true
 done
 sleep 3
 units_after="$(systemctl list-units --all --plain --no-legend 'baft-tunnel*' | awk '{print $1}' | sort)"
@@ -199,7 +203,7 @@ sudo find "$CTL" -maxdepth 1 -type f -delete
 step "2b duplicate request"
 # Duplicate request on a running unit: consumed, unit untouched (same main PID, no restart).
 pid_before="$(sudo systemctl show -p MainPID --value "baft-tunnel@$SERVE.service")"
-sudo -u baft-tunnel touch "$CTL/$SERVE.start"; sleep 1; sudo -u baft-tunnel touch "$CTL/$SERVE.start"
+sudo -u baft-tunnel-agent touch "$CTL/$SERVE.start"; sleep 1; sudo -u baft-tunnel-agent touch "$CTL/$SERVE.start"
 for n in $(seq 1 20); do [[ ! -e "$CTL/$SERVE.start" ]] && break; sleep 0.25; done
 [[ ! -e "$CTL/$SERVE.start" ]] || die "duplicate request was not consumed"
 [[ "$(sudo systemctl show -p MainPID --value "baft-tunnel@$SERVE.service")" == "$pid_before" ]] || die "duplicate start restarted the unit"
@@ -210,23 +214,23 @@ sudo chmod 600 "$TMP/sentinel"
 # Let the second duplicate request finish being consumed before placing the link.
 for n in $(seq 1 40); do [[ ! -e "$CTL/$SERVE.start" ]] && break; sleep 0.25; done
 sleep 2
-sudo -u baft-tunnel ln -sfn "$TMP/sentinel" "$CTL/$SERVE.start" || die "agent user cannot create the test symlink"
+sudo -u baft-tunnel-agent ln -sfn "$TMP/sentinel" "$CTL/$SERVE.start" || die "agent user cannot create the test symlink"
 for n in $(seq 1 20); do [[ ! -e "$CTL/$SERVE.start" && ! -L "$CTL/$SERVE.start" ]] && break; sleep 0.25; done
 [[ ! -L "$CTL/$SERVE.start" ]] || die "symlink request was not removed"
 [[ "$(sudo cat "$TMP/sentinel")" == sentinel ]] || die "symlink request touched its target"
 active "$SERVE" || die "symlink request disturbed $SERVE"
 step "2b stale stop request"
 # Stale request: a file left from before the unit stopped is consumed once and not replayed later.
-sudo -u baft-tunnel touch "$CTL/$SERVE.stop"; wait_state "$SERVE" inactive || die "stop failed"
+sudo -u baft-tunnel-agent touch "$CTL/$SERVE.stop"; wait_state "$SERVE" inactive || die "stop failed"
 sleep 2
 inactive_after="$(sudo systemctl is-active "baft-tunnel@$SERVE.service" || true)"
 [[ "$inactive_after" != active ]] || die "a consumed stop request was replayed into a start"
-sudo -u baft-tunnel touch "$CTL/$SERVE.start"; wait_state "$SERVE" active || die "restart request failed"
+sudo -u baft-tunnel-agent touch "$CTL/$SERVE.start"; wait_state "$SERVE" active || die "restart request failed"
 step "2c no direct systemctl rights"
 # The agent user has no direct systemctl rights (no polkit rule, no sudo).
 ! sudo -u baft-tunnel systemctl --no-ask-password stop "baft-tunnel@$SERVE.service" >/dev/null 2>&1 || die "agent user can stop units directly"
 active "$SERVE" || die "unit stopped by the denied direct stop"
-sudo -u baft-tunnel touch "/run/baft-tunnel/control/$SERVE.stop"
+sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/$SERVE.stop"
 wait_state "$SERVE" inactive || die "stop request did not stop $SERVE"
 
 step "3 Apply start"
@@ -270,7 +274,7 @@ step "3 replay"
 [[ "$(apply "$SERVE" serve ctl-serve-0001 null null | field replayed)" == True ]] || die "idempotent replay failed"
 # The same request on a running unit is refused and changes nothing.
 [[ "$(apply "$SERVE" serve ctl-serve-0002 null null | field result)" == refused ]] || die "running unit was not refused"
-sudo -u baft-tunnel touch "/run/baft-tunnel/control/$SERVE.stop"; wait_state "$SERVE" inactive || die "could not stop $SERVE"
+sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/$SERVE.stop"; wait_state "$SERVE" inactive || die "could not stop $SERVE"
 step "3 failing start rollback"
 # A unit that cannot start (missing certificate): verification fails, Apply stops it and reports rolled_back.
 out="$(apply "$FWD" forward ctl-fwd-0001 '"127.0.0.1"' '"tunnel.example.test"')"
@@ -412,7 +416,7 @@ assert t["tiers"]["authorized_session"]["peer_id"] == "poscli", t
 assert t["tiers"]["integrity"]["result"] == "unknown" and isinstance(t["last_verified_unix"], int), t
 PY
 # Stop the forward node: the session indicator on the serve node must clear.
-sudo -u baft-tunnel touch "/run/baft-tunnel/control/$POS_C.stop"; wait_state "$POS_C" inactive || die "could not stop $POS_C"
+sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/$POS_C.stop"; wait_state "$POS_C" inactive || die "could not stop $POS_C"
 for n in $(seq 1 40); do sudo test -e "/run/baft-tunnel/$POS_S/session.json" || break; sleep 0.5; done
 ! sudo test -e "/run/baft-tunnel/$POS_S/session.json" || die "serve session indicator stayed after the peer left"
 # Without the peer the status drops a tier, diagnostics fail at the session tier, and the last
@@ -442,7 +446,7 @@ wait "$OBS_PID" 2>/dev/null || true; OBS_PID=""
 # Wait until the observing agent has released its port, so the side-effect snapshot is clean.
 for n in $(seq 1 40); do curl -fs --max-time 1 http://127.0.0.1:18091/v1/health >/dev/null 2>&1 || break; sleep 0.25; done
 ! curl -fs --max-time 1 http://127.0.0.1:18091/v1/health >/dev/null 2>&1 || die "observing agent did not stop"
-sudo -u baft-tunnel touch "/run/baft-tunnel/control/$POS_S.stop"; wait_state "$POS_S" inactive || die "could not stop $POS_S"
+sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/$POS_S.stop"; wait_state "$POS_S" inactive || die "could not stop $POS_S"
 kill "$ECHO_PID" 2>/dev/null || true; ECHO_PID=""
 step "3 receipts and side effects"
 nrec="$(sudo find /var/lib/baft-tunnel/agent/receipts -name '*.json' | wc -l)"
