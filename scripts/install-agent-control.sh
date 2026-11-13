@@ -117,10 +117,17 @@ if [[ "$STAGING" == "0" ]]; then
     stop_snapshot_units() {
       local label="$1"; shift
       local unit failed=0
+      local state
       for unit in "$@"; do
         if ! systemctl stop "$unit"; then
-          echo "install-agent-control: failed to stop $label unit $unit" >&2
-          failed=1
+          state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+          case "$state" in
+            inactive|failed) ;; # Already quiescent despite the stop command's nonzero result.
+            *)
+              echo "install-agent-control: failed to stop $label unit $unit (state: ${state:-unknown})" >&2
+              failed=1
+              ;;
+          esac
         fi
       done
       return "$failed"
