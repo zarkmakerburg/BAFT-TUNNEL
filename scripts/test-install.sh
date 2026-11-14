@@ -297,4 +297,4 @@ if [[ -n "$REAL_BIN" ]]; then
 fi
 echo "BAFT_INSTALL_ENGINE_STORE=$ENGINE_TEST"
 
-echo "BAFT_INSTALL_TEST=PASS (staged install, systemd hardening, rollback, baseline credential provisioning/replace/rollback, fail-closed credential checks, safe uninstall, explicit config purge, one-step agent registration, CSR helper unit install, agent and control helper removed)"
+echo "BAFT_INSTALL_TEST=PASS (staged install, systemd hardening, engine-store pointer rollback, rollback, baseline credential provisioning/replace/rollback, fail-closed credential checks, safe uninstall, explicit config purge, one-step agent registration, CSR helper unit install, agent and control helper removed)"
