@@ -107,7 +107,12 @@ if [[ "$STAGING" == "0" ]]; then
   systemctl enable --now "${CTL_PATHS[@]}"
   # The agent starts now: in setup mode (panel pairing) until NAME.json exists, then normally.
   systemctl enable --now "baft-tunnel-agent@$INSTANCE.path"
-  systemctl enable --now "baft-tunnel-agent@$INSTANCE.service" >/dev/null 2>&1
+  if ! systemctl enable --now "baft-tunnel-agent@$INSTANCE.service" >/dev/null 2>&1; then
+    echo "install-agent-control: agent service failed to enable/start: baft-tunnel-agent@$INSTANCE.service" >&2
+    systemctl status "baft-tunnel-agent@$INSTANCE.service" --no-pager >&2 || true
+    journalctl -u "baft-tunnel-agent@$INSTANCE.service" -n 80 --no-pager >&2 || true
+    die "agent service failed to start for instance $INSTANCE"
+  fi
 else
   install -d -m 0700 "$STATE"
 fi
