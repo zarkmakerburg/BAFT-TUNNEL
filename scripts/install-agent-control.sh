@@ -92,7 +92,9 @@ if [[ "$STAGING" == "0" ]]; then
      id -nG "$SERVICE_GROUP" | tr ' ' '\n' | grep -qx "$AGENT_USER"; then
     die "group $AGENT_USER must be exclusive to the dedicated agent account"
   fi
-  if [[ "$CONTROL_DIR_STATE" != "root:baft-tunnel-agent 770" ]]; then
+  MIGRATION_JOURNAL=/var/lib/baft-tunnel-control/migration-v1.units
+  # Resume a partially completed migration even if the directory mode was already changed.
+  if [[ "$CONTROL_DIR_STATE" != "root:baft-tunnel-agent 770" || -e "$MIGRATION_JOURNAL" || -L "$MIGRATION_JOURNAL" ]]; then
     bash "$SCRIPT_DIR/migrate-agent-control-dir.sh" --control-dir "$CONTROL_DIR" --tmpfiles "$TMPF"
   else
     systemd-tmpfiles --create "$TMPF"
