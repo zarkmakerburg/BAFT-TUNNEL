@@ -296,10 +296,10 @@ No new engines or protocols, no Fleet or billing, no React migration, no `noise-
 - Scope: B2 accepted for Direct only. Reverse remains gated by ADR-0021. No release, deploy or Phase 2 transition.
 
 
-### 2026-11-14 — PR #199 control-request boundary (Draft, not merged)
+### 2026-11-14 — PR #199 control-request boundary (merged)
 
-- Owner human review of `02d05213434399c527ea941db3cfa00291063be9`: **APPROVED WITH CONDITIONS** (H-01..H-03 resolved; L-01..L-04 Low, documented in `SECURITY_ASSESSMENT.md`). Not a merge authorization.
-- Evidence at `02d0521`, **CI PASSED / CONTAINER SYSTEMD PASSED** (GitHub Ubuntu 22.04 runner, real systemd 249): phase1-rust [43617041465](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43617041465) with `BAFT_AGENT_CONTROL_MIGRATION_TEST`, `BAFT_AGENT_CONTROL_MIGRATION_SYSTEMD_TEST` (2 active, 1 inactive; `baft-tunnel` write/list denied, agent write allowed, no unit transitions) and `BAFT_AGENT_CONTROL_UPGRADE_TEST` (update.sh path) = PASS; phase0, package/signature and CodSpeed success.
+- Owner human review of `02d05213434399c527ea941db3cfa00291063be9`: **APPROVED WITH CONDITIONS** (H-01..H-03 resolved; L-01..L-04 Low, documented in `SECURITY_ASSESSMENT.md`).
+- Merged under the owner's autonomous mandate as `dc0e947584a62fdb1f2083b23b1200579bc50464` (merge of head `aa1382f`, docs/tests-only delta after the reviewed `02d0521`). Exact-main CI on `dc0e947`: phase1-rust [43620032665](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43620032665) (all migration/upgrade markers PASS), phase0 43620032768, package/signature 43620032649, CodSpeed 43620032567, all success.
 - **NOT VERIFIED**: standalone VM, real two-host LAB, Production. No release or deploy.
-- B4 stays blocked: PR #199 must merge first (owner authorization), then B4 needs its own design/ADR-0019 phase F work and a REAL-LAB run through the Wizard path.
+- B4 is now unblocked by PR #199 and is next: ADR-0019 phase F (`setup plan/init/join` for `baft` Direct, Engine Store install in `install.sh`, Apply start/stop, Wizard selectable), exit evidence REAL-LAB through the Wizard path.
 
