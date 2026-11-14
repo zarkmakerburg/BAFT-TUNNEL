@@ -108,7 +108,6 @@ setup_case() {
   CASE="$TMP/case"
   rm -rf "$CASE"
 mkdir -p "$CASE/state" "$CASE/parent/control"
-  mkdir -p "$CASE/control"
   : > "$CASE/state/active"; : > "$CASE/state/inactive"
   : > "$CASE/state/failed"; : > "$CASE/state/unknown"
   : > "$CASE/state/activating"; : > "$CASE/state/deactivating"
@@ -154,6 +153,25 @@ grep -Fxq "$AGENT_SERVICE" "$CASE/state/active"
 [[ "$(sed -n '10p' "$CASE/log")" == "start $AGENT_PATH" ]]
 [[ "$(sed -n '11p' "$CASE/log")" == "start $AGENT_PATH2" ]]
 [[ "$(sed -n '12p' "$CASE/log")" == "start $AGENT_SERVICE" ]]
+
+# Reject a symlink at the control directory leaf before touching any units.
+setup_case
+rm -rf "$FAKE_CONTROL_DIR"
+mkdir -p "$CASE/target"
+ln -s "$CASE/target" "$FAKE_CONTROL_DIR"
+expect_fail
+! grep -q '^stop ' "$CASE/log"
+
+# Reject a symlinked parent and a parent whose ownership/mode is not trusted.
+setup_case
+mv "$FAKE_CONTROL_PARENT" "$CASE/parent-real"
+ln -s "$CASE/parent-real" "$FAKE_CONTROL_PARENT"
+expect_fail
+! grep -q '^stop ' "$CASE/log"
+setup_case
+printf 'root:root 775\\n' > "$FAKE_CONTROL_PARENT_STATE"
+expect_fail
+! grep -q '^stop ' "$CASE/log"
 
 # A fresh install may not have created the shared request directory yet.
 setup_case
