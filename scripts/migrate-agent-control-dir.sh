@@ -4,6 +4,8 @@
 # then rerun the same install-agent-control.sh --instance NAME registration. Never
 # delete this journal or manually restart watchers while the directory boundary is unsafe.
 set -Eeuo pipefail
+# BAFT_ERR_DIAGNOSTIC: preserve the failing command location on strict-mode exits.
+trap 'rc=$?; printf 'agent-control-migration: unhandled command failure (exit=%s, line=%s, function=%s)\\n' "$rc" "${BASH_LINENO[0]:-?}" "${FUNCNAME[1]:-main}" >&2; exit "$rc"' ERR
 
 CONTROL_DIR=/run/baft-tunnel/control
 TMPFILES=/etc/tmpfiles.d/baft-tunnel-control.conf
