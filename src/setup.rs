@@ -644,7 +644,17 @@ fn tls_material(dir: &Path, node_id: &str, engine: EngineKind) -> Result<(String
     if engine == EngineKind::Baft {
         // Revalidate the selected BAFT profile at Init, not only when the panel imports
         // the certificate. Operators may have copied or restored PKI files manually.
-        let expected_san = format!("DNS:{node_id}.baft-tunnel.invalid");
+        // The CSR enrollment metadata fixes the requested DNS/IP SAN before the offline CA
+        // signs it. Recover the actual signed SAN here rather than inventing a DNS name: real
+        // deployments commonly enroll the serving node's public IP address.
+        let (pin, server_name) = crate::baft_engine::certificate_summary(&cert, node_id)
+            .context("BAFT certificate does not satisfy the exact identity/SAN profile")?;
+        let server_name = server_name.context("BAFT certificate has no DNS or IPv4 server SAN")?;
+        let expected_san = if server_name.parse::<std::net::IpAddr>().is_ok() {
+            format!("IP:{server_name}")
+        } else {
+            format!("DNS:{server_name}")
+        };
         crate::tls::verify_local_certificate(&ca, &crl, &cert, &expected_san)
             .context("BAFT certificate chain, EKU, validity or CRL verification failed")?;
         let certs = crate::tls::certificates(&cert)?;
@@ -658,7 +668,7 @@ fn tls_material(dir: &Path, node_id: &str, engine: EngineKind) -> Result<(String
             crate::pki_helper::IdentityProfile::Baft,
         )
         .context("BAFT certificate does not satisfy the exact identity/SAN profile")?;
-        crate::baft_engine::certificate_summary(&cert, node_id)
+        Ok((pin, Some(server_name)))
     } else {
         crate::tls::node_certificate_summary(&cert, node_id)
     }
@@ -1177,10 +1187,28 @@ mod tests {
         ca: &crate::tls::tests::TestCa,
         uri: &str,
     ) -> PathBuf {
+        let server_name = format!("{node}.baft-tunnel.invalid");
+        install_pki_uri_with_server_name(root, dir_name, node, ca, uri, &server_name)
+    }
+
+    fn install_pki_uri_with_server_name(
+        root: &Path,
+        dir_name: &str,
+        node: &str,
+        ca: &crate::tls::tests::TestCa,
+        uri: &str,
+        server_name: &str,
+    ) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let dir = root.join(dir_name);
         std::fs::create_dir_all(&dir).unwrap();
-        let (cert, key) = crate::tls::tests::leaf(&dir, &format!("{node}-gen"), uri, &ca.issuer);
+        let (cert, key) = crate::tls::tests::leaf_with_server_name(
+            &dir,
+            &format!("{node}-gen"),
+            uri,
+            server_name,
+            &ca.issuer,
+        );
         std::fs::rename(cert, dir.join("node.crt")).unwrap();
         std::fs::rename(key, dir.join("node.key")).unwrap();
         std::fs::set_permissions(dir.join("node.key"), std::fs::Permissions::from_mode(0o600))
@@ -1230,7 +1258,7 @@ mod tests {
         };
         assert_eq!(load(&sd)["peer_fingerprint"], forward_bundle.public);
         assert_eq!(load(&fd)["peer_fingerprint"], serve_bundle.public);
-        assert_eq!(load(&fd)["server_name"], "localhost");
+        assert_eq!(load(&fd)["server_name"], "abroad.baft-tunnel.invalid");
         assert!(load(&sd).get("server_name").is_none());
         // The private key is never copied into the bundle or state.
         let key = std::fs::read_to_string(sd.join("node.key")).unwrap();
@@ -1268,7 +1296,10 @@ mod tests {
         let serve_bundle: Bundle =
             serde_json::from_slice(&std::fs::read(&a.bundle_path).unwrap()).unwrap();
         assert_eq!(serve_bundle.engine, "baft");
-        assert_eq!(serve_bundle.server_name.as_deref(), Some("localhost"));
+        assert_eq!(
+            serve_bundle.server_name.as_deref(),
+            Some("abroad.baft-tunnel.invalid")
+        );
         join(&sd, &b.bundle_path, &b.checksum).unwrap();
         join(&fd, &a.bundle_path, &a.checksum).unwrap();
         let load = |d: &Path| -> Value {
@@ -1285,6 +1316,27 @@ mod tests {
         assert!(serve.get("peer_fingerprint").is_none());
         assert_eq!(forward["peer_fingerprint"], serve_bundle.public);
         assert_eq!(forward["server_name"], "abroad.baft-tunnel.invalid");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn baft_setup_accepts_the_enrolled_ipv4_server_san() {
+        let root = temp("baft-ip-san");
+        let ca = crate::tls::tests::make_ca(&root, "ca");
+        let dir = install_pki_uri_with_server_name(
+            &root,
+            "serve",
+            "abroad",
+            &ca,
+            "urn:baft:node:abroad",
+            "203.0.113.10",
+        );
+        let mut req = tls_side(&root, Role::Serve, "abroad", "iran", dir.clone());
+        req.engine = EngineKind::Baft;
+        let result = init(&req, None).unwrap();
+        let bundle: Bundle =
+            serde_json::from_slice(&std::fs::read(&result.bundle_path).unwrap()).unwrap();
+        assert_eq!(bundle.server_name.as_deref(), Some("203.0.113.10"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
