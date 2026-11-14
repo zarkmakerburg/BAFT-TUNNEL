@@ -25,6 +25,7 @@ mode_of() {
 write_fake 0.1.0
 "$INSTALL" --binary "$FAKE" --destdir "$STAGE" >/dev/null
 [[ -x "$STAGE/usr/local/lib/baft-tunnel/scripts/quick-install.sh" ]]
+[[ -f "$STAGE/usr/local/lib/baft-tunnel/scripts/migrate-agent-control-dir.sh" ]]
 BIN="$STAGE/usr/local/bin/baft-tunnel"
 UNIT="$STAGE/etc/systemd/system/baft-tunnel@.service"
 [[ "$("$BIN" --version)" == "baft-tunnel 0.1.0" ]]
