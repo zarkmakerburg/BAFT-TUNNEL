@@ -204,7 +204,7 @@ engine_rollback_fail() {
     echo "--- engine store state ---" >&2
     ls -la "$ENGINE_DIR" "$ENGINE_DIR/releases" >&2 || true
     for pointer in current previous; do
-      [[ ! -L "$ENGINE_DIR/$pointer" ]] || printf '%s -> %s\\n' "$pointer" "$(readlink "$ENGINE_DIR/$pointer")" >&2
+      [[ ! -L "$ENGINE_DIR/$pointer" ]] || printf '%s -> %s\n' "$pointer" "$(readlink "$ENGINE_DIR/$pointer")" >&2
     done
   fi
   exit 1
@@ -215,7 +215,7 @@ cat > "$ENGINE_FAKE" <<'EOF_ENGINE_FAKE'
 set -Eeuo pipefail
 if [[ "${1:-}" == "--version" ]]; then echo "baft-tunnel engine-test"; exit 0; fi
 if [[ "${1:-}" == "engine" && "${2:-}" == "manifest" ]]; then
-  printf '{"engines":[{"id":"baft"}]}\\n'
+  printf '{"engines":[{"id":"baft"}]}\n'
   exit 0
 fi
 if [[ "${1:-}" == "engine" && "${2:-}" == "install" ]]; then
@@ -254,11 +254,11 @@ ENGINE_DIR="$ENGINE_FAIL_STAGE/usr/local/lib/baft-tunnel-engines/baft"
 OLD_CURRENT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 OLD_PREVIOUS="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 mkdir -p "$ENGINE_DIR/releases/$OLD_CURRENT" "$ENGINE_DIR/releases/$OLD_PREVIOUS"
-printf 'old-current\\n' > "$ENGINE_DIR/releases/$OLD_CURRENT/engine"
-printf 'old-previous\\n' > "$ENGINE_DIR/releases/$OLD_PREVIOUS/engine"
+printf 'old-current\n' > "$ENGINE_DIR/releases/$OLD_CURRENT/engine"
+printf 'old-previous\n' > "$ENGINE_DIR/releases/$OLD_PREVIOUS/engine"
 ln -s "releases/$OLD_CURRENT" "$ENGINE_DIR/current"
 ln -s "releases/$OLD_PREVIOUS" "$ENGINE_DIR/previous"
-printf 'candidate-engine\\n' > "$TMP/engine-candidate"
+printf 'candidate-engine\n' > "$TMP/engine-candidate"
 if BAFT_TEST_FAIL_VERIFY=1 bash -x "$INSTALL" --binary "$ENGINE_FAKE" --baft-engine "$TMP/engine-candidate" --destdir "$ENGINE_FAIL_STAGE" >"$TMP/engine-fail.log" 2>&1; then
   engine_rollback_fail "engine verification failure unexpectedly succeeded"
 fi
