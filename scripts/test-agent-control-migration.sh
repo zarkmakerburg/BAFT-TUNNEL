@@ -18,7 +18,7 @@ set -Eeuo pipefail
 contains() { grep -Fxq -- "$2" "$1" 2>/dev/null; }
 add_state() {
   local state=$1 unit=$2 file="$FAKE_STATE_DIR/$1"
-  for f in active inactive failed unknown; do
+  for f in active inactive failed unknown activating deactivating; do
     grep -Fxv -- "$unit" "$FAKE_STATE_DIR/$f" > "$FAKE_STATE_DIR/$f.tmp" 2>/dev/null || true
     mv "$FAKE_STATE_DIR/$f.tmp" "$FAKE_STATE_DIR/$f"
   done
@@ -37,7 +37,7 @@ case "$cmd" in
     done
     [[ "$kind" == path || "$kind" == service ]] || exit 2
     files=(active)
-    [[ "$all" == 1 ]] && files=(active inactive failed unknown)
+    [[ "$all" == 1 ]] && files=(active inactive failed unknown activating deactivating)
     for state_file in "${files[@]}"; do
       while IFS= read -r unit; do
         [[ -n "$unit" ]] || continue
@@ -55,6 +55,8 @@ case "$cmd" in
     if contains "$FAKE_STATE_DIR/active" "$unit"; then echo active; exit 0; fi
     if contains "$FAKE_STATE_DIR/failed" "$unit"; then echo failed; exit 1; fi
     if contains "$FAKE_STATE_DIR/unknown" "$unit"; then echo unknown; exit 4; fi
+    if contains "$FAKE_STATE_DIR/activating" "$unit"; then echo activating; exit 0; fi
+    if contains "$FAKE_STATE_DIR/deactivating" "$unit"; then echo deactivating; exit 0; fi
     echo inactive; exit 3
     ;;
   stop)
@@ -108,6 +110,7 @@ setup_case() {
   mkdir -p "$CASE/control"
   : > "$CASE/state/active"; : > "$CASE/state/inactive"
   : > "$CASE/state/failed"; : > "$CASE/state/unknown"
+  : > "$CASE/state/activating"; : > "$CASE/state/deactivating"
   : > "$CASE/log"
   printf 'root:baft-tunnel 770\n' > "$CASE/control-state"
   printf '%s\n' "$CONTROL" "$AGENT_PATH" "$AGENT_SERVICE" > "$CASE/state/active"
@@ -156,12 +159,21 @@ expect_fail
 setup_case
 : > "$REQUEST_FILE"
 expect_fail
+[[ -e "$REQUEST_FILE" ]]
 ! grep -q '^stop ' "$CASE/log"
 
-# Stop failure (including unknown post-stop state) is fail-closed and recoverable.
+# Partial stop failures at each dependency stage, including an unknown state,
+# never change ownership or restart any unit. A later retry consumes the journal.
+for failed_unit in "$CONTROL" "$AGENT_PATH" "$AGENT_SERVICE"; do
+  setup_case
+  STOP_FAIL_UNIT="$failed_unit" run_helper >"$CASE/out" 2>&1 && exit 1
+  [[ -f "$CASE/state-dir/migration-v1.units" ]]
+  [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel 770' ]]
+  ! grep -q '^start ' "$CASE/log"
+done
 setup_case
 STOP_FAIL_UNIT="$AGENT_PATH" STOP_FAIL_UNKNOWN=1 run_helper >"$CASE/out" 2>&1 && exit 1
-[[ -f "$CASE/state-dir/migration-v1.units" ]]
+grep -q 'state: unknown' "$CASE/out"
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel 770' ]]
 ! grep -q '^start ' "$CASE/log"
 run_helper
@@ -180,12 +192,14 @@ TMPFILES_BAD_STATE=1 run_helper >"$CASE/out" 2>&1 && exit 1
 setup_case
 REQUEST_ON_STOP_UNIT="$CONTROL" run_helper >"$CASE/out" 2>&1 && exit 1
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel 770' ]]
+[[ -e "$REQUEST_FILE" ]]
 ! grep -q '^start ' "$CASE/log"
 rm -f "$REQUEST_FILE"
 run_helper
 setup_case
 REQUEST_ON_TMPFILES=1 run_helper >"$CASE/out" 2>&1 && exit 1
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
+[[ -e "$REQUEST_FILE" ]]
 ! grep -q '^start ' "$CASE/log"
 rm -f "$REQUEST_FILE"
 run_helper
@@ -197,12 +211,17 @@ DAEMON_RELOAD_FAIL=1 run_helper >"$CASE/out" 2>&1 && exit 1
 run_helper
 [[ ! -e "$CASE/state-dir/migration-v1.units" ]]
 
-# Partial restore failure is reported; journal survives and a rerun completes recovery.
-setup_case
-START_FAIL_UNIT="$AGENT_SERVICE" run_helper >"$CASE/out" 2>&1 && exit 1
-[[ -f "$CASE/state-dir/migration-v1.units" ]]
-run_helper
-[[ ! -e "$CASE/state-dir/migration-v1.units" ]]
-grep -Fxq "$AGENT_SERVICE" "$CASE/state/active"
+# Every restoration-start failure is reported; journal survives and a rerun
+# completes recovery without activating units that were inactive in the snapshot.
+for failed_unit in "$CONTROL" "$CONTROL2" "$AGENT_PATH" "$AGENT_PATH2" "$AGENT_SERVICE"; do
+  setup_case
+  START_FAIL_UNIT="$failed_unit" run_helper >"$CASE/out" 2>&1 && exit 1
+  [[ -f "$CASE/state-dir/migration-v1.units" ]]
+  grep -q "could not restore" "$CASE/out"
+  run_helper
+  [[ ! -e "$CASE/state-dir/migration-v1.units" ]]
+  grep -Fxq "$failed_unit" "$CASE/state/active"
+  ! grep -Fxq "$INACTIVE_AGENT" "$CASE/state/active"
+done
 
 echo "BAFT_AGENT_CONTROL_MIGRATION_TEST=PASS (preflight refusal, ordered quiescence, verified ownership, request-race refusal, tmpfiles and daemon-reload failures, partial restore recovery)"
