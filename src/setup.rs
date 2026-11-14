@@ -1300,7 +1300,7 @@ mod tests {
         req.engine = EngineKind::Baft;
         let error = init(&req, None).unwrap_err();
         assert!(
-            format!("{error:#}").contains("urn:baft:node:abroad"),
+            format!("{error:#}").contains("exact identity/SAN profile"),
             "{error:#}"
         );
         assert!(!dir.join(STATE_FILE).exists());
