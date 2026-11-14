@@ -116,6 +116,7 @@ setup_case() {
   : > "$CASE/log"
   printf 'root:baft-tunnel 770\n' > "$CASE/control-state"
   printf '%s\n' "$CONTROL" "$AGENT_PATH" "$AGENT_SERVICE" > "$CASE/state/active"
+  printf '%s\n' "$INACTIVE_AGENT" > "$CASE/state/inactive"
   export FAKE_STATE_DIR="$CASE/state" FAKE_CONTROL_DIR="$CASE/control"
   export FAKE_CONTROL_STATE="$CASE/control-state" FAKE_LOG="$CASE/log"
   export REQUEST_FILE="$CASE/control/iran.start"
