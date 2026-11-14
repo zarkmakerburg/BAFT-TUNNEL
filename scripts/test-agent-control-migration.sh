@@ -27,19 +27,27 @@ add_state() {
 cmd=$1; shift
 case "$cmd" in
   list-units)
-    kind= pattern=
+    kind= pattern= all=0
     for arg in "$@"; do
-      case "$arg" in --type=*) kind="${arg#--type=}" ;; *) pattern="$arg" ;; esac
+      case "$arg" in
+        --type=*) kind="${arg#--type=}" ;;
+        --all) all=1 ;;
+        *) pattern="$arg" ;;
+      esac
     done
     [[ "$kind" == path || "$kind" == service ]] || exit 2
-    while IFS= read -r unit; do
-      [[ -n "$unit" ]] || continue
-      [[ "$unit" == $pattern ]] || continue
-      if [[ "$kind" == path && "$unit" == *.path ]] ||
-         [[ "$kind" == service && "$unit" == *.service ]]; then
-        printf '%s loaded active running fake\n' "$unit"
-      fi
-    done < "$FAKE_STATE_DIR/active"
+    files=(active)
+    [[ "$all" == 1 ]] && files=(active inactive failed unknown)
+    for state_file in "${files[@]}"; do
+      while IFS= read -r unit; do
+        [[ -n "$unit" ]] || continue
+        [[ "$unit" == $pattern ]] || continue
+        if [[ "$kind" == path && "$unit" == *.path ]] ||
+           [[ "$kind" == service && "$unit" == *.service ]]; then
+          printf '%s loaded active running fake\\n' "$unit"
+        fi
+      done < "$FAKE_STATE_DIR/$state_file"
+    done
     ;;
   is-active)
     [[ "${1:-}" == --quiet ]] && shift
@@ -130,9 +138,15 @@ grep -Fxq "$AGENT_PATH" "$CASE/state/active"
 grep -Fxq "$AGENT_SERVICE" "$CASE/state/active"
 ! grep -Fxq "$INACTIVE_AGENT" "$CASE/log"
 [[ "$(sed -n '1p' "$CASE/log")" == "stop $CONTROL" ]]
-[[ "$(sed -n '2p' "$CASE/log")" == "stop $AGENT_PATH" ]]
-[[ "$(sed -n '3p' "$CASE/log")" == "stop $AGENT_SERVICE" ]]
-[[ "$(sed -n '6p' "$CASE/log")" == "start $CONTROL" ]]
+[[ "$(sed -n '2p' "$CASE/log")" == "stop $CONTROL2" ]]
+[[ "$(sed -n '3p' "$CASE/log")" == "stop $AGENT_PATH" ]]
+[[ "$(sed -n '4p' "$CASE/log")" == "stop $AGENT_PATH2" ]]
+[[ "$(sed -n '5p' "$CASE/log")" == "stop $AGENT_SERVICE" ]]
+[[ "$(sed -n '8p' "$CASE/log")" == "start $CONTROL" ]]
+[[ "$(sed -n '9p' "$CASE/log")" == "start $CONTROL2" ]]
+[[ "$(sed -n '10p' "$CASE/log")" == "start $AGENT_PATH" ]]
+[[ "$(sed -n '11p' "$CASE/log")" == "start $AGENT_PATH2" ]]
+[[ "$(sed -n '12p' "$CASE/log")" == "start $AGENT_SERVICE" ]]
 
 # Active root helper and pre-existing pending request must refuse before stopping.
 setup_case
