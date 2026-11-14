@@ -224,6 +224,7 @@ run_helper
 setup_case
 DAEMON_RELOAD_FAIL=1 run_helper >"$CASE/out" 2>&1 && exit 1
 ! grep -q '^start ' "$CASE/log"
+unset DAEMON_RELOAD_FAIL
 run_helper
 [[ ! -e "$CASE/state-dir/migration-v1.units" ]]
 
