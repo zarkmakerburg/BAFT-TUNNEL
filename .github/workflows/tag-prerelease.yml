@@ -1,0 +1,73 @@
+name: Tag a signed prerelease from reviewed main
+
+# Creates an annotated prerelease tag (vX.Y.Z-rc.N) on a commit of main whose required
+# checks are green, then dispatches release.yml on that tag (tags pushed with
+# GITHUB_TOKEN do not trigger push workflows; workflow_dispatch is allowed).
+# Stable tags are never created here.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Prerelease tag to create (vX.Y.Z-rc.N)
+        required: true
+        type: string
+      sha:
+        description: Full commit SHA on main to tag
+        required: true
+        type: string
+      confirm:
+        description: Type TAG_SIGNED_PRERELEASE to authorize
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag-prerelease
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write   # create the tag
+      actions: write    # dispatch release.yml on the tag
+      checks: read
+    env:
+      TAG: ${{ inputs.tag }}
+      SHA: ${{ inputs.sha }}
+      CONFIRM: ${{ inputs.confirm }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Validate inputs, main ancestry and required checks
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == TAG_SIGNED_PRERELEASE ]] || { echo '::error::explicit confirmation required'; exit 2; }
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || { echo '::error::only vX.Y.Z-rc.N prerelease tags'; exit 2; }
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::sha must be a full commit SHA'; exit 2; }
+          git merge-base --is-ancestor "$SHA" "$GITHUB_SHA" || { echo '::error::sha is not on main'; exit 2; }
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo '::error::tag already exists; tags are immutable'; exit 2
+          fi
+          for check in rust ubuntu-2204-baseline lab-config; do
+            ok="$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?check_name=$check" \
+              --jq '[.check_runs[]|select(.conclusion=="success")]|length')"
+            [[ "$ok" -ge 1 ]] || { echo "::error::required check $check is not green on $SHA"; exit 2; }
+          done
+      - name: Create the annotated tag and dispatch the signed release
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$TAG" "$SHA" -m "$TAG (prerelease) from main $SHA"
+          git push origin "refs/tags/$TAG"
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+          echo "tagged $TAG at $SHA; release.yml dispatched" >> "$GITHUB_STEP_SUMMARY"
