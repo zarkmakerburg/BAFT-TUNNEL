@@ -204,12 +204,15 @@ expect_fail
 setup_case
 mkdir -p "$CASE/state-dir"
 chmod 0700 "$CASE/state-dir"
-(
+if (
   exec 8>"$CASE/state-dir/migration.lock"
   flock -n 8
   chmod 0600 "$CASE/state-dir/migration.lock"
   run_helper >"$CASE/out" 2>&1
-) && exit 1
+); then
+  echo "expected concurrent migration to fail while the lock is held" >&2
+  exit 1
+fi
 grep -q 'another control-directory migration is already running' "$CASE/out"
 ! grep -q '^stop ' "$CASE/log"
 
