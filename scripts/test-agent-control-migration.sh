@@ -12,6 +12,7 @@ cat > "$BIN/stat" <<'SH'
 [[ "${1:-}" == -c ]] || exit 2
 if [[ "${3:-}" == "$FAKE_CONTROL_DIR" ]]; then cat "$FAKE_CONTROL_STATE"; elif [[ "${3:-}" == "$FAKE_CONTROL_PARENT" ]]; then cat "$FAKE_CONTROL_PARENT_STATE"; else /usr/bin/stat "$@"; fi
 SH
+cat > "$BIN/systemctl" <<'SH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 contains() { grep -Fxq -- "$2" "$1" 2>/dev/null; }
