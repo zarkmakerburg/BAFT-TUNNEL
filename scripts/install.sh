@@ -280,7 +280,7 @@ if [[ -n "$BAFT_ENGINE" ]]; then
         [[ -L "$link" ]] || die "refusing non-symlink engine pointer: $link"
         target="$(readlink -- "$link")"
         [[ "$target" =~ ^releases/[0-9a-f]{64}$ ]] || die "refusing malformed engine pointer: $link"
-        printf '%s\\n' "$target" > "$BACKUP_DIR/engine-$pointer-target"
+        printf '%s\n' "$target" > "$BACKUP_DIR/engine-$pointer-target"
       fi
     done
   fi
