@@ -174,6 +174,42 @@ printf 'root:root 775\\n' > "$FAKE_CONTROL_PARENT_STATE"
 expect_fail
 ! grep -q '^stop ' "$CASE/log"
 
+# Unsafe pre-existing state-directory permissions are rejected, not silently repaired.
+setup_case
+mkdir -p "$CASE/state-dir"
+chmod 0777 "$CASE/state-dir"
+expect_fail
+[[ "$(stat -c '%a' "$CASE/state-dir")" == 777 ]]
+! grep -q '^stop ' "$CASE/log"
+
+# Malformed journals and symlinked lock files fail before any unit transition.
+setup_case
+mkdir -p "$CASE/state-dir"
+chmod 0700 "$CASE/state-dir"
+printf 'unknown\\tunit\\n' > "$CASE/state-dir/migration-v1.units"
+chmod 0600 "$CASE/state-dir/migration-v1.units"
+expect_fail
+! grep -q '^stop ' "$CASE/log"
+setup_case
+mkdir -p "$CASE/state-dir"
+chmod 0700 "$CASE/state-dir"
+ln -s "$CASE/lock-target" "$CASE/state-dir/migration.lock"
+expect_fail
+! grep -q '^stop ' "$CASE/log"
+
+# A concurrent migration holding the lock must prevent a second invocation.
+setup_case
+mkdir -p "$CASE/state-dir"
+chmod 0700 "$CASE/state-dir"
+(
+  exec 8>"$CASE/state-dir/migration.lock"
+  flock -n 8
+  chmod 0600 "$CASE/state-dir/migration.lock"
+  run_helper >"$CASE/out" 2>&1
+) && exit 1
+grep -q 'another control-directory migration is already running' "$CASE/out"
+! grep -q '^stop ' "$CASE/log"
+
 # A fresh install may not have created the shared request directory yet.
 setup_case
 rm -rf "$FAKE_CONTROL_DIR"
