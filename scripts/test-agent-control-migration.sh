@@ -170,7 +170,7 @@ ln -s "$CASE/parent-real" "$FAKE_CONTROL_PARENT"
 expect_fail
 ! grep -q '^stop ' "$CASE/log"
 setup_case
-printf 'root:root 775\\n' > "$FAKE_CONTROL_PARENT_STATE"
+printf 'root:root 775\n' > "$FAKE_CONTROL_PARENT_STATE"
 expect_fail
 ! grep -q '^stop ' "$CASE/log"
 
@@ -186,7 +186,7 @@ expect_fail
 setup_case
 mkdir -p "$CASE/state-dir"
 chmod 0700 "$CASE/state-dir"
-printf 'unknown\\tunit\\n' > "$CASE/state-dir/migration-v1.units"
+printf 'unknown\tunit\n' > "$CASE/state-dir/migration-v1.units"
 chmod 0600 "$CASE/state-dir/migration-v1.units"
 expect_fail
 ! grep -q '^stop ' "$CASE/log"
