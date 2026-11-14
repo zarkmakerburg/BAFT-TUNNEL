@@ -21,6 +21,7 @@ JOURNAL="$STATE_DIR/migration-v1.units"
 [[ ! -L "$STATE_DIR" ]] || die "state directory must not be a symlink"
 mkdir -p "$STATE_DIR"
 chmod 0700 "$STATE_DIR"
+umask 077
 [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || die "invalid migration state directory"
 [[ "$(stat -c '%U:%G %a' "$STATE_DIR")" == "$(id -un):$(id -gn) 700" ]] || die "migration state directory must be private to the invoking privileged account"
 [[ ! -L "$JOURNAL" ]] || die "migration journal must not be a symlink"
