@@ -10,7 +10,7 @@ mkdir -p "$BIN"
 cat > "$BIN/stat" <<'SH'
 #!/usr/bin/env bash
 [[ "${1:-}" == -c ]] || exit 2
-cat "$FAKE_CONTROL_STATE"
+if [[ "${3:-}" == "$FAKE_CONTROL_DIR" ]]; then cat "$FAKE_CONTROL_STATE"; else /usr/bin/stat "$@"; fi
 SH
 cat > "$BIN/systemctl" <<'SH'
 #!/usr/bin/env bash
@@ -128,7 +128,7 @@ grep -Fxq "$AGENT_SERVICE" "$CASE/state/active"
 [[ "$(sed -n '1p' "$CASE/log")" == "stop $CONTROL" ]]
 [[ "$(sed -n '2p' "$CASE/log")" == "stop $AGENT_PATH" ]]
 [[ "$(sed -n '3p' "$CASE/log")" == "stop $AGENT_SERVICE" ]]
-[[ "$(sed -n '5p' "$CASE/log")" == "start $CONTROL" ]]
+[[ "$(sed -n '6p' "$CASE/log")" == "start $CONTROL" ]]
 
 # Active root helper and pre-existing pending request must refuse before stopping.
 setup_case
