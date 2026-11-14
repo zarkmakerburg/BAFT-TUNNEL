@@ -1076,8 +1076,11 @@ pub(crate) mod tests {
         uri: &str,
         issuer: &Issuer<'static, KeyPair>,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
-        let node_id = uri.rsplit(':').next().unwrap_or("node");
-        let server_name = format!("{node_id}.baft-tunnel.invalid");
+        // tcp-tls test handshakes dial "localhost"; BAFT leaves carry the fixed listener name.
+        let server_name = uri
+            .strip_prefix("urn:baft:node:")
+            .map(|node_id| format!("{node_id}.baft-tunnel.invalid"))
+            .unwrap_or_else(|| "localhost".to_owned());
         leaf_with_server_name(dir, name, uri, &server_name, issuer)
     }
 
