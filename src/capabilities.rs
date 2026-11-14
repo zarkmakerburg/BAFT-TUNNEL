@@ -73,7 +73,7 @@ fn baft() -> Value {
     json!({
         "id": "baft",
         "status": "preview",
-        "guided_setup": {"available": false, "reason": "setup cannot create a baft configuration yet (ADR-0019 phase F)"},
+        "guided_setup": {"available": true, "requires": ["engine-store", "offline-ca-baft-profile"]},
         "directions": ["direct"],
         "reverse": {"state": "unavailable", "reason": "engine-has-no-reverse; its LAB reverse case only swaps which host dials"},
         "security": "BAFT h2 mutual TLS carrier (separate Go engine host, pinned release digest)",
@@ -234,9 +234,8 @@ mod tests {
         assert_eq!(baft["limits"]["end_to_end_status"], "unknown");
         assert!(supports_direction("baft", "direct"));
         assert!(!supports_direction("baft", "reverse"));
-        // Shown but not selectable in the Wizard until setup can write its config.
-        assert_eq!(baft["guided_setup"]["available"], false);
-        for e in engines.iter().filter(|e| e["id"] != "baft") {
+        // Selectable in the Wizard since guided setup writes its config (B4); still Preview.
+        for e in engines {
             assert_eq!(e["guided_setup"]["available"], true);
         }
         assert!(engines.iter().all(|e| e["status"] != "ready"));

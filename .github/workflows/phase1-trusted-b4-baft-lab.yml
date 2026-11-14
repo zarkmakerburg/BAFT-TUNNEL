@@ -1,0 +1,156 @@
+name: B4 trusted two-host BAFT Wizard LAB
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact reviewed-main commit to build and test
+        required: true
+        type: string
+      engine_release:
+        description: Signed prerelease whose baft-engine asset is installed (its digest must equal the candidate's engine-manifest pin)
+        required: true
+        type: string
+        default: v0.1.0-rc.7
+      confirm:
+        description: Type RUN_TRUSTED_PHASE1_LAB to authorize the isolated B4 baft Wizard two-host test
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-trusted-lab-hosts
+  cancel-in-progress: false
+
+jobs:
+  validate-candidate:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      candidate_sha: ${{ steps.candidate.outputs.sha }}
+    steps:
+      - name: Require explicit approval and immutable candidate
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          REQUESTED_SHA: ${{ inputs.candidate_sha }}
+          ENGINE_RELEASE: ${{ inputs.engine_release }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == RUN_TRUSTED_PHASE1_LAB ]] || { echo 'Explicit confirmation is required' >&2; exit 2; }
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate_sha must be a full lowercase 40-character SHA' >&2; exit 2; }
+          [[ "$ENGINE_RELEASE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo 'engine_release must be a release tag' >&2; exit 2; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin candidate and prove product sources match trusted main
+        id: candidate
+        env:
+          REQUESTED_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse --verify "$REQUESTED_SHA^{commit}")"
+          [[ "$actual" == "$REQUESTED_SHA" ]]
+          git merge-base --is-ancestor "$actual" "$GITHUB_SHA"
+          unexpected="$(git diff --name-only "$actual" "$GITHUB_SHA" | grep -v -E '^(\.github/workflows/phase0\.yml|\.github/workflows/phase1-trusted-lab\.yml|\.github/workflows/phase1-trusted-d2-lab\.yml|\.github/workflows/phase1-trusted-u7-lab\.yml|lab/trusted/test-workflow-boundary\.sh|lab/real-hosts/ops-stage\.sh|lab/real-hosts/prepare-ops-package\.sh|lab/real-hosts/test-prepare-ops-package\.sh|lab/real-hosts/panel-pairing-stage\.sh|\.github/workflows/phase1-trusted-b4-baft-lab\.yml|scripts/pki/test-panel-tls-lab-stage\.sh|docs/PHASE1_IMPLEMENTATION_STATUS\.md|docs/PRODUCT_ROADMAP\.md|docs/PROJECT_BOARD\.md|docs/REMAINING_WORK_PLAN\.md)$' || true)"
+          [[ -z "$unexpected" ]] || { printf 'Candidate and trusted-main product sources differ:\n%s\n' "$unexpected" >&2; exit 2; }
+          echo "sha=$actual" >> "$GITHUB_OUTPUT"
+          echo "B4_CANDIDATE_SHA=$actual" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Product source tree matches the candidate; only trusted LAB workflow plumbing differs.' >> "$GITHUB_STEP_SUMMARY"
+
+  build-candidate:
+    needs: validate-candidate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ needs.validate-candidate.outputs.candidate_sha }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build candidate binary without LAB credentials
+        run: cargo +1.88.0 build --locked --release
+      - name: Upload candidate binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4.6.2
+        with:
+          name: baft-tunnel-b4-candidate-${{ needs.validate-candidate.outputs.candidate_sha }}
+          path: |
+            target/release/baft-tunnel
+            release/engine-manifest.json
+          if-no-files-found: error
+          retention-days: 1
+
+  b4-two-host-lab:
+    needs: [validate-candidate, build-candidate]
+    runs-on: ubuntu-22.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 40
+    steps:
+      # Trusted main scripts orchestrate the test. Only the separately built candidate binary is imported.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download candidate binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # actions/download-artifact v4.3.0
+        with:
+          name: baft-tunnel-b4-candidate-${{ needs.validate-candidate.outputs.candidate_sha }}
+          path: ${{ runner.temp }}/baft-tunnel-b4-candidate
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+        with:
+          cosign-release: v2.5.3
+      - name: Download and verify the signed BAFT engine asset against the candidate pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.engine_release }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/b4-engine"; mkdir -p "$d"
+          gh release download "$TAG" --repo zarkmakerburg/BAFT-TUNNEL \
+            --pattern "baft-engine-$TAG-linux-amd64" --pattern SHA256SUMS --pattern SHA256SUMS.cosign.bundle --dir "$d"
+          cd "$d"
+          cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity "https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/tags/$TAG" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          sha256sum --ignore-missing --check SHA256SUMS
+          have="$(sha256sum "baft-engine-$TAG-linux-amd64" | cut -d' ' -f1)"
+          want="$(python3 -c 'import json,sys;m=json.load(open(sys.argv[1]));print([e for e in m["engines"] if e["id"]=="baft"][0]["artifact_sha256"])' "$RUNNER_TEMP/baft-tunnel-b4-candidate/release/engine-manifest.json")"
+          [[ "$have" == "$want" ]] || { echo "signed engine $have is not the candidate pin $want" >&2; exit 1; }
+          install -m 0755 "baft-engine-$TAG-linux-amd64" "$RUNNER_TEMP/baft-engine"
+          echo "B4_ENGINE=$TAG sha256=$have (cosign + SHA256SUMS verified, equals candidate pin)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Run B4 Wizard path (agent API, root helpers, offline CA baft profile, engine store) on both hosts
+        env:
+          LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+          LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
+          LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          LAB_SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+          LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+          LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+          LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+          LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+          CANDIDATE_SHA: ${{ needs.validate-candidate.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          candidate="$RUNNER_TEMP/baft-tunnel-b4-candidate/target/release/baft-tunnel"
+          install -D -m 0755 "$candidate" target/release/baft-tunnel
+          printf '%s\n' "$LAB_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/b4-lab-id_ed25519"
+          printf '%s\n' "$LAB_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/b4-lab-known_hosts"
+          chmod 600 "$RUNNER_TEMP/b4-lab-id_ed25519" "$RUNNER_TEMP/b4-lab-known_hosts"
+          unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS
+          export SSH_KEY_FILE="$RUNNER_TEMP/b4-lab-id_ed25519"
+          export SSH_KNOWN_HOSTS_FILE="$RUNNER_TEMP/b4-lab-known_hosts"
+          export MVP_BINARY="$PWD/target/release/baft-tunnel"
+          export BAFT_TUNNEL_BINARY="$PWD/target/release/baft-tunnel"
+          export MVP_SOURCE="$CANDIDATE_SHA"
+          export LAB_SOAK_SECONDS=0 LAB_IMPAIR=0 LAB_SETUP=0 LAB_ROLLOVER=0
+          export LAB_REVERSE=0 LAB_MVP=0 LAB_OPS=0 LAB_AGENT_SVC=0
+          export LAB_PANEL_PAIRING=1 LAB_PANEL_ENGINE=baft
+          export BAFT_ENGINE_BINARY="$RUNNER_TEMP/baft-engine"
+          trap 'rm -f "$RUNNER_TEMP/b4-lab-id_ed25519" "$RUNNER_TEMP/b4-lab-known_hosts"' EXIT
+          bash lab/real-hosts/phase1-two-host-e2e.sh

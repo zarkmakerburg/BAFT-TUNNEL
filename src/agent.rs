@@ -849,6 +849,31 @@ async fn port_accepting(port: u16) -> bool {
 /// Read-only preflight of THIS host for a planned tunnel. Results are pass / warning / blocked /
 /// unknown; anything the agent cannot observe from here is `unknown`, never `pass`. Writes
 /// nothing, runs nothing, and does not contact the peer.
+/// Guided baft setup needs the pinned engine in the root-owned store before Init: the
+/// configuration it writes launches only that store's verified `current` release.
+fn baft_engine_store_check(store: &Path) -> Value {
+    let pinned = match crate::baft_engine::pinned_sha256() {
+        Ok(sha) => sha,
+        Err(error) => return check("engine_store", "blocked", format!("{error:#}")),
+    };
+    match crate::engine_store::resolve_for_launch(store, "baft", &pinned) {
+        Ok(_) => check_with_params(
+            "engine_store",
+            "pass",
+            "the pinned BAFT engine is installed and verified in the engine store".into(),
+            json!({"store": store.display().to_string(), "sha256": pinned}),
+        ),
+        Err(error) => check_with_params(
+            "engine_store",
+            "blocked",
+            format!(
+                "the pinned BAFT engine is not ready in the engine store ({error:#}); install it with: sudo /usr/local/lib/baft-tunnel/scripts/install.sh --binary /usr/local/bin/baft-tunnel --baft-engine PATH_TO_SIGNED_ENGINE"
+            ),
+            json!({"store": store.display().to_string(), "sha256": pinned}),
+        ),
+    }
+}
+
 async fn preflight(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
     let request: PlanBody = match serde_json::from_slice(body) {
         Ok(r) => r,
@@ -944,7 +969,7 @@ async fn preflight(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             "no earlier pairing in this directory".into(),
         ));
     }
-    if req.engine == crate::config::EngineKind::TcpTls && ctx.via_helper(&req) {
+    if crate::setup::uses_certificates(req.engine) && ctx.via_helper(&req) {
         let name = req.instance.as_deref().unwrap_or_default();
         checks.push(if !ctx.pki.supports_config_dir(dir) {
             check(
@@ -964,7 +989,12 @@ async fn preflight(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             }
         });
     }
-    if req.engine == crate::config::EngineKind::TcpTls {
+    if req.engine == crate::config::EngineKind::Baft {
+        checks.push(baft_engine_store_check(Path::new(
+            crate::baft_engine::STORE_DIR,
+        )));
+    }
+    if crate::setup::uses_certificates(req.engine) {
         match crate::pki_helper::active_set_dir(dir) {
             Err(error) => checks.push(check(
                 "pki_files",
@@ -1700,6 +1730,10 @@ struct PkiCsrBody {
     server_name: String,
     #[serde(default)]
     confirm: bool,
+    /// Engine the certificate is for (`tcp-tls` default, or `baft`); it fixes the node URI SAN
+    /// the root helper will require when the signed certificate is uploaded.
+    #[serde(default)]
+    engine: Option<crate::config::EngineKind>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1795,6 +1829,14 @@ async fn pki_csr_action(
         );
     }
 
+    let requested_engine = req.engine.unwrap_or(crate::config::EngineKind::TcpTls);
+    if !crate::setup::uses_certificates(requested_engine) {
+        return (
+            422,
+            json!({"error": "PKI enrollment is only valid for tcp-tls or baft"}),
+        );
+    }
+    let mut profile = crate::pki_helper::IdentityProfile::for_engine(requested_engine);
     // CSR generation is strictly before Init. Once a config exists, only read is available.
     if let Some(config) = ctx.config.as_ref() {
         let (local_id, engine) = match config {
@@ -1811,12 +1853,16 @@ async fn pki_csr_action(
                 json!({"error": "CSR generation is only available before Init"}),
             );
         }
-        if engine != crate::config::EngineKind::TcpTls || local_id != req.node_id {
+        if !crate::setup::uses_certificates(engine)
+            || local_id != req.node_id
+            || req.engine.is_some_and(|wanted| wanted != engine)
+        {
             return (
                 409,
-                json!({"error": "CSR retrieval is only available for this configured tcp-tls node"}),
+                json!({"error": "CSR retrieval is only available for this configured tcp-tls or baft node"}),
             );
         }
+        profile = crate::pki_helper::IdentityProfile::for_engine(engine);
     } else {
         if operation == crate::pki_helper::PkiOperation::CreateCsr
             && ctx.instance_config().is_some_and(|path| path.is_file())
@@ -1880,12 +1926,23 @@ async fn pki_csr_action(
             }
         };
         if let Some(state) = state {
-            if state["engine"].as_str() != Some("tcp-tls") {
+            let state_engine = match state["engine"].as_str() {
+                Some("tcp-tls") => crate::config::EngineKind::TcpTls,
+                Some("baft") => crate::config::EngineKind::Baft,
+                _ => {
+                    return (
+                        409,
+                        json!({"error": "PKI enrollment is only valid for tcp-tls or baft"}),
+                    );
+                }
+            };
+            if req.engine.is_some_and(|wanted| wanted != state_engine) {
                 return (
                     409,
-                    json!({"error": "PKI enrollment is only valid for tcp-tls"}),
+                    json!({"error": "engine does not match the existing setup state"}),
                 );
             }
+            profile = crate::pki_helper::IdentityProfile::for_engine(state_engine);
             if state["node_id"].as_str() != Some(req.node_id.as_str()) {
                 return (
                     409,
@@ -1900,6 +1957,7 @@ async fn pki_csr_action(
         operation,
         &req.node_id,
         &req.server_name,
+        profile,
     );
     let request_bytes = match serde_json::to_vec(&request) {
         Ok(bytes) => bytes,
@@ -2199,7 +2257,7 @@ fn setup_plan(body: &[u8]) -> (u16, Value) {
         let commands: Vec<String> = match &req.instance {
             // Installed service: the unit runs as the baft-tunnel user, so it must own its key.
             Some(name) => {
-                let key = if req.engine == crate::config::EngineKind::TcpTls {
+                let key = if crate::setup::uses_certificates(req.engine) {
                     "node.key"
                 } else {
                     "node.noise"
@@ -3729,6 +3787,28 @@ mod tests {
                 .unwrap()
                 .contains("not installed yet")
         );
+        // baft adds the engine store gate; with no pinned engine installed Init is blocked.
+        let baft = body.replace("tcp-tls", "baft");
+        let (_, out) = call(None, "POST", "/v1/setup/preflight", Some(TOKEN), &baft).await;
+        let v: Value = serde_json::from_str(&out[out.find('{').unwrap()..]).unwrap();
+        let ids: Vec<&str> = v["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&"pki_files") && ids.contains(&"engine_store"),
+            "{out}"
+        );
+        let store = baft_engine_store_check(&dir.join("no-store"));
+        assert_eq!(store["result"], "blocked");
+        assert!(
+            store["evidence"]
+                .as_str()
+                .unwrap()
+                .contains("--baft-engine")
+        );
         let bad = body.replace("node-b", "node-a");
         let (code, out) = call(None, "POST", "/v1/setup/preflight", Some(TOKEN), &bad).await;
         assert_eq!(code, 200);
@@ -5161,6 +5241,41 @@ mod tests {
             .0,
             409
         );
+
+        // The engine fixes the certificate identity profile at CSR time (baft: urn:baft:node).
+        std::fs::remove_file(&state_path).unwrap();
+        let mut baft = create.clone();
+        baft["request_id"] = json!("csr-create-baft1");
+        baft["engine"] = json!("noise-tcp");
+        let code = route(
+            &post("/v1/pki/csr/create"),
+            baft.to_string().as_bytes(),
+            &ctx,
+        )
+        .await
+        .0;
+        assert_eq!(code, 422);
+        baft["engine"] = json!("baft");
+        let (code, out) = route(
+            &post("/v1/pki/csr/create"),
+            baft.to_string().as_bytes(),
+            &ctx,
+        )
+        .await;
+        assert_eq!(code, 201, "{out}");
+        assert_eq!(
+            fake.requests.lock().unwrap().last().unwrap()["identity_profile"],
+            "baft"
+        );
+        std::fs::write(&state_path, br#"{"engine":"baft","node_id":"abroad"}"#).unwrap();
+        baft["request_id"] = json!("csr-create-baft2");
+        baft["engine"] = json!("tcp-tls");
+        let code = route(&post("/v1/pki/csr/read"), baft.to_string().as_bytes(), &ctx)
+            .await
+            .0;
+        assert_eq!(code, 409);
+        std::fs::remove_file(&state_path).unwrap();
+        fake.requests.lock().unwrap().clear();
 
         let state = state_dir("pki-configured");
         let configured = Ctx::new(serve_config(), TOKEN.into(), Some(state.clone()))

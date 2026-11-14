@@ -321,11 +321,13 @@
     return { step: 0, direction: null, role: 'forward', engine: 'tcp-tls', protocolVersion: 1, node: c.local_identity || '', peerId: '', tunnel: '', port: '', peerHost: '', serverName: '', localServerName: '',
       tport: '8443', dir: '/etc/baft-tunnel', inst: '', pf: null, plan: null, busy: false, errors: {} };
   }
+  // Engines whose nodes enroll an X.509 certificate from the offline CA (tcp-tls and baft).
+  function x509(w) { return w.engine === 'tcp-tls' || w.engine === 'baft'; }
   function body(w) {
     var b = { engine: w.engine, direction: w.direction, role: w.role, protocol_version: w.protocolVersion || 1, node_id: w.node.trim(), peer_id: w.peerId.trim(), tunnel_id: w.tunnel.trim(),
       service_port: Number(w.port), tunnel_port: Number(w.tport), dir: w.dir.trim() };
     if (w.inst.trim()) { b.instance = w.inst.trim(); }
-    if (w.role === 'forward') { b.peer_host = w.peerHost.trim(); if (w.engine === 'tcp-tls') { b.server_name = w.serverName.trim(); } }
+    if (w.role === 'forward') { b.peer_host = w.peerHost.trim(); if (x509(w)) { b.server_name = w.serverName.trim(); } }
     return b;
   }
   BAFT.register({ id: 'setup', icon: 'setup', order: 4, primary: true, needs: ['engines'], refresh: false, render: function (ctx) {
@@ -364,9 +366,9 @@
         var q = Number(w.tport); if (!(q >= 1024 && q <= 65535)) { e.tport = t('err.port'); }
         if (w.role === 'forward') {
           if (!w.peerHost.trim()) { e.peerHost = t('err.required'); }
-          if (w.engine === 'tcp-tls' && !w.serverName.trim()) { e.serverName = t('err.required'); }
+          if (x509(w) && !w.serverName.trim()) { e.serverName = t('err.required'); }
         }
-        if (w.engine === 'tcp-tls' && !w.localServerName.trim()) { e.localServerName = t('err.required'); }
+        if (x509(w) && !w.localServerName.trim()) { e.localServerName = t('err.required'); }
       }
       w.errors = e;
       return !Object.keys(e).length;
@@ -414,8 +416,8 @@
           choice('role', 'serve', !fwd, t(rev ? 'srv.rev.serve' : 'srv.serve'), rev ? t('srv.rev.serve.d') : '', function (v) { w.role = v; invalidate(); draw(); })),
         h('div', { class: 'form-grid' }, field('node', t('f.node')), field('peerId', t('f.peerid')), field('tunnel', t('f.tunnel')), field('port', t(rev && !fwd ? 'f.port.ingress' : 'f.port'), { type: 'number', inputmode: 'numeric' }),
           fwd ? field('peerHost', t('f.peerhost'), { inputmode: 'decimal' }) : null,
-          fwd && w.engine === 'tcp-tls' ? field('serverName', t('f.servername')) : null,
-          w.engine === 'tcp-tls' ? h('div', null, field('localServerName', t('f.localserver')), h('p', { class: 'sub', text: t('f.localserver.help') })) : null),
+          fwd && x509(w) ? field('serverName', t('f.servername')) : null,
+          x509(w) ? h('div', null, field('localServerName', t('f.localserver')), h('p', { class: 'sub', text: t('f.localserver.help') })) : null),
         h('details', null, h('summary', { text: t('adv') }), h('div', { class: 'form-grid' }, field('tport', t('f.tport'), { type: 'number', inputmode: 'numeric' }), field('dir', t('f.dir')), field('inst', t('f.inst')))));
     }
     function stepMethod() {
@@ -597,7 +599,7 @@
           document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 0);
         } })));
       out.push(h('h4', { text: t('pki.offlineTitle') }), h('p', { class: 'sub', text: t('pki.offlineBody') }),
-        h('pre', { dir: 'ltr', text: 'scripts/pki/baft-pki.sh issue-node CA_DIR ' + w.node.trim() + ' CSR_FILE OUTPUT_DIR ' + w.localServerName.trim() }));
+        h('pre', { dir: 'ltr', text: 'scripts/pki/baft-pki.sh ' + (w.engine === 'baft' ? 'issue-baft-node' : 'issue-node') + ' CA_DIR ' + w.node.trim() + ' CSR_FILE OUTPUT_DIR ' + w.localServerName.trim() }));
       out.push(h('h4', { text: t('pki.uploadTitle') }), h('p', { class: 'sub', text: t('pki.uploadBody') }));
       function pemInput(key, label, marker, maxBytes) {
         var input = h('input', { type: 'file', accept: '.pem,.crt,.cer,.crl,application/x-pem-file,text/plain', 'aria-label': label, onchange: function (e) {
@@ -639,7 +641,7 @@
     }
     function requestCsr(operation) {
       w.pkiBusy = true; w.pkiError = null; draw();
-      var req = { request_id: newKey('ui-csr-'), node_id: w.node.trim(), server_name: w.localServerName.trim() };
+      var req = { request_id: newKey('ui-csr-'), node_id: w.node.trim(), server_name: w.localServerName.trim(), engine: w.engine };
       if (operation === 'create') { req.confirm = true; }
       BAFT.api('POST', '/v1/pki/csr/' + operation, req).then(function (r) {
         if ((r.status !== 200 && r.status !== 201) || !r.body || !r.body.csr_pem
@@ -668,7 +670,7 @@
       var pr = st.pairing || {}, helper = st.setup_helper || {};
       var scopeOk = w.inst.trim() === (st.instance || '') && w.dir.trim() === (st.config_dir || '');
       var initDone = pr.initialized || (w.applyReceipt && w.applyReceipt.result === 'applied');
-      var pkiRequired = w.engine === 'tcp-tls';
+      var pkiRequired = x509(w);
       var pkiReady = !pkiRequired || (w.pkiReceipt && w.pkiReceipt.result === 'installed');
       if (initDone && !w.own && !w.ownLoading) { w.ownLoading = true; loadOwn(); }
       var out = [h('p', { class: 'sub', text: t('pair.intro') })];

@@ -11,6 +11,7 @@ NODE_KEY=""
 CREDENTIAL_MODE="baseline"
 REPLACE_CREDENTIAL=0
 ASSUME_SYSTEMD_VERSION=""
+BAFT_ENGINE=""
 SERVICE_USER="baft-tunnel"
 CREDENTIAL_ID="node-key"
 MAX_CREDENTIAL_BYTES=16384
@@ -21,7 +22,7 @@ DROPIN_MARKER="# Managed by BAFT-TUNNEL scripts/install.sh"
 usage() {
   cat <<'EOF'
 Usage: install.sh                (no arguments on a terminal: interactive menu)
-       install.sh [--binary PATH] [--instance NAME --node-key PATH
+       install.sh [--binary PATH [--baft-engine PATH]] [--instance NAME --node-key PATH
                   [--credential-mode baseline|encrypted] [--replace-credential]]
                   [--register NAME [--agent-listen 127.0.0.1:PORT]]
                   [--destdir ROOT [--systemd-version N]]
@@ -31,6 +32,13 @@ node-key service credential for one instance. At least one of --binary or
 --instance is required. No tunnel is enabled, started, or restarted.
 With --binary the scripts and units are also copied to /usr/local/lib/baft-tunnel
 so that `baft-tunnel menu` (Persian/English interactive menu) works afterwards.
+
+--baft-engine PATH (with --binary): verify the signed BAFT engine asset
+(baft-engine-TAG-linux-amd64) against the engine manifest built into the
+binary and install it as `current` in the root-owned engine store
+/usr/local/lib/baft-tunnel-engines (the previous release is kept for
+`baft-tunnel engine rollback`). Needed before the panel can set up the baft
+engine (Preview, Direct only). A binary with another digest is refused.
 
 --instance/--node-key (PEM key) are for the tcp-tls engine only; noise-tcp
 creates its own key with `baft-tunnel setup init` and needs neither.
@@ -71,6 +79,7 @@ fi
 while (($#)); do
   case "$1" in
     --binary) (($# >= 2)) || die "--binary needs a path"; BINARY="$2"; shift 2 ;;
+    --baft-engine) (($# >= 2)) || die "--baft-engine needs a path"; BAFT_ENGINE="$2"; shift 2 ;;
     --destdir) (($# >= 2)) || die "--destdir needs a path"; ROOT_PREFIX="$2"; shift 2 ;;
     --instance) (($# >= 2)) || die "--instance needs a name"; INSTANCE="$2"; shift 2 ;;
     --register) (($# >= 2)) || die "--register needs a name"; REGISTER="$2"; shift 2 ;;
@@ -97,6 +106,11 @@ if [[ -n "$BINARY" ]]; then
   [[ -x "$BINARY" ]] || die "provide an executable release binary with --binary"
   BINARY="$(cd "$(dirname "$BINARY")" && pwd -P)/$(basename "$BINARY")"
   "$BINARY" --version >/dev/null 2>&1 || die "binary failed its --version check"
+fi
+if [[ -n "$BAFT_ENGINE" ]]; then
+  [[ -n "$BINARY" ]] || die "--baft-engine requires --binary (its built-in manifest pins the engine)"
+  [[ -f "$BAFT_ENGINE" && ! -L "$BAFT_ENGINE" ]] || die "--baft-engine must be a regular, non-symlink file"
+  BAFT_ENGINE="$(cd "$(dirname "$BAFT_ENGINE")" && pwd -P)/$(basename "$BAFT_ENGINE")"
 fi
 if [[ -n "$INSTANCE" ]]; then
   # Restrict to names that need no systemd escaping and cannot traverse paths.
@@ -311,6 +325,18 @@ if [[ -n "$BINARY" ]]; then
   chmod -R u=rwX,go=rX "$LIB_DEST.new.$$"
   rm -rf "$LIB_DEST"
   mv -f "$LIB_DEST.new.$$" "$LIB_DEST"
+fi
+
+if [[ -n "$BAFT_ENGINE" ]]; then
+  # Root-owned store outside LIB_DEST (which every --binary install replaces). The engine
+  # store refuses a binary whose SHA-256 differs from the manifest built into BIN_DEST.
+  ENGINE_STORE="$ROOT_PREFIX/usr/local/lib/baft-tunnel-engines"
+  install -d -m 0755 "$ENGINE_STORE"
+  if [[ "$STAGING" == "0" ]]; then chown root:root "$ENGINE_STORE"; fi
+  "$BIN_DEST" engine manifest > "$BACKUP_DIR/engine-manifest.json"
+  "$BIN_DEST" engine install --store "$ENGINE_STORE" --manifest "$BACKUP_DIR/engine-manifest.json" \
+    --id baft --binary "$BAFT_ENGINE"
+  "$BIN_DEST" engine verify --store "$ENGINE_STORE" --id baft
 fi
 
 if [[ -n "$INSTANCE" ]]; then

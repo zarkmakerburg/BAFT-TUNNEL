@@ -192,4 +192,31 @@ fi
 [[ -z "$(compgen -G "$STAGE/etc/systemd/system/baft-tunnel-agent@*" || true)" ]]
 [[ ! -L "$STAGE/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@iran.path" && ! -e "$STAGE/var/lib/baft-tunnel-agent" ]]
 
+# --baft-engine: needs --binary, and a binary whose digest is not the built-in pin is refused
+# with the previous install restored and no engine made current.
+if bash "$INSTALL" --baft-engine "$FAKE" --destdir "$TMP/engine-only" >/dev/null 2>&1; then
+  echo "--baft-engine without --binary was accepted" >&2; exit 1
+fi
+REAL_BIN="${BAFT_TUNNEL_TEST_BINARY:-}"
+if [[ -z "$REAL_BIN" ]]; then
+  for c in "$ROOT/target/release/baft-tunnel" "$ROOT/target/debug/baft-tunnel"; do [[ -x "$c" ]] && { REAL_BIN="$c"; break; }; done
+fi
+ENGINE_TEST=skipped
+if [[ -n "$REAL_BIN" ]]; then
+  ES="$TMP/engine-stage"
+  "$INSTALL" --binary "$REAL_BIN" --destdir "$ES" >/dev/null
+  cmp -s "$REAL_BIN" "$ES/usr/local/bin/baft-tunnel"
+  "$ES/usr/local/bin/baft-tunnel" engine manifest | python3 -c 'import json,sys; m=json.load(sys.stdin); assert [e for e in m["engines"] if e["id"]=="baft"]'
+  printf 'not-the-pinned-engine\n' > "$TMP/fake-engine"
+  if "$INSTALL" --binary "$REAL_BIN" --baft-engine "$TMP/fake-engine" --destdir "$ES" >/dev/null 2>&1; then
+    echo "an engine with the wrong digest was installed" >&2; exit 1
+  fi
+  cmp -s "$REAL_BIN" "$ES/usr/local/bin/baft-tunnel" || { echo "failed engine install did not restore the binary" >&2; exit 1; }
+  [[ ! -e "$ES/usr/local/lib/baft-tunnel-engines/baft/current" ]] || { echo "refused engine became current" >&2; exit 1; }
+  "$UNINSTALL" --destdir "$ES" >/dev/null
+  [[ ! -e "$ES/usr/local/lib/baft-tunnel-engines" ]] || { echo "uninstall left the engine store" >&2; exit 1; }
+  ENGINE_TEST=pass
+fi
+echo "BAFT_INSTALL_ENGINE_STORE=$ENGINE_TEST"
+
 echo "BAFT_INSTALL_TEST=PASS (staged install, systemd hardening, rollback, baseline credential provisioning/replace/rollback, fail-closed credential checks, safe uninstall, explicit config purge, one-step agent registration, CSR helper unit install, agent and control helper removed)"

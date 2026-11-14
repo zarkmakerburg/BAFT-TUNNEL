@@ -54,10 +54,10 @@ fi
 PANEL_PAIRING="${LAB_PANEL_PAIRING:-0}"
 PANEL_ENGINE="${LAB_PANEL_ENGINE:-noise-tcp}"
 [[ "$PANEL_PAIRING" == 0 || "$PANEL_PAIRING" == 1 ]] || { echo "LAB_PANEL_PAIRING must be 0 or 1" >&2; exit 2; }
-[[ "$PANEL_ENGINE" == noise-tcp || "$PANEL_ENGINE" == tcp-tls ]] || { echo "LAB_PANEL_ENGINE must be noise-tcp or tcp-tls" >&2; exit 2; }
+[[ "$PANEL_ENGINE" == noise-tcp || "$PANEL_ENGINE" == tcp-tls || "$PANEL_ENGINE" == baft ]] || { echo "LAB_PANEL_ENGINE must be noise-tcp, tcp-tls or baft" >&2; exit 2; }
 if (( PANEL_PAIRING == 1 )); then
   [[ -x "$MVP_BINARY_PATH" ]] || { echo "LAB_PANEL_PAIRING needs MVP_BINARY" >&2; exit 2; }
-  command -v docker >/dev/null 2>&1 || [[ "$PANEL_ENGINE" != tcp-tls ]] || { echo "tcp-tls panel enrollment LAB needs Docker for the network-isolated offline CA" >&2; exit 2; }
+  command -v docker >/dev/null 2>&1 || [[ "$PANEL_ENGINE" == noise-tcp ]] || { echo "$PANEL_ENGINE panel enrollment LAB needs Docker for the network-isolated offline CA" >&2; exit 2; }
   [[ "$MVP" == 0 && "$REVERSE_ACCEPT" == 0 && "$OPS_SOAK" == 0 && "$AGENT_SVC" == 0 ]] || { echo "LAB_PANEL_PAIRING is a separate run from LAB_MVP, LAB_REVERSE_ACCEPT, LAB_OPS and LAB_AGENT_SVC" >&2; exit 2; }
 fi
 [[ "$REVERSE_R3" =~ ^[0-9]+$ ]] && (( REVERSE_R3 <= 3600 )) || { echo "LAB_REVERSE_R3 must be 0-3600 (Reverse R3 soak seconds; 0 = off)" >&2; exit 2; }

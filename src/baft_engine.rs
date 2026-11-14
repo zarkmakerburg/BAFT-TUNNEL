@@ -4,7 +4,7 @@
 //! the JSON configuration that process reads. It is pure: it starts nothing, opens no socket
 //! and reads no key. The output is derived, never edited by hand, and never read back.
 //! `EngineKind::Baft` routes here from `config.rs`. The engine is Preview/Direct-only; guided
-//! setup cannot yet construct its configuration (ADR-0019 phase F / roadmap B4).
+//! setup builds its configuration since ADR-0019 phase F (roadmap B4).
 
 use std::{
     fs,
@@ -74,6 +74,60 @@ pub struct BaftRenderInput {
     pub side: Side,
     pub max_streams: usize,
     pub paths: BaftPaths,
+}
+
+/// The engine manifest this binary was built with (the same file release.yml checks the
+/// signed engine asset against). Guided setup pins `baft.sha256` to its BAFT entry.
+pub const PINNED_MANIFEST: &str = include_str!("../release/engine-manifest.json");
+
+/// Root-owned engine store that `scripts/install.sh --baft-engine` fills. Kept outside
+/// `/usr/local/lib/baft-tunnel`, which every `install.sh --binary` replaces.
+pub const STORE_DIR: &str = "/usr/local/lib/baft-tunnel-engines";
+
+/// SHA-256 of the BAFT engine artifact pinned by [`PINNED_MANIFEST`].
+pub fn pinned_sha256() -> Result<String> {
+    let manifest = crate::runtime_host::Manifest::parse(PINNED_MANIFEST)?;
+    Ok(manifest
+        .engine("baft")
+        .context("the built-in engine manifest has no baft entry")?
+        .artifact_sha256
+        .to_ascii_lowercase())
+}
+
+/// Pin and first DNS (or IPv4) SAN of a node certificate for the baft engine. The certificate
+/// must carry exactly one URI SAN and it must be `urn:baft:node:<node_id>` (BAFT refuses any
+/// other form), so a tcp-tls certificate is rejected here instead of at engine start.
+pub fn certificate_summary(cert: &Path, node_id: &str) -> Result<(String, Option<String>)> {
+    use x509_parser::extensions::GeneralName;
+    let certs = crate::tls::certificates(cert)?;
+    let leaf = certs
+        .first()
+        .context("certificate file contains no certificates")?;
+    let (_, parsed) = x509_parser::parse_x509_certificate(leaf.as_ref())
+        .map_err(|_| anyhow::anyhow!("node certificate is not valid X.509 DER"))?;
+    let san = parsed
+        .subject_alternative_name()
+        .context("parse subject alternative name")?
+        .context("node certificate has no subjectAltName")?;
+    let mut uris = Vec::new();
+    let mut name = None;
+    for entry in &san.value.general_names {
+        match entry {
+            GeneralName::URI(uri) => uris.push(*uri),
+            GeneralName::DNSName(dns) if name.is_none() => name = Some((*dns).to_owned()),
+            GeneralName::IPAddress(b) if b.len() == 4 && name.is_none() => {
+                name = Some(format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]));
+            }
+            _ => {}
+        }
+    }
+    let expected = identity_uri(node_id);
+    if uris != [expected.as_str()] {
+        bail!(
+            "the baft engine needs a certificate with exactly one URI SAN {expected} (issue it with baft-pki.sh issue-baft-node); found {uris:?}"
+        );
+    }
+    Ok((hex::encode(Sha256::digest(leaf.as_ref())), name))
 }
 
 fn identity_uri(id: &str) -> String {

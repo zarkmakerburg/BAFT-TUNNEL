@@ -12,7 +12,7 @@ use rustls::{
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use zeroize::Zeroizing;
 
-fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
+pub(crate) fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
     let file =
         File::open(path).with_context(|| format!("open certificate file {}", path.display()))?;
     let items = CertificateDer::pem_reader_iter(BufReader::new(file))
