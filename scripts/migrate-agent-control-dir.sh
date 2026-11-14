@@ -18,8 +18,10 @@ EXPECTED='root:baft-tunnel-agent 770'
 VERBS=(start stop enable disable setup pki)
 JOURNAL="$STATE_DIR/migration-v1.units"
 
-[[ -d "$CONTROL_DIR" ]] || die "control directory is missing: $CONTROL_DIR"
-[[ -d "$STATE_DIR" ]] || die "state directory is missing: $STATE_DIR"
+[[ ! -L "$STATE_DIR" ]] || die "state directory must not be a symlink"
+mkdir -p "$STATE_DIR"
+chmod 0700 "$STATE_DIR"
+[[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || die "invalid migration state directory"
 [[ ! -L "$JOURNAL" ]] || die "migration journal must not be a symlink"
 exec 9>"$STATE_DIR/migration.lock"
 flock -n 9 || die "another control-directory migration is already running"
@@ -27,6 +29,7 @@ flock -n 9 || die "another control-directory migration is already running"
 directory_state() { stat -c '%U:%G %a' "$CONTROL_DIR" 2>/dev/null || true; }
 has_pending_requests() {
   local verb request
+  [[ -d "$CONTROL_DIR" ]] || return 1
   for verb in "${VERBS[@]}"; do
     for request in "$CONTROL_DIR"/*."$verb"; do
       [[ -e "$request" || -L "$request" ]] && return 0
