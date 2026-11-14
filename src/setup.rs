@@ -642,6 +642,22 @@ fn tls_material(dir: &Path, node_id: &str, engine: EngineKind) -> Result<(String
         bail!("CRL has under 24 hours left (or is expired); issue a fresh CRL first");
     }
     if engine == EngineKind::Baft {
+        // Revalidate the selected BAFT profile at Init, not only when the panel imports
+        // the certificate. Operators may have copied or restored PKI files manually.
+        let expected_san = format!("DNS:{node_id}.baft-tunnel.invalid");
+        crate::tls::verify_local_certificate(&ca, &crl, &cert, &expected_san)
+            .context("BAFT certificate chain, EKU, validity or CRL verification failed")?;
+        let certs = crate::tls::certificates(&cert)?;
+        let leaf = certs
+            .first()
+            .context("BAFT certificate file contains no leaf certificate")?;
+        crate::pki_helper::validate_leaf_policy(
+            leaf.as_ref(),
+            node_id,
+            &expected_san,
+            crate::pki_helper::IdentityProfile::Baft,
+        )
+        .context("BAFT certificate does not satisfy the exact identity/SAN profile")?;
         crate::baft_engine::certificate_summary(&cert, node_id)
     } else {
         crate::tls::node_certificate_summary(&cert, node_id)
