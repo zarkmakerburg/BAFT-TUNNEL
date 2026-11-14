@@ -88,8 +88,11 @@ SH
 chmod 755 "$BIN/"*
 
 CONTROL="baft-tunnel-control-start@iran.path"
+CONTROL2="baft-tunnel-control-stop@outside.path"
 AGENT_PATH="baft-tunnel-agent@iran.path"
+AGENT_PATH2="baft-tunnel-agent@outside.path"
 AGENT_SERVICE="baft-tunnel-agent@iran.service"
+INACTIVE_AGENT="baft-tunnel-agent@offline.service"
 setup_case() {
   CASE="$TMP/case"
   rm -rf "$CASE"
@@ -125,6 +128,7 @@ run_helper
 grep -Fxq "$CONTROL" "$CASE/state/active"
 grep -Fxq "$AGENT_PATH" "$CASE/state/active"
 grep -Fxq "$AGENT_SERVICE" "$CASE/state/active"
+! grep -Fxq "$INACTIVE_AGENT" "$CASE/log"
 [[ "$(sed -n '1p' "$CASE/log")" == "stop $CONTROL" ]]
 [[ "$(sed -n '2p' "$CASE/log")" == "stop $AGENT_PATH" ]]
 [[ "$(sed -n '3p' "$CASE/log")" == "stop $AGENT_SERVICE" ]]
