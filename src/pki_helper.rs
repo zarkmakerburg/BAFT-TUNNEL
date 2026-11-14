@@ -652,7 +652,7 @@ fn crl_number(path: &Path) -> Result<u64> {
     }
 }
 
-fn validate_leaf_policy(
+pub(crate) fn validate_leaf_policy(
     cert_der: &[u8],
     node_id: &str,
     expected_server_san: &str,
