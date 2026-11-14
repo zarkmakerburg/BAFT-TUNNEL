@@ -38,6 +38,7 @@ case "$cmd" in
       esac
     done
     [[ "$kind" == path || "$kind" == service ]] || exit 2
+    [[ "${LIST_UNITS_FAIL_PATTERN:-}" == "$pattern" ]] && exit 1
     files=(active)
     [[ "$all" == 1 ]] && files=(active inactive failed unknown activating deactivating)
     for state_file in "${files[@]}"; do
@@ -121,7 +122,7 @@ setup_case() {
   printf 'root:root 755\n' > "$CASE/parent-state"
   export FAKE_CONTROL_STATE="$CASE/control-state" FAKE_CONTROL_PARENT_STATE="$CASE/parent-state" FAKE_LOG="$CASE/log"
   export REQUEST_FILE="$CASE/parent/control/iran.start"
-  unset STOP_FAIL_UNIT STOP_FAIL_UNKNOWN START_FAIL_UNIT DAEMON_RELOAD_FAIL TMPFILES_FAIL TMPFILES_BAD_STATE REQUEST_ON_STOP_UNIT REQUEST_ON_TMPFILES
+  unset STOP_FAIL_UNIT STOP_FAIL_UNKNOWN START_FAIL_UNIT DAEMON_RELOAD_FAIL TMPFILES_FAIL TMPFILES_BAD_STATE REQUEST_ON_STOP_UNIT REQUEST_ON_TMPFILES LIST_UNITS_FAIL_PATTERN
 }
 run_helper() {
   PATH="$BIN:$PATH" bash "$HELPER" --control-dir "$FAKE_CONTROL_DIR" --tmpfiles "$CASE/tmpfiles.conf" --state-dir "$CASE/state-dir"
@@ -225,6 +226,15 @@ setup_case
 LIST_UNITS_FAIL=1 run_helper >"$CASE/out" 2>&1 && exit 1
 ! grep -q '^stop ' "$CASE/log"
 grep -q 'could not enumerate root control helper services' "$CASE/out"
+
+# Failures in each migration snapshot enumeration must propagate out of the
+# process substitution boundary and abort before any unit is stopped.
+for failed_pattern in 'baft-tunnel-control-*@*.path' 'baft-tunnel-agent@*.path' 'baft-tunnel-agent@*.service'; do
+  setup_case
+  LIST_UNITS_FAIL_PATTERN="$failed_pattern" expect_fail
+  ! grep -q '^stop ' "$CASE/log"
+  grep -q 'could not enumerate' "$CASE/out"
+done
 
 # Active root helper and pre-existing pending request must refuse before stopping.
 setup_case
