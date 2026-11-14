@@ -93,7 +93,7 @@ if [[ "$STAGING" == "0" ]]; then
     die "group $AGENT_USER must be exclusive to the dedicated agent account"
   fi
   if [[ "$CONTROL_DIR_STATE" != "root:baft-tunnel-agent 770" ]]; then
-    "$SCRIPT_DIR/migrate-agent-control-dir.sh" --control-dir "$CONTROL_DIR" --tmpfiles "$TMPF"
+    bash "$SCRIPT_DIR/migrate-agent-control-dir.sh" --control-dir "$CONTROL_DIR" --tmpfiles "$TMPF"
   else
     systemd-tmpfiles --create "$TMPF"
     systemctl daemon-reload
