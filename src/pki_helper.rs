@@ -50,6 +50,47 @@ impl PkiOperation {
     }
 }
 
+/// Which node URI SAN a certificate must carry. `baft-tunnel` engines (tcp-tls) verify
+/// `urn:baft-tunnel:node:<id>`; the external BAFT engine hard-requires exactly one URI SAN
+/// `urn:baft:node:<id>` (ADR-0019, R15). The profile is fixed when the CSR is created and
+/// stored in root-owned metadata, so a later upload cannot switch it.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum IdentityProfile {
+    #[default]
+    #[serde(rename = "baft-tunnel")]
+    BaftTunnel,
+    #[serde(rename = "baft")]
+    Baft,
+}
+
+impl IdentityProfile {
+    pub(crate) fn is_default(&self) -> bool {
+        *self == Self::BaftTunnel
+    }
+
+    pub(crate) fn for_engine(engine: crate::config::EngineKind) -> Self {
+        if engine == crate::config::EngineKind::Baft {
+            Self::Baft
+        } else {
+            Self::BaftTunnel
+        }
+    }
+
+    pub(crate) fn node_uri(self, node_id: &str) -> String {
+        match self {
+            Self::BaftTunnel => format!("urn:baft-tunnel:node:{node_id}"),
+            Self::Baft => format!("urn:baft:node:{node_id}"),
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::BaftTunnel => "baft-tunnel",
+            Self::Baft => "baft",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PkiRequest {
@@ -58,6 +99,10 @@ struct PkiRequest {
     operation: PkiOperation,
     node_id: String,
     server_name: String,
+    /// Only meaningful for `create_csr`; other operations use the stored CSR metadata and
+    /// refuse a request that names a different profile.
+    #[serde(default, skip_serializing_if = "IdentityProfile::is_default")]
+    identity_profile: IdentityProfile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     certificate_pem: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -73,6 +118,8 @@ struct CsrMetadata {
     node_id: String,
     expected_server_san: String,
     public_key_sha256: String,
+    #[serde(default, skip_serializing_if = "IdentityProfile::is_default")]
+    identity_profile: IdentityProfile,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -605,10 +652,11 @@ fn crl_number(path: &Path) -> Result<u64> {
     }
 }
 
-fn validate_leaf_policy(
+pub(crate) fn validate_leaf_policy(
     cert_der: &[u8],
     node_id: &str,
     expected_server_san: &str,
+    profile: IdentityProfile,
 ) -> Result<(String, String, i64)> {
     use x509_parser::extensions::GeneralName;
     let (remaining, cert) = x509_parser::parse_x509_certificate(cert_der)
@@ -658,7 +706,7 @@ fn validate_leaf_policy(
     let san = cert
         .subject_alternative_name()?
         .context("leaf certificate lacks subjectAltName")?;
-    let expected_uri = format!("urn:baft-tunnel:node:{node_id}");
+    let expected_uri = profile.node_uri(node_id);
     let mut uri_count = 0usize;
     let mut server_count = 0usize;
     for name in &san.value.general_names {
@@ -764,6 +812,11 @@ fn install_certificate_at(
         metadata.expected_server_san == expected_san,
         "certificate DNS/IP identity does not match the original CSR enrollment"
     );
+    ensure!(
+        req.identity_profile.is_default() || req.identity_profile == metadata.identity_profile,
+        "requested identity profile does not match the original CSR enrollment"
+    );
+    let profile = metadata.identity_profile;
 
     let cert_bytes = req
         .certificate_pem
@@ -869,7 +922,7 @@ fn install_certificate_at(
         run_openssl(&openssl_args(&der_args))?;
         let cert_der = read_regular(&der_path, MAX_CERTIFICATE_BYTES as u64, false)?;
         let (fingerprint, cert_key_fingerprint, not_after) =
-            validate_leaf_policy(&cert_der, &req.node_id, &expected_san)?;
+            validate_leaf_policy(&cert_der, &req.node_id, &expected_san, profile)?;
         ensure!(
             cert_key_fingerprint == key_fingerprint,
             "leaf certificate public key does not match the local private key"
@@ -1212,6 +1265,7 @@ fn create_csr_at(config_dir: &Path, req: &PkiRequest, enforce_fixed: bool) -> Re
             node_id: req.node_id.clone(),
             expected_server_san: server_san.clone(),
             public_key_sha256: fingerprint.clone(),
+            identity_profile: req.identity_profile,
         };
         let metadata_bytes = serde_json::to_vec(&metadata)?;
         let mut metadata_file = OpenOptions::new()
@@ -1242,6 +1296,7 @@ fn create_csr_at(config_dir: &Path, req: &PkiRequest, enforce_fixed: bool) -> Re
             "result": "created",
             "node_id": req.node_id,
             "expected_server_san": server_san,
+            "identity_profile": req.identity_profile.as_str(),
             "public_key_sha256": fingerprint,
             "csr_pem": String::from_utf8(csr_bytes)?,
             "private_key_exported": false
@@ -1305,6 +1360,10 @@ fn read_csr_at(config_dir: &Path, req: &PkiRequest, enforce_fixed: bool) -> Resu
         "requested server SAN does not match the stored CSR enrollment"
     );
     ensure!(
+        req.identity_profile.is_default() || req.identity_profile == metadata.identity_profile,
+        "requested identity profile does not match the stored CSR enrollment"
+    );
+    ensure!(
         String::from_utf8_lossy(&csr_bytes).starts_with("-----BEGIN CERTIFICATE REQUEST-----"),
         "stored CSR is not a PEM certificate request"
     );
@@ -1324,6 +1383,7 @@ fn read_csr_at(config_dir: &Path, req: &PkiRequest, enforce_fixed: bool) -> Resu
             "result": "retrieved",
             "node_id": req.node_id,
             "expected_server_san": expected_server_san(&req.server_name)?,
+            "identity_profile": metadata.identity_profile.as_str(),
             "public_key_sha256": fingerprint,
             "csr_pem": String::from_utf8(csr_bytes)?,
             "private_key_exported": false
@@ -1725,8 +1785,9 @@ pub fn request_document(
     operation: PkiOperation,
     node_id: &str,
     server_name: &str,
+    profile: IdentityProfile,
 ) -> Value {
-    json!({
+    let mut doc = json!({
         "request_version": 1,
         "request_id": request_id,
         "operation": operation,
@@ -1735,7 +1796,11 @@ pub fn request_document(
         "certificate_pem": null,
         "ca_pem": null,
         "crl_pem": null
-    })
+    });
+    if !profile.is_default() {
+        doc["identity_profile"] = json!(profile.as_str());
+    }
+    doc
 }
 
 pub fn certificate_request_document(
@@ -2038,6 +2103,100 @@ mod tests {
     }
 
     #[test]
+    fn baft_profile_is_fixed_at_csr_time_and_requires_the_baft_node_uri() {
+        let (tmp, control, config, receipts) = fixture();
+        let mut create = request("csr-baft-01", PkiOperation::CreateCsr, "node1", "localhost");
+        create["identity_profile"] = json!("baft");
+        let created = create_csr_at(&config, &test_request(&create), false).unwrap();
+        assert_eq!(created["identity_profile"], "baft");
+        let meta: Value =
+            serde_json::from_slice(&fs::read(config.join("node.csr.meta")).unwrap()).unwrap();
+        assert_eq!(meta["identity_profile"], "baft");
+
+        let ca = crate::tls::tests::make_ca(&tmp.0, "baft-ca");
+        let ca_dir = ca.ca_pem.parent().unwrap().to_path_buf();
+        // The same CSR is signed twice (wrong and right identity profile).
+        fs::write(ca_dir.join("index.txt.attr"), "unique_subject = no\n").unwrap();
+        let issue = |name: &str, uri: &str| -> String {
+            let ext = tmp.0.join(format!("{name}.cnf"));
+            fs::write(&ext, format!("[node_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=URI:{uri},DNS:localhost\n")).unwrap();
+            let cert = tmp.0.join(format!("{name}.crt"));
+            let ok = Command::new("openssl")
+                .args(["ca", "-batch", "-notext", "-config"])
+                .arg(ca_dir.join("openssl.cnf"))
+                .arg("-extfile")
+                .arg(&ext)
+                .args(["-extensions", "node_ext", "-days", "90", "-in"])
+                .arg(config.join("node.csr"))
+                .arg("-out")
+                .arg(&cert)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+            fs::read_to_string(cert).unwrap()
+        };
+        let crl = tmp.0.join("baft.crl");
+        assert!(
+            Command::new("openssl")
+                .args(["ca", "-gencrl", "-batch", "-config"])
+                .arg(ca_dir.join("openssl.cnf"))
+                .arg("-out")
+                .arg(&crl)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (ca_pem, crl_pem) = (
+            fs::read_to_string(&ca.ca_pem).unwrap(),
+            fs::read_to_string(&crl).unwrap(),
+        );
+
+        // A tcp-tls identity is refused for a baft enrollment, and nothing becomes active.
+        let wrong = issue("wrong", "urn:baft-tunnel:node:node1");
+        let doc = certificate_request_document(
+            "cert-baft-w1",
+            "node1",
+            "localhost",
+            &wrong,
+            &ca_pem,
+            &crl_pem,
+        );
+        put(&control, &doc);
+        let refused = run_at("node1", &control, &config, &receipts, false).unwrap();
+        assert_eq!(refused["result"], "refused", "{refused:?}");
+        assert!(active_set_dir(&config).unwrap().is_none());
+
+        // An unknown profile name is refused before anything is read.
+        let right = issue("right", "urn:baft:node:node1");
+        let mut other = certificate_request_document(
+            "cert-baft-w2",
+            "node1",
+            "localhost",
+            &right,
+            &ca_pem,
+            &crl_pem,
+        );
+        other["identity_profile"] = json!("other");
+        put(&control, &other);
+        let refused = run_at("node1", &control, &config, &receipts, false).unwrap();
+        assert_eq!(refused["result"], "refused", "{refused:?}");
+
+        let doc = certificate_request_document(
+            "cert-baft-ok",
+            "node1",
+            "localhost",
+            &right,
+            &ca_pem,
+            &crl_pem,
+        );
+        put(&control, &doc);
+        let installed = run_at("node1", &control, &config, &receipts, false).unwrap();
+        assert_eq!(installed["result"], "installed", "{installed:?}");
+        assert!(active_set_dir(&config).unwrap().is_some());
+    }
+
+    #[test]
     fn rejects_wrong_certificate_identity_without_changing_active_pointer() {
         let (tmp, control, config, receipts) = fixture();
         let create = request(
@@ -2307,6 +2466,7 @@ mod tests {
             PkiOperation::ReadCsr,
             "node1",
             "node1.example.test",
+            IdentityProfile::BaftTunnel,
         );
         let receipt = client.submit("node1", &request);
         worker.join().unwrap();

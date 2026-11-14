@@ -46,6 +46,23 @@ if awk '/^  build-candidate:/{inside=1} /^  d2-two-host-lab:/{inside=0} inside &
   exit 1
 fi
 test "$(grep -c 'secrets\.' "$d2")" = 4
+# B4 (baft through the Wizard) uses the same trusted-main boundary; the engine is a verified signed asset.
+b4="$root/.github/workflows/phase1-trusted-b4-baft-lab.yml"
+grep -F "if: \${{ github.ref == 'refs/heads/main' }}" "$b4" >/dev/null
+grep -F 'ref: ${{ github.sha }}' "$b4" >/dev/null
+grep -F 'git merge-base --is-ancestor "$actual" "$GITHUB_SHA"' "$b4" >/dev/null
+grep -F '[[ "$CONFIRM" == RUN_TRUSTED_PHASE1_LAB ]]' "$b4" >/dev/null
+grep -F 'cosign verify-blob SHA256SUMS' "$b4" >/dev/null
+grep -F 'release.yml@refs/tags/$TAG' "$b4" >/dev/null
+grep -F '[[ "$have" == "$want" ]]' "$b4" >/dev/null
+grep -F 'LAB_PANEL_PAIRING=1 LAB_PANEL_ENGINE=baft' "$b4" >/dev/null
+grep -F 'unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS' "$b4" >/dev/null
+grep -F 'environment: baft-tunnel-lab' "$b4" >/dev/null
+if awk '/^  build-candidate:/{inside=1} /^  b4-two-host-lab:/{inside=0} inside && /secrets\./{found=1} END{exit !found}' "$b4"; then
+  echo 'B4 candidate build job has access to LAB secrets' >&2
+  exit 1
+fi
+test "$(grep -c 'secrets\.' "$b4")" = 4
 
 # U7 uses only verified published release inputs and trusted main-branch orchestration.
 u7="$root/.github/workflows/phase1-trusted-u7-lab.yml"

@@ -23,9 +23,15 @@ Usage:
   baft-pki.sh init-ca CA_DIR [CA_NAME]
   baft-pki.sh new-node NODE_ID NODE_DIR
   baft-pki.sh issue-node CA_DIR NODE_ID CSR_FILE OUTPUT_DIR SERVER_NAME [VALID_DAYS]
+  baft-pki.sh issue-baft-node CA_DIR NODE_ID CSR_FILE OUTPUT_DIR SERVER_NAME [VALID_DAYS]
   baft-pki.sh revoke-node CA_DIR NODE_CERT OUTPUT_DIR
   baft-pki.sh renew-crl CA_DIR OUTPUT_DIR [VALID_DAYS]
   baft-pki.sh verify-node CA_DIR CRL_FILE NODE_CERT NODE_ID SERVER_NAME
+  baft-pki.sh verify-baft-node CA_DIR CRL_FILE NODE_CERT NODE_ID SERVER_NAME
+
+issue-node certifies a tcp-tls node (URI SAN urn:baft-tunnel:node:NODE_ID).
+issue-baft-node certifies a node for the BAFT engine, which requires exactly one
+URI SAN urn:baft:node:NODE_ID. Same CA, same CRL; one certificate per engine.
 
 Peers refuse every connection once the CRL has expired. Run renew-crl weekly
 (default validity 30 days, 2-90 allowed), check the result with crl-status.sh
@@ -36,6 +42,9 @@ Node keys are unencrypted EC P-256 files with mode 0600 because the
 current runtime does not yet support encrypted private-key files.
 EOF
 }
+
+# Node URI SAN prefix: tcp-tls (default) or the BAFT engine profile (issue-baft-node).
+NODE_URI_PREFIX="urn:baft-tunnel:node:"
 
 validate_node_id() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] ||
@@ -159,7 +168,7 @@ issue_node() {
 basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature
 extendedKeyUsage=serverAuth,clientAuth
-subjectAltName=URI:urn:baft-tunnel:node:$node_id,$server_san
+subjectAltName=URI:$NODE_URI_PREFIX$node_id,$server_san
 subjectKeyIdentifier=hash
 authorityKeyIdentifier=keyid,issuer
 EOF
@@ -184,7 +193,8 @@ revoke_node() {
     die "certificate is not issued by this CA"
   local san
   san="$(openssl x509 -in "$cert" -noout -ext subjectAltName)"
-  [[ "$san" == *"URI:urn:baft-tunnel:node:"* ]] || die "certificate has no BAFT-TUNNEL node URI SAN"
+  [[ "$san" == *"URI:urn:baft-tunnel:node:"* || "$san" == *"URI:urn:baft:node:"* ]] ||
+    die "certificate has no BAFT-TUNNEL or BAFT node URI SAN"
   mkdir -p "$out_dir"
   chmod 700 "$out_dir"
   TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/baft-pki.XXXXXX")"
@@ -233,8 +243,8 @@ verify_node() {
   san="$(openssl x509 -in "$cert" -noout -ext subjectAltName | tr ',' '\n')"
   uri_sans="$(printf '%s\n' "$san" | sed -n 's/.*URI:\([^[:space:]]*\).*/\1/p')"
   server_sans="$(printf '%s\n' "$san" | sed -n -e 's/.*DNS:\([^[:space:]]*\).*/DNS:\1/p' -e 's/.*IP Address:\([^[:space:]]*\).*/IP:\1/p')"
-  [[ "$uri_sans" == "urn:baft-tunnel:node:$node_id" ]] ||
-    die "certificate must contain exactly one BAFT-TUNNEL node URI SAN matching $node_id"
+  [[ "$uri_sans" == "$NODE_URI_PREFIX$node_id" ]] ||
+    die "certificate must contain exactly one node URI SAN $NODE_URI_PREFIX$node_id"
   [[ "$server_sans" == "$expected_server_san" ]] ||
     die "certificate must contain exactly one server SAN matching $expected_server_san"
   openssl x509 -in "$cert" -noout -fingerprint -sha256
@@ -247,9 +257,11 @@ case "$command" in
   init-ca) [[ $# == 1 || $# == 2 ]] || { usage; exit 2; }; init_ca "$@" ;;
   new-node) [[ $# == 2 ]] || { usage; exit 2; }; new_node "$1" "$2" ;;
   issue-node) [[ $# == 5 || $# == 6 ]] || { usage; exit 2; }; issue_node "$@" ;;
+  issue-baft-node) [[ $# == 5 || $# == 6 ]] || { usage; exit 2; }; NODE_URI_PREFIX="urn:baft:node:"; issue_node "$@" ;;
   revoke-node) [[ $# == 3 ]] || { usage; exit 2; }; revoke_node "$@" ;;
   renew-crl) [[ $# == 2 || $# == 3 ]] || { usage; exit 2; }; renew_crl "$@" ;;
   verify-node) [[ $# == 5 ]] || { usage; exit 2; }; verify_node "$@" ;;
+  verify-baft-node) [[ $# == 5 ]] || { usage; exit 2; }; NODE_URI_PREFIX="urn:baft:node:"; verify_node "$@" ;;
   -h|--help|help) usage ;;
   *) usage; die "unknown command: $command" ;;
 esac

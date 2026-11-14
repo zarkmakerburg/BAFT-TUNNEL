@@ -4,7 +4,8 @@ usage() {
   cat <<'EOF'
 Usage: uninstall.sh [--destdir ROOT] [--stop] [--purge-config --yes]
 
-Removes the binary, the menu scripts (/usr/local/lib/baft-tunnel), the systemd
+Removes the binary, the menu scripts (/usr/local/lib/baft-tunnel), the engine
+store (/usr/local/lib/baft-tunnel-engines), the systemd
 templates, the agent units and the control helper.
 Config, node-key credentials (/etc/baft-tunnel/credentials), their instance
 drop-ins, state, and the agent token and state (/var/lib/baft-tunnel-agent)
@@ -78,6 +79,7 @@ done
 shopt -u nullglob
 rm -f "$ROOT_PREFIX/usr/local/bin/baft-tunnel" "$ROOT_PREFIX/etc/systemd/system/baft-tunnel@.service"
 rm -rf "$ROOT_PREFIX/usr/local/lib/baft-tunnel"
+rm -rf "$ROOT_PREFIX/usr/local/lib/baft-tunnel-engines"
 if [[ "$PURGE" == "1" ]]; then
   # Remove only drop-ins written by install.sh; leave any operator-owned files.
   shopt -s nullglob

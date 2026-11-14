@@ -9,9 +9,20 @@
 # The runner only carries public CSRs, signed public credential files, and public bundles. For tcp-tls,
 # an ephemeral CA runs in a network-isolated container; its encrypted CA key stays in container tmpfs.
 # Topology: abroad = serve (owns the service target), iran = forward (owns the ingress).
+# baft (B4, ADR-0019 phase F): same X.509 path as tcp-tls with the BAFT identity profile
+# (urn:baft:node), plus the signed engine installed into the root-owned engine store by
+# `install.sh --baft-engine`, the engine-store preflight gate, and Stop through the agent.
 
 PANEL_ENGINE="${LAB_PANEL_ENGINE:-noise-tcp}"
-[[ "$PANEL_ENGINE" == noise-tcp || "$PANEL_ENGINE" == tcp-tls ]] || { echo "invalid LAB_PANEL_ENGINE" >&2; exit 2; }
+[[ "$PANEL_ENGINE" == noise-tcp || "$PANEL_ENGINE" == tcp-tls || "$PANEL_ENGINE" == baft ]] || { echo "invalid LAB_PANEL_ENGINE" >&2; exit 2; }
+PP_X509=0; [[ "$PANEL_ENGINE" == noise-tcp ]] || PP_X509=1
+ESTORE=/usr/local/lib/baft-tunnel-engines
+PP_ENGINE_ARG=""; PP_ENGINE_SHA=""
+if [[ "$PANEL_ENGINE" == baft ]]; then
+  [[ -f "${BAFT_ENGINE_BINARY:-}" ]] || { echo "LAB_PANEL_ENGINE=baft needs BAFT_ENGINE_BINARY (verified signed engine asset)" >&2; exit 2; }
+  PP_ENGINE_SHA="$(sha256sum "$BAFT_ENGINE_BINARY" | awk '{print $1}')"
+  PP_ENGINE_ARG="--baft-engine '$REMOTE_DIR/baft-engine-pp'"
+fi
 echo "=== PANEL PAIRING ($PANEL_ENGINE): install --register, setup mode, enrollment/init/export/inspect/join through the agent API only, Start ==="
 stop_role iran serve; stop_role abroad serve; stop_role iran forward; stop_role abroad forward; sleep 1
 # Do not let logs from earlier E2E stages (including the intentional revoked-cert test)
@@ -33,7 +44,7 @@ pp_snapshot() { # side : normalized firewall rules, listeners outside the test p
 echo "--- clean-host check ---"
 PP_USERS_BEFORE=(); PP_DRIFT=()
 for side in iran abroad; do
-  ssh_host "$side" "! test -e $UB && ! test -e $EB && ! test -e /var/lib/baft-tunnel && ! test -e /var/lib/baft-tunnel-control && ! test -e $AGS && [ \"\$(systemctl list-unit-files --no-legend 'baft-tunnel*' | wc -l)\" = 0 ]" ||
+  ssh_host "$side" "! test -e $UB && ! test -e $EB && ! test -e $ESTORE && ! test -e /var/lib/baft-tunnel && ! test -e /var/lib/baft-tunnel-control && ! test -e $AGS && [ \"\$(systemctl list-unit-files --no-legend 'baft-tunnel*' | wc -l)\" = 0 ]" ||
     { echo "$side is not clean: an earlier BAFT-TUNNEL install is present (binary, $EB, state or units)" >&2; exit 1; }
   ssh_host "$side" "systemctl --version | head -1; . /etc/os-release; echo \$PRETTY_NAME"
   for u in baft-tunnel baft-tunnel-agent; do
@@ -63,12 +74,16 @@ trap 'pp_status=$?; set +e; pp_cleanup; (exit "$pp_status"); cleanup' EXIT
 echo "--- one-step install with --register (${MVP_SOURCE}, sha256 ${PP_SHA}); no configuration yet ---"
 tar -czf "$LOCAL_TMP/pp-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-pp"
+[[ -z "$PP_ENGINE_SHA" ]] || install -m 0755 "$BAFT_ENGINE_BINARY" "$LOCAL_TMP/baft-engine-pp"
 for side in iran abroad; do
   inst="$(pp_inst "$side")"
   copy_to_host "$side" "$LOCAL_TMP/pp-pkg.tgz" "$LOCAL_TMP/baft-tunnel-pp"
+  [[ -z "$PP_ENGINE_SHA" ]] || copy_to_host "$side" "$LOCAL_TMP/baft-engine-pp"
   ssh_host "$side" "set -e; mkdir -p '$PKG'; tar -xzf '$REMOTE_DIR/pp-pkg.tgz' -C '$PKG';
     [ \"\$(sha256sum '$REMOTE_DIR/baft-tunnel-pp' | cut -d' ' -f1)\" = '$PP_SHA' ];
-    bash '$PKG/scripts/install.sh' --binary '$REMOTE_DIR/baft-tunnel-pp' --register $inst --agent-listen 127.0.0.1:$MAG >/dev/null;
+    [ -z '$PP_ENGINE_SHA' ] || [ \"\$(sha256sum '$REMOTE_DIR/baft-engine-pp' | cut -d' ' -f1)\" = '$PP_ENGINE_SHA' ];
+    bash '$PKG/scripts/install.sh' --binary '$REMOTE_DIR/baft-tunnel-pp' $PP_ENGINE_ARG --register $inst --agent-listen 127.0.0.1:$MAG >/dev/null;
+    [ -z '$PP_ENGINE_SHA' ] || { [ \"\$(readlink $ESTORE/baft/current)\" = 'releases/$PP_ENGINE_SHA' ] && [ \"\$(stat -c '%U:%G' $ESTORE $ESTORE/baft/releases/$PP_ENGINE_SHA/engine)\" = \"\$(printf 'root:root\nroot:root')\" ] && rm -f '$REMOTE_DIR/baft-engine-pp'; };
     [ \"\$(sha256sum $UB | cut -d' ' -f1)\" = '$PP_SHA' ];
     systemctl is-enabled --quiet baft-tunnel-control-setup@$inst.path; systemctl is-active --quiet baft-tunnel-control-setup@$inst.path;
     ! test -e $EB/$inst.json; ! systemctl is-active --quiet baft-tunnel@$inst.service" ||
@@ -116,11 +131,11 @@ for side in iran abroad; do
 done
 
 pp_plan() { # side -> plan JSON
-  if [[ "$PANEL_ENGINE" == tcp-tls ]]; then
+  if (( PP_X509 == 1 )); then
     if [[ "$1" == abroad ]]; then
-      printf '{"engine":"tcp-tls","role":"serve","direction":"direct","node_id":"abroad","peer_id":"iran","tunnel_id":"ppair","service_port":%s,"tunnel_port":%s,"dir":"%s","instance":"%s"}' "$MSVC" "$MTP" "$EB" "$SRV"
+      printf '{"engine":"'"$PANEL_ENGINE"'","role":"serve","direction":"direct","node_id":"abroad","peer_id":"iran","tunnel_id":"ppair","service_port":%s,"tunnel_port":%s,"dir":"%s","instance":"%s"}' "$MSVC" "$MTP" "$EB" "$SRV"
     else
-      printf '{"engine":"tcp-tls","role":"forward","direction":"direct","node_id":"iran","peer_id":"abroad","tunnel_id":"ppair","service_port":%s,"tunnel_port":%s,"peer_host":"%s","server_name":"%s","dir":"%s","instance":"%s"}' "$MSVC" "$MTP" "$LAB_ABROAD_HOST" "$LAB_ABROAD_HOST" "$EB" "$CLI"
+      printf '{"engine":"'"$PANEL_ENGINE"'","role":"forward","direction":"direct","node_id":"iran","peer_id":"abroad","tunnel_id":"ppair","service_port":%s,"tunnel_port":%s,"peer_host":"%s","server_name":"%s","dir":"%s","instance":"%s"}' "$MSVC" "$MTP" "$LAB_ABROAD_HOST" "$LAB_ABROAD_HOST" "$EB" "$CLI"
     fi
   elif [[ "$1" == abroad ]]; then
     printf '{"engine":"noise-tcp","role":"serve","direction":"direct","node_id":"abroad","peer_id":"iran","tunnel_id":"ppair","service_port":%s,"tunnel_port":%s,"dir":"%s","instance":"%s"}' "$MSVC" "$MTP" "$EB" "$SRV"
@@ -137,17 +152,18 @@ pp_tls_enroll() {
     inst="$(pp_inst "$side")"
     ssh_host "$side" "systemctl is-enabled --quiet baft-tunnel-control-pki@$inst.path && systemctl is-active --quiet baft-tunnel-control-pki@$inst.path" || pp_fail "PKI root-helper path unit is not enabled and active on $side" "$side"
     req_id="pki-csr-$side-0001"
-    python3 - "$LOCAL_TMP/d2-certs/csr-request-$side.json" "$req_id" "$node" "$san" <<'PY'
+    python3 - "$LOCAL_TMP/d2-certs/csr-request-$side.json" "$req_id" "$node" "$san" "$PANEL_ENGINE" <<'PY'
 import json, sys
-json.dump({"request_id":sys.argv[2],"node_id":sys.argv[3],"server_name":sys.argv[4],"confirm":True},open(sys.argv[1],"w"))
+json.dump({"request_id":sys.argv[2],"node_id":sys.argv[3],"server_name":sys.argv[4],"confirm":True,"engine":sys.argv[5]},open(sys.argv[1],"w"))
 PY
     if ! pp_api "$side" POST /v1/pki/csr/create "$LOCAL_TMP/d2-certs/csr-request-$side.json" > "$LOCAL_TMP/d2-certs/csr-response-$side.json"; then
       pp_fail "PKI CSR API transport failed on $side" "$side"
     fi
-    if ! python3 - "$LOCAL_TMP/d2-certs/csr-response-$side.json" "$LOCAL_TMP/d2-certs/csr/$side.csr" "$node" "$san" <<'PY'
+    if ! python3 - "$LOCAL_TMP/d2-certs/csr-response-$side.json" "$LOCAL_TMP/d2-certs/csr/$side.csr" "$node" "$san" "$PANEL_ENGINE" <<'PY'
 import json, sys
 d=json.load(open(sys.argv[1]))
 assert d.get("result") == "created", d
+assert d.get("identity_profile") == ("baft" if sys.argv[5] == "baft" else "baft-tunnel"), d
 assert d.get("node_id") == sys.argv[3], d
 assert d.get("expected_server_san") == "IP:" + sys.argv[4], d
 assert d.get("private_key_exported") is False, d
@@ -185,6 +201,7 @@ PY
     -v "$LOCAL_TMP/d2-certs:/workspace:rw" \
     -v "$PWD/scripts/pki:/pki:ro" \
     -e D2_IRAN_SAN="$LAB_IRAN_HOST" -e D2_ABROAD_SAN="$LAB_ABROAD_HOST" \
+    -e D2_PROFILE="$([[ "$PANEL_ENGINE" == baft ]] && echo baft-node || echo node)" \
     "$image" /bin/bash -euo pipefail -c '
       umask 077
       cat > /tmp/passphrase
@@ -192,12 +209,12 @@ PY
       export BAFT_PKI_PASSFILE=/tmp/passphrase
       mkdir -p /tmp/ca /workspace/signed
       bash /pki/baft-pki.sh init-ca /tmp/ca "BAFT-TUNNEL D2 LAB CA" >/dev/null
-      bash /pki/baft-pki.sh issue-node /tmp/ca abroad /workspace/csr/abroad.csr /workspace/signed/abroad "$D2_ABROAD_SAN" 90 >/dev/null
-      bash /pki/baft-pki.sh issue-node /tmp/ca iran /workspace/csr/iran.csr /workspace/signed/iran "$D2_IRAN_SAN" 90 >/dev/null
+      bash /pki/baft-pki.sh "issue-$D2_PROFILE" /tmp/ca abroad /workspace/csr/abroad.csr /workspace/signed/abroad "$D2_ABROAD_SAN" 90 >/dev/null
+      bash /pki/baft-pki.sh "issue-$D2_PROFILE" /tmp/ca iran /workspace/csr/iran.csr /workspace/signed/iran "$D2_IRAN_SAN" 90 >/dev/null
       cp /tmp/ca/ca.crl /workspace/signed/abroad/ca.crl
       cp /tmp/ca/ca.crl /workspace/signed/iran/ca.crl
-      bash /pki/baft-pki.sh verify-node /tmp/ca /tmp/ca/ca.crl /workspace/signed/abroad/node.crt abroad "$D2_ABROAD_SAN" >/dev/null
-      bash /pki/baft-pki.sh verify-node /tmp/ca /tmp/ca/ca.crl /workspace/signed/iran/node.crt iran "$D2_IRAN_SAN" >/dev/null
+      bash /pki/baft-pki.sh "verify-$D2_PROFILE" /tmp/ca /tmp/ca/ca.crl /workspace/signed/abroad/node.crt abroad "$D2_ABROAD_SAN" >/dev/null
+      bash /pki/baft-pki.sh "verify-$D2_PROFILE" /tmp/ca /tmp/ca/ca.crl /workspace/signed/iran/node.crt iran "$D2_IRAN_SAN" >/dev/null
       # These are public enrollment artifacts only. The container may create them
       # with a different uid; grant the ephemeral runner cleanup access as well.
       find /workspace/signed -type d -exec chmod 777 {} +
@@ -273,8 +290,10 @@ for side in iran abroad; do
 import json,sys
 c={x["id"]:x["result"] for x in json.load(open(sys.argv[1]))["checks"]}
 assert c.get("setup_helper") == "pass", c
-if sys.argv[2] == "tcp-tls":
+if sys.argv[2] in ("tcp-tls", "baft"):
     assert c.get("pki_files") == "warning", c
+if sys.argv[2] == "baft":
+    assert c.get("engine_store") == "pass", c
 PY
   then
     cat "$LOCAL_TMP/pp-pf-$side.json" >&2
@@ -282,7 +301,7 @@ PY
   fi
 done
 
-if [[ "$PANEL_ENGINE" == tcp-tls ]]; then
+if (( PP_X509 == 1 )); then
   pp_tls_enroll
 fi
 
@@ -293,7 +312,7 @@ for side in abroad iran; do
   pp_api "$side" POST /v1/setup/apply "$LOCAL_TMP/pp-init-$side.json" > "$LOCAL_TMP/pp-init-out-$side.json"
   [[ "$(jf result < "$LOCAL_TMP/pp-init-out-$side.json")" == applied && "$(jf source < "$LOCAL_TMP/pp-init-out-$side.json")" == "root setup helper" ]] ||
     { cat "$LOCAL_TMP/pp-init-out-$side.json" >&2; pp_fail "init through the agent on $side was not applied by the root helper" "$side"; }
-  if [[ "$PANEL_ENGINE" == tcp-tls ]]; then
+  if (( PP_X509 == 1 )); then
     ssh_host "$side" "[ \"\$(stat -c '%U:%G %a' $EB/node.key)\" = 'baft-tunnel:baft-tunnel 600' ] && ! runuser -u baft-tunnel-agent -- cat $EB/node.key >/dev/null 2>&1" ||
       pp_fail "node key on $side has the wrong owner/mode or is readable by the agent user" "$side"
   else
@@ -307,7 +326,7 @@ for side in abroad iran; do
   python3 -c 'import json,sys; open(sys.argv[2],"w").write(json.load(open(sys.argv[1]))["bundle"])' "$LOCAL_TMP/pp-own-$side.json" "$LOCAL_TMP/pp-bundle-$side.json"
   copy_to_host "$side" "$LOCAL_TMP/pp-bundle-$side.json" ||
     pp_fail "could not stage public bundle for key-exposure check on $side" "$side"
-  if [[ "$PANEL_ENGINE" == tcp-tls ]]; then
+  if (( PP_X509 == 1 )); then
     ssh_host "$side" "! grep -q 'PRIVATE KEY' '$REMOTE_DIR/pp-bundle-$side.json'; rc=\$?; rm -f '$REMOTE_DIR/pp-bundle-$side.json'; exit \$rc" ||
       pp_fail "the exported bundle on $side contains private-key PEM" "$side"
   else
@@ -332,11 +351,21 @@ for side in abroad iran; do
   pp_body "$LOCAL_TMP/pp-join-$side.json" join "pp-join-$side-0001" "$(pp_plan "$side")" "$LOCAL_TMP/pp-bundle-$peer.json" "${PP_CK[$peer]}"
   pp_api "$side" POST /v1/setup/apply "$LOCAL_TMP/pp-join-$side.json" > "$LOCAL_TMP/pp-join-out-$side.json"
   [[ "$(jf result < "$LOCAL_TMP/pp-join-out-$side.json")" == applied ]] || { cat "$LOCAL_TMP/pp-join-out-$side.json" >&2; pp_fail "join through the agent on $side was not applied" "$side"; }
-  if [[ "$PANEL_ENGINE" == tcp-tls ]]; then
+  if (( PP_X509 == 1 )); then
     ssh_host "$side" "grep -q 'pki/current/node.crt' $EB/$(pp_inst "$side").json && grep -q 'pki/current/ca.crt' $EB/$(pp_inst "$side").json" ||
-      pp_fail "tcp-tls config on $side does not use the active versioned credential set after join" "$side"
+      pp_fail "$PANEL_ENGINE config on $side does not use the active versioned credential set after join" "$side"
     ssh_host "$side" "openssl verify -purpose any -CAfile $EB/pki/current/ca.crt -CRLfile $EB/pki/current/ca.crl -crl_check $EB/pki/current/node.crt >/dev/null" ||
       pp_fail "the active local certificate on $side does not verify against its active CA/CRL" "$side"
+  fi
+  if [[ "$PANEL_ENGINE" == baft ]]; then
+    # Pinned store engine; the listener takes no pin, the dialer pins the listener certificate.
+    ssh_host "$side" "python3 - $EB/$(pp_inst "$side").json '$side' '$PP_ENGINE_SHA' '$ESTORE' <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+assert c['engine'] == 'baft' and c['direction'] == 'direct', c
+assert c['baft'] == {'sha256': sys.argv[3], 'store': sys.argv[4]}, c['baft']
+assert ('peer_fingerprint' in c) == (sys.argv[2] == 'iran'), sorted(c)
+PY" || pp_fail "baft config on $side does not pin the store engine or has the wrong pin layout" "$side"
   fi
   ssh_host "$side" "[ \"\$(stat -c '%U:%G %a' $EB/$(pp_inst "$side").json)\" = 'root:baft-tunnel 640' ]" || pp_fail "instance config on $side has the wrong owner/mode" "$side"
 done
@@ -364,6 +393,27 @@ t0=$SECONDS; PP_DATA_S=""
 while (( SECONDS - t0 < 60 )); do probe_host iran 65536 >/dev/null 2>&1 && { PP_DATA_S=$((SECONDS - t0)); break; }; sleep 2; done
 [[ -n "$PP_DATA_S" ]] || { ssh_host iran "journalctl -u baft-tunnel@$CLI -n 40 --no-pager" >&2 || true; echo "no data through the panel-paired tunnel" >&2; exit 1; }
 probe_host iran 65536; probe_host iran 2097289
+PP_STOP=0
+if [[ "$PANEL_ENGINE" == baft ]]; then
+  echo "--- baft: the store engine runs as the tunnel user; Stop through the agent ends it and closes the ports ---"
+  for side in abroad iran; do
+    ssh_host "$side" "pid=\$(systemctl show -p MainPID --value baft-tunnel@$(pp_inst "$side").service); c=\$(pgrep -P \$pid -f '^$ESTORE/baft/releases/$PP_ENGINE_SHA/engine run ' | head -1); [ -n \"\$c\" ] && [ \"\$(ps -o user= -p \$c)\" = baft-tunnel ]" ||
+      pp_fail "the pinned store engine is not the running child of baft-tunnel@$(pp_inst "$side") on $side" "$side"
+  done
+  for side in iran abroad; do
+    printf '{"action":"stop","confirm":true,"idempotency_key":"pp-stop-%s-0001"}' "$side" > "$LOCAL_TMP/pp-stop-$side.json"
+    pp_api "$side" POST /v1/tunnel/lifecycle "$LOCAL_TMP/pp-stop-$side.json" > "$LOCAL_TMP/pp-stop-out-$side.json"
+    [[ "$(jf result < "$LOCAL_TMP/pp-stop-out-$side.json")" == applied ]] || { cat "$LOCAL_TMP/pp-stop-out-$side.json" >&2; pp_fail "Stop on $side was not applied" "$side"; }
+  done
+  sleep 3
+  for side in iran abroad; do
+    port="$MTP"; [[ "$side" == iran ]] && port="$MSVC"   # abroad's echo service keeps MSVC
+    ssh_host "$side" "! systemctl is-active --quiet baft-tunnel@$(pp_inst "$side").service && ! pgrep -f '^$ESTORE/baft/' >/dev/null && ! ss -ltnH | awk '{print \$4}' | grep -qE ':$port\$'" ||
+      pp_fail "Stop left the baft engine or the tunnel port $port open on $side" "$side"
+  done
+  if probe_host iran 65536 >/dev/null 2>&1; then echo "data still flowed after Stop" >&2; exit 1; fi
+  PP_STOP=2
+fi
 
 echo "--- audit, helper receipts, no secrets in agent state ---"
 for side in iran abroad; do
@@ -382,7 +432,7 @@ LOCAL_PORT="$OLD_LOCAL_PORT"; stop_role abroad echo2
 echo "--- uninstall and cleanup proof ---"
 pp_cleanup; trap cleanup EXIT
 for side in iran abroad; do
-  ssh_host "$side" "! test -e $UB && ! test -e $EB && ! test -e /var/lib/baft-tunnel && ! test -e $AGS && ! test -e /run/baft-tunnel/control &&
+  ssh_host "$side" "! test -e $UB && ! test -e $EB && ! test -e $ESTORE && ! test -e /var/lib/baft-tunnel && ! test -e $AGS && ! test -e /run/baft-tunnel/control &&
     ! ls /etc/systemd/system/multi-user.target.wants/ | grep -q '^baft-tunnel' && ! systemctl list-units --all --plain --no-legend 'baft-tunnel*' | grep -q . &&
     ! ss -ltnH | awk '{print \$4}' | grep -qE ':($MSVC|$MTP|$MAG)\$'" ||
     { echo "uninstall left BAFT-TUNNEL resources on $side" >&2; exit 1; }
@@ -404,4 +454,4 @@ for side in iran abroad; do
     PP_DRIFT+=("$side")
   fi
 done
-echo "PANEL_PAIRING_RESULT engine=$PANEL_ENGINE source=$MVP_SOURCE binary_sha256=$PP_SHA clean_hosts=1 setup_mode_after_install=1 agent_user=baft-tunnel-agent preflight_setup_helper=1 pki_enrollment=$([[ "$PANEL_ENGINE" == tcp-tls ]] && echo 1 || echo 0) init_via_agent=2 key_not_agent_readable=1 export_checksum=1 bundle_key_free=1 wrong_checksum_flagged=1 wrong_checksum_join_refused=1 join_via_agent=2 agents_reloaded=2 root_setup_commands_by_us=0 start_via_agent=2 data_s=$PP_DATA_S integrity_64k_2m=1 audit_setup=1 helper_receipts=1 state_secret_free=1 uninstalled=1 users_removed=1 baft_fw_rules=0 host_drift=${PP_DRIFT[*]:-none}"
+echo "PANEL_PAIRING_RESULT engine=$PANEL_ENGINE source=$MVP_SOURCE binary_sha256=$PP_SHA clean_hosts=1 setup_mode_after_install=1 agent_user=baft-tunnel-agent preflight_setup_helper=1 pki_enrollment=$PP_X509 engine_sha256=${PP_ENGINE_SHA:-none} stop_via_agent=$PP_STOP init_via_agent=2 key_not_agent_readable=1 export_checksum=1 bundle_key_free=1 wrong_checksum_flagged=1 wrong_checksum_join_refused=1 join_via_agent=2 agents_reloaded=2 root_setup_commands_by_us=0 start_via_agent=2 data_s=$PP_DATA_S integrity_64k_2m=1 audit_setup=1 helper_receipts=1 state_secret_free=1 uninstalled=1 users_removed=1 baft_fw_rules=0 host_drift=${PP_DRIFT[*]:-none}"

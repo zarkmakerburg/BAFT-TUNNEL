@@ -12,7 +12,7 @@ use rustls::{
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use zeroize::Zeroizing;
 
-fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
+pub(crate) fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
     let file =
         File::open(path).with_context(|| format!("open certificate file {}", path.display()))?;
     let items = CertificateDer::pem_reader_iter(BufReader::new(file))
@@ -360,8 +360,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::handshake::{client_handshake, server_handshake, verify_peer_fingerprint};
     use rcgen::{
-        BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
-        KeyUsagePurpose, SanType, string::Ia5String,
+        BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,
+        IsCa, Issuer, KeyPair, KeyUsagePurpose, SanType, string::Ia5String,
     };
     use sha2::{Digest, Sha256};
     use std::{
@@ -1076,7 +1076,33 @@ pub(crate) mod tests {
         uri: &str,
         issuer: &Issuer<'static, KeyPair>,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
-        let mut params = CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+        // tcp-tls test handshakes dial "localhost"; BAFT leaves carry the fixed listener name.
+        let server_name = uri
+            .strip_prefix("urn:baft:node:")
+            .map(|node_id| format!("{node_id}.baft-tunnel.invalid"))
+            .unwrap_or_else(|| "localhost".to_owned());
+        leaf_with_server_name(dir, name, uri, &server_name, issuer)
+    }
+
+    pub(crate) fn leaf_with_server_name(
+        dir: &Path,
+        name: &str,
+        uri: &str,
+        server_name: &str,
+        issuer: &Issuer<'static, KeyPair>,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let mut params = CertificateParams::new(Vec::new()).unwrap();
+        params.distinguished_name = DistinguishedName::new();
+        let node_id = uri.rsplit(':').next().unwrap_or("node");
+        params.distinguished_name.push(DnType::CommonName, node_id);
+        if let Ok(ip) = server_name.parse::<std::net::IpAddr>() {
+            params.subject_alt_names.push(SanType::IpAddress(ip));
+        } else {
+            params.subject_alt_names.push(SanType::DnsName(
+                Ia5String::try_from(server_name.to_owned()).unwrap(),
+            ));
+        }
+        params.is_ca = IsCa::ExplicitNoCa;
         params.key_usages.push(KeyUsagePurpose::DigitalSignature);
         params.extended_key_usages = vec![
             ExtendedKeyUsagePurpose::ServerAuth,

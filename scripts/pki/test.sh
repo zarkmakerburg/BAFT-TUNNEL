@@ -64,6 +64,20 @@ ABROAD="$TMP/abroad"
 openssl x509 -in "$ABROAD/node.crt" -noout -ext subjectAltName | grep -Fq 'IP Address:192.0.2.10'
 [[ ! -e "$NODE/ca.key" ]] || { echo "CA private key leaked into node bundle" >&2; exit 1; }
 
+# BAFT engine profile: exactly one URI SAN urn:baft:node:<id>; tcp-tls verification refuses it.
+BNODE="$TMP/baft-node"
+"$PKI" new-node bnode "$BNODE"
+"$PKI" issue-baft-node "$CA" bnode "$BNODE/node.csr" "$BNODE" bnode.example.test 30 >/dev/null
+"$PKI" verify-baft-node "$CA" "$BNODE/ca.crl" "$BNODE/node.crt" bnode bnode.example.test >/dev/null
+[[ "$(openssl x509 -in "$BNODE/node.crt" -noout -ext subjectAltName | grep -o 'URI:[^,]*' | tr -d ' ')" == "URI:urn:baft:node:bnode" ]] ||
+  { echo "baft certificate must carry exactly the baft node URI" >&2; exit 1; }
+if "$PKI" verify-node "$CA" "$BNODE/ca.crl" "$BNODE/node.crt" bnode bnode.example.test >/dev/null 2>&1; then
+  echo "baft-profile certificate was accepted as a tcp-tls node certificate" >&2; exit 1
+fi
+if "$PKI" verify-baft-node "$CA" "$NODE/ca.crl" "$NODE/node.crt" iran tunnel.iran.example.test >/dev/null 2>&1; then
+  echo "tcp-tls certificate was accepted as a baft node certificate" >&2; exit 1
+fi
+
 if "$PKI" issue-node "$CA" abroad "$NODE/node.csr" "$TMP/wrong-cn" tunnel.abroad.example.test 30 >/dev/null 2>&1; then
   echo "CSR subject mismatch was accepted" >&2
   exit 1

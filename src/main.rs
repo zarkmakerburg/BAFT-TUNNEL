@@ -297,6 +297,8 @@ enum EngineCommand {
         #[arg(long)]
         id: String,
     },
+    /// Print the engine manifest this binary was built with (the pins guided setup uses).
+    Manifest,
 }
 
 #[derive(Debug, Subcommand)]
@@ -652,7 +654,7 @@ async fn run() -> Result<()> {
             // SAFETY: geteuid has no preconditions and cannot fail.
             if unsafe { libc::geteuid() } == 0 && !allow_root {
                 anyhow::bail!(
-                    "refusing to run the agent as root: run it as the baft-tunnel user (for example `setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups baft-tunnel agent ...`), or pass --allow-root to accept the risk"
+                    "refusing to run the agent as root: run it as the baft-tunnel-agent user, as the installed baft-tunnel-agent@NAME service does (for example `setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups baft-tunnel agent ...`), or pass --allow-root to accept the risk"
                 );
             }
             // Setup mode (ADR-0026): an installed instance without NAME.json yet still gets its
@@ -702,6 +704,9 @@ async fn run() -> Result<()> {
                 EngineCommand::Verify { store, id } => {
                     let bin = engine_store::verify_current(&store, &id)?;
                     println!("engine {id}: current verified: {}", bin.display());
+                }
+                EngineCommand::Manifest => {
+                    print!("{}", baft_engine::PINNED_MANIFEST);
                 }
                 EngineCommand::Rollback { store, id } => {
                     let sha = engine_store::rollback(&store, &id)?;

@@ -192,4 +192,109 @@ fi
 [[ -z "$(compgen -G "$STAGE/etc/systemd/system/baft-tunnel-agent@*" || true)" ]]
 [[ ! -L "$STAGE/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@iran.path" && ! -e "$STAGE/var/lib/baft-tunnel-agent" ]]
 
-echo "BAFT_INSTALL_TEST=PASS (staged install, systemd hardening, rollback, baseline credential provisioning/replace/rollback, fail-closed credential checks, safe uninstall, explicit config purge, one-step agent registration, CSR helper unit install, agent and control helper removed)"
+# Engine-store pointer rollback after engine install succeeds but verification fails.
+# This uses a fake CLI, so no production failpoint or real engine is needed.
+engine_rollback_fail() {
+  echo "BAFT_ENGINE_ROLLBACK_TEST=FAIL: $*" >&2
+  if [[ -f "$TMP/engine-fail.log" ]]; then
+    echo "--- fake installer trace (last 100 lines) ---" >&2
+    tail -n 100 "$TMP/engine-fail.log" >&2
+  fi
+  if [[ -d "${ENGINE_DIR:-}" ]]; then
+    echo "--- engine store state ---" >&2
+    ls -la "$ENGINE_DIR" "$ENGINE_DIR/releases" >&2 || true
+    for pointer in current previous; do
+      [[ ! -L "$ENGINE_DIR/$pointer" ]] || printf '%s -> %s\n' "$pointer" "$(readlink "$ENGINE_DIR/$pointer")" >&2
+    done
+  fi
+  exit 1
+}
+ENGINE_FAKE="$TMP/engine-fake"
+cat > "$ENGINE_FAKE" <<'EOF_ENGINE_FAKE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "${1:-}" == "--version" ]]; then echo "baft-tunnel engine-test"; exit 0; fi
+if [[ "${1:-}" == "engine" && "${2:-}" == "manifest" ]]; then
+  printf '{"engines":[{"id":"baft"}]}\n'
+  exit 0
+fi
+if [[ "${1:-}" == "engine" && "${2:-}" == "install" ]]; then
+  shift 2
+  store=""; asset=""
+  while (($#)); do
+    case "$1" in
+      --store) store="$2"; shift 2 ;;
+      --binary) asset="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -n "$store" && -n "$asset" ]]
+  digest="$(sha256sum "$asset" | awk '{print $1}')"
+  engine_dir="$store/baft"
+  mkdir -p "$engine_dir/releases/$digest"
+  cp "$asset" "$engine_dir/releases/$digest/engine"
+  if [[ -L "$engine_dir/current" ]]; then
+    old="$(readlink "$engine_dir/current")"
+    ln -sfn "$old" "$engine_dir/previous"
+  fi
+  ln -sfn "releases/$digest" "$engine_dir/current"
+  exit 0
+fi
+if [[ "${1:-}" == "engine" && "${2:-}" == "verify" ]]; then
+  [[ "${BAFT_TEST_FAIL_VERIFY:-0}" != "1" ]] || exit 42
+  exit 0
+fi
+echo "unexpected fake CLI invocation: $*" >&2
+exit 64
+EOF_ENGINE_FAKE
+chmod 755 "$ENGINE_FAKE"
+ENGINE_FAIL_STAGE="$TMP/engine-fail-stage"
+"$INSTALL" --binary "$ENGINE_FAKE" --destdir "$ENGINE_FAIL_STAGE" >/dev/null || engine_rollback_fail "initial fake binary staging install failed"
+ENGINE_DIR="$ENGINE_FAIL_STAGE/usr/local/lib/baft-tunnel-engines/baft"
+OLD_CURRENT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+OLD_PREVIOUS="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+mkdir -p "$ENGINE_DIR/releases/$OLD_CURRENT" "$ENGINE_DIR/releases/$OLD_PREVIOUS"
+printf 'old-current\n' > "$ENGINE_DIR/releases/$OLD_CURRENT/engine"
+printf 'old-previous\n' > "$ENGINE_DIR/releases/$OLD_PREVIOUS/engine"
+ln -s "releases/$OLD_CURRENT" "$ENGINE_DIR/current"
+ln -s "releases/$OLD_PREVIOUS" "$ENGINE_DIR/previous"
+printf 'candidate-engine\n' > "$TMP/engine-candidate"
+if BAFT_TEST_FAIL_VERIFY=1 bash -x "$INSTALL" --binary "$ENGINE_FAKE" --baft-engine "$TMP/engine-candidate" --destdir "$ENGINE_FAIL_STAGE" >"$TMP/engine-fail.log" 2>&1; then
+  engine_rollback_fail "engine verification failure unexpectedly succeeded"
+fi
+[[ -L "$ENGINE_DIR/current" ]] || engine_rollback_fail "current pointer was not restored as a symlink"
+[[ -L "$ENGINE_DIR/previous" ]] || engine_rollback_fail "previous pointer was not restored as a symlink"
+[[ "$(readlink "$ENGINE_DIR/current")" == "releases/$OLD_CURRENT" ]] || engine_rollback_fail "current pointer target mismatch"
+[[ "$(readlink "$ENGINE_DIR/previous")" == "releases/$OLD_PREVIOUS" ]] || engine_rollback_fail "previous pointer target mismatch"
+[[ -f "$ENGINE_DIR/releases/$OLD_CURRENT/engine" && -f "$ENGINE_DIR/releases/$OLD_PREVIOUS/engine" ]] || engine_rollback_fail "previous release payload missing"
+grep -Fq 'previous files restored' "$TMP/engine-fail.log" || engine_rollback_fail "installer did not report rollback completion"
+echo "BAFT_ENGINE_ROLLBACK_TEST=PASS"
+
+# --baft-engine: needs --binary, and a binary whose digest is not the built-in pin is refused
+# with the previous install restored and no engine made current.
+if bash "$INSTALL" --baft-engine "$FAKE" --destdir "$TMP/engine-only" >/dev/null 2>&1; then
+  echo "--baft-engine without --binary was accepted" >&2; exit 1
+fi
+REAL_BIN="${BAFT_TUNNEL_TEST_BINARY:-}"
+if [[ -z "$REAL_BIN" ]]; then
+  for c in "$ROOT/target/release/baft-tunnel" "$ROOT/target/debug/baft-tunnel"; do [[ -x "$c" ]] && { REAL_BIN="$c"; break; }; done
+fi
+ENGINE_TEST=skipped
+if [[ -n "$REAL_BIN" ]]; then
+  ES="$TMP/engine-stage"
+  "$INSTALL" --binary "$REAL_BIN" --destdir "$ES" >/dev/null
+  cmp -s "$REAL_BIN" "$ES/usr/local/bin/baft-tunnel"
+  "$ES/usr/local/bin/baft-tunnel" engine manifest | python3 -c 'import json,sys; m=json.load(sys.stdin); assert [e for e in m["engines"] if e["id"]=="baft"]'
+  printf 'not-the-pinned-engine\n' > "$TMP/fake-engine"
+  if "$INSTALL" --binary "$REAL_BIN" --baft-engine "$TMP/fake-engine" --destdir "$ES" >/dev/null 2>&1; then
+    echo "an engine with the wrong digest was installed" >&2; exit 1
+  fi
+  cmp -s "$REAL_BIN" "$ES/usr/local/bin/baft-tunnel" || { echo "failed engine install did not restore the binary" >&2; exit 1; }
+  [[ ! -e "$ES/usr/local/lib/baft-tunnel-engines/baft/current" ]] || { echo "refused engine became current" >&2; exit 1; }
+  "$UNINSTALL" --destdir "$ES" >/dev/null
+  [[ ! -e "$ES/usr/local/lib/baft-tunnel-engines" ]] || { echo "uninstall left the engine store" >&2; exit 1; }
+  ENGINE_TEST=pass
+fi
+echo "BAFT_INSTALL_ENGINE_STORE=$ENGINE_TEST"
+
+echo "BAFT_INSTALL_TEST=PASS (staged install, systemd hardening, engine-store pointer rollback, rollback, baseline credential provisioning/replace/rollback, fail-closed credential checks, safe uninstall, explicit config purge, one-step agent registration, CSR helper unit install, agent and control helper removed)"

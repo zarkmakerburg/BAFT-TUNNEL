@@ -11,6 +11,7 @@ NODE_KEY=""
 CREDENTIAL_MODE="baseline"
 REPLACE_CREDENTIAL=0
 ASSUME_SYSTEMD_VERSION=""
+BAFT_ENGINE=""
 SERVICE_USER="baft-tunnel"
 CREDENTIAL_ID="node-key"
 MAX_CREDENTIAL_BYTES=16384
@@ -21,7 +22,7 @@ DROPIN_MARKER="# Managed by BAFT-TUNNEL scripts/install.sh"
 usage() {
   cat <<'EOF'
 Usage: install.sh                (no arguments on a terminal: interactive menu)
-       install.sh [--binary PATH] [--instance NAME --node-key PATH
+       install.sh [--binary PATH [--baft-engine PATH]] [--instance NAME --node-key PATH
                   [--credential-mode baseline|encrypted] [--replace-credential]]
                   [--register NAME [--agent-listen 127.0.0.1:PORT]]
                   [--destdir ROOT [--systemd-version N]]
@@ -31,6 +32,13 @@ node-key service credential for one instance. At least one of --binary or
 --instance is required. No tunnel is enabled, started, or restarted.
 With --binary the scripts and units are also copied to /usr/local/lib/baft-tunnel
 so that `baft-tunnel menu` (Persian/English interactive menu) works afterwards.
+
+--baft-engine PATH (with --binary): verify the signed BAFT engine asset
+(baft-engine-TAG-linux-amd64) against the engine manifest built into the
+binary and install it as `current` in the root-owned engine store
+/usr/local/lib/baft-tunnel-engines (the previous release is kept for
+`baft-tunnel engine rollback`). Needed before the panel can set up the baft
+engine (Preview, Direct only). A binary with another digest is refused.
 
 --instance/--node-key (PEM key) are for the tcp-tls engine only; noise-tcp
 creates its own key with `baft-tunnel setup init` and needs neither.
@@ -71,6 +79,7 @@ fi
 while (($#)); do
   case "$1" in
     --binary) (($# >= 2)) || die "--binary needs a path"; BINARY="$2"; shift 2 ;;
+    --baft-engine) (($# >= 2)) || die "--baft-engine needs a path"; BAFT_ENGINE="$2"; shift 2 ;;
     --destdir) (($# >= 2)) || die "--destdir needs a path"; ROOT_PREFIX="$2"; shift 2 ;;
     --instance) (($# >= 2)) || die "--instance needs a name"; INSTANCE="$2"; shift 2 ;;
     --register) (($# >= 2)) || die "--register needs a name"; REGISTER="$2"; shift 2 ;;
@@ -97,6 +106,11 @@ if [[ -n "$BINARY" ]]; then
   [[ -x "$BINARY" ]] || die "provide an executable release binary with --binary"
   BINARY="$(cd "$(dirname "$BINARY")" && pwd -P)/$(basename "$BINARY")"
   "$BINARY" --version >/dev/null 2>&1 || die "binary failed its --version check"
+fi
+if [[ -n "$BAFT_ENGINE" ]]; then
+  [[ -n "$BINARY" ]] || die "--baft-engine requires --binary (its built-in manifest pins the engine)"
+  [[ -f "$BAFT_ENGINE" && ! -L "$BAFT_ENGINE" ]] || die "--baft-engine must be a regular, non-symlink file"
+  BAFT_ENGINE="$(cd "$(dirname "$BAFT_ENGINE")" && pwd -P)/$(basename "$BAFT_ENGINE")"
 fi
 if [[ -n "$INSTANCE" ]]; then
   # Restrict to names that need no systemd escaping and cannot traverse paths.
@@ -159,6 +173,12 @@ BIN_DEST="$BIN_DIR/baft-tunnel"
 UNIT_DEST="$UNIT_DIR/baft-tunnel@.service"
 # Scripts and units for `baft-tunnel menu` (same relative layout as the release tree).
 LIB_DEST="$ROOT_PREFIX/usr/local/lib/baft-tunnel"
+ENGINE_STORE="$ROOT_PREFIX/usr/local/lib/baft-tunnel-engines"
+
+# The engine store is installation-owned. Never follow or replace a symlink here.
+if [[ -e "$ENGINE_STORE" || -L "$ENGINE_STORE" ]]; then
+  [[ -d "$ENGINE_STORE" && ! -L "$ENGINE_STORE" ]] || die "refusing non-directory or symlinked engine store: $ENGINE_STORE"
+fi
 
 if [[ -z "$BINARY" ]]; then
   [[ -x "$BIN_DEST" && -f "$UNIT_DEST" ]] || die "binary/template not installed yet; pass --binary as well"
@@ -245,6 +265,26 @@ if [[ -n "$BINARY" ]]; then
   [[ ! -e "$UNIT_DEST" ]] || { cp -p "$UNIT_DEST" "$BACKUP_DIR/baft-tunnel@.service"; : > "$BACKUP_DIR/had-unit"; }
   [[ ! -d "$LIB_DEST" ]] || { cp -a "$LIB_DEST" "$BACKUP_DIR/lib"; : > "$BACKUP_DIR/had-lib"; }
 fi
+if [[ -n "$BAFT_ENGINE" ]]; then
+  : > "$BACKUP_DIR/scope-engine-store"
+  ENGINE_DIR="$ENGINE_STORE/baft"
+  if [[ -e "$ENGINE_STORE" || -L "$ENGINE_STORE" ]]; then
+    [[ -d "$ENGINE_STORE" && ! -L "$ENGINE_STORE" ]] || die "refusing unsafe engine store root: $ENGINE_STORE"
+  fi
+  if [[ -e "$ENGINE_DIR" || -L "$ENGINE_DIR" ]]; then
+    [[ -d "$ENGINE_DIR" && ! -L "$ENGINE_DIR" ]] || die "refusing unsafe BAFT engine directory: $ENGINE_DIR"
+    : > "$BACKUP_DIR/had-engine-dir"
+    for pointer in current previous; do
+      link="$ENGINE_DIR/$pointer"
+      if [[ -e "$link" || -L "$link" ]]; then
+        [[ -L "$link" ]] || die "refusing non-symlink engine pointer: $link"
+        target="$(readlink -- "$link")"
+        [[ "$target" =~ ^releases/[0-9a-f]{64}$ ]] || die "refusing malformed engine pointer: $link"
+        printf '%s\n' "$target" > "$BACKUP_DIR/engine-$pointer-target"
+      fi
+    done
+  fi
+fi
 if [[ -n "$INSTANCE" ]]; then
   printf '%s\n' "$INSTANCE" > "$BACKUP_DIR/scope-credential"
   mkdir -m 0700 "$BACKUP_DIR/credential"
@@ -285,6 +325,28 @@ rollback_install() {
       rm -rf "$LIB_DEST.new.$$"
       if [[ -f "$BACKUP_DIR/had-lib" ]]; then rm -rf "$LIB_DEST"; cp -a "$BACKUP_DIR/lib" "$LIB_DEST"; else rm -rf "$LIB_DEST"; fi
     fi
+    if [[ -n "$BAFT_ENGINE" ]]; then
+      ENGINE_DIR="$ENGINE_STORE/baft"
+      if [[ -f "$BACKUP_DIR/had-engine-dir" ]]; then
+        install -d -m 0755 "$ENGINE_DIR"
+        for pointer in current previous; do
+          link="$ENGINE_DIR/$pointer"
+          target_file="$BACKUP_DIR/engine-$pointer-target"
+          tmp="$ENGINE_DIR/.$pointer.rollback.${BASHPID}"
+          rm -f -- "$tmp"
+          if [[ -f "$target_file" ]]; then
+            target="$(cat "$target_file")"
+            [[ "$target" =~ ^releases/[0-9a-f]{64}$ ]] || die "invalid saved engine pointer: $pointer"
+            ln -s -- "$target" "$tmp"
+            mv -Tf -- "$tmp" "$link"
+          else
+            rm -f -- "$link"
+          fi
+        done
+      else
+        rm -rf -- "$ENGINE_DIR"
+      fi
+    fi
     if [[ "$STAGING" == "0" ]]; then remove_created_account; fi
     if [[ "$CRED_TOUCHED" == "1" ]]; then restore_credential; fi
     if [[ "$STAGING" == "0" ]]; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
@@ -311,6 +373,17 @@ if [[ -n "$BINARY" ]]; then
   chmod -R u=rwX,go=rX "$LIB_DEST.new.$$"
   rm -rf "$LIB_DEST"
   mv -f "$LIB_DEST.new.$$" "$LIB_DEST"
+fi
+
+if [[ -n "$BAFT_ENGINE" ]]; then
+  # Root-owned store outside LIB_DEST (which every --binary install replaces). The engine
+  # store refuses a binary whose SHA-256 differs from the manifest built into BIN_DEST.
+  install -d -m 0755 "$ENGINE_STORE"
+  if [[ "$STAGING" == "0" ]]; then chown root:root "$ENGINE_STORE"; fi
+  "$BIN_DEST" engine manifest > "$BACKUP_DIR/engine-manifest.json"
+  "$BIN_DEST" engine install --store "$ENGINE_STORE" --manifest "$BACKUP_DIR/engine-manifest.json" \
+    --id baft --binary "$BAFT_ENGINE"
+  "$BIN_DEST" engine verify --store "$ENGINE_STORE" --id baft
 fi
 
 if [[ -n "$INSTANCE" ]]; then
