@@ -121,7 +121,7 @@ setup_case() {
   unset STOP_FAIL_UNIT STOP_FAIL_UNKNOWN START_FAIL_UNIT DAEMON_RELOAD_FAIL TMPFILES_FAIL TMPFILES_BAD_STATE REQUEST_ON_STOP_UNIT REQUEST_ON_TMPFILES
 }
 run_helper() {
-  PATH="$BIN:$PATH" "$HELPER" --control-dir "$FAKE_CONTROL_DIR" --tmpfiles "$CASE/tmpfiles.conf" --state-dir "$CASE/state-dir"
+  PATH="$BIN:$PATH" bash "$HELPER" --control-dir "$FAKE_CONTROL_DIR" --tmpfiles "$CASE/tmpfiles.conf" --state-dir "$CASE/state-dir"
 }
 expect_fail() {
   if run_helper >"$CASE/out" 2>&1; then
