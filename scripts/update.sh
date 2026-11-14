@@ -14,6 +14,9 @@ Updates the installed baft-tunnel binary and unit template:
      baft-tunnel@*.service; or the named --instance values),
   4. requires each to stay active with no restarts for --health-secs
      (default 10) and, if given, --health-cmd NAME to exit 0.
+Before step 1, an installed agent control helper is moved to the dedicated
+request-directory boundary (install-agent-control.sh --upgrade-boundary);
+if that refuses, nothing is updated.
 If any step fails, rollback.sh restores the previous binary and unit, the same
 instances are restarted and re-verified, and the exit status is 1. If the
 rollback itself is unhealthy the exit status is 3. Configuration and keys are
@@ -102,6 +105,11 @@ restart_all() {
   systemctl try-restart 'baft-tunnel-agent@*.service' >/dev/null 2>&1 || true
 }
 
+# Existing installs get the control-request boundary (root:baft-tunnel-agent 0770) here, before the
+# binary changes. Fail-closed: on any refusal nothing else is updated and the reason is printed.
+CONTROL_BOUNDARY="$("$SCRIPT_DIR/install-agent-control.sh" --upgrade-boundary "${DEST_ARGS[@]}" | sed -n 's/^CONTROL_BOUNDARY=//p' | tail -n 1)" ||
+  die "control-directory boundary migration failed; binary not updated. Resolve the reported condition and rerun update.sh"
+[[ -n "$CONTROL_BOUNDARY" ]] || die "control-directory boundary state unknown; binary not updated"
 DIGEST_BEFORE="$(state_digest)"
 DATA_BACKUP="$("$SCRIPT_DIR/backup.sh" "${DEST_ARGS[@]}" | sed -n 's/^Backup: //p' | tail -n 1)"
 [[ -d "$DATA_BACKUP" ]] || die "data backup failed; nothing was changed"
@@ -111,7 +119,7 @@ BIN_BACKUP="$(printf '%s\n' "$INSTALL_OUT" | sed -n 's/^Backup: //p' | tail -n 1
 
 if restart_all && healthy; then
   [[ "$(state_digest)" == "$DIGEST_BEFORE" ]] || { echo "update: WARNING config/keys digest changed during update" >&2; exit 3; }
-  echo "UPDATE_OK from='$OLD_VERSION' to='$NEW_VERSION' instances=${#INSTANCES[@]} config_keys_digest=unchanged"
+  echo "UPDATE_OK from='$OLD_VERSION' to='$NEW_VERSION' instances=${#INSTANCES[@]} config_keys_digest=unchanged control_boundary=$CONTROL_BOUNDARY"
   echo "Data backup: $DATA_BACKUP"
   echo "Binary backup: $BIN_BACKUP"
   echo "Both are root-only; delete them when rollback is no longer needed."

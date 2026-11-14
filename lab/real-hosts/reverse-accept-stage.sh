@@ -127,7 +127,7 @@ jf() { python3 -c 'import sys,json; d=json.load(sys.stdin)
 for k in sys.argv[1].split("."): d = d.get(k, "") if isinstance(d, dict) else ""
 print(d)' "$1"; }
 unit_active() { ssh_host "$1" "systemctl is-active --quiet baft-tunnel@$2.service"; }
-unit_stop() { ssh_host "$1" "setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups touch /run/baft-tunnel/control/$2.stop; for n in \$(seq 1 40); do systemctl is-active --quiet baft-tunnel@$2.service || exit 0; sleep 0.5; done; exit 1"; }
+unit_stop() { ssh_host "$1" "setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups touch /run/baft-tunnel/control/$2.stop; for n in \$(seq 1 40); do systemctl is-active --quiet baft-tunnel@$2.service || exit 0; sleep 0.5; done; exit 1"; }
 RA_SINCE_iran="$(ssh_host iran 'date -u "+%F %T"')"; RA_SINCE_abroad="$(ssh_host abroad 'date -u "+%F %T"')"
 ra_authfail() { local since="RA_SINCE_$1"; ssh_host "$1" "journalctl --utc --since '${!since}' -u baft-tunnel@$2.service --no-pager 2>/dev/null | grep -c 'secure_channel stage failed' || true"; }
 ra_wait() { local t0=$SECONDS; while (( SECONDS - t0 < $1 )); do probe_host iran 65536 >/dev/null 2>&1 && { echo $((SECONDS - t0)); return 0; }; sleep 2; done; return 1; }

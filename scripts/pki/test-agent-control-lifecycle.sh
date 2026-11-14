@@ -31,7 +31,7 @@ cleanup() {
   local status=$?
   trap - EXIT
   if [[ -n "$AGENT_PID" ]]; then sudo kill "$AGENT_PID" >/dev/null 2>&1 || true; fi
-  if [[ -n "${OBS_PID:-}" ]]; then sudo pkill -TERM -u baft-tunnel -f -- '--listen 127.0.0.1:18091' >/dev/null 2>&1 || true; fi
+  if [[ -n "${OBS_PID:-}" ]]; then sudo pkill -TERM -u baft-tunnel-agent -f -- '--listen 127.0.0.1:18091' >/dev/null 2>&1 || true; fi
   [[ -n "$ECHO_PID" ]] && kill "$ECHO_PID" >/dev/null 2>&1 || true
   for i in "$SERVE" "$FWD" "$POS_S" "$POS_C"; do
     sudo "$ROOT/scripts/install-agent-control.sh" --remove --instance "$i" >/dev/null 2>&1 || true
@@ -48,7 +48,34 @@ cleanup() {
   [[ "$CREATED_AGENT" == 1 ]] && { sudo userdel baft-tunnel-agent >/dev/null 2>&1; sudo groupdel baft-tunnel-agent >/dev/null 2>&1; } || true
   [[ "$CREATED_USER" == 1 ]] && sudo userdel baft-tunnel >/dev/null 2>&1 || true
   [[ "$CREATED_GROUP" == 1 ]] && sudo groupdel baft-tunnel >/dev/null 2>&1 || true
-  rm -rf "$TMP"
+  if [[ "$status" == 0 ]]; then
+    rm -rf "$TMP"
+  else
+    # Keep failure diagnostics, but never preserve the temporary CA/node private keys or configs.
+    DIAG_ROOT="${RUNNER_TEMP:-/tmp}"
+    DIAG_DIR="$(mktemp -d "$DIAG_ROOT/baft-agent-control-failure.XXXXXX")"
+    chmod 700 "$DIAG_DIR"
+    for f in "$TMP"/*.log "$TMP"/fw-*.txt "$TMP"/side-*.txt; do
+      [[ -f "$f" ]] && cp -p "$f" "$DIAG_DIR/"
+    done
+    {
+      echo "exit_status=$status"
+      echo "github_run_id=${GITHUB_RUN_ID:-unknown}"
+      echo "github_job=${GITHUB_JOB:-unknown}"
+      echo "systemd_version=${v:-unknown}"
+      echo "preserved_files=logs and side-effect snapshots only; private keys/configs excluded"
+    } > "$DIAG_DIR/failure.txt"
+    chmod 600 "$DIAG_DIR/"*
+    echo "agent control lifecycle: failure diagnostics preserved at $DIAG_DIR" >&2
+    # GitHub-hosted runners discard RUNNER_TEMP after the job; emit the sanitized diagnostics
+    # into the job log so the failing command can be identified without a separate artifact.
+    for f in "$DIAG_DIR"/*.log "$DIAG_DIR"/fw-*.txt "$DIAG_DIR"/side-*.txt "$DIAG_DIR"/failure.txt; do
+      [[ -f "$f" ]] || continue
+      echo "===== diagnostic: $(basename "$f") =====" >&2
+      sed -n '1,240p' "$f" >&2
+    done
+    rm -rf "$TMP"
+  fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -167,29 +194,47 @@ wait_state() { # NAME active|inactive
 
 # 1. Install the helper explicitly, per instance.
 # Each registration also starts that instance's agent service (own user); distinct loopback ports.
-sudo "$ROOT/scripts/install-agent-control.sh" --instance "$SERVE" --listen 127.0.0.1:18100 >"$TMP/ctl-serve.log"
-sudo "$ROOT/scripts/install-agent-control.sh" --instance "$FWD" --listen 127.0.0.1:18101 >"$TMP/ctl-fwd.log"
+echo "[agent-control] registering serve instance"
+if sudo "$ROOT/scripts/install-agent-control.sh" --instance "$SERVE" --listen 127.0.0.1:18100 >"$TMP/ctl-serve.log" 2>"$TMP/ctl-serve.stderr.log"; then
+  echo "[agent-control] serve registration completed"
+else
+  rc=$?
+  echo "[agent-control] serve registration failed exit=$rc" >&2
+  exit "$rc"
+fi
+echo "[agent-control] registering forward instance"
+if sudo "$ROOT/scripts/install-agent-control.sh" --instance "$FWD" --listen 127.0.0.1:18101 >"$TMP/ctl-fwd.log" 2>"$TMP/ctl-fwd.stderr.log"; then
+  echo "[agent-control] forward registration completed"
+else
+  rc=$?
+  echo "[agent-control] forward registration failed exit=$rc" >&2
+  exit "$rc"
+fi
 for k in start stop enable disable; do
   sudo systemctl is-active --quiet "baft-tunnel-control-$k@$SERVE.path" || die "path unit $k for $SERVE is not active"
 done
-[[ "$(sudo stat -c '%U:%G %a' /run/baft-tunnel/control)" == "root:baft-tunnel 770" ]] || die "control dir is not root:baft-tunnel 0770"
+[[ "$(sudo stat -c '%U:%G %a' /run/baft-tunnel/control)" == "root:baft-tunnel-agent 770" ]] || die "control dir is not root:baft-tunnel-agent 0770"
 
 # 2. The agent user can request a start, and only for an instance that has a path unit.
-sudo -u baft-tunnel touch "/run/baft-tunnel/control/$SERVE.start" || die "agent user cannot write a request"
+sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/$SERVE.start" || die "agent user cannot write a request"
 wait_state "$SERVE" active || die "request did not start $SERVE"
 [[ "$(sudo systemctl show -p User --value "baft-tunnel@$SERVE.service")" == baft-tunnel ]] || die "unit does not run as baft-tunnel"
 for n in $(seq 1 20); do [[ ! -e "/run/baft-tunnel/control/$SERVE.start" ]] && break; sleep 0.25; done
 [[ ! -e "/run/baft-tunnel/control/$SERVE.start" ]] || die "request file was not consumed"
-sudo -u baft-tunnel touch "/run/baft-tunnel/control/notinstalled.start"
+sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/notinstalled.start"
 sleep 3
 ! sudo systemctl is-active --quiet "baft-tunnel@notinstalled.service" || die "a request without a path unit started a unit"
 sudo rm -f /run/baft-tunnel/control/notinstalled.start
 step "2b malformed/unregistered requests"
 # 2b. Malformed, unregistered, duplicate, stale and symlinked requests (P0-1 acceptance).
 CTL=/run/baft-tunnel/control
+! sudo -u baft-tunnel touch "$CTL/$SERVE.start" 2>/dev/null || die "tunnel service user can write control requests"
+sudo -u baft-tunnel-agent touch "$CTL/$SERVE.start" || die "dedicated agent user cannot write control requests"
+for n in $(seq 1 20); do [[ ! -e "$CTL/$SERVE.start" ]] && break; sleep 0.25; done
+[[ ! -e "$CTL/$SERVE.start" ]] || die "authorization probe request was not consumed"
 units_before="$(systemctl list-units --all --plain --no-legend 'baft-tunnel*' | awk '{print $1}' | sort)"
 for bad in 'bad name' '-lead' 'a.b' 'UP..PER' "$(printf 'x%.0s' $(seq 1 70))" 'notinstalled' 'agentctl-other'; do
-  sudo -u baft-tunnel touch "$CTL/$bad.start" "$CTL/$bad.stop" 2>/dev/null || true
+  sudo -u baft-tunnel-agent touch "$CTL/$bad.start" "$CTL/$bad.stop" 2>/dev/null || true
 done
 sleep 3
 units_after="$(systemctl list-units --all --plain --no-legend 'baft-tunnel*' | awk '{print $1}' | sort)"
@@ -199,7 +244,7 @@ sudo find "$CTL" -maxdepth 1 -type f -delete
 step "2b duplicate request"
 # Duplicate request on a running unit: consumed, unit untouched (same main PID, no restart).
 pid_before="$(sudo systemctl show -p MainPID --value "baft-tunnel@$SERVE.service")"
-sudo -u baft-tunnel touch "$CTL/$SERVE.start"; sleep 1; sudo -u baft-tunnel touch "$CTL/$SERVE.start"
+sudo -u baft-tunnel-agent touch "$CTL/$SERVE.start"; sleep 1; sudo -u baft-tunnel-agent touch "$CTL/$SERVE.start"
 for n in $(seq 1 20); do [[ ! -e "$CTL/$SERVE.start" ]] && break; sleep 0.25; done
 [[ ! -e "$CTL/$SERVE.start" ]] || die "duplicate request was not consumed"
 [[ "$(sudo systemctl show -p MainPID --value "baft-tunnel@$SERVE.service")" == "$pid_before" ]] || die "duplicate start restarted the unit"
@@ -210,41 +255,42 @@ sudo chmod 600 "$TMP/sentinel"
 # Let the second duplicate request finish being consumed before placing the link.
 for n in $(seq 1 40); do [[ ! -e "$CTL/$SERVE.start" ]] && break; sleep 0.25; done
 sleep 2
-sudo -u baft-tunnel ln -sfn "$TMP/sentinel" "$CTL/$SERVE.start" || die "agent user cannot create the test symlink"
+sudo -u baft-tunnel-agent ln -sfn "$TMP/sentinel" "$CTL/$SERVE.start" || die "agent user cannot create the test symlink"
 for n in $(seq 1 20); do [[ ! -e "$CTL/$SERVE.start" && ! -L "$CTL/$SERVE.start" ]] && break; sleep 0.25; done
 [[ ! -L "$CTL/$SERVE.start" ]] || die "symlink request was not removed"
 [[ "$(sudo cat "$TMP/sentinel")" == sentinel ]] || die "symlink request touched its target"
 active "$SERVE" || die "symlink request disturbed $SERVE"
 step "2b stale stop request"
 # Stale request: a file left from before the unit stopped is consumed once and not replayed later.
-sudo -u baft-tunnel touch "$CTL/$SERVE.stop"; wait_state "$SERVE" inactive || die "stop failed"
+sudo -u baft-tunnel-agent touch "$CTL/$SERVE.stop"; wait_state "$SERVE" inactive || die "stop failed"
 sleep 2
 inactive_after="$(sudo systemctl is-active "baft-tunnel@$SERVE.service" || true)"
 [[ "$inactive_after" != active ]] || die "a consumed stop request was replayed into a start"
-sudo -u baft-tunnel touch "$CTL/$SERVE.start"; wait_state "$SERVE" active || die "restart request failed"
+sudo -u baft-tunnel-agent touch "$CTL/$SERVE.start"; wait_state "$SERVE" active || die "restart request failed"
 step "2c no direct systemctl rights"
 # The agent user has no direct systemctl rights (no polkit rule, no sudo).
 ! sudo -u baft-tunnel systemctl --no-ask-password stop "baft-tunnel@$SERVE.service" >/dev/null 2>&1 || die "agent user can stop units directly"
 active "$SERVE" || die "unit stopped by the denied direct stop"
-sudo -u baft-tunnel touch "/run/baft-tunnel/control/$SERVE.stop"
+sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/$SERVE.stop"
 wait_state "$SERVE" inactive || die "stop request did not stop $SERVE"
 
 step "3 Apply start"
 # 3. Apply start through the agent API: success with verify, then rollback of a failing start.
-sudo install -d -o baft-tunnel -g baft-tunnel -m 0700 /var/lib/baft-tunnel/agent
-sudo -u baft-tunnel "$RUNTIME_BIN" agent-token --out /var/lib/baft-tunnel/agent/token >/dev/null
-TOKEN="$(sudo cat /var/lib/baft-tunnel/agent/token)"
+AGENT_STATE=/var/lib/baft-tunnel-agent/lifecycle-test
+AGENT_TOKEN=/var/lib/baft-tunnel-agent/token
+sudo install -d -o baft-tunnel-agent -g baft-tunnel-agent -m 0700 "$AGENT_STATE"
+TOKEN="$(sudo cat "$AGENT_TOKEN")"
 # The agent itself validates its config outside systemd, so give it a file-key variant.
-sudo install -o baft-tunnel -g baft-tunnel -m 0600 "$NODE/node.key" /var/lib/baft-tunnel/agent/agent.key
+sudo install -o baft-tunnel-agent -g baft-tunnel-agent -m 0600 "$NODE/node.key" "$AGENT_STATE/agent.key"
 python3 - "$TMP/$SERVE.json" "$TMP/agent-config.json" <<'PY'
 import json, sys
-c = json.load(open(sys.argv[1])); c.pop("key_credential"); c["key"] = "/var/lib/baft-tunnel/agent/agent.key"
+c = json.load(open(sys.argv[1])); c.pop("key_credential"); c["key"] = "/var/lib/baft-tunnel-agent/lifecycle-test/agent.key"
 c["listen"] = "127.0.0.1:18444"
 json.dump(c, open(sys.argv[2], "w"))
 PY
-sudo install -o baft-tunnel -g baft-tunnel -m 0600 "$TMP/agent-config.json" /var/lib/baft-tunnel/agent/config.json
-sudo -u baft-tunnel "$RUNTIME_BIN" agent --config /var/lib/baft-tunnel/agent/config.json --token-file /var/lib/baft-tunnel/agent/token \
-  --state-dir /var/lib/baft-tunnel/agent --listen 127.0.0.1:18090 >"$TMP/agent.log" 2>&1 &
+sudo install -o baft-tunnel-agent -g baft-tunnel-agent -m 0600 "$TMP/agent-config.json" "$AGENT_STATE/config.json"
+sudo -u baft-tunnel-agent "$RUNTIME_BIN" agent --config "$AGENT_STATE/config.json" --token-file "$AGENT_TOKEN" \
+  --state-dir "$AGENT_STATE" --listen 127.0.0.1:18090 >"$TMP/agent.log" 2>&1 &
 AGENT_PID=$!
 for n in $(seq 1 40); do curl -fs http://127.0.0.1:18090/v1/health >/dev/null 2>&1 && break; sleep 0.25; done
 curl -fs http://127.0.0.1:18090/v1/health >/dev/null || { cat "$TMP/agent.log" >&2; die "agent did not start"; }
@@ -270,7 +316,7 @@ step "3 replay"
 [[ "$(apply "$SERVE" serve ctl-serve-0001 null null | field replayed)" == True ]] || die "idempotent replay failed"
 # The same request on a running unit is refused and changes nothing.
 [[ "$(apply "$SERVE" serve ctl-serve-0002 null null | field result)" == refused ]] || die "running unit was not refused"
-sudo -u baft-tunnel touch "/run/baft-tunnel/control/$SERVE.stop"; wait_state "$SERVE" inactive || die "could not stop $SERVE"
+sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/$SERVE.stop"; wait_state "$SERVE" inactive || die "could not stop $SERVE"
 step "3 failing start rollback"
 # A unit that cannot start (missing certificate): verification fails, Apply stops it and reports rolled_back.
 out="$(apply "$FWD" forward ctl-fwd-0001 '"127.0.0.1"' '"tunnel.example.test"')"
@@ -348,16 +394,17 @@ spid="$(sudo systemctl show -p MainPID --value "baft-tunnel@$POS_S.service")"
 [[ "$(sudo python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["state"], d["pid"])' "/run/baft-tunnel/$POS_S/session.json")" == "authorized $spid" ]] || die "serve session file does not match its main PID"
 step "4b P1 operations evidence: agent bound to the serve instance (ADR-0024)"
 # A second agent reports on the serve unit: session, counters and failure stage from its runtime dir.
-sudo install -o baft-tunnel -g baft-tunnel -m 0600 "$NODE/possrv.key" /var/lib/baft-tunnel/agent/pos.key
-sudo install -d -o baft-tunnel -g baft-tunnel -m 0700 /var/lib/baft-tunnel/agent-obs
+OBS_STATE=/var/lib/baft-tunnel-agent/observer-test
+sudo install -o baft-tunnel-agent -g baft-tunnel-agent -m 0600 "$NODE/possrv.key" "$AGENT_STATE/pos.key"
+sudo install -d -o baft-tunnel-agent -g baft-tunnel-agent -m 0700 "$OBS_STATE"
 python3 - "$TMP/pos-srv.json" "$TMP/obs-config.json" <<'PY'
 import json, sys
-c = json.load(open(sys.argv[1])); c.pop("key_credential"); c["key"] = "/var/lib/baft-tunnel/agent/pos.key"
+c = json.load(open(sys.argv[1])); c.pop("key_credential"); c["key"] = "/var/lib/baft-tunnel-agent/lifecycle-test/pos.key"
 json.dump(c, open(sys.argv[2], "w"))
 PY
-sudo install -o baft-tunnel -g baft-tunnel -m 0600 "$TMP/obs-config.json" /var/lib/baft-tunnel/agent-obs/config.json
-sudo -u baft-tunnel "$RUNTIME_BIN" agent --config /var/lib/baft-tunnel/agent-obs/config.json --token-file /var/lib/baft-tunnel/agent/token \
-  --state-dir /var/lib/baft-tunnel/agent-obs --listen 127.0.0.1:18091 --instance "$POS_S" >"$TMP/obs.log" 2>&1 &
+sudo install -o baft-tunnel-agent -g baft-tunnel-agent -m 0600 "$TMP/obs-config.json" "$OBS_STATE/config.json"
+sudo -u baft-tunnel-agent "$RUNTIME_BIN" agent --config "$OBS_STATE/config.json" --token-file "$AGENT_TOKEN" \
+  --state-dir "$OBS_STATE" --listen 127.0.0.1:18091 --instance "$POS_S" >"$TMP/obs.log" 2>&1 &
 OBS_PID=$!
 for n in $(seq 1 40); do curl -fs http://127.0.0.1:18091/v1/health >/dev/null 2>&1 && break; sleep 0.25; done
 obs() { curl -s --max-time 30 -X "$1" "http://127.0.0.1:18091$2" -H "Authorization: Bearer $TOKEN"; }
@@ -412,7 +459,7 @@ assert t["tiers"]["authorized_session"]["peer_id"] == "poscli", t
 assert t["tiers"]["integrity"]["result"] == "unknown" and isinstance(t["last_verified_unix"], int), t
 PY
 # Stop the forward node: the session indicator on the serve node must clear.
-sudo -u baft-tunnel touch "/run/baft-tunnel/control/$POS_C.stop"; wait_state "$POS_C" inactive || die "could not stop $POS_C"
+sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/$POS_C.stop"; wait_state "$POS_C" inactive || die "could not stop $POS_C"
 for n in $(seq 1 40); do sudo test -e "/run/baft-tunnel/$POS_S/session.json" || break; sleep 0.5; done
 ! sudo test -e "/run/baft-tunnel/$POS_S/session.json" || die "serve session indicator stayed after the peer left"
 # Without the peer the status drops a tier, diagnostics fail at the session tier, and the last
@@ -428,29 +475,29 @@ assert r["session"] == "fail" and r["data_path"] == "unknown" and d["verified"] 
 assert isinstance(d["verified_unix"], int), d
 PY
 # Audit: actor fingerprint, target node and resource; never the token.
-sudo python3 - /var/lib/baft-tunnel/agent-obs/audit.log <<'PY' || die "audit lines miss actor/target/resource"
+sudo python3 - "$OBS_STATE/audit.log" <<'PY' || die "audit lines miss actor/target/resource"
 import json, sys
 lines = [json.loads(l) for l in open(sys.argv[1])]
 assert len(lines) >= 2 and all(l["audit_version"] == 2 and l["actor"]["kind"] == "api_token" and len(l["actor"]["fingerprint"]) == 16
                                and l["target"]["node"] == "possrv" and l["resource"] == "diagnostics" for l in lines), lines
 PY
-! sudo grep -q -- "$TOKEN" /var/lib/baft-tunnel/agent-obs/audit.log /var/lib/baft-tunnel/agent/audit.log || die "an audit log contains the token"
+! sudo grep -q -- "$TOKEN" "$OBS_STATE/audit.log" "$AGENT_STATE/audit.log" || die "an audit log contains the token"
 # sudo does not relay a signal sent from the script's own process group, so stop the agent itself
 # (only processes of the baft-tunnel user match; the pattern names this agent's unique port).
-sudo pkill -TERM -u baft-tunnel -f -- '--listen 127.0.0.1:18091' 2>/dev/null || true
+sudo pkill -TERM -u baft-tunnel-agent -f -- '--listen 127.0.0.1:18091' 2>/dev/null || true
 wait "$OBS_PID" 2>/dev/null || true; OBS_PID=""
 # Wait until the observing agent has released its port, so the side-effect snapshot is clean.
 for n in $(seq 1 40); do curl -fs --max-time 1 http://127.0.0.1:18091/v1/health >/dev/null 2>&1 || break; sleep 0.25; done
 ! curl -fs --max-time 1 http://127.0.0.1:18091/v1/health >/dev/null 2>&1 || die "observing agent did not stop"
-sudo -u baft-tunnel touch "/run/baft-tunnel/control/$POS_S.stop"; wait_state "$POS_S" inactive || die "could not stop $POS_S"
+sudo -u baft-tunnel-agent touch "/run/baft-tunnel/control/$POS_S.stop"; wait_state "$POS_S" inactive || die "could not stop $POS_S"
 kill "$ECHO_PID" 2>/dev/null || true; ECHO_PID=""
 step "3 receipts and side effects"
-nrec="$(sudo find /var/lib/baft-tunnel/agent/receipts -name '*.json' | wc -l)"
+nrec="$(sudo find "$AGENT_STATE/receipts" -name '*.json' | wc -l)"
 [[ "$nrec" -ge 2 ]] || die "expected receipts, found $nrec"
-! sudo grep -rq -- "$TOKEN" /var/lib/baft-tunnel/agent/receipts || die "a receipt contains the token"
+! sudo grep -rq -- "$TOKEN" "$AGENT_STATE/receipts" || die "a receipt contains the token"
 # Nothing else changed: firewall hash, listeners and unrelated units match the baseline.
 sudo kill "$AGENT_PID" 2>/dev/null || true; sleep 2; AGENT_PID=""; step "3 agent stopped"
 snapshot after >"$TMP/side-after.txt"
 diff "$TMP/side-before.txt" "$TMP/side-after.txt" >&2 || { diff "$TMP/fw-before.txt" "$TMP/fw-after.txt" >&2 || true; die "firewall, listeners or unrelated units changed"; }
 
-echo "AGENT_CONTROL_LIFECYCLE=PASS (systemd $v: path units active, control dir root:baft-tunnel 0770, request starts and stops only baft-tunnel@NAME, no direct rights for the agent user, Apply start verified and replayed, running unit refused, failing start rolled back, real authorized session observed between two nodes with 64 KiB and 2 MiB intact, agent diagnostics/status/traffic/audit tiers matched the unit evidence, malformed/unregistered/duplicate/stale/symlink requests harmless, no firewall/listener/unit side effects)"
+echo "AGENT_CONTROL_LIFECYCLE=PASS (systemd $v: path units active, control dir root:baft-tunnel-agent 0770, request starts and stops only baft-tunnel@NAME, no direct rights for the agent user, Apply start verified and replayed, running unit refused, failing start rolled back, real authorized session observed between two nodes with 64 KiB and 2 MiB intact, agent diagnostics/status/traffic/audit tiers matched the unit evidence, malformed/unregistered/duplicate/stale/symlink requests harmless, no firewall/listener/unit side effects)"

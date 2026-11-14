@@ -25,6 +25,7 @@ mode_of() {
 write_fake 0.1.0
 "$INSTALL" --binary "$FAKE" --destdir "$STAGE" >/dev/null
 [[ -x "$STAGE/usr/local/lib/baft-tunnel/scripts/quick-install.sh" ]]
+[[ -f "$STAGE/usr/local/lib/baft-tunnel/scripts/migrate-agent-control-dir.sh" ]]
 BIN="$STAGE/usr/local/bin/baft-tunnel"
 UNIT="$STAGE/etc/systemd/system/baft-tunnel@.service"
 [[ "$("$BIN" --version)" == "baft-tunnel 0.1.0" ]]
@@ -148,6 +149,35 @@ ln -sf ../baft-tunnel-control-start@.path "$STAGE/etc/systemd/system/multi-user.
 ln -sf ../baft-tunnel-agent@.path "$STAGE/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@iran.path"
 [[ -f "$STAGE/etc/systemd/system/baft-tunnel-control-start@.path" && -f "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf" ]]
 grep -qx 'd /var/lib/baft-tunnel-control 0700 root root -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
+# The tunnel engine user must not share the group that can submit root control requests.
+grep -qx 'd /run/baft-tunnel/control 0770 root baft-tunnel-agent -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
+! grep -qx 'd /run/baft-tunnel/control 0770 root baft-tunnel -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf" || false
+grep -Fq 'active_units path' "$ROOT/scripts/migrate-agent-control-dir.sh"
+grep -Fq 'active_units service' "$ROOT/scripts/migrate-agent-control-dir.sh"
+grep -Fq 'for request in "$CONTROL_DIR"/*."$verb"; do' "$ROOT/scripts/migrate-agent-control-dir.sh"
+grep -Fq 'root control helpers remain active' "$ROOT/scripts/migrate-agent-control-dir.sh"
+grep -Fq 'pending control request exists' "$ROOT/scripts/migrate-agent-control-dir.sh"
+# The fail-closed helper runs on every registration/upgrade, never skipped for an already-safe directory.
+grep -Fq '  bash "$SCRIPT_DIR/migrate-agent-control-dir.sh" --control-dir "$CONTROL_DIR" --tmpfiles "$TMPF"' "$ROOT/scripts/install-agent-control.sh"
+! grep -Fq 'systemd-tmpfiles --create "$TMPF"' "$ROOT/scripts/install-agent-control.sh" || false
+grep -Fq 'request appeared during directory migration' "$ROOT/scripts/migrate-agent-control-dir.sh"
+grep -Fq 'group $AGENT_USER must be exclusive to the dedicated agent account' "$ROOT/scripts/install-agent-control.sh"
+grep -Fq 'id -gn "$AGENT_USER"' "$ROOT/scripts/install-agent-control.sh"
+grep -Fq 'getent passwd | awk -F: -v gid="$AGENT_GID"' "$ROOT/scripts/install-agent-control.sh"
+grep -Fq 'OTHER_PRIMARY_USERS' "$ROOT/scripts/install-agent-control.sh"
+grep -Fq 'pending control request exists' "$ROOT/scripts/migrate-agent-control-dir.sh"
+grep -Fq 'request appeared during directory migration' "$ROOT/scripts/migrate-agent-control-dir.sh"
+grep -Fq 'root:baft-tunnel-agent 770' "$ROOT/scripts/install-agent-control.sh"
+# update.sh upgrade path (H-01): no control helper means nothing to migrate; an installed one in a
+# staged tree only refreshes templates and is reported as not verified, never as migrated.
+EMPTY_STAGE="$TMP/empty-stage"; mkdir -p "$EMPTY_STAGE"
+[[ "$("$ROOT/scripts/install-agent-control.sh" --upgrade-boundary --destdir "$EMPTY_STAGE")" == 'CONTROL_BOUNDARY=not-installed' ]]
+mkdir -p "$EMPTY_STAGE/etc/tmpfiles.d"; printf 'd /run/baft-tunnel/control 0770 root baft-tunnel -\n' > "$EMPTY_STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
+[[ "$("$ROOT/scripts/install-agent-control.sh" --upgrade-boundary --destdir "$EMPTY_STAGE")" == 'CONTROL_BOUNDARY=staged-not-verified' ]]
+grep -qx 'd /run/baft-tunnel/control 0770 root baft-tunnel-agent -' "$EMPTY_STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
+refused "$ROOT/scripts/install-agent-control.sh" --upgrade-boundary --instance iran --destdir "$EMPTY_STAGE"
+grep -Fq 'install-agent-control.sh" --upgrade-boundary' "$ROOT/scripts/update.sh"
+grep -Fq 'control_boundary=$CONTROL_BOUNDARY' "$ROOT/scripts/update.sh"
 if "$UNINSTALL" --destdir "$STAGE" --purge-config >/dev/null 2>&1; then
   echo "uninstall accepted config purge without --yes" >&2
   exit 1

@@ -41,6 +41,12 @@ jobs:
         run: cargo +1.88.0 build --locked --release
       - name: Validate staged installer, credential provisioning and rollback
         run: bash scripts/test-install.sh
+      - name: Validate fail-closed agent control directory migration and recovery
+        run: |
+          bash -n scripts/migrate-agent-control-dir.sh
+          bash -n scripts/install-agent-control.sh
+          bash -n scripts/test-agent-control-migration.sh
+          bash scripts/test-agent-control-migration.sh
       - name: Validate the signed one-line installer interface
         run: bash scripts/test-quick-install.sh
       - name: Validate the interactive menu (staged, fa/en, arrow keys on a pty)
@@ -71,6 +77,10 @@ jobs:
         run: cargo +1.88.0 build --locked --release
       - name: Record host systemd version
         run: systemctl --version | head -n 1
+      - name: Validate control-directory migration on real systemd (two active, one inactive)
+        run: |
+          bash -n scripts/pki/test-agent-control-migration-systemd.sh
+          sudo timeout 120 bash scripts/pki/test-agent-control-migration-systemd.sh
       - name: Build the previous pre-release for the upgrade drill (R-001)
         run: |
           git fetch --depth=1 origin tag v0.1.0-phase1-pre
