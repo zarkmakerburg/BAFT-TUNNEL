@@ -41,27 +41,33 @@ has_pending_requests() {
   return 1
 }
 active_units() {
-  local kind=$1 pattern=$2 unit state
+  local kind=$1 pattern=$2 unit state listed
+  listed="$(systemctl list-units --type="$kind" --all --no-legend --plain "$pattern")" ||
+    die "could not enumerate $kind units matching $pattern; refusing to change directory ownership"
   while IFS= read -r unit; do
     [[ -n "$unit" ]] || continue
     state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    [[ -n "$state" ]] || state=unknown
     case "$state" in
       active|activating|deactivating|unknown) printf '%s\n' "$unit" ;;
     esac
-  done < <(systemctl list-units --type="$kind" --all --no-legend --plain "$pattern" | awk 'NF { print $1 }')
+  done < <(printf '%s\n' "$listed" | awk 'NF { print $1 }')
 }
 root_helpers_active() {
-  local unit state
+  local unit state listed
+  listed="$(systemctl list-units --type=service --all --no-legend --plain 'baft-tunnel-control-*@*.service')" ||
+    die "could not enumerate root control helper services; refusing to proceed"
   while IFS= read -r unit; do
     [[ -n "$unit" ]] || continue
     state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    [[ -n "$state" ]] || state=unknown
     case "$state" in
       active|activating|deactivating|unknown)
         echo "agent-control-migration: root helper is $state: $unit" >&2
         return 0
         ;;
     esac
-  done < <(systemctl list-units --type=service --all --no-legend --plain 'baft-tunnel-control-*@*.service' | awk 'NF { print $1 }')
+  done < <(printf '%s\n' "$listed" | awk 'NF { print $1 }')
   return 1
 }
 valid_unit() {
@@ -170,7 +176,7 @@ if [[ "$(directory_state)" != "$EXPECTED" ]]; then
   fi
   root_helpers_active && die "root control helpers remain active; all snapshotted units remain stopped"
   has_pending_requests && die "pending request appeared during quiescence; units remain stopped and journal retained"
-  systemd-tmpfiles --create "$TMPFILES"
+  systemd-tmpfiles --create "$TMPFILES" || die "systemd-tmpfiles failed; units remain stopped and migration journal retained"
   TMPFILES_APPLIED=1
   [[ "$(directory_state)" == "$EXPECTED" ]] || die "control directory did not reach $EXPECTED; units remain stopped and journal retained"
   has_pending_requests && die "request appeared during directory migration; units remain stopped and journal retained"
