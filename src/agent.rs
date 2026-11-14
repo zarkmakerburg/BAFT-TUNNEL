@@ -2675,7 +2675,23 @@ fn audit_tail(path: &Path) -> String {
 
 /// Engine capability contract (see `capabilities`): real, versioned, unknown stays unknown.
 fn engines() -> Value {
-    crate::capabilities::catalog()
+    engines_with_store(Path::new(crate::baft_engine::STORE_DIR))
+}
+
+fn engines_with_store(store: &Path) -> Value {
+    let mut catalog = crate::capabilities::catalog();
+    let store_check = baft_engine_store_check(store);
+    let available = store_check["result"] == "pass";
+    if let Some(engine) = catalog["engines"]
+        .as_array_mut()
+        .and_then(|engines| engines.iter_mut().find(|engine| engine["id"] == "baft"))
+    {
+        engine["guided_setup"]["available"] = json!(available);
+        if !available {
+            engine["guided_setup"]["reason"] = store_check["evidence"].clone();
+        }
+    }
+    catalog
 }
 
 fn get_desired(ctx: &Ctx) -> (u16, Value) {
@@ -4207,6 +4223,21 @@ mod tests {
         let unauth = route("GET /v1/history HTTP/1.1\r\n\r\n", b"", &bare).await;
         assert_eq!(unauth.0, 401);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn baft_guided_setup_catalog_requires_a_verified_engine_store() {
+        let missing = state_dir("missing-baft-store");
+        let catalog = engines_with_store(&missing);
+        assert_eq!(catalog["engines"][2]["id"], "baft");
+        assert_eq!(catalog["engines"][2]["guided_setup"]["available"], false);
+        assert!(
+            catalog["engines"][2]["guided_setup"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("engine store")
+        );
+        std::fs::remove_dir_all(&missing).unwrap();
     }
 
     #[test]
