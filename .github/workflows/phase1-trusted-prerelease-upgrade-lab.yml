@@ -100,10 +100,7 @@ jobs:
           bash "$GITHUB_WORKSPACE/lab/real-hosts/prepare-ops-package.sh" \
             "baft-tunnel-$NEXT-linux-x86_64.tar.gz" \
             "baft-tunnel-$NEXT-linux-x86_64" extract >/dev/null
-          # Stable names for the upload step (contexts cannot expand shell variables).
-          cp "baft-tunnel-$NEXT-linux-x86_64.tar.gz" next.tar.gz
-          cp "extract/baft-tunnel-$NEXT-linux-x86_64/baft-tunnel" baft-tunnel-next
-          ./baft-tunnel-next --version
+          "extract/baft-tunnel-$NEXT-linux-x86_64/baft-tunnel" --version
           # Also exercise the public one-line installer verification path for this exact tag.
           bash "$GITHUB_WORKSPACE/scripts/quick-install.sh" --verify-only --tag "$NEXT"
       - name: Download and verify the PREV signed upgrade source
@@ -128,15 +125,15 @@ jobs:
         run: |
           set -euo pipefail
           timeout 600 bash scripts/pki/test-systemd-baseline-lifecycle.sh \
-            "$RUNNER_TEMP/u7/rc7/baft-tunnel-next" \
+            "$RUNNER_TEMP/u7/rc7/extract/baft-tunnel-$NEXT-linux-x86_64/baft-tunnel" \
             "$RUNNER_TEMP/u7/rc5/baft-tunnel-prev"
       - name: Upload only verified release inputs for trusted orchestration
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4.6.2
         with:
           name: baft-tunnel-upgrade-signed-release-inputs
           path: |
-            ${{ runner.temp }}/u7/rc7/next.tar.gz
-            ${{ runner.temp }}/u7/rc7/baft-tunnel-next
+            ${{ runner.temp }}/u7/rc7/baft-tunnel-${{ inputs.target_tag }}-linux-x86_64.tar.gz
+            ${{ runner.temp }}/u7/rc7/extract/baft-tunnel-${{ inputs.target_tag }}-linux-x86_64/baft-tunnel
             ${{ runner.temp }}/u7/rc5/baft-tunnel-prev
           if-no-files-found: error
           retention-days: 1
@@ -167,8 +164,9 @@ jobs:
           LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
           LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
           LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
-          MVP_BINARY: ${{ runner.temp }}/u7-inputs/rc7/baft-tunnel-next
-          MVP_PKG: ${{ runner.temp }}/u7-inputs/rc7/next.tar.gz
+          # The harness copies MVP_BINARY by basename; it must be named baft-tunnel.
+          MVP_BINARY: ${{ runner.temp }}/u7-inputs/rc7/extract/baft-tunnel-${{ inputs.target_tag }}-linux-x86_64/baft-tunnel
+          MVP_PKG: ${{ runner.temp }}/u7-inputs/rc7/baft-tunnel-${{ inputs.target_tag }}-linux-x86_64.tar.gz
           MVP_INITIAL_BINARY: ${{ runner.temp }}/u7-inputs/rc5/baft-tunnel-prev
           MVP_SOURCE: signed-release:${{ inputs.previous_tag }}-to-${{ inputs.target_tag }}
           LAB_OPS: '3600'
