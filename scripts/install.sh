@@ -267,9 +267,22 @@ if [[ -n "$BINARY" ]]; then
 fi
 if [[ -n "$BAFT_ENGINE" ]]; then
   : > "$BACKUP_DIR/scope-engine-store"
-  if [[ -d "$ENGINE_STORE" ]]; then
-    cp -a "$ENGINE_STORE" "$BACKUP_DIR/engine-store"
-    : > "$BACKUP_DIR/had-engine-store"
+  ENGINE_DIR="$ENGINE_STORE/baft"
+  if [[ -e "$ENGINE_STORE" || -L "$ENGINE_STORE" ]]; then
+    [[ -d "$ENGINE_STORE" && ! -L "$ENGINE_STORE" ]] || die "refusing unsafe engine store root: $ENGINE_STORE"
+  fi
+  if [[ -e "$ENGINE_DIR" || -L "$ENGINE_DIR" ]]; then
+    [[ -d "$ENGINE_DIR" && ! -L "$ENGINE_DIR" ]] || die "refusing unsafe BAFT engine directory: $ENGINE_DIR"
+    : > "$BACKUP_DIR/had-engine-dir"
+    for pointer in current previous; do
+      link="$ENGINE_DIR/$pointer"
+      if [[ -e "$link" || -L "$link" ]]; then
+        [[ -L "$link" ]] || die "refusing non-symlink engine pointer: $link"
+        target="$(readlink -- "$link")"
+        [[ "$target" =~ ^releases/[0-9a-f]{64}$ ]] || die "refusing malformed engine pointer: $link"
+        printf '%s\\n' "$target" > "$BACKUP_DIR/engine-$pointer-target"
+      fi
+    done
   fi
 fi
 if [[ -n "$INSTANCE" ]]; then
@@ -313,9 +326,25 @@ rollback_install() {
       if [[ -f "$BACKUP_DIR/had-lib" ]]; then rm -rf "$LIB_DEST"; cp -a "$BACKUP_DIR/lib" "$LIB_DEST"; else rm -rf "$LIB_DEST"; fi
     fi
     if [[ -n "$BAFT_ENGINE" ]]; then
-      rm -rf "$ENGINE_STORE"
-      if [[ -f "$BACKUP_DIR/had-engine-store" ]]; then
-        cp -a "$BACKUP_DIR/engine-store" "$ENGINE_STORE"
+      ENGINE_DIR="$ENGINE_STORE/baft"
+      if [[ -f "$BACKUP_DIR/had-engine-dir" ]]; then
+        install -d -m 0755 "$ENGINE_DIR"
+        for pointer in current previous; do
+          link="$ENGINE_DIR/$pointer"
+          target_file="$BACKUP_DIR/engine-$pointer-target"
+          tmp="$ENGINE_DIR/.$pointer.rollback.$"
+          rm -f -- "$tmp"
+          if [[ -f "$target_file" ]]; then
+            target="$(cat "$target_file")"
+            [[ "$target" =~ ^releases/[0-9a-f]{64}$ ]] || die "invalid saved engine pointer: $pointer"
+            ln -s -- "$target" "$tmp"
+            mv -Tf -- "$tmp" "$link"
+          else
+            rm -f -- "$link"
+          fi
+        done
+      else
+        rm -rf -- "$ENGINE_DIR"
       fi
     fi
     if [[ "$STAGING" == "0" ]]; then remove_created_account; fi
