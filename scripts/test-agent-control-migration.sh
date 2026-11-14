@@ -222,7 +222,7 @@ run_helper
 
 # daemon-reload failure leaves the durable journal for a safe retry.
 setup_case
-DAEMON_RELOAD_FAIL=1 run_helper >"$CASE/out" 2>&1 && exit 1
+PATH="$BIN:$PATH" DAEMON_RELOAD_FAIL=1 bash "$HELPER" --control-dir "$FAKE_CONTROL_DIR" --tmpfiles "$CASE/tmpfiles.conf" --state-dir "$CASE/state-dir" >"$CASE/out" 2>&1 && exit 1
 ! grep -q '^start ' "$CASE/log"
 unset DAEMON_RELOAD_FAIL
 run_helper
