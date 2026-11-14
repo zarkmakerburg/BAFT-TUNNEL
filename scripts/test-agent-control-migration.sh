@@ -77,8 +77,9 @@ case "$cmd" in
     add_state active "$unit"
     ;;
   daemon-reload)
-    printf 'daemon-reload\n' >> "$FAKE_LOG"
-    [[ "${DAEMON_RELOAD_FAIL:-}" == 1 ]] && exit 1
+    printf 'daemon-reload\\n' >> "$FAKE_LOG"
+    if [[ "${DAEMON_RELOAD_FAIL:-}" == 1 ]]; then exit 1; fi
+    exit 0
     ;;
   *) echo "unexpected systemctl command: $cmd $*" >&2; exit 2 ;;
 esac
