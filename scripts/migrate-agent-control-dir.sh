@@ -46,10 +46,11 @@ root_helpers_active() {
   [[ -n "$(active_units service 'baft-tunnel-control-*@*.service')" ]]
 }
 valid_unit() {
-  case "$1:$2" in
-    control:baft-tunnel-control-(start|stop|enable|disable|setup|pki)@[A-Za-z0-9][A-Za-z0-9_-]*.path) [[ "$2" =~ ^baft-tunnel-control-(start|stop|enable|disable|setup|pki)@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\.path$ ]] ;;
-    agent_path:baft-tunnel-agent@[A-Za-z0-9][A-Za-z0-9_-]*.path) [[ "$2" =~ ^baft-tunnel-agent@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\.path$ ]] ;;
-    agent_service:baft-tunnel-agent@[A-Za-z0-9][A-Za-z0-9_-]*.service) [[ "$2" =~ ^baft-tunnel-agent@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\.service$ ]] ;;
+  local kind=$1 unit=$2
+  case "$kind" in
+    control) [[ "$unit" =~ ^baft-tunnel-control-(start|stop|enable|disable|setup|pki)@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\\.path$ ]] ;;
+    agent_path) [[ "$unit" =~ ^baft-tunnel-agent@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\\.path$ ]] ;;
+    agent_service) [[ "$unit" =~ ^baft-tunnel-agent@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\\.service$ ]] ;;
     *) return 1 ;;
   esac
 }
