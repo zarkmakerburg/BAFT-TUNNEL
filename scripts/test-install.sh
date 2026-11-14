@@ -13,7 +13,7 @@ write_fake() {
   local version="$1"
   cat > "$FAKE" <<EOF
 #!/usr/bin/env sh
-[ "${1:-}" = "--version" ] && { echo "baft-tunnel $version"; exit 0; }
+[ "\${1:-}" = "--version" ] && { echo "baft-tunnel $version"; exit 0; }
 exit 0
 EOF
   chmod 755 "$FAKE"
