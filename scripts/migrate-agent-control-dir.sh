@@ -19,7 +19,6 @@ done
 die() { echo "agent-control-migration: $*" >&2; exit 2; }
 EXPECTED='root:baft-tunnel-agent 770'
 VERBS=(start stop enable disable setup pki)
-JOURNAL="$STATE_DIR/migration-v1.units"
 CONTROL_PARENT="${CONTROL_DIR%/*}"
 [[ "$CONTROL_PARENT" != "$CONTROL_DIR" ]] || die "control directory must have a parent directory"
 [[ ! -L "$CONTROL_PARENT" ]] || die "control directory parent must not be a symlink"
