@@ -11,7 +11,7 @@
 echo "=== REVERSE ACCEPTANCE: clean install from ${MVP_SOURCE}, Reverse via setup+Apply, ${REVERSE_ACCEPT}s soak, backup/restore, update/rollback ==="
 stop_role iran serve; stop_role abroad serve; stop_role iran forward; stop_role abroad forward; sleep 1
 MSVC=18094; MTP=18330; MAG=18096
-EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGD=/var/lib/baft-tunnel/agent; PKG="$REMOTE_DIR/pkg"
+EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGD=/var/lib/baft-tunnel-agent/lab-agent; PKG="$REMOTE_DIR/pkg"
 PUB=revpub; SVC=revsvc          # instance names on iran / abroad
 MVP_SHA="$(sha256sum "$MVP_BINARY_PATH" | awk '{print $1}')"
 
@@ -102,9 +102,9 @@ RA_SNI="$(ssh_host abroad "python3 -c 'import json;print(json.load(open(\"$EB/$S
 echo "--- local agent per host (service user, loopback) ---"
 for side in iran abroad; do
   cfg=$PUB; [[ "$side" == abroad ]] && cfg=$SVC
-  ssh_host "$side" "set -e; install -d -o baft-tunnel -g baft-tunnel -m 0700 $AGD;
-    setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups $UB agent-token --out $AGD/token >/dev/null;
-    nohup setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG --instance $cfg > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
+  ssh_host "$side" "set -e; install -d -o baft-tunnel-agent -g baft-tunnel-agent -m 0700 $AGD;
+    setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent-token --out $AGD/token >/dev/null;
+    nohup setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG --instance $cfg > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
     for n in \$(seq 1 40); do python3 -c 'import urllib.request;urllib.request.urlopen(\"http://127.0.0.1:$MAG/v1/health\",timeout=1)' 2>/dev/null && exit 0; sleep 0.25; done; tail -20 '$REMOTE_DIR/agent.log'; exit 1"
 done
 ra_apply() { # side instance role key -> receipt JSON on stdout (direction reverse)
@@ -255,8 +255,8 @@ ssh_host iran "bash '$PKG/scripts/restore.sh' --yes '$RA_BK_PUB' >/dev/null"; ss
 [[ "$(ra_own iran $PUB)" == "$RA_OWN_PUB" && "$(ra_own abroad $SVC)" == "$RA_OWN_SVC" ]] || { echo "restore changed config content, owners or modes" >&2; exit 1; }
 for side in iran abroad; do
   cfg=$PUB; [[ "$side" == abroad ]] && cfg=$SVC
-  ssh_host "$side" "set -e; install -d -o baft-tunnel -g baft-tunnel -m 0700 $AGD; [ -s $AGD/token ] || setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups $UB agent-token --out $AGD/token >/dev/null;
-    nohup setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG --instance $cfg > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
+  ssh_host "$side" "set -e; install -d -o baft-tunnel-agent -g baft-tunnel-agent -m 0700 $AGD; [ -s $AGD/token ] || setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent-token --out $AGD/token >/dev/null;
+    nohup setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG --instance $cfg > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
     for n in \$(seq 1 40); do python3 -c 'import urllib.request;urllib.request.urlopen(\"http://127.0.0.1:$MAG/v1/health\",timeout=1)' 2>/dev/null && exit 0; sleep 0.25; done; tail -20 '$REMOTE_DIR/agent.log'; exit 1"
 done
 [[ "$(ra_apply iran $PUB serve ra-pub-0004 | jf result)" == applied ]] || { echo "public node did not start from the restored configuration" >&2; exit 1; }
@@ -276,7 +276,7 @@ probe_host iran 2097289
 for side in iran abroad; do ssh_host "$side" "[ -s '$REMOTE_DIR/agent.pid' ] && kill \$(cat '$REMOTE_DIR/agent.pid'); rm -f '$REMOTE_DIR/agent.pid'"; done
 for side in iran abroad; do
   cfg=$PUB; [[ "$side" == abroad ]] && cfg=$SVC
-  ssh_host "$side" "nohup setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG --instance $cfg > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
+  ssh_host "$side" "nohup setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG --instance $cfg > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
     for n in \$(seq 1 40); do python3 -c 'import urllib.request;urllib.request.urlopen(\"http://127.0.0.1:$MAG/v1/health\",timeout=1)' 2>/dev/null && exit 0; sleep 0.25; done; exit 1"
 done
 sleep 14
