@@ -200,7 +200,7 @@ for attempt in 1 2; do
   ! grep -q '^UPDATE_OK' "$TMP/update-refused.log" || die "refused update printed UPDATE_OK"
   [[ "$(sudo stat -c '%i %Y' /usr/local/bin/baft-tunnel)" == "$BIN_ID0" ]] || die "refused update changed the binary"
   [[ "$(sudo systemctl show -p InvocationID --value "baft-tunnel-agent@$NAME.service")" == "$AGENT_INV0" ]] || die "refused update restarted the agent"
-  [[ -e "$CTL/ghost.start" ]] || die "refused update removed the pending request"
+  sudo test -e "$CTL/ghost.start" || die "refused update removed the pending request"
   [[ "$(sudo stat -c '%U:%G %a' "$CTL")" == "root:baft-tunnel-agent 770" ]] || die "tunnel access was not revoked before the refusal"
 done
 if sudo setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups touch "$CTL/ghost2.start" 2>/dev/null; then die "tunnel user could replant after the refusal"; fi
@@ -210,7 +210,7 @@ grep -q "^UPDATE_OK .* control_boundary=root:baft-tunnel-agent-0770$" "$TMP/upda
 [[ "$(sudo stat -c '%U:%G %a' "$CTL")" == "root:baft-tunnel-agent 770" ]] || die "update.sh did not migrate the control directory"
 [[ "$(sudo stat -c '%U:%G %a' /run/baft-tunnel)" == "root:root 755" ]] || die "control parent is not root:root 0755 after update"
 sudo grep -qx "d $CTL 0770 root baft-tunnel-agent -" /etc/tmpfiles.d/baft-tunnel-control.conf || die "update.sh did not refresh the tmpfiles entry"
-[[ ! -e /var/lib/baft-tunnel-control/migration-v1.units ]] || die "migration journal left after a successful update"
+! sudo test -e /var/lib/baft-tunnel-control/migration-v1.units || die "migration journal left after a successful update"
 if sudo setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups touch "$CTL/h01-denied" 2>/dev/null; then die "tunnel user can still write requests after update"; fi
 sudo setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups touch "$CTL/h01-agent-probe" || die "agent user cannot write requests after update"
 sudo rm -f "$CTL/h01-agent-probe"
