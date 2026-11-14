@@ -77,7 +77,7 @@ case "$cmd" in
     add_state active "$unit"
     ;;
   daemon-reload)
-    printf 'daemon-reload\\n' >> "$FAKE_LOG"
+    printf 'daemon-reload\n' >> "$FAKE_LOG"
     if [[ "${DAEMON_RELOAD_FAIL:-}" == 1 ]]; then exit 1; fi
     exit 0
     ;;
@@ -115,7 +115,7 @@ setup_case() {
   : > "$CASE/state/activating"; : > "$CASE/state/deactivating"
   : > "$CASE/log"
   printf 'root:baft-tunnel 770\n' > "$CASE/control-state"
-  printf '%s\n' "$CONTROL" "$AGENT_PATH" "$AGENT_SERVICE" > "$CASE/state/active"
+  printf '%s\n' "$CONTROL" "$CONTROL2" "$AGENT_PATH" "$AGENT_PATH2" "$AGENT_SERVICE" > "$CASE/state/active"
   printf '%s\n' "$INACTIVE_AGENT" > "$CASE/state/inactive"
   export FAKE_STATE_DIR="$CASE/state" FAKE_CONTROL_DIR="$CASE/control"
   export FAKE_CONTROL_STATE="$CASE/control-state" FAKE_LOG="$CASE/log"
@@ -142,7 +142,7 @@ run_helper
 grep -Fxq "$CONTROL" "$CASE/state/active"
 grep -Fxq "$AGENT_PATH" "$CASE/state/active"
 grep -Fxq "$AGENT_SERVICE" "$CASE/state/active"
-! grep -Fxq "$INACTIVE_AGENT" "$CASE/log"
+! grep -Fxq "start $INACTIVE_AGENT" "$CASE/log"
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
 [[ "$(sed -n '1p' "$CASE/log")" == "stop $CONTROL" ]]
 [[ "$(sed -n '2p' "$CASE/log")" == "stop $CONTROL2" ]]
