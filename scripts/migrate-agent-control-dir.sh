@@ -32,19 +32,29 @@ fi
 [[ ! -L "$CONTROL_DIR" ]] || die "control directory must not be a symlink"
 TMPFILES_APPLIED=0
 
-[[ ! -L "$STATE_DIR" ]] || die "state directory must not be a symlink"
-mkdir -p "$STATE_DIR"
-chmod 0700 "$STATE_DIR"
 umask 077
-[[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || die "invalid migration state directory"
-[[ "$(stat -c '%U:%G %a' "$STATE_DIR")" == "$(id -un):$(id -gn) 700" ]] || die "migration state directory must be private to the invoking privileged account"
+if [[ -e "$STATE_DIR" || -L "$STATE_DIR" ]]; then
+  [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || die "invalid migration state directory"
+  [[ "$(stat -c '%U:%G %a' "$STATE_DIR")" == "$(id -un):$(id -gn) 700" ]] ||
+    die "migration state directory must already be private to the invoking privileged account"
+else
+  mkdir -p "$STATE_DIR"
+fi
+JOURNAL="$STATE_DIR/migration-v1.units"
+LOCK_FILE="$STATE_DIR/migration.lock"
 [[ ! -L "$JOURNAL" ]] || die "migration journal must not be a symlink"
 if [[ -e "$JOURNAL" ]]; then
   [[ -f "$JOURNAL" ]] || die "migration journal is not a regular file"
   [[ "$(stat -c '%U:%G %a' "$JOURNAL")" == "$(id -un):$(id -gn) 600" ]] ||
     die "migration journal must be private to the invoking privileged account"
 fi
-exec 9>"$STATE_DIR/migration.lock"
+[[ ! -L "$LOCK_FILE" ]] || die "migration lock must not be a symlink"
+if [[ -e "$LOCK_FILE" ]]; then
+  [[ -f "$LOCK_FILE" ]] || die "migration lock is not a regular file"
+  [[ "$(stat -c '%U:%G %a' "$LOCK_FILE")" == "$(id -un):$(id -gn) 600" ]] ||
+    die "migration lock must be private to the invoking privileged account"
+fi
+exec 9>"$LOCK_FILE"
 flock -n 9 || die "another control-directory migration is already running"
 
 directory_state() { stat -c '%U:%G %a' "$CONTROL_DIR" 2>/dev/null || true; }
