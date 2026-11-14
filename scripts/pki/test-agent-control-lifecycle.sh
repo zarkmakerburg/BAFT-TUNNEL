@@ -194,8 +194,22 @@ wait_state() { # NAME active|inactive
 
 # 1. Install the helper explicitly, per instance.
 # Each registration also starts that instance's agent service (own user); distinct loopback ports.
-sudo "$ROOT/scripts/install-agent-control.sh" --instance "$SERVE" --listen 127.0.0.1:18100 >"$TMP/ctl-serve.log" 2>"$TMP/ctl-serve.stderr.log"
-sudo "$ROOT/scripts/install-agent-control.sh" --instance "$FWD" --listen 127.0.0.1:18101 >"$TMP/ctl-fwd.log" 2>"$TMP/ctl-fwd.stderr.log"
+echo "[agent-control] registering serve instance"
+if sudo "$ROOT/scripts/install-agent-control.sh" --instance "$SERVE" --listen 127.0.0.1:18100 >"$TMP/ctl-serve.log" 2>"$TMP/ctl-serve.stderr.log"; then
+  echo "[agent-control] serve registration completed"
+else
+  rc=$?
+  echo "[agent-control] serve registration failed exit=$rc" >&2
+  exit "$rc"
+fi
+echo "[agent-control] registering forward instance"
+if sudo "$ROOT/scripts/install-agent-control.sh" --instance "$FWD" --listen 127.0.0.1:18101 >"$TMP/ctl-fwd.log" 2>"$TMP/ctl-fwd.stderr.log"; then
+  echo "[agent-control] forward registration completed"
+else
+  rc=$?
+  echo "[agent-control] forward registration failed exit=$rc" >&2
+  exit "$rc"
+fi
 for k in start stop enable disable; do
   sudo systemctl is-active --quiet "baft-tunnel-control-$k@$SERVE.path" || die "path unit $k for $SERVE is not active"
 done
