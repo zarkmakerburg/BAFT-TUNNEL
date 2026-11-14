@@ -223,7 +223,7 @@ run_helper
 
 # If systemd cannot enumerate loaded units, do not assume the snapshot is empty.
 setup_case
-LIST_UNITS_FAIL=1 run_helper >"$CASE/out" 2>&1 && exit 1
+LIST_UNITS_FAIL=1 expect_fail
 ! grep -q '^stop ' "$CASE/log"
 grep -q 'could not enumerate root control helper services' "$CASE/out"
 
@@ -251,13 +251,13 @@ expect_fail
 # never change ownership or restart any unit. A later retry consumes the journal.
 for failed_unit in "$CONTROL" "$AGENT_PATH" "$AGENT_SERVICE"; do
   setup_case
-  STOP_FAIL_UNIT="$failed_unit" run_helper >"$CASE/out" 2>&1 && exit 1
+  STOP_FAIL_UNIT="$failed_unit" expect_fail
   [[ -f "$CASE/state-dir/migration-v1.units" ]]
   [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel 770' ]]
   ! grep -q '^start ' "$CASE/log"
 done
 setup_case
-STOP_FAIL_UNIT="$AGENT_PATH" STOP_FAIL_UNKNOWN=1 run_helper >"$CASE/out" 2>&1 && exit 1
+STOP_FAIL_UNIT="$AGENT_PATH" STOP_FAIL_UNKNOWN=1 expect_fail
 grep -q 'state=unknown' "$CASE/out"
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel 770' ]]
 ! grep -q '^start ' "$CASE/log"
@@ -266,23 +266,23 @@ run_helper
 
 # tmpfiles failure and ownership/mode mismatch never restore writers or watchers.
 setup_case
-TMPFILES_FAIL=1 run_helper >"$CASE/out" 2>&1 && exit 1
+TMPFILES_FAIL=1 expect_fail
 ! grep -q '^start ' "$CASE/log"
 run_helper
 setup_case
-TMPFILES_BAD_STATE=1 run_helper >"$CASE/out" 2>&1 && exit 1
+TMPFILES_BAD_STATE=1 expect_fail
 ! grep -q '^start ' "$CASE/log"
 
 # A request appearing while writers are being stopped or during tmpfiles blocks restore.
 setup_case
-REQUEST_ON_STOP_UNIT="$CONTROL" run_helper >"$CASE/out" 2>&1 && exit 1
+REQUEST_ON_STOP_UNIT="$CONTROL" expect_fail
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel 770' ]]
 [[ -e "$REQUEST_FILE" ]]
 ! grep -q '^start ' "$CASE/log"
 rm -f "$REQUEST_FILE"
 run_helper
 setup_case
-REQUEST_ON_TMPFILES=1 run_helper >"$CASE/out" 2>&1 && exit 1
+REQUEST_ON_TMPFILES=1 expect_fail
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
 [[ -e "$REQUEST_FILE" ]]
 ! grep -q '^start ' "$CASE/log"
@@ -291,7 +291,7 @@ run_helper
 
 # daemon-reload failure leaves the durable journal for a safe retry.
 setup_case
-PATH="$BIN:$PATH" DAEMON_RELOAD_FAIL=1 bash "$HELPER" --control-dir "$FAKE_CONTROL_DIR" --tmpfiles "$CASE/tmpfiles.conf" --state-dir "$CASE/state-dir" >"$CASE/out" 2>&1 && exit 1
+DAEMON_RELOAD_FAIL=1 expect_fail
 ! grep -q '^start ' "$CASE/log"
 unset DAEMON_RELOAD_FAIL
 run_helper
