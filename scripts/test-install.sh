@@ -200,7 +200,7 @@ cat > "$ENGINE_FAKE" <<'EOF_ENGINE_FAKE'
 set -Eeuo pipefail
 if [[ "${1:-}" == "--version" ]]; then echo "baft-tunnel engine-test"; exit 0; fi
 if [[ "${1:-}" == "engine" && "${2:-}" == "manifest" ]]; then
-  printf '{"engines":[{"id":"baft"]}\n'
+  printf '{"engines":[{"id":"baft"}]}\n'
   exit 0
 fi
 if [[ "${1:-}" == "engine" && "${2:-}" == "install" ]]; then
