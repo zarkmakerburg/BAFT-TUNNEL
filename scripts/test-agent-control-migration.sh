@@ -107,7 +107,7 @@ INACTIVE_AGENT="baft-tunnel-agent@offline.service"
 setup_case() {
   CASE="$TMP/case"
   rm -rf "$CASE"
-mkdir -p "$CASE/state" "$CASE/parent/control"
+  mkdir -p "$CASE/state" "$CASE/parent/control"
   : > "$CASE/state/active"; : > "$CASE/state/inactive"
   : > "$CASE/state/failed"; : > "$CASE/state/unknown"
   : > "$CASE/state/activating"; : > "$CASE/state/deactivating"
@@ -115,10 +115,10 @@ mkdir -p "$CASE/state" "$CASE/parent/control"
   printf 'root:baft-tunnel 770\n' > "$CASE/control-state"
   printf '%s\n' "$CONTROL" "$CONTROL2" "$AGENT_PATH" "$AGENT_PATH2" "$AGENT_SERVICE" > "$CASE/state/active"
   printf '%s\n' "$INACTIVE_AGENT" > "$CASE/state/inactive"
-export FAKE_STATE_DIR="$CASE/state" FAKE_CONTROL_DIR="$CASE/parent/control" FAKE_CONTROL_PARENT="$CASE/parent"
-printf 'root:root 755\n' > "$CASE/parent-state"
+  export FAKE_STATE_DIR="$CASE/state" FAKE_CONTROL_DIR="$CASE/parent/control" FAKE_CONTROL_PARENT="$CASE/parent"
+  printf 'root:root 755\n' > "$CASE/parent-state"
   export FAKE_CONTROL_STATE="$CASE/control-state" FAKE_CONTROL_PARENT_STATE="$CASE/parent-state" FAKE_LOG="$CASE/log"
-export REQUEST_FILE="$CASE/parent/control/iran.start"
+  export REQUEST_FILE="$CASE/parent/control/iran.start"
   unset STOP_FAIL_UNIT STOP_FAIL_UNKNOWN START_FAIL_UNIT DAEMON_RELOAD_FAIL TMPFILES_FAIL TMPFILES_BAD_STATE REQUEST_ON_STOP_UNIT REQUEST_ON_TMPFILES
 }
 run_helper() {
