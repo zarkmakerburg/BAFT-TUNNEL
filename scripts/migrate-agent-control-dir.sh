@@ -29,6 +29,11 @@ umask 077
 [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || die "invalid migration state directory"
 [[ "$(stat -c '%U:%G %a' "$STATE_DIR")" == "$(id -un):$(id -gn) 700" ]] || die "migration state directory must be private to the invoking privileged account"
 [[ ! -L "$JOURNAL" ]] || die "migration journal must not be a symlink"
+if [[ -e "$JOURNAL" ]]; then
+  [[ -f "$JOURNAL" ]] || die "migration journal is not a regular file"
+  [[ "$(stat -c '%U:%G %a' "$JOURNAL")" == "$(id -un):$(id -gn) 600" ]] ||
+    die "migration journal must be private to the invoking privileged account"
+fi
 exec 9>"$STATE_DIR/migration.lock"
 flock -n 9 || die "another control-directory migration is already running"
 
