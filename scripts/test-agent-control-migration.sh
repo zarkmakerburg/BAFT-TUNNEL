@@ -205,7 +205,7 @@ grep -q 'migration journal must not be a symlink' "$CASE/out"
 setup_case
 mkdir -p "$CASE/state-dir"
 chmod 0700 "$CASE/state-dir"
-printf 'sentinel-must-remain-unchanged\\n' > "$CASE/lock-target"
+printf 'sentinel-must-remain-unchanged\n' > "$CASE/lock-target"
 ln -s "$CASE/lock-target" "$CASE/state-dir/migration.lock"
 expect_fail
 [[ "$(cat "$CASE/lock-target")" == 'sentinel-must-remain-unchanged' ]]
