@@ -301,7 +301,7 @@ run_helper
 # completes recovery without activating units that were inactive in the snapshot.
 for failed_unit in "$CONTROL" "$CONTROL2" "$AGENT_PATH" "$AGENT_PATH2" "$AGENT_SERVICE"; do
   setup_case
-  START_FAIL_UNIT="$failed_unit" run_helper >"$CASE/out" 2>&1 && exit 1
+  START_FAIL_UNIT="$failed_unit" expect_fail
   [[ -f "$CASE/state-dir/migration-v1.units" ]]
   grep -q "could not restore" "$CASE/out"
   run_helper
