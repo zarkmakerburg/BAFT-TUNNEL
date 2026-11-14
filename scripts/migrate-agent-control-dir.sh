@@ -17,6 +17,7 @@ die() { echo "agent-control-migration: $*" >&2; exit 2; }
 EXPECTED='root:baft-tunnel-agent 770'
 VERBS=(start stop enable disable setup pki)
 JOURNAL="$STATE_DIR/migration-v1.units"
+TMPFILES_APPLIED=0
 
 [[ ! -L "$STATE_DIR" ]] || die "state directory must not be a symlink"
 mkdir -p "$STATE_DIR"
@@ -170,6 +171,7 @@ if [[ "$(directory_state)" != "$EXPECTED" ]]; then
   root_helpers_active && die "root control helpers remain active; all snapshotted units remain stopped"
   has_pending_requests && die "pending request appeared during quiescence; units remain stopped and journal retained"
   systemd-tmpfiles --create "$TMPFILES"
+  TMPFILES_APPLIED=1
   [[ "$(directory_state)" == "$EXPECTED" ]] || die "control directory did not reach $EXPECTED; units remain stopped and journal retained"
   has_pending_requests && die "request appeared during directory migration; units remain stopped and journal retained"
 fi
@@ -178,6 +180,11 @@ fi
 # or recovery after an interrupted restore. Re-running start is idempotent.
 root_helpers_active && die "a root control helper is active; refusing to restore migration snapshot"
 has_pending_requests && die "pending request exists; refusing to restore migration snapshot"
+if (( ! TMPFILES_APPLIED )); then
+  systemd-tmpfiles --create "$TMPFILES" || die "systemd-tmpfiles failed during migration recovery; journal retained and units remain stopped"
+fi
+[[ "$(directory_state)" == "$EXPECTED" ]] || die "control directory is not at the required safe owner/group/mode; journal retained and units remain stopped"
+has_pending_requests && die "request appeared during migration recovery; units remain stopped and journal retained"
 systemctl daemon-reload || die "systemd daemon-reload failed; journal retained and units remain stopped"
 RESTORE_FAILURE=0
 restore_units "root control watcher" "${CONTROL_PATHS[@]}" || RESTORE_FAILURE=1
