@@ -288,6 +288,12 @@ expect_fail
 # cannot be replanted and block every retry.
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
 grep -Fxq 'chown root:baft-tunnel-agent' "$CASE/log"
+# A rerun on the now-safe directory without removing the request is still refused (no bypass).
+expect_fail
+grep -q 'pending' "$CASE/out"
+[[ -e "$REQUEST_FILE" ]]
+! grep -q '^stop ' "$CASE/log" || false
+! grep -q '^start ' "$CASE/log" || false
 # After root removes the refused request, a rerun completes on the already-safe
 # directory without stopping units, and never activates the inactive agent.
 rm -f "$REQUEST_FILE"

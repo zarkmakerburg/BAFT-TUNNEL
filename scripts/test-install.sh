@@ -157,8 +157,9 @@ grep -Fq 'active_units service' "$ROOT/scripts/migrate-agent-control-dir.sh"
 grep -Fq 'for request in "$CONTROL_DIR"/*."$verb"; do' "$ROOT/scripts/migrate-agent-control-dir.sh"
 grep -Fq 'root control helpers remain active' "$ROOT/scripts/migrate-agent-control-dir.sh"
 grep -Fq 'pending control request exists' "$ROOT/scripts/migrate-agent-control-dir.sh"
-grep -Fq 'MIGRATION_JOURNAL=/var/lib/baft-tunnel-control/migration-v1.units' "$ROOT/scripts/install-agent-control.sh"
-grep -Fq '|| -e "$MIGRATION_JOURNAL" || -L "$MIGRATION_JOURNAL"' "$ROOT/scripts/install-agent-control.sh"
+# The fail-closed helper runs on every registration/upgrade, never skipped for an already-safe directory.
+grep -Fq '  bash "$SCRIPT_DIR/migrate-agent-control-dir.sh" --control-dir "$CONTROL_DIR" --tmpfiles "$TMPF"' "$ROOT/scripts/install-agent-control.sh"
+! grep -Fq 'systemd-tmpfiles --create "$TMPF"' "$ROOT/scripts/install-agent-control.sh" || false
 grep -Fq 'request appeared during directory migration' "$ROOT/scripts/migrate-agent-control-dir.sh"
 grep -Fq 'group $AGENT_USER must be exclusive to the dedicated agent account' "$ROOT/scripts/install-agent-control.sh"
 grep -Fq 'id -gn "$AGENT_USER"' "$ROOT/scripts/install-agent-control.sh"

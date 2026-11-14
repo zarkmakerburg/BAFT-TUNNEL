@@ -187,6 +187,24 @@ sudo chown root:baft-tunnel "$CTL"; sudo chmod 0770 "$CTL"
 [[ "$(sudo stat -c '%U:%G %a' "$CTL")" == "root:baft-tunnel 770" ]] || die "could not recreate the old boundary"
 sudo setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups touch "$CTL/h01-old-probe" || die "old boundary should still let the tunnel user write (baseline)"
 sudo rm -f "$CTL/h01-old-probe"
+# Fail-closed: a request planted by the tunnel user (instance with no watcher) blocks update.sh, also
+# on a rerun after the directory is already safe; the binary is not updated and no units transition.
+sudo setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups touch "$CTL/ghost.start" || die "could not plant the old-boundary request"
+BIN_ID0="$(sudo stat -c '%i %Y' /usr/local/bin/baft-tunnel)"
+AGENT_INV0="$(sudo systemctl show -p InvocationID --value "baft-tunnel-agent@$NAME.service")"
+for attempt in 1 2; do
+  if sudo "$ROOT/scripts/update.sh" --binary "$TMP/baft-tunnel" --health-secs 2 >"$TMP/update-refused.log" 2>&1; then
+    cat "$TMP/update-refused.log" >&2; die "update.sh accepted a pending tunnel-planted request (attempt $attempt)"
+  fi
+  grep -q 'pending control request exists' "$TMP/update-refused.log" || { cat "$TMP/update-refused.log" >&2; die "refusal did not name the pending request"; }
+  ! grep -q '^UPDATE_OK' "$TMP/update-refused.log" || die "refused update printed UPDATE_OK"
+  [[ "$(sudo stat -c '%i %Y' /usr/local/bin/baft-tunnel)" == "$BIN_ID0" ]] || die "refused update changed the binary"
+  [[ "$(sudo systemctl show -p InvocationID --value "baft-tunnel-agent@$NAME.service")" == "$AGENT_INV0" ]] || die "refused update restarted the agent"
+  [[ -e "$CTL/ghost.start" ]] || die "refused update removed the pending request"
+  [[ "$(sudo stat -c '%U:%G %a' "$CTL")" == "root:baft-tunnel-agent 770" ]] || die "tunnel access was not revoked before the refusal"
+done
+if sudo setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups touch "$CTL/ghost2.start" 2>/dev/null; then die "tunnel user could replant after the refusal"; fi
+sudo rm -f "$CTL/ghost.start"
 sudo "$ROOT/scripts/update.sh" --binary "$TMP/baft-tunnel" --health-secs 2 >"$TMP/update1.log" 2>&1 || { cat "$TMP/update1.log" >&2; die "update.sh failed on the upgrade path"; }
 grep -q "^UPDATE_OK .* control_boundary=root:baft-tunnel-agent-0770$" "$TMP/update1.log" || { cat "$TMP/update1.log" >&2; die "update.sh did not report the migrated boundary"; }
 [[ "$(sudo stat -c '%U:%G %a' "$CTL")" == "root:baft-tunnel-agent 770" ]] || die "update.sh did not migrate the control directory"
@@ -213,7 +231,7 @@ for b in $(sed -n 's/^\(Data\|Binary\) backup: //p' "$TMP/update1.log" "$TMP/upd
 done
 ! sudo systemctl is-active --quiet "baft-tunnel@$NAME.service" || die "second update started the stopped tunnel"
 for n in $(seq 1 60); do curl -fs "http://$API/v1/health" >/dev/null 2>&1 && break; sleep 0.5; done
-echo "BAFT_AGENT_CONTROL_UPGRADE_TEST=PASS (update.sh migrated root:baft-tunnel 770 -> root:baft-tunnel-agent 770, tunnel user denied, agent allowed, stopped tunnel stayed stopped, idempotent rerun)"
+echo "BAFT_AGENT_CONTROL_UPGRADE_TEST=PASS (pending tunnel request refused twice with binary and agent unchanged and no replant, then update.sh migrated root:baft-tunnel 770 -> root:baft-tunnel-agent 770, tunnel user denied, agent allowed, stopped tunnel stayed stopped, idempotent rerun)"
 
 step "8 Start again so uninstall must stop it; uninstall leaves nothing"
 [[ "$(echo "$(life start svc-start-0003)" | field result)" == applied ]] || die "second Start failed"

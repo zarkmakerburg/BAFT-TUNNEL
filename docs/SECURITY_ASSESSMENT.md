@@ -192,8 +192,9 @@ arrive after its watcher stopped.
 
 Existing installs (H-01): `update.sh` runs `install-agent-control.sh --upgrade-boundary` before it
 changes the binary. That refreshes the control/agent unit templates and the tmpfiles entry, re-checks
-the exclusive agent group and runs the same fail-closed migration. If it refuses, nothing else is
-updated and the reason is printed. `UPDATE_OK` reports `control_boundary=root:baft-tunnel-agent-0770`
+the exclusive agent group and always runs the same fail-closed migration helper, also on an
+already-migrated directory, so a refused pending request is refused again on every rerun until root
+removes it. If it refuses, nothing else is updated and the reason is printed. `UPDATE_OK` reports `control_boundary=root:baft-tunnel-agent-0770`
 only after the directory was verified; a staged tree reports `staged-not-verified`, a host without the
 control helper `not-installed`. Evidence: the real-systemd agent-service test upgrades a recreated
 pre-boundary install through `update.sh` (`BAFT_AGENT_CONTROL_UPGRADE_TEST=PASS`), and the

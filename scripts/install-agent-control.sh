@@ -63,10 +63,7 @@ install_templates() {
 }
 # Enforce the request-group boundary and migrate the request directory if needed (fail-closed).
 enforce_control_boundary() {
-  local dir_state parent_state AGENT_GID OTHER_PRIMARY_USERS
-  local MIGRATION_JOURNAL=/var/lib/baft-tunnel-control/migration-v1.units
-  dir_state="$(stat -c '%U:%G %a' "$CONTROL_DIR" 2>/dev/null || true)"
-  parent_state="$(stat -c '%U:%G %a' "$CONTROL_PARENT" 2>/dev/null || true)"
+  local AGENT_GID OTHER_PRIMARY_USERS
   AGENT_GID="$(getent group "$AGENT_USER" | awk -F: '{print $3}')"
   OTHER_PRIMARY_USERS="$(getent passwd | awk -F: -v gid="$AGENT_GID" -v agent="$AGENT_USER" '$4 == gid && $1 != agent { print $1 }')"
   if [[ -z "$AGENT_GID" ]] ||
@@ -76,13 +73,9 @@ enforce_control_boundary() {
      id -nG "$SERVICE_GROUP" | tr ' ' '\n' | grep -qx "$AGENT_USER"; then
     die "group $AGENT_USER must be exclusive to the dedicated agent account"
   fi
-  # Resume a partially completed migration even if the directory mode was already changed.
-  if [[ "$dir_state" != "root:baft-tunnel-agent 770" || "$parent_state" != "root:root 755" || -L "$CONTROL_PARENT" || -L "$CONTROL_DIR" || -e "$MIGRATION_JOURNAL" || -L "$MIGRATION_JOURNAL" ]]; then
-    bash "$SCRIPT_DIR/migrate-agent-control-dir.sh" --control-dir "$CONTROL_DIR" --tmpfiles "$TMPF"
-  else
-    systemd-tmpfiles --create "$TMPF"
-    systemctl daemon-reload
-  fi
+  # Always run the fail-closed helper, also on an already-migrated directory: it re-checks active
+  # root helpers and pending requests, so a refused request is still refused on every rerun.
+  bash "$SCRIPT_DIR/migrate-agent-control-dir.sh" --control-dir "$CONTROL_DIR" --tmpfiles "$TMPF"
   [[ "$(stat -c '%U:%G %a' "$CONTROL_DIR")" == "root:baft-tunnel-agent 770" ]] ||
     die "control directory did not reach root:baft-tunnel-agent 0770"
 }
