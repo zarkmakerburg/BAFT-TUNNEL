@@ -67,6 +67,13 @@ cleanup() {
     } > "$DIAG_DIR/failure.txt"
     chmod 600 "$DIAG_DIR/"*
     echo "agent control lifecycle: failure diagnostics preserved at $DIAG_DIR" >&2
+    # GitHub-hosted runners discard RUNNER_TEMP after the job; emit the sanitized diagnostics
+    # into the job log so the failing command can be identified without a separate artifact.
+    for f in "$DIAG_DIR"/*.log "$DIAG_DIR"/fw-*.txt "$DIAG_DIR"/side-*.txt "$DIAG_DIR"/failure.txt; do
+      [[ -f "$f" ]] || continue
+      echo "===== diagnostic: $(basename "$f") =====" >&2
+      sed -n '1,240p' "$f" >&2
+    done
     rm -rf "$TMP"
   fi
   exit "$status"
