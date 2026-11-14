@@ -137,4 +137,17 @@ test "$(grep -c 'secrets\.' "$b2")" = 4
 grep -F 'unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS' "$root/lab/trusted/phase1-b2-integrity-probe.sh" >/dev/null
 grep -F 'candidate_unprivileged=1 ssh_key_exposed_to_candidate=0' "$root/lab/trusted/phase1-b2-integrity-probe.sh" >/dev/null
 
+# Signed prerelease upgrade LAB (S2): main-only, trusted orchestration, tag-bound signatures for both tags.
+up="$root/.github/workflows/phase1-trusted-prerelease-upgrade-lab.yml"
+grep -F "if: \${{ github.ref == 'refs/heads/main' }}" "$up" >/dev/null
+grep -F 'ref: ${{ github.sha }}' "$up" >/dev/null
+grep -F 'git merge-base --is-ancestor "$new" "$GITHUB_SHA"' "$up" >/dev/null
+grep -F 'release.yml@refs/tags/$PREV' "$up" >/dev/null
+grep -F 'release.yml@refs/tags/$NEXT' "$up" >/dev/null
+grep -F 'RUN_TRUSTED_PHASE1_LAB' "$up" >/dev/null
+test "$(grep -c 'secrets\.' "$up")" = 4
+if awk '/^  verify-release-assets:/{inside=1} /^  two-host-u7-lab:/{inside=0} inside && /secrets\./{found=1} END{exit !found}' "$up"; then
+  echo 'Upgrade release verification job has access to secrets' >&2
+  exit 1
+fi
 echo 'Trusted workflow secret-boundary tests: PASS'
