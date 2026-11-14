@@ -201,6 +201,17 @@ expect_fail
 ! grep -q '^stop ' "$CASE/log"
 grep -q 'migration journal must not be a symlink' "$CASE/out"
 
+# A symlinked migration.lock must be rejected before opening its target or touching units.
+setup_case
+mkdir -p "$CASE/state-dir"
+chmod 0700 "$CASE/state-dir"
+printf 'sentinel-must-remain-unchanged\\n' > "$CASE/lock-target"
+ln -s "$CASE/lock-target" "$CASE/state-dir/migration.lock"
+expect_fail
+[[ "$(cat "$CASE/lock-target")" == 'sentinel-must-remain-unchanged' ]]
+grep -q 'migration lock must not be a symlink' "$CASE/out"
+[[ ! -s "$CASE/log" ]]
+
 # A concurrent migration holding the lock must prevent a second invocation.
 setup_case
 mkdir -p "$CASE/state-dir"
