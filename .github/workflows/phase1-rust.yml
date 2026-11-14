@@ -7,7 +7,6 @@ on:
   push:
     branches:
       - main
-      - fix/control-request-dir-privilege-boundary
   schedule:
     # Weekly exact-main run so new RustSec advisories surface without a PR.
     - cron: '17 3 * * 1'

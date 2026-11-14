@@ -188,5 +188,14 @@ directory to `root:baft-tunnel-agent 0770`, before any pending-request check, so
 account cannot keep replanting a request that blocks every retry; a request already planted is
 still refused and must be inspected and removed as root. Units are then stopped producers first
 (agent path, agent service) and consumers last (root control watchers), so no agent request can
-arrive after its watcher stopped. Pre-existing hosts keep the old boundary until the instance is
-re-registered (`update.sh` does not run the migration).
+arrive after its watcher stopped.
+
+Existing installs (H-01): `update.sh` runs `install-agent-control.sh --upgrade-boundary` before it
+changes the binary. That refreshes the control/agent unit templates and the tmpfiles entry, re-checks
+the exclusive agent group and runs the same fail-closed migration. If it refuses, nothing else is
+updated and the reason is printed. `UPDATE_OK` reports `control_boundary=root:baft-tunnel-agent-0770`
+only after the directory was verified; a staged tree reports `staged-not-verified`, a host without the
+control helper `not-installed`. Evidence: the real-systemd agent-service test upgrades a recreated
+pre-boundary install through `update.sh` (`BAFT_AGENT_CONTROL_UPGRADE_TEST=PASS`), and the
+real-systemd migration test checks write denial for `baft-tunnel` and write access for
+`baft-tunnel-agent` with unchanged unit states (H-02).

@@ -36,7 +36,7 @@ cleanup() {
   sudo "$ROOT/scripts/install-agent-control.sh" --remove --instance "$NAME" >/dev/null 2>&1 || true
   sudo systemctl disable --now "baft-tunnel@$NAME.service" >/dev/null 2>&1 || true
   if [[ "$INSTALLED" == 1 ]]; then sudo "$ROOT/scripts/uninstall.sh" --stop --purge-config --yes >/dev/null 2>&1 || true; fi
-  sudo rm -rf /etc/baft-tunnel /var/lib/baft-tunnel /var/lib/baft-tunnel-agent /run/baft-tunnel/control
+  sudo rm -rf /etc/baft-tunnel /var/lib/baft-tunnel /var/lib/baft-tunnel-agent /run/baft-tunnel/control /var/lib/baft-tunnel-control
   sudo rm -f /usr/local/bin/baft-tunnel /etc/systemd/system/baft-tunnel@.service \
     /etc/systemd/system/baft-tunnel-control-*@.* /etc/systemd/system/baft-tunnel-agent@.* /etc/tmpfiles.d/baft-tunnel-control.conf
   sudo rm -rf /etc/systemd/system/baft-tunnel-agent@*.service.d
@@ -178,6 +178,42 @@ res = [l["resource"] for l in lines if l["action"] == "lifecycle"]
 assert {"tunnel/start", "tunnel/restart", "tunnel/stop"} <= set(res), res
 PY
 ! sudo grep -rq -- "$TOKEN" /var/lib/baft-tunnel-agent/"$NAME" || die "agent state contains the token"
+
+step "7b upgrade an existing pre-boundary install through update.sh (H-01)"
+# Recreate the pre-PR #199 boundary: request directory group baft-tunnel, old tmpfiles entry.
+CTL=/run/baft-tunnel/control
+printf 'd /var/lib/baft-tunnel-control 0700 root root -\nd %s 0770 root baft-tunnel -\n' "$CTL" | sudo tee /etc/tmpfiles.d/baft-tunnel-control.conf >/dev/null
+sudo chown root:baft-tunnel "$CTL"; sudo chmod 0770 "$CTL"
+[[ "$(sudo stat -c '%U:%G %a' "$CTL")" == "root:baft-tunnel 770" ]] || die "could not recreate the old boundary"
+sudo setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups touch "$CTL/h01-old-probe" || die "old boundary should still let the tunnel user write (baseline)"
+sudo rm -f "$CTL/h01-old-probe"
+sudo "$ROOT/scripts/update.sh" --binary "$TMP/baft-tunnel" --health-secs 2 >"$TMP/update1.log" 2>&1 || { cat "$TMP/update1.log" >&2; die "update.sh failed on the upgrade path"; }
+grep -q "^UPDATE_OK .* control_boundary=root:baft-tunnel-agent-0770$" "$TMP/update1.log" || { cat "$TMP/update1.log" >&2; die "update.sh did not report the migrated boundary"; }
+[[ "$(sudo stat -c '%U:%G %a' "$CTL")" == "root:baft-tunnel-agent 770" ]] || die "update.sh did not migrate the control directory"
+[[ "$(sudo stat -c '%U:%G %a' /run/baft-tunnel)" == "root:root 755" ]] || die "control parent is not root:root 0755 after update"
+sudo grep -qx "d $CTL 0770 root baft-tunnel-agent -" /etc/tmpfiles.d/baft-tunnel-control.conf || die "update.sh did not refresh the tmpfiles entry"
+[[ ! -e /var/lib/baft-tunnel-control/migration-v1.units ]] || die "migration journal left after a successful update"
+if sudo setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups touch "$CTL/h01-denied" 2>/dev/null; then die "tunnel user can still write requests after update"; fi
+sudo setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups touch "$CTL/h01-agent-probe" || die "agent user cannot write requests after update"
+sudo rm -f "$CTL/h01-agent-probe"
+# States preserved: agent and control paths active and enabled, the stopped tunnel stays stopped.
+sudo systemctl is-active --quiet "baft-tunnel-agent@$NAME.service" || die "agent not active after update"
+for u in "baft-tunnel-agent@$NAME.path" "baft-tunnel-control-start@$NAME.path" "baft-tunnel-control-stop@$NAME.path"; do
+  sudo systemctl is-active --quiet "$u" || die "$u not active after update"
+done
+! sudo systemctl is-active --quiet "baft-tunnel@$NAME.service" || die "stopped tunnel was started by update"
+for n in $(seq 1 60); do curl -fs "http://$API/v1/health" >/dev/null 2>&1 && break; sleep 0.5; done
+curl -fs "http://$API/v1/health" >/dev/null || die "agent API not healthy after update"
+# Idempotent: a second update keeps the boundary and changes no state.
+sudo "$ROOT/scripts/update.sh" --binary "$TMP/baft-tunnel" --health-secs 2 >"$TMP/update2.log" 2>&1 || { cat "$TMP/update2.log" >&2; die "second update.sh failed"; }
+grep -q "^UPDATE_OK .* control_boundary=root:baft-tunnel-agent-0770$" "$TMP/update2.log" || die "second update did not report the boundary"
+# The update's root-only backups belong to this disposable test; remove exactly those it named.
+for b in $(sed -n 's/^\(Data\|Binary\) backup: //p' "$TMP/update1.log" "$TMP/update2.log"); do
+  if [[ "$b" == /var/backups/baft-tunnel-* ]]; then sudo rm -rf -- "$b"; fi
+done
+! sudo systemctl is-active --quiet "baft-tunnel@$NAME.service" || die "second update started the stopped tunnel"
+for n in $(seq 1 60); do curl -fs "http://$API/v1/health" >/dev/null 2>&1 && break; sleep 0.5; done
+echo "BAFT_AGENT_CONTROL_UPGRADE_TEST=PASS (update.sh migrated root:baft-tunnel 770 -> root:baft-tunnel-agent 770, tunnel user denied, agent allowed, stopped tunnel stayed stopped, idempotent rerun)"
 
 step "8 Start again so uninstall must stop it; uninstall leaves nothing"
 [[ "$(echo "$(life start svc-start-0003)" | field result)" == applied ]] || die "second Start failed"

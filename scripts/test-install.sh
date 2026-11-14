@@ -167,6 +167,16 @@ grep -Fq 'OTHER_PRIMARY_USERS' "$ROOT/scripts/install-agent-control.sh"
 grep -Fq 'pending control request exists' "$ROOT/scripts/migrate-agent-control-dir.sh"
 grep -Fq 'request appeared during directory migration' "$ROOT/scripts/migrate-agent-control-dir.sh"
 grep -Fq 'root:baft-tunnel-agent 770' "$ROOT/scripts/install-agent-control.sh"
+# update.sh upgrade path (H-01): no control helper means nothing to migrate; an installed one in a
+# staged tree only refreshes templates and is reported as not verified, never as migrated.
+EMPTY_STAGE="$TMP/empty-stage"; mkdir -p "$EMPTY_STAGE"
+[[ "$("$ROOT/scripts/install-agent-control.sh" --upgrade-boundary --destdir "$EMPTY_STAGE")" == 'CONTROL_BOUNDARY=not-installed' ]]
+mkdir -p "$EMPTY_STAGE/etc/tmpfiles.d"; printf 'd /run/baft-tunnel/control 0770 root baft-tunnel -\n' > "$EMPTY_STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
+[[ "$("$ROOT/scripts/install-agent-control.sh" --upgrade-boundary --destdir "$EMPTY_STAGE")" == 'CONTROL_BOUNDARY=staged-not-verified' ]]
+grep -qx 'd /run/baft-tunnel/control 0770 root baft-tunnel-agent -' "$EMPTY_STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
+refused "$ROOT/scripts/install-agent-control.sh" --upgrade-boundary --instance iran --destdir "$EMPTY_STAGE"
+grep -Fq 'install-agent-control.sh" --upgrade-boundary' "$ROOT/scripts/update.sh"
+grep -Fq 'control_boundary=$CONTROL_BOUNDARY' "$ROOT/scripts/update.sh"
 if "$UNINSTALL" --destdir "$STAGE" --purge-config >/dev/null 2>&1; then
   echo "uninstall accepted config purge without --yes" >&2
   exit 1

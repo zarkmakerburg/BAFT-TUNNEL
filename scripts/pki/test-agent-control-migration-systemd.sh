@@ -26,6 +26,8 @@ START_LOG="$TMP_ROOT/started-instances"
 CREATED_UNIT_FILES=()
 GROUP_CREATED_AGENT=0
 GROUP_CREATED_TUNNEL=0
+USER_CREATED_AGENT=0
+USER_CREATED_TUNNEL=0
 UNITS_STARTED=0
 
 ALL_UNITS=(
@@ -43,16 +45,22 @@ cleanup() {
   local rc=$?
   trap - EXIT
   if (( UNITS_STARTED )); then
-    for unit in "\${ALL_UNITS[@]}"; do
+    for unit in "${ALL_UNITS[@]}"; do
       systemctl stop "$unit" >/dev/null 2>&1 || true
     done
   fi
-  for file in "\${CREATED_UNIT_FILES[@]}"; do
+  for file in "${CREATED_UNIT_FILES[@]}"; do
     rm -f -- "$file"
   done
   systemctl daemon-reload >/dev/null 2>&1 || true
   rm -f -- "$TMPFILES"
   rm -rf -- "$TMP_ROOT" "$STATE_DIR"
+  if (( USER_CREATED_AGENT )); then
+    userdel baft-tunnel-agent >/dev/null 2>&1 || true
+  fi
+  if (( USER_CREATED_TUNNEL )); then
+    userdel baft-tunnel >/dev/null 2>&1 || true
+  fi
   if (( GROUP_CREATED_AGENT )); then
     groupdel baft-tunnel-agent >/dev/null 2>&1 || true
   fi
@@ -64,7 +72,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Refuse to collide with any pre-existing service or unit definition.
-for unit in "\${ALL_UNITS[@]}" baft-tunnel-control-start@iran.service baft-tunnel-control-start@outside.service; do
+for unit in "${ALL_UNITS[@]}" baft-tunnel-control-start@iran.service baft-tunnel-control-start@outside.service; do
   load_state="$(systemctl show "$unit" --property=LoadState --value 2>/dev/null || true)"
   if [[ -n "$load_state" && "$load_state" != "not-found" ]]; then
     echo "agent-control-migration-systemd: refusing pre-existing unit $unit ($load_state)" >&2
@@ -91,6 +99,22 @@ if ! getent group baft-tunnel >/dev/null; then
   GROUP_CREATED_TUNNEL=1
 fi
 
+# The real service identities (H-02): baft-tunnel runs the tunnel, baft-tunnel-agent the agent.
+if ! id baft-tunnel-agent >/dev/null 2>&1; then
+  useradd --system --gid baft-tunnel-agent --no-create-home --shell /usr/sbin/nologin baft-tunnel-agent
+  USER_CREATED_AGENT=1
+fi
+if ! id baft-tunnel >/dev/null 2>&1; then
+  useradd --system --gid baft-tunnel --no-create-home --shell /usr/sbin/nologin baft-tunnel
+  USER_CREATED_TUNNEL=1
+fi
+if id -nG baft-tunnel | tr ' ' '\n' | grep -qx baft-tunnel-agent; then
+  echo "agent-control-migration-systemd: tunnel identity is in the agent group; refusing" >&2
+  exit 3
+fi
+as_tunnel() { setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups "$@"; }
+as_agent() { setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups "$@"; }
+chmod 0755 "$TMP_ROOT"
 install -d -o root -g root -m 0755 "$CONTROL_PARENT"
 install -d -o root -g baft-tunnel -m 0770 "$CONTROL_DIR"
 : > "$START_LOG"
@@ -179,6 +203,10 @@ INACTIVE_COUNT="$(awk '$1 ~ /^baft-tunnel-agent@/ && $2 == "loaded" && $3 == "in
   exit 1
 }
 
+# Baseline: under the old boundary the tunnel identity can write, so the denial below is meaningful.
+as_tunnel touch "$CONTROL_DIR/h02-baseline-probe"
+rm -f "$CONTROL_DIR/h02-baseline-probe"
+
 : > "$START_LOG"
 bash "$HELPER" \
   --control-dir "$CONTROL_DIR" \
@@ -204,6 +232,33 @@ grep -Fxq outside "$START_LOG"
 ! grep -Fxq offline "$START_LOG" || false
 [[ "$(wc -l < "$START_LOG" | tr -d ' ')" == "2" ]]
 
+# H-02: direct identity checks on the migrated directory, with no service transitions.
+unit_states() {
+  local unit
+  for unit in "${ALL_UNITS[@]}"; do
+    printf '%s %s\n' "$unit" "$(systemctl show "$unit" --property=ActiveState,SubState,InvocationID --value | tr '\n' ' ')"
+  done
+}
+BEFORE_IDENTITY="$(unit_states)"
+START_LINES_BEFORE="$(wc -l < "$START_LOG" | tr -d ' ')"
+if as_tunnel touch "$CONTROL_DIR/h02-tunnel-probe" 2>/dev/null; then
+  echo "agent-control-migration-systemd: baft-tunnel can still create files in the control directory" >&2
+  exit 1
+fi
+if as_tunnel ls "$CONTROL_DIR" >/dev/null 2>&1; then
+  echo "agent-control-migration-systemd: baft-tunnel can still list the control directory" >&2
+  exit 1
+fi
+[[ ! -e "$CONTROL_DIR/h02-tunnel-probe" ]]
+as_agent touch "$CONTROL_DIR/h02-agent-probe"
+[[ "$(stat -c '%U:%G' "$CONTROL_DIR/h02-agent-probe")" == "baft-tunnel-agent:baft-tunnel-agent" ]]
+as_agent rm -f "$CONTROL_DIR/h02-agent-probe"
+[[ ! -e "$CONTROL_DIR/h02-agent-probe" ]]
+[[ "$(stat -c '%U:%G %a' "$CONTROL_DIR")" == "root:baft-tunnel-agent 770" ]]
+[[ "$(unit_states)" == "$BEFORE_IDENTITY" ]]
+[[ "$(wc -l < "$START_LOG" | tr -d ' ')" == "$START_LINES_BEFORE" ]]
+
 echo "BAFT_AGENT_CONTROL_MIGRATION_SYSTEMD_TEST=PASS"
 echo "systemd=$SYSTEMD_VERSION active_agents=$ACTIVE_COUNT inactive_agents=$INACTIVE_COUNT"
 echo "control_dir=$(stat -c '%U:%G %a' "$CONTROL_DIR")"
+echo "identity=baft-tunnel write=denied list=denied; baft-tunnel-agent write=allowed; unit_transitions=none"

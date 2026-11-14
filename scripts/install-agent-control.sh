@@ -9,13 +9,16 @@
 #     in /etc/baft-tunnel only. No polkit, no sudo.
 #   install-agent-control.sh --instance NAME [--listen 127.0.0.1:PORT] [--destdir ROOT]
 #   install-agent-control.sh --remove --instance NAME [--destdir ROOT]
+#   install-agent-control.sh --upgrade-boundary [--destdir ROOT]
+#     (update.sh: refresh templates and migrate an existing install's request directory
+#      to root:baft-tunnel-agent 0770, fail-closed; prints CONTROL_BOUNDARY=...)
 set -Eeuo pipefail
 # BAFT_ERR_DIAGNOSTIC: preserve the failing command location on strict-mode exits.
 trap 'rc=$?; echo "install-agent-control: unhandled command failure (exit=$rc, line=${BASH_LINENO[0]:-?}, function=${FUNCNAME[1]:-main})" >&2; exit "$rc"' ERR
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$SCRIPT_DIR/../systemd/control"
 AGENT_SRC="$SCRIPT_DIR/../systemd/agent"
-ROOT_PREFIX=""; INSTANCE=""; REMOVE=0; LISTEN=""
+ROOT_PREFIX=""; INSTANCE=""; REMOVE=0; LISTEN=""; UPGRADE=0
 AGENT_USER=baft-tunnel-agent
 SERVICE_GROUP=baft-tunnel
 die() { echo "install-agent-control: $*" >&2; exit 2; }
@@ -25,12 +28,14 @@ while (($#)); do
     --listen) (($# >= 2)) || die "--listen needs 127.0.0.1:PORT"; LISTEN="$2"; shift 2 ;;
     --destdir) (($# >= 2)) || die "--destdir needs a path"; ROOT_PREFIX="$2"; shift 2 ;;
     --remove) REMOVE=1; shift ;;
-    -h|--help) sed -n 2,9p "$0"; exit 0 ;;
+    --upgrade-boundary) UPGRADE=1; shift ;;
+    -h|--help) sed -n 2,12p "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
+(( ! UPGRADE )) || [[ -z "$INSTANCE" && -z "$LISTEN" && "$REMOVE" == 0 ]] || die "--upgrade-boundary takes no --instance, --listen or --remove"
 # The name becomes part of a unit name and a file name: letters, digits, '_' and '-' only.
-[[ "$INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$ ]] || die "--instance must be 1-63 characters of A-Z a-z 0-9 _ - and start alphanumeric"
+(( UPGRADE )) || [[ "$INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$ ]] || die "--instance must be 1-63 characters of A-Z a-z 0-9 _ - and start alphanumeric"
 if [[ -n "$LISTEN" ]]; then
   [[ "$LISTEN" =~ ^(127\.0\.0\.1|\[::1\]):([0-9]{1,5})$ ]] && (( BASH_REMATCH[2] >= 1 && BASH_REMATCH[2] <= 65535 )) ||
     die "--listen must be 127.0.0.1:PORT or [::1]:PORT (the agent is loopback only)"
@@ -48,6 +53,57 @@ FILES=(); for v in "${VERBS[@]}"; do FILES+=("baft-tunnel-control-$v@.path" "baf
 CTL_PATHS=(); for v in "${VERBS[@]}"; do CTL_PATHS+=("baft-tunnel-control-$v@$INSTANCE.path"); done
 AGENT_UNITS=("baft-tunnel-agent@$INSTANCE.path" "baft-tunnel-agent@$INSTANCE.service")
 DROPIN_DIR="$UNIT_DIR/baft-tunnel-agent@$INSTANCE.service.d"
+CONTROL_DIR=/run/baft-tunnel/control
+CONTROL_PARENT=/run/baft-tunnel
+install_templates() {
+  install -d -m 0755 "$UNIT_DIR" "$(dirname "$TMPF")"
+  for f in "${FILES[@]}"; do install -m 0644 "$SRC/$f" "$UNIT_DIR/$f"; done
+  for f in baft-tunnel-agent@.service baft-tunnel-agent@.path; do install -m 0644 "$AGENT_SRC/$f" "$UNIT_DIR/$f"; done
+  install -m 0644 "$SRC/baft-tunnel-control.conf" "$TMPF"
+}
+# Enforce the request-group boundary and migrate the request directory if needed (fail-closed).
+enforce_control_boundary() {
+  local dir_state parent_state AGENT_GID OTHER_PRIMARY_USERS
+  local MIGRATION_JOURNAL=/var/lib/baft-tunnel-control/migration-v1.units
+  dir_state="$(stat -c '%U:%G %a' "$CONTROL_DIR" 2>/dev/null || true)"
+  parent_state="$(stat -c '%U:%G %a' "$CONTROL_PARENT" 2>/dev/null || true)"
+  AGENT_GID="$(getent group "$AGENT_USER" | awk -F: '{print $3}')"
+  OTHER_PRIMARY_USERS="$(getent passwd | awk -F: -v gid="$AGENT_GID" -v agent="$AGENT_USER" '$4 == gid && $1 != agent { print $1 }')"
+  if [[ -z "$AGENT_GID" ]] ||
+     [[ "$(id -gn "$AGENT_USER")" != "$AGENT_USER" ]] ||
+     [[ -n "$(getent group "$AGENT_USER" | awk -F: '{print $4}')" ]] ||
+     [[ -n "$OTHER_PRIMARY_USERS" ]] ||
+     id -nG "$SERVICE_GROUP" | tr ' ' '\n' | grep -qx "$AGENT_USER"; then
+    die "group $AGENT_USER must be exclusive to the dedicated agent account"
+  fi
+  # Resume a partially completed migration even if the directory mode was already changed.
+  if [[ "$dir_state" != "root:baft-tunnel-agent 770" || "$parent_state" != "root:root 755" || -L "$CONTROL_PARENT" || -L "$CONTROL_DIR" || -e "$MIGRATION_JOURNAL" || -L "$MIGRATION_JOURNAL" ]]; then
+    bash "$SCRIPT_DIR/migrate-agent-control-dir.sh" --control-dir "$CONTROL_DIR" --tmpfiles "$TMPF"
+  else
+    systemd-tmpfiles --create "$TMPF"
+    systemctl daemon-reload
+  fi
+  [[ "$(stat -c '%U:%G %a' "$CONTROL_DIR")" == "root:baft-tunnel-agent 770" ]] ||
+    die "control directory did not reach root:baft-tunnel-agent 0770"
+}
+if (( UPGRADE )); then
+  if [[ ! -f "$TMPF" && ! -e "$UNIT_DIR/baft-tunnel-control-start@.path" ]]; then
+    echo "CONTROL_BOUNDARY=not-installed"
+    exit 0
+  fi
+  if [[ "$STAGING" == "0" ]]; then
+    id "$AGENT_USER" >/dev/null 2>&1 ||
+      die "agent control is installed but account $AGENT_USER is missing; re-run install-agent-control.sh --instance NAME"
+  fi
+  install_templates
+  if [[ "$STAGING" == "1" ]]; then
+    echo "CONTROL_BOUNDARY=staged-not-verified"
+    exit 0
+  fi
+  enforce_control_boundary
+  echo "CONTROL_BOUNDARY=root:baft-tunnel-agent-0770"
+  exit 0
+fi
 if [[ "$REMOVE" == "1" ]]; then
   if [[ "$STAGING" == "0" ]]; then
     systemctl disable --now "${AGENT_UNITS[@]}" "${CTL_PATHS[@]}" 2>/dev/null || true
@@ -59,10 +115,7 @@ if [[ "$REMOVE" == "1" ]]; then
   exit 0
 fi
 
-install -d -m 0755 "$UNIT_DIR" "$(dirname "$TMPF")"
-for f in "${FILES[@]}"; do install -m 0644 "$SRC/$f" "$UNIT_DIR/$f"; done
-for f in baft-tunnel-agent@.service baft-tunnel-agent@.path; do install -m 0644 "$AGENT_SRC/$f" "$UNIT_DIR/$f"; done
-install -m 0644 "$SRC/baft-tunnel-control.conf" "$TMPF"
+install_templates
 if [[ -n "$LISTEN" ]]; then
   install -d -m 0755 "$DROPIN_DIR"
   printf '# Managed by BAFT-TUNNEL scripts/install-agent-control.sh\n[Service]\nEnvironment=BAFT_AGENT_LISTEN=%s\n' "$LISTEN" > "$DROPIN_DIR/listen.conf"
@@ -83,27 +136,7 @@ if [[ "$STAGING" == "0" ]]; then
       /usr/local/bin/baft-tunnel agent-token --out "$STATE/token" >/dev/null
   fi
   [[ "$(stat -c '%U %a' "$STATE/token")" == "$AGENT_USER 600" ]] || die "$STATE/token must be $AGENT_USER, mode 0600"
-  CONTROL_DIR=/run/baft-tunnel/control
-  CONTROL_PARENT=/run/baft-tunnel
-  CONTROL_DIR_STATE="$(stat -c '%U:%G %a' "$CONTROL_DIR" 2>/dev/null || true)"
-  CONTROL_PARENT_STATE="$(stat -c '%U:%G %a' "$CONTROL_PARENT" 2>/dev/null || true)"
-  # Enforce the request-group boundary on every registration, not only on migration.
-  AGENT_GID="$(getent group "$AGENT_USER" | awk -F: '{print $3}')"
-  OTHER_PRIMARY_USERS="$(getent passwd | awk -F: -v gid="$AGENT_GID" -v agent="$AGENT_USER" '$4 == gid && $1 != agent { print $1 }')"
-  if [[ "$(id -gn "$AGENT_USER")" != "$AGENT_USER" ]] ||
-     [[ -n "$(getent group "$AGENT_USER" | awk -F: '{print $4}')" ]] ||
-     [[ -n "$OTHER_PRIMARY_USERS" ]] ||
-     id -nG "$SERVICE_GROUP" | tr ' ' '\n' | grep -qx "$AGENT_USER"; then
-    die "group $AGENT_USER must be exclusive to the dedicated agent account"
-  fi
-  MIGRATION_JOURNAL=/var/lib/baft-tunnel-control/migration-v1.units
-  # Resume a partially completed migration even if the directory mode was already changed.
-  if [[ "$CONTROL_DIR_STATE" != "root:baft-tunnel-agent 770" || "$CONTROL_PARENT_STATE" != "root:root 755" || -L "$CONTROL_PARENT" || -L "$CONTROL_DIR" || -e "$MIGRATION_JOURNAL" || -L "$MIGRATION_JOURNAL" ]]; then
-    bash "$SCRIPT_DIR/migrate-agent-control-dir.sh" --control-dir "$CONTROL_DIR" --tmpfiles "$TMPF"
-  else
-    systemd-tmpfiles --create "$TMPF"
-    systemctl daemon-reload
-  fi
+  enforce_control_boundary
   systemctl enable --now "${CTL_PATHS[@]}"
   # The agent starts now: in setup mode (panel pairing) until NAME.json exists, then normally.
   systemctl enable --now "baft-tunnel-agent@$INSTANCE.path"
