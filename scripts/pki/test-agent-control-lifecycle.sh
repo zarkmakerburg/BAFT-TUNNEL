@@ -55,14 +55,11 @@ cleanup() {
     DIAG_ROOT="${RUNNER_TEMP:-/tmp}"
     DIAG_DIR="$(mktemp -d "$DIAG_ROOT/baft-agent-control-failure.XXXXXX")"
     chmod 700 "$DIAG_DIR"
-    find "$TMP" -maxdepth 1 -type f \( -name '*.log' -o -name 'fw-*.txt' -o -name 'side-*.txt' \) -exec cp -p {} "$DIAG_DIR/" \;
+    for f in "$TMP"/*.log "$TMP"/fw-*.txt "$TMP"/side-*.txt; do
+      [[ -f "$f" ]] && cp -p "$f" "$DIAG_DIR/"
+    done
     {
-      printf 'exit_status=%s\n' "$status"
-      printf 'github_run_id=%s\n' "${GITHUB_RUN_ID:-unknown}"
-      printf 'github_job=%s\n' "${GITHUB_JOB:-unknown}"
-      printf 'systemd_version=%s\n' "${v:-unknown}"
-      printf 'temporary_directory=%s\n' "$TMP"
-      printf 'preserved_files=log files and side-effect snapshots only; private keys/configs excluded\n'
+      printf "%s\\n" "exit_status=$status" "github_run_id=${GITHUB_RUN_ID:-unknown}" "github_job=${GITHUB_JOB:-unknown}" "systemd_version=${v:-unknown}" "preserved_files=logs and side-effect snapshots only; private keys/configs excluded"
     } > "$DIAG_DIR/failure.txt"
     chmod 600 "$DIAG_DIR/"*
     echo "agent control lifecycle: failure diagnostics preserved at $DIAG_DIR" >&2
