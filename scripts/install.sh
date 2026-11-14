@@ -332,7 +332,7 @@ rollback_install() {
         for pointer in current previous; do
           link="$ENGINE_DIR/$pointer"
           target_file="$BACKUP_DIR/engine-$pointer-target"
-          tmp="$ENGINE_DIR/.$pointer.rollback.$"
+          tmp="$ENGINE_DIR/.$pointer.rollback.${BASHPID}"
           rm -f -- "$tmp"
           if [[ -f "$target_file" ]]; then
             target="$(cat "$target_file")"
