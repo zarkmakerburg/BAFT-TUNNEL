@@ -40,19 +40,35 @@ has_pending_requests() {
   return 1
 }
 active_units() {
-  local kind=$1 pattern=$2
-  systemctl list-units --type="$kind" --state=active --no-legend --plain "$pattern" |
-    awk 'NF { print $1 }'
+  local kind=$1 pattern=$2 unit state
+  while IFS= read -r unit; do
+    [[ -n "$unit" ]] || continue
+    state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    case "$state" in
+      active|activating|deactivating|unknown) printf '%s\\n' "$unit" ;;
+    esac
+  done < <(systemctl list-units --type="$kind" --all --no-legend --plain "$pattern" | awk 'NF { print $1 }')
 }
 root_helpers_active() {
-  [[ -n "$(active_units service 'baft-tunnel-control-*@*.service')" ]]
+  local unit state
+  while IFS= read -r unit; do
+    [[ -n "$unit" ]] || continue
+    state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    case "$state" in
+      active|activating|deactivating|unknown)
+        echo "agent-control-migration: root helper is $state: $unit" >&2
+        return 0
+        ;;
+    esac
+  done < <(systemctl list-units --type=service --all --no-legend --plain 'baft-tunnel-control-*@*.service' | awk 'NF { print $1 }')
+  return 1
 }
 valid_unit() {
   local kind=$1 unit=$2
   case "$kind" in
-    control) [[ "$unit" =~ ^baft-tunnel-control-(start|stop|enable|disable|setup|pki)@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\\.path$ ]] ;;
-    agent_path) [[ "$unit" =~ ^baft-tunnel-agent@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\\.path$ ]] ;;
-    agent_service) [[ "$unit" =~ ^baft-tunnel-agent@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\\.service$ ]] ;;
+    control) [[ "$unit" =~ ^baft-tunnel-control-(start|stop|enable|disable|setup|pki)@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\.path$ ]] ;;
+    agent_path) [[ "$unit" =~ ^baft-tunnel-agent@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\.path$ ]] ;;
+    agent_service) [[ "$unit" =~ ^baft-tunnel-agent@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\.service$ ]] ;;
     *) return 1 ;;
   esac
 }
