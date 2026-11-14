@@ -13,7 +13,7 @@ write_fake() {
   local version="$1"
   cat > "$FAKE" <<EOF
 #!/usr/bin/env sh
-[ "\${1:-}" = "--version" ] && { echo "baft-tunnel $version"; exit 0; }
+[ "${1:-}" = "--version" ] && { echo "baft-tunnel $version"; exit 0; }
 exit 0
 EOF
   chmod 755 "$FAKE"
@@ -198,12 +198,12 @@ ENGINE_FAKE="$TMP/engine-fake"
 cat > "$ENGINE_FAKE" <<'EOF_ENGINE_FAKE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-if [[ "\${1:-}" == "--version" ]]; then echo "baft-tunnel engine-test"; exit 0; fi
-if [[ "\${1:-}" == "engine" && "\${2:-}" == "manifest" ]]; then
+if [[ "${1:-}" == "--version" ]]; then echo "baft-tunnel engine-test"; exit 0; fi
+if [[ "${1:-}" == "engine" && "${2:-}" == "manifest" ]]; then
   printf '{"engines":[{"id":"baft"]}\n'
   exit 0
 fi
-if [[ "\${1:-}" == "engine" && "\${2:-}" == "install" ]]; then
+if [[ "${1:-}" == "engine" && "${2:-}" == "install" ]]; then
   shift 2
   store=""; asset=""
   while (($#)); do
@@ -225,8 +225,8 @@ if [[ "\${1:-}" == "engine" && "\${2:-}" == "install" ]]; then
   ln -sfn "releases/$digest" "$engine_dir/current"
   exit 0
 fi
-if [[ "\${1:-}" == "engine" && "\${2:-}" == "verify" ]]; then
-  [[ "\${BAFT_TEST_FAIL_VERIFY:-0}" != "1" ]] || exit 42
+if [[ "${1:-}" == "engine" && "${2:-}" == "verify" ]]; then
+  [[ "${BAFT_TEST_FAIL_VERIFY:-0}" != "1" ]] || exit 42
   exit 0
 fi
 echo "unexpected fake CLI invocation: $*" >&2
