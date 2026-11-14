@@ -145,7 +145,7 @@ run_helper
 grep -Fxq "$CONTROL" "$CASE/state/active"
 grep -Fxq "$AGENT_PATH" "$CASE/state/active"
 grep -Fxq "$AGENT_SERVICE" "$CASE/state/active"
-! grep -Fxq "start $INACTIVE_AGENT" "$CASE/log"
+! grep -Fxq "start $INACTIVE_AGENT" "$CASE/log" || false
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
 [[ "$(sed -n '1p' "$CASE/log")" == "stop $CONTROL" ]]
 [[ "$(sed -n '2p' "$CASE/log")" == "stop $CONTROL2" ]]
@@ -164,18 +164,18 @@ rm -rf "$FAKE_CONTROL_DIR"
 mkdir -p "$CASE/target"
 ln -s "$CASE/target" "$FAKE_CONTROL_DIR"
 expect_fail
-! grep -q '^stop ' "$CASE/log"
+! grep -q '^stop ' "$CASE/log" || false
 
 # Reject a symlinked parent and a parent whose ownership/mode is not trusted.
 setup_case
 mv "$FAKE_CONTROL_PARENT" "$CASE/parent-real"
 ln -s "$CASE/parent-real" "$FAKE_CONTROL_PARENT"
 expect_fail
-! grep -q '^stop ' "$CASE/log"
+! grep -q '^stop ' "$CASE/log" || false
 setup_case
 printf 'root:root 775\n' > "$FAKE_CONTROL_PARENT_STATE"
 expect_fail
-! grep -q '^stop ' "$CASE/log"
+! grep -q '^stop ' "$CASE/log" || false
 
 # Unsafe pre-existing state-directory permissions are rejected, not silently repaired.
 setup_case
@@ -183,7 +183,7 @@ mkdir -p "$CASE/state-dir"
 chmod 0777 "$CASE/state-dir"
 expect_fail
 [[ "$(stat -c '%a' "$CASE/state-dir")" == 777 ]]
-! grep -q '^stop ' "$CASE/log"
+! grep -q '^stop ' "$CASE/log" || false
 
 # Malformed journals and symlinked lock files fail before any unit transition.
 setup_case
@@ -192,13 +192,13 @@ chmod 0700 "$CASE/state-dir"
 printf 'unknown\tunit\n' > "$CASE/state-dir/migration-v1.units"
 chmod 0600 "$CASE/state-dir/migration-v1.units"
 expect_fail
-! grep -q '^stop ' "$CASE/log"
+! grep -q '^stop ' "$CASE/log" || false
 setup_case
 mkdir -p "$CASE/state-dir"
 chmod 0700 "$CASE/state-dir"
 ln -s "$CASE/journal-target" "$CASE/state-dir/migration-v1.units"
 expect_fail
-! grep -q '^stop ' "$CASE/log"
+! grep -q '^stop ' "$CASE/log" || false
 grep -q 'migration journal must not be a symlink' "$CASE/out"
 
 # A symlinked migration.lock must be rejected before opening its target or touching units.
@@ -226,7 +226,7 @@ if (
   exit 1
 fi
 grep -q 'another control-directory migration is already running' "$CASE/out"
-! grep -q '^stop ' "$CASE/log"
+! grep -q '^stop ' "$CASE/log" || false
 
 # A fresh install may not have created the shared request directory yet.
 setup_case
@@ -239,7 +239,7 @@ run_helper
 # If systemd cannot enumerate loaded units, do not assume the snapshot is empty.
 setup_case
 LIST_UNITS_FAIL=1 expect_fail
-! grep -q '^stop ' "$CASE/log"
+! grep -q '^stop ' "$CASE/log" || false
 grep -q 'could not enumerate root control helper services' "$CASE/out"
 
 # Failures in each migration snapshot enumeration must propagate out of the
@@ -247,7 +247,7 @@ grep -q 'could not enumerate root control helper services' "$CASE/out"
 for failed_pattern in 'baft-tunnel-control-*@*.path' 'baft-tunnel-agent@*.path' 'baft-tunnel-agent@*.service'; do
   setup_case
   LIST_UNITS_FAIL_PATTERN="$failed_pattern" expect_fail
-  ! grep -q '^stop ' "$CASE/log"
+  ! grep -q '^stop ' "$CASE/log" || false
   grep -q 'could not enumerate' "$CASE/out"
 done
 
@@ -255,12 +255,12 @@ done
 setup_case
 printf '%s\n' 'baft-tunnel-control-setup@iran.service' >> "$CASE/state/active"
 expect_fail
-! grep -q '^stop ' "$CASE/log"
+! grep -q '^stop ' "$CASE/log" || false
 setup_case
 : > "$REQUEST_FILE"
 expect_fail
 [[ -e "$REQUEST_FILE" ]]
-! grep -q '^stop ' "$CASE/log"
+! grep -q '^stop ' "$CASE/log" || false
 
 # Partial stop failures at each dependency stage, including an unknown state,
 # never change ownership or restart any unit. A later retry consumes the journal.
@@ -269,45 +269,45 @@ for failed_unit in "$CONTROL" "$AGENT_PATH" "$AGENT_SERVICE"; do
   STOP_FAIL_UNIT="$failed_unit" expect_fail
   [[ -f "$CASE/state-dir/migration-v1.units" ]]
   [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel 770' ]]
-  ! grep -q '^start ' "$CASE/log"
+  ! grep -q '^start ' "$CASE/log" || false
 done
 setup_case
 STOP_FAIL_UNIT="$AGENT_PATH" STOP_FAIL_UNKNOWN=1 expect_fail
 grep -q 'state=unknown' "$CASE/out"
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel 770' ]]
-! grep -q '^start ' "$CASE/log"
+! grep -q '^start ' "$CASE/log" || false
 run_helper
 [[ ! -e "$CASE/state-dir/migration-v1.units" ]]
 
 # tmpfiles failure and ownership/mode mismatch never restore writers or watchers.
 setup_case
 TMPFILES_FAIL=1 expect_fail
-! grep -q '^start ' "$CASE/log"
+! grep -q '^start ' "$CASE/log" || false
 run_helper
 setup_case
 TMPFILES_BAD_STATE=1 expect_fail
-! grep -q '^start ' "$CASE/log"
+! grep -q '^start ' "$CASE/log" || false
 
 # A request appearing while writers are being stopped or during tmpfiles blocks restore.
 setup_case
 REQUEST_ON_STOP_UNIT="$CONTROL" expect_fail
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel 770' ]]
 [[ -e "$REQUEST_FILE" ]]
-! grep -q '^start ' "$CASE/log"
+! grep -q '^start ' "$CASE/log" || false
 rm -f "$REQUEST_FILE"
 run_helper
 setup_case
 REQUEST_ON_TMPFILES=1 expect_fail
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
 [[ -e "$REQUEST_FILE" ]]
-! grep -q '^start ' "$CASE/log"
+! grep -q '^start ' "$CASE/log" || false
 rm -f "$REQUEST_FILE"
 run_helper
 
 # daemon-reload failure leaves the durable journal for a safe retry.
 setup_case
 DAEMON_RELOAD_FAIL=1 expect_fail
-! grep -q '^start ' "$CASE/log"
+! grep -q '^start ' "$CASE/log" || false
 unset DAEMON_RELOAD_FAIL
 run_helper
 [[ ! -e "$CASE/state-dir/migration-v1.units" ]]
@@ -322,7 +322,7 @@ for failed_unit in "$CONTROL" "$CONTROL2" "$AGENT_PATH" "$AGENT_PATH2" "$AGENT_S
   run_helper
   [[ ! -e "$CASE/state-dir/migration-v1.units" ]]
   grep -Fxq "$failed_unit" "$CASE/state/active"
-  ! grep -Fxq "$INACTIVE_AGENT" "$CASE/state/active"
+  ! grep -Fxq "$INACTIVE_AGENT" "$CASE/state/active" || false
 done
 
 echo "BAFT_AGENT_CONTROL_MIGRATION_TEST=PASS (preflight refusal, ordered quiescence, verified ownership, request-race refusal, tmpfiles and daemon-reload failures, partial restore recovery)"

@@ -201,7 +201,7 @@ done
 [[ ! -e "$STATE_DIR/migration-v1.units" ]]
 grep -Fxq iran "$START_LOG"
 grep -Fxq outside "$START_LOG"
-! grep -Fxq offline "$START_LOG"
+! grep -Fxq offline "$START_LOG" || false
 [[ "$(wc -l < "$START_LOG" | tr -d ' ')" == "2" ]]
 
 echo "BAFT_AGENT_CONTROL_MIGRATION_SYSTEMD_TEST=PASS"

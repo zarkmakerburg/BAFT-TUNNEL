@@ -151,7 +151,7 @@ ln -sf ../baft-tunnel-agent@.path "$STAGE/etc/systemd/system/multi-user.target.w
 grep -qx 'd /var/lib/baft-tunnel-control 0700 root root -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
 # The tunnel engine user must not share the group that can submit root control requests.
 grep -qx 'd /run/baft-tunnel/control 0770 root baft-tunnel-agent -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
-! grep -qx 'd /run/baft-tunnel/control 0770 root baft-tunnel -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
+! grep -qx 'd /run/baft-tunnel/control 0770 root baft-tunnel -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf" || false
 grep -Fq 'active_units path' "$ROOT/scripts/migrate-agent-control-dir.sh"
 grep -Fq 'active_units service' "$ROOT/scripts/migrate-agent-control-dir.sh"
 grep -Fq 'for request in "$CONTROL_DIR"/*."$verb"; do' "$ROOT/scripts/migrate-agent-control-dir.sh"
