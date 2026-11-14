@@ -126,10 +126,19 @@ unique_append() {
   arr+=("$unit")
 }
 snapshot_current_units() {
-  local unit
-  while IFS= read -r unit; do [[ -n "$unit" ]] && unique_append CONTROL_PATHS "$unit"; done < <(active_units path 'baft-tunnel-control-*@*.path')
-  while IFS= read -r unit; do [[ -n "$unit" ]] && unique_append AGENT_PATHS "$unit"; done < <(active_units path 'baft-tunnel-agent@*.path')
-  while IFS= read -r unit; do [[ -n "$unit" ]] && unique_append AGENT_SERVICES "$unit"; done < <(active_units service 'baft-tunnel-agent@*.service')
+  local unit listed
+  # Do not use process substitution here: its exit status is not propagated to
+  # the parent shell. Capture each enumeration so a systemctl failure aborts
+  # before the journal is committed or any unit is stopped.
+  listed="$(active_units path 'baft-tunnel-control-*@*.path')" ||
+    die "could not snapshot root control path watchers; refusing to change directory ownership"
+  while IFS= read -r unit; do [[ -n "$unit" ]] && unique_append CONTROL_PATHS "$unit"; done <<< "$listed"
+  listed="$(active_units path 'baft-tunnel-agent@*.path')" ||
+    die "could not snapshot agent path units; refusing to change directory ownership"
+  while IFS= read -r unit; do [[ -n "$unit" ]] && unique_append AGENT_PATHS "$unit"; done <<< "$listed"
+  listed="$(active_units service 'baft-tunnel-agent@*.service')" ||
+    die "could not snapshot agent services; refusing to change directory ownership"
+  while IFS= read -r unit; do [[ -n "$unit" ]] && unique_append AGENT_SERVICES "$unit"; done <<< "$listed"
 }
 write_journal() {
   local tmp="$JOURNAL.tmp.$$" unit
