@@ -248,7 +248,7 @@ for failed_unit in "$CONTROL" "$AGENT_PATH" "$AGENT_SERVICE"; do
 done
 setup_case
 STOP_FAIL_UNIT="$AGENT_PATH" STOP_FAIL_UNKNOWN=1 run_helper >"$CASE/out" 2>&1 && exit 1
-grep -q 'state: unknown' "$CASE/out"
+grep -q 'state=unknown' "$CASE/out"
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel 770' ]]
 ! grep -q '^start ' "$CASE/log"
 run_helper
