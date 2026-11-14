@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+NFT=/usr/sbin/nft
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+echo "=== B3 capability experiment: read-only nftables listing ==="
+echo "OS: $(. /etc/os-release; printf '%s %s' "$PRETTY_NAME" "$VERSION_ID")"
+SYSTEMD_VERSION="$(systemctl --version | head -n 1)"
+echo "systemd: $SYSTEMD_VERSION"
+if ! grep -Eq '^systemd 249([. ]|$)' <<<"$SYSTEMD_VERSION"; then
+  echo "ERROR: this experiment requires systemd 249; refusing to report a valid matrix." >&2
+  exit 2
+fi
+
+if [[ ! -x "$NFT" ]]; then
+  echo "ERROR: $NFT is unavailable." >&2
+  exit 2
+fi
+"$NFT" --version
+
+run_case() {
+  local name="$1"
+  shift
+  local out="$TMP/$name.stdout" err="$TMP/$name.stderr" rc=0
+  echo
+  echo "--- CASE: $name ---"
+  set +e
+  timeout 10s "$@" >"$out" 2>"$err"
+  rc=$?
+  set -e
+  echo "exit_code=$rc"
+  echo "stdout_bytes=$(wc -c <"$out" | tr -d ' ')"
+  echo "stderr_bytes=$(wc -c <"$err" | tr -d ' ')"
+  if grep -q '^CapEff:' "$out"; then
+    grep '^CapEff:' "$out"
+  fi
+  if [[ -s "$err" ]]; then
+    echo "stderr:"
+    head -c 512 "$err" || true
+    echo
+  fi
+  printf '%s\n' "$rc" >"$TMP/$name.rc"
+}
+
+# All nft invocations below are list-only. The before/after fingerprints
+# detect any unexpected ruleset change. Never print the raw host ruleset.
+timeout 10s sudo "$NFT" --json list ruleset >"$TMP/before.json"
+
+run_case unprivileged sudo -u nobody -- "$NFT" --json list ruleset
+
+# Drop every other capability from the bounding set, then grant only
+# CAP_NET_ADMIN effective/permitted to the command process.
+DROP_OTHER_CAPS="cap_chown,cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,cap_linux_immutable,cap_net_bind_service,cap_net_broadcast,cap_net_raw,cap_ipc_lock,cap_ipc_owner,cap_sys_module,cap_sys_rawio,cap_sys_chroot,cap_sys_ptrace,cap_sys_pacct,cap_sys_admin,cap_sys_boot,cap_sys_nice,cap_sys_resource,cap_sys_time,cap_sys_tty_config,cap_mknod,cap_lease,cap_audit_write,cap_audit_control,cap_setfcap,cap_mac_override,cap_mac_admin,cap_syslog,cap_wake_alarm,cap_block_suspend,cap_audit_read,cap_perfmon,cap_bpf,cap_checkpoint_restore"
+run_case cap_net_admin_only sudo capsh --drop="$DROP_OTHER_CAPS" --caps=cap_net_admin+ep -- -c "grep '^CapEff:' /proc/self/status; $NFT --json list ruleset"
+
+# Retain root but remove CAP_NET_ADMIN from its bounding/effective set.
+run_case root_without_cap_net_admin sudo capsh --drop=cap_net_admin -- -c "grep '^CapEff:' /proc/self/status; $NFT --json list ruleset"
+run_case root_baseline sudo "$NFT" --json list ruleset
+
+CAP_ONLY_EFF="$(awk '/^CapEff:/ {print $2; exit}' "$TMP/cap_net_admin_only.stdout")"
+ROOT_NO_CAP_EFF="$(awk '/^CapEff:/ {print $2; exit}' "$TMP/root_without_cap_net_admin.stdout")"
+if [[ -z "$CAP_ONLY_EFF" || -z "$ROOT_NO_CAP_EFF" ]]; then
+  echo "ERROR: could not capture effective capability masks." >&2
+  exit 6
+fi
+echo
+echo "cap_net_admin_only_effective_mask=$CAP_ONLY_EFF"
+echo "root_without_cap_net_admin_effective_mask=$ROOT_NO_CAP_EFF"
+if (( 16#$CAP_ONLY_EFF != 0x1000 )); then
+  echo "ERROR: CAP_NET_ADMIN-only case did not run with exactly CAP_NET_ADMIN effective." >&2
+  exit 7
+fi
+if (( (16#$ROOT_NO_CAP_EFF & 0x1000) != 0 )); then
+  echo "ERROR: root-without-CAP_NET_ADMIN case still has CAP_NET_ADMIN effective." >&2
+  exit 8
+fi
+
+timeout 10s sudo "$NFT" --json list ruleset >"$TMP/after.json"
+BEFORE="$(sha256sum "$TMP/before.json" | awk '{print $1}')"
+AFTER="$(sha256sum "$TMP/after.json" | awk '{print $1}')"
+echo
+echo "ruleset_before_sha256=$BEFORE"
+echo "ruleset_after_sha256=$AFTER"
+if [[ "$BEFORE" != "$AFTER" ]]; then
+  echo "ERROR: ruleset fingerprint changed during read-only experiment." >&2
+  exit 3
+fi
+
+ROOT_RC="$(cat "$TMP/root_baseline.rc")"
+CAP_RC="$(cat "$TMP/cap_net_admin_only.rc")"
+if [[ "$ROOT_RC" != "0" ]]; then
+  echo "ERROR: root baseline could not list the ruleset; matrix is inconclusive." >&2
+  exit 4
+fi
+if [[ "$CAP_RC" != "0" ]]; then
+  echo "ERROR: CAP_NET_ADMIN-only invocation could not list the ruleset; matrix is inconclusive." >&2
+  exit 5
+fi
+
+echo
+echo "B3_NFT_CAPABILITY_MATRIX=PASS"
+echo "Interpretation: the unprivileged, CAP_NET_ADMIN-only, root-without-CAP_NET_ADMIN and root-baseline results above determine the minimum observed privilege."
+echo "No firewall rule, service, route, sysctl, or host configuration was intentionally changed."
