@@ -1076,7 +1076,11 @@ pub(crate) mod tests {
         uri: &str,
         issuer: &Issuer<'static, KeyPair>,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
-        let mut params = CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+        let server_name = uri
+            .strip_prefix("urn:baft:node:")
+            .map(|node_id| format!("{node_id}.baft-tunnel.invalid"))
+            .unwrap_or_else(|| "localhost".to_owned());
+        let mut params = CertificateParams::new(vec![server_name]).unwrap();
         params.key_usages.push(KeyUsagePurpose::DigitalSignature);
         params.extended_key_usages = vec![
             ExtendedKeyUsagePurpose::ServerAuth,
