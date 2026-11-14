@@ -59,7 +59,11 @@ cleanup() {
       [[ -f "$f" ]] && cp -p "$f" "$DIAG_DIR/"
     done
     {
-      printf "%s\\n" "exit_status=$status" "github_run_id=${GITHUB_RUN_ID:-unknown}" "github_job=${GITHUB_JOB:-unknown}" "systemd_version=${v:-unknown}" "preserved_files=logs and side-effect snapshots only; private keys/configs excluded"
+      echo "exit_status=$status"
+      echo "github_run_id=${GITHUB_RUN_ID:-unknown}"
+      echo "github_job=${GITHUB_JOB:-unknown}"
+      echo "systemd_version=${v:-unknown}"
+      echo "preserved_files=logs and side-effect snapshots only; private keys/configs excluded"
     } > "$DIAG_DIR/failure.txt"
     chmod 600 "$DIAG_DIR/"*
     echo "agent control lifecycle: failure diagnostics preserved at $DIAG_DIR" >&2
