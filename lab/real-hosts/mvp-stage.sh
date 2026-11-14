@@ -8,7 +8,7 @@
 echo "=== MVP (P0-5): clean install from ${MVP_SOURCE}, setup, Apply start, verify, negatives, uninstall ==="
 stop_role iran serve; stop_role abroad serve; stop_role iran forward; stop_role abroad forward; sleep 1
 MSVC=18094; MTP=18330; MAG=18096; MALT=18097
-EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGD=/var/lib/baft-tunnel/agent
+EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGD=/var/lib/baft-tunnel-agent/lab-agent
 SRV=mvpsrv; CLI=mvpcli
 MVP_SHA="$(sha256sum "$MVP_BINARY_PATH" | awk '{print $1}')"
 
@@ -101,9 +101,9 @@ MVP_SNI="$(ssh_host iran "python3 -c 'import json;print(json.load(open(\"$EB/$CL
 echo "--- MVP local agent per host (service user, loopback) ---"
 for side in iran abroad; do
   cfg=$SRV; [[ "$side" == iran ]] && cfg=$CLI
-  ssh_host "$side" "set -e; install -d -o baft-tunnel -g baft-tunnel -m 0700 $AGD;
-    setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups $UB agent-token --out $AGD/token >/dev/null;
-    nohup setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG --instance $cfg > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
+  ssh_host "$side" "set -e; install -d -o baft-tunnel-agent -g baft-tunnel-agent -m 0700 $AGD;
+    setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent-token --out $AGD/token >/dev/null;
+    nohup setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG --instance $cfg > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
     for n in \$(seq 1 40); do python3 -c 'import urllib.request;urllib.request.urlopen(\"http://127.0.0.1:$MAG/v1/health\",timeout=1)' 2>/dev/null && exit 0; sleep 0.25; done; tail -20 '$REMOTE_DIR/agent.log'; exit 1"
 done
 mvp_apply() { # side instance role key -> receipt JSON on stdout

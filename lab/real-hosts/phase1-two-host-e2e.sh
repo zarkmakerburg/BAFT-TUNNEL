@@ -190,7 +190,7 @@ if [[ "${LAB_CLEANUP_STALE:-0}" == 1 || "${LAB_CLEANUP_STALE:-0}" == 2 ]]; then
       copy_to_host "$side" "$LOCAL_TMP/stale-pkg.tgz" || true
       ssh_host "$side" "tar -xzf '$REMOTE_DIR/stale-pkg.tgz' -C '$REMOTE_DIR/pkg';
         for i in revpub revsvc; do touch /run/baft-tunnel/control/\$i.stop 2>/dev/null; systemctl stop baft-tunnel@\$i.service 2>/dev/null; bash '$REMOTE_DIR/pkg/scripts/install-agent-control.sh' --remove --instance \$i >/dev/null 2>&1; done;
-        for f in /var/lib/baft-tunnel/agent/*.pid /tmp/baft-tunnel-e2e-*/agent.pid; do [ -s \"\$f\" ] && kill \$(cat \"\$f\") 2>/dev/null; done;
+        for f in /var/lib/baft-tunnel/agent/*.pid /var/lib/baft-tunnel-agent/lab-agent/*.pid /tmp/baft-tunnel-e2e-*/agent.pid; do [ -s \"\$f\" ] && kill \$(cat \"\$f\") 2>/dev/null; done;
         bash '$REMOTE_DIR/pkg/scripts/uninstall.sh' --stop --purge-config --yes >/dev/null 2>&1;
         rm -rf /var/backups/baft-tunnel-backup.* 2>/dev/null; systemctl reset-failed 'baft-tunnel*' 2>/dev/null; systemctl daemon-reload;
         echo STALE_INSTALL_REMOVED" || true
