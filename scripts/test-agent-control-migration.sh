@@ -99,6 +99,27 @@ else
 fi
 if [[ "${REQUEST_ON_TMPFILES:-}" == 1 ]]; then mkdir -p "$(dirname "$REQUEST_FILE")"; : > "$REQUEST_FILE"; fi
 SH
+cat > "$BIN/chown" <<'SH'
+#!/usr/bin/env bash
+if [[ "${2:-}" == "$FAKE_CONTROL_DIR" ]]; then
+  printf 'chown %s\n' "$1" >> "$FAKE_LOG"
+  [[ "${CHOWN_FAIL:-}" == 1 ]] && exit 1
+  mode="$(awk '{print $2}' "$FAKE_CONTROL_STATE")"
+  printf '%s %s\n' "$1" "$mode" > "$FAKE_CONTROL_STATE"
+else
+  exec /usr/bin/chown "$@"
+fi
+SH
+cat > "$BIN/chmod" <<'SH'
+#!/usr/bin/env bash
+if [[ "${2:-}" == "$FAKE_CONTROL_DIR" ]]; then
+  printf 'chmod %s\n' "$1" >> "$FAKE_LOG"
+  owner="$(awk '{print $1}' "$FAKE_CONTROL_STATE")"
+  printf '%s %s\n' "$owner" "${1#0}" > "$FAKE_CONTROL_STATE"
+else
+  exec /usr/bin/chmod "$@"
+fi
+SH
 chmod 755 "$BIN/"*
 
 CONTROL="baft-tunnel-control-start@iran.path"
@@ -122,7 +143,7 @@ setup_case() {
   printf 'root:root 755\n' > "$CASE/parent-state"
   export FAKE_CONTROL_STATE="$CASE/control-state" FAKE_CONTROL_PARENT_STATE="$CASE/parent-state" FAKE_LOG="$CASE/log"
   export REQUEST_FILE="$CASE/parent/control/iran.start"
-  unset STOP_FAIL_UNIT STOP_FAIL_UNKNOWN START_FAIL_UNIT DAEMON_RELOAD_FAIL TMPFILES_FAIL TMPFILES_BAD_STATE REQUEST_ON_STOP_UNIT REQUEST_ON_TMPFILES LIST_UNITS_FAIL_PATTERN
+  unset CHOWN_FAIL STOP_FAIL_UNIT STOP_FAIL_UNKNOWN START_FAIL_UNIT DAEMON_RELOAD_FAIL TMPFILES_FAIL TMPFILES_BAD_STATE REQUEST_ON_STOP_UNIT REQUEST_ON_TMPFILES LIST_UNITS_FAIL_PATTERN
 }
 run_helper() {
   PATH="$BIN:$PATH" bash "$HELPER" --control-dir "$FAKE_CONTROL_DIR" --tmpfiles "$CASE/tmpfiles.conf" --state-dir "$CASE/state-dir"
@@ -147,16 +168,18 @@ grep -Fxq "$AGENT_PATH" "$CASE/state/active"
 grep -Fxq "$AGENT_SERVICE" "$CASE/state/active"
 ! grep -Fxq "start $INACTIVE_AGENT" "$CASE/log" || false
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
-[[ "$(sed -n '1p' "$CASE/log")" == "stop $CONTROL" ]]
-[[ "$(sed -n '2p' "$CASE/log")" == "stop $CONTROL2" ]]
+[[ "$(sed -n '1p' "$CASE/log")" == "chown root:baft-tunnel-agent" ]]
+[[ "$(sed -n '2p' "$CASE/log")" == "chmod 0770" ]]
 [[ "$(sed -n '3p' "$CASE/log")" == "stop $AGENT_PATH" ]]
 [[ "$(sed -n '4p' "$CASE/log")" == "stop $AGENT_PATH2" ]]
 [[ "$(sed -n '5p' "$CASE/log")" == "stop $AGENT_SERVICE" ]]
-[[ "$(sed -n '8p' "$CASE/log")" == "start $CONTROL" ]]
-[[ "$(sed -n '9p' "$CASE/log")" == "start $CONTROL2" ]]
-[[ "$(sed -n '10p' "$CASE/log")" == "start $AGENT_PATH" ]]
-[[ "$(sed -n '11p' "$CASE/log")" == "start $AGENT_PATH2" ]]
-[[ "$(sed -n '12p' "$CASE/log")" == "start $AGENT_SERVICE" ]]
+[[ "$(sed -n '6p' "$CASE/log")" == "stop $CONTROL" ]]
+[[ "$(sed -n '7p' "$CASE/log")" == "stop $CONTROL2" ]]
+[[ "$(sed -n '10p' "$CASE/log")" == "start $CONTROL" ]]
+[[ "$(sed -n '11p' "$CASE/log")" == "start $CONTROL2" ]]
+[[ "$(sed -n '12p' "$CASE/log")" == "start $AGENT_PATH" ]]
+[[ "$(sed -n '13p' "$CASE/log")" == "start $AGENT_PATH2" ]]
+[[ "$(sed -n '14p' "$CASE/log")" == "start $AGENT_SERVICE" ]]
 
 # Reject a symlink at the control directory leaf before touching any units.
 setup_case
@@ -261,20 +284,30 @@ setup_case
 expect_fail
 [[ -e "$REQUEST_FILE" ]]
 ! grep -q '^stop ' "$CASE/log" || false
+# The tunnel account loses write access before the refusal, so a removed request
+# cannot be replanted and block every retry.
+[[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
+grep -Fxq 'chown root:baft-tunnel-agent' "$CASE/log"
+
+# If access cannot be revoked, refuse before any unit transition.
+setup_case
+CHOWN_FAIL=1 expect_fail
+grep -q 'could not revoke tunnel access' "$CASE/out"
+! grep -q '^stop ' "$CASE/log" || false
 
 # Partial stop failures at each dependency stage, including an unknown state,
-# never change ownership or restart any unit. A later retry consumes the journal.
+# never restart any unit; tunnel access is already revoked. A later retry consumes the journal.
 for failed_unit in "$CONTROL" "$AGENT_PATH" "$AGENT_SERVICE"; do
   setup_case
   STOP_FAIL_UNIT="$failed_unit" expect_fail
   [[ -f "$CASE/state-dir/migration-v1.units" ]]
-  [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel 770' ]]
+  [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
   ! grep -q '^start ' "$CASE/log" || false
 done
 setup_case
 STOP_FAIL_UNIT="$AGENT_PATH" STOP_FAIL_UNKNOWN=1 expect_fail
 grep -q 'state=unknown' "$CASE/out"
-[[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel 770' ]]
+[[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
 ! grep -q '^start ' "$CASE/log" || false
 run_helper
 [[ ! -e "$CASE/state-dir/migration-v1.units" ]]
@@ -291,7 +324,7 @@ TMPFILES_BAD_STATE=1 expect_fail
 # A request appearing while writers are being stopped or during tmpfiles blocks restore.
 setup_case
 REQUEST_ON_STOP_UNIT="$CONTROL" expect_fail
-[[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel 770' ]]
+[[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
 [[ -e "$REQUEST_FILE" ]]
 ! grep -q '^start ' "$CASE/log" || false
 rm -f "$REQUEST_FILE"

@@ -191,6 +191,16 @@ restore_units() {
   return "$failed"
 }
 
+# Revoke tunnel-account access before any quiescence or pending-request check, so the
+# tunnel account cannot keep planting requests that block migration indefinitely.
+# The agent (primary group baft-tunnel-agent) and root helpers keep access.
+INITIAL_STATE="$(directory_state)"
+if [[ -d "$CONTROL_DIR" && "$INITIAL_STATE" != "$EXPECTED" ]]; then
+  chown root:baft-tunnel-agent "$CONTROL_DIR" || die "could not revoke tunnel access to the control directory"
+  chmod 0770 "$CONTROL_DIR" || die "could not revoke tunnel access to the control directory"
+  [[ "$(directory_state)" == "$EXPECTED" ]] || die "control directory did not reach $EXPECTED after revoking tunnel access"
+fi
+
 if [[ -f "$JOURNAL" ]]; then
   load_journal
 else
@@ -200,16 +210,18 @@ else
   write_journal
 fi
 
-if [[ "$(directory_state)" != "$EXPECTED" ]]; then
+if [[ "$INITIAL_STATE" != "$EXPECTED" ]]; then
   root_helpers_active && die "a root control helper is active; journal retained and migration stopped"
   has_pending_requests && die "pending control request exists; journal retained and migration stopped"
   # Include anything that became active after the durable snapshot.
   snapshot_current_units
   write_journal
   STOP_FAILURE=0
-  stop_units "root control watcher" "${CONTROL_PATHS[@]}" || STOP_FAILURE=1
+  # Stop request producers (agent) before consumers (root watchers), so no agent
+  # request can land after its watcher is gone.
   stop_units "agent path" "${AGENT_PATHS[@]}" || STOP_FAILURE=1
   stop_units "agent service" "${AGENT_SERVICES[@]}" || STOP_FAILURE=1
+  stop_units "root control watcher" "${CONTROL_PATHS[@]}" || STOP_FAILURE=1
   if (( STOP_FAILURE )); then
     for unit in "${CONTROL_PATHS[@]}" "${AGENT_PATHS[@]}" "${AGENT_SERVICES[@]}"; do
       [[ -n "$unit" ]] || continue

@@ -182,3 +182,11 @@ Evidence and scope: PR #199 adds negative registration/migration harness cases f
 and directory boundaries. The group invariant is checked at registration; runtime drift
 monitoring is not implemented or tested in this PR. Revisit if group membership becomes
 dynamically managed or if non-root operators can alter local group membership.
+
+Migration ordering (PR #199 review follow-up): the migration helper first sets the existing
+directory to `root:baft-tunnel-agent 0770`, before any pending-request check, so the tunnel
+account cannot keep replanting a request that blocks every retry; a request already planted is
+still refused and must be inspected and removed as root. Units are then stopped producers first
+(agent path, agent service) and consumers last (root control watchers), so no agent request can
+arrive after its watcher stopped. Pre-existing hosts keep the old boundary until the instance is
+re-registered (`update.sh` does not run the migration).
