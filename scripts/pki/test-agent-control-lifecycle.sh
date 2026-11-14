@@ -55,14 +55,14 @@ cleanup() {
     DIAG_ROOT="${RUNNER_TEMP:-/tmp}"
     DIAG_DIR="$(mktemp -d "$DIAG_ROOT/baft-agent-control-failure.XXXXXX")"
     chmod 700 "$DIAG_DIR"
-    find "$TMP" -maxdepth 1 -type f \\( -name '*.log' -o -name 'fw-*.txt' -o -name 'side-*.txt' \\) -exec cp -p {} "$DIAG_DIR/" \\;
+    find "$TMP" -maxdepth 1 -type f \( -name '*.log' -o -name 'fw-*.txt' -o -name 'side-*.txt' \) -exec cp -p {} "$DIAG_DIR/" \;
     {
-      printf 'exit_status=%s\\n' "$status"
-      printf 'github_run_id=%s\\n' "${GITHUB_RUN_ID:-unknown}"
-      printf 'github_job=%s\\n' "${GITHUB_JOB:-unknown}"
-      printf 'systemd_version=%s\\n' "${v:-unknown}"
-      printf 'temporary_directory=%s\\n' "$TMP"
-      printf 'preserved_files=log files and side-effect snapshots only; private keys/configs excluded\\n'
+      printf 'exit_status=%s\n' "$status"
+      printf 'github_run_id=%s\n' "${GITHUB_RUN_ID:-unknown}"
+      printf 'github_job=%s\n' "${GITHUB_JOB:-unknown}"
+      printf 'systemd_version=%s\n' "${v:-unknown}"
+      printf 'temporary_directory=%s\n' "$TMP"
+      printf 'preserved_files=log files and side-effect snapshots only; private keys/configs excluded\n'
     } > "$DIAG_DIR/failure.txt"
     chmod 600 "$DIAG_DIR/"*
     echo "agent control lifecycle: failure diagnostics preserved at $DIAG_DIR" >&2
