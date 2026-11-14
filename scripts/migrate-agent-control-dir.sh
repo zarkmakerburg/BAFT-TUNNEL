@@ -134,13 +134,19 @@ snapshot_current_units() {
   # before the journal is committed or any unit is stopped.
   listed="$(active_units path 'baft-tunnel-control-*@*.path')" ||
     die "could not snapshot root control path watchers; refusing to change directory ownership"
-  while IFS= read -r unit; do [[ -n "$unit" ]] && unique_append CONTROL_PATHS "$unit"; done <<< "$listed"
+  while IFS= read -r unit; do
+    if [[ -n "$unit" ]]; then unique_append CONTROL_PATHS "$unit"; fi
+  done <<< "$listed"
   listed="$(active_units path 'baft-tunnel-agent@*.path')" ||
     die "could not snapshot agent path units; refusing to change directory ownership"
-  while IFS= read -r unit; do [[ -n "$unit" ]] && unique_append AGENT_PATHS "$unit"; done <<< "$listed"
+  while IFS= read -r unit; do
+    if [[ -n "$unit" ]]; then unique_append AGENT_PATHS "$unit"; fi
+  done <<< "$listed"
   listed="$(active_units service 'baft-tunnel-agent@*.service')" ||
     die "could not snapshot agent services; refusing to change directory ownership"
-  while IFS= read -r unit; do [[ -n "$unit" ]] && unique_append AGENT_SERVICES "$unit"; done <<< "$listed"
+  while IFS= read -r unit; do
+    if [[ -n "$unit" ]]; then unique_append AGENT_SERVICES "$unit"; fi
+  done <<< "$listed"
 }
 write_journal() {
   local tmp="$JOURNAL.tmp.$$" unit
