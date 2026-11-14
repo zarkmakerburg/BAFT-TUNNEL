@@ -1218,7 +1218,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&a.bundle_path).unwrap()).unwrap();
         let forward_bundle: Bundle =
             serde_json::from_slice(&std::fs::read(&b.bundle_path).unwrap()).unwrap();
-        assert_eq!(serve_bundle.server_name.as_deref(), Some("localhost"));
+        assert_eq!(serve_bundle.server_name.as_deref(), Some("abroad.baft-tunnel.invalid"));
         assert_eq!(forward_bundle.server_name, None);
         join(&sd, &b.bundle_path, &b.checksum).unwrap();
         join(&fd, &a.bundle_path, &a.checksum).unwrap();
@@ -1281,7 +1281,7 @@ mod tests {
         }
         assert!(serve.get("peer_fingerprint").is_none());
         assert_eq!(forward["peer_fingerprint"], serve_bundle.public);
-        assert_eq!(forward["server_name"], "localhost");
+        assert_eq!(forward["server_name"], "abroad.baft-tunnel.invalid");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1289,7 +1289,13 @@ mod tests {
     fn baft_init_refuses_a_tcp_tls_certificate_and_writes_nothing() {
         let root = temp("baft-wrong-uri");
         let ca = crate::tls::tests::make_ca(&root, "ca");
-        let dir = install_pki(&root, "serve", "abroad", &ca);
+        let dir = install_pki_uri(
+            &root,
+            "serve",
+            "abroad",
+            &ca,
+            "urn:baft-tunnel:node:abroad",
+        );
         let mut req = tls_side(&root, Role::Serve, "abroad", "iran", dir.clone());
         req.engine = EngineKind::Baft;
         let error = init(&req, None).unwrap_err();
