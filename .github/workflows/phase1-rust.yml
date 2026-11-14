@@ -44,6 +44,7 @@ jobs:
       - name: Validate fail-closed agent control directory migration and recovery
         run: |
           bash -n scripts/migrate-agent-control-dir.sh
+          bash -n scripts/install-agent-control.sh
           bash -n scripts/test-agent-control-migration.sh
           bash scripts/test-agent-control-migration.sh
       - name: Validate the signed one-line installer interface
