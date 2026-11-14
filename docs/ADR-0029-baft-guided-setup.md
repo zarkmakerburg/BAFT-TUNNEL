@@ -1,6 +1,6 @@
 # ADR-0029: Guided setup for the BAFT engine (ADR-0019 phase F, roadmap B4)
 
-**Status:** Accepted 2026-11-14 (owner full-autonomy delegation). Implementation in this PR; acceptance needs the real two-host LAB run through the Wizard path (`phase1-trusted-b4-baft-lab.yml`). Until that run passes on the exact merged SHA, the evidence level is CI plus a local loopback rehearsal, not LAB.
+**Status:** Accepted 2026-11-14 (owner full-autonomy delegation). Implementation in this PR; acceptance needs the real two-host LAB run through the Wizard path (`phase1-trusted-b4-baft-lab.yml`). Accepted on REAL two-host LAB 2026-11-14 on merged main `86ba404` ([LAB run 43644908151](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43644908151)).
 **Scope:** `setup plan/init/join` for engine `baft`, the PKI identity profile, the engine store install path, the Wizard engine choice.
 **Builds on:** ADR-0019 (BAFT engine host), ADR-0020 (managed runtime host), ADR-0021 (Direct/Reverse), ADR-0026 (panel pairing via the root setup helper), ADR-0027 (offline tcp-tls enrollment).
 

@@ -93,7 +93,7 @@
 | `tcp-tls` Direct | `ready` unknown (by design); cross-version update; multi-hour soak; unrelated nft drift on the abroad host |
 | `tcp-tls` Reverse (Preview) | Additional evidence gaps remain; any soak is capped at 3600 s; cross-version update and environmental nft drift follow-up remain |
 | `noise-tcp` Direct (Experimental) | No loss/soak/ops acceptance; Reverse unavailable. No work planned (L6) |
-| `baft` (Preview, Direct only) | Exposed as Preview, Direct only by PR #133 (merged); not configurable (B4); no status/diagnostics (unknown by design); multi-hour soak; listener RSS +23 % over 1200 s (watch in S1) |
+| `baft` (Preview, Direct only) | Exposed as Preview, Direct only by PR #133 (merged); configurable via guided setup since B4 (PR #201); no status/diagnostics (unknown by design); multi-hour soak; listener RSS +23 % over 1200 s (watch in S1) |
 
 ### 3.6 Security assessment
 
@@ -302,5 +302,5 @@ No new engines or protocols, no Fleet or billing, no React migration, no `noise-
 - Evidence at `02d0521`, **CI PASSED / CONTAINER SYSTEMD PASSED** (GitHub Ubuntu 22.04 runner, real systemd 249): phase1-rust [43617041465](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43617041465) with `BAFT_AGENT_CONTROL_MIGRATION_TEST`, `BAFT_AGENT_CONTROL_MIGRATION_SYSTEMD_TEST` (2 active, 1 inactive; `baft-tunnel` write/list denied, agent write allowed, no unit transitions) and `BAFT_AGENT_CONTROL_UPGRADE_TEST` (update.sh path) = PASS; phase0, package/signature and CodSpeed success.
 - **NOT VERIFIED**: standalone VM, real two-host LAB, Production. No release or deploy.
 - Merged under the owner's autonomous mandate as `dc0e947584a62fdb1f2083b23b1200579bc50464` (merge of head `aa1382f`, docs/tests-only delta after the reviewed `02d0521`). Exact-main CI on `dc0e947`: phase1-rust [43620032665](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43620032665) (all migration/upgrade markers PASS), phase0 43620032768, package/signature 43620032649, CodSpeed 43620032567, all success.
-- B4 is now unblocked by PR #199 and is next: ADR-0019 phase F (`setup plan/init/join` for `baft` Direct, Engine Store install in `install.sh`, Apply start/stop, Wizard selectable), exit evidence REAL-LAB through the Wizard path.
+- B4 **Done** 2026-11-14: PR #201 merged (`86ba404`); real two-host LAB through the Wizard/agent API passed on that exact SHA ([LAB run 43644908151](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43644908151)): signed rc.7 engine (cosign + SHA256SUMS, digest = pin) installed with `--baft-engine`, engine-store preflight pass, baft-profile CSR create/recover, offline CA `issue-baft-node`, Init/Join/Start/Stop via agent, wrong checksum refused, 64 KiB and 2 MiB byte-exact, uninstall left no store/users/units. BAFT stays Preview, Direct only; status/traffic stay unknown.
 
