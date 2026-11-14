@@ -82,7 +82,9 @@ if [[ "$STAGING" == "0" ]]; then
   fi
   [[ "$(stat -c '%U %a' "$STATE/token")" == "$AGENT_USER 600" ]] || die "$STATE/token must be $AGENT_USER, mode 0600"
   CONTROL_DIR=/run/baft-tunnel/control
+  CONTROL_PARENT=/run/baft-tunnel
   CONTROL_DIR_STATE="$(stat -c '%U:%G %a' "$CONTROL_DIR" 2>/dev/null || true)"
+  CONTROL_PARENT_STATE="$(stat -c '%U:%G %a' "$CONTROL_PARENT" 2>/dev/null || true)"
   # Enforce the request-group boundary on every registration, not only on migration.
   AGENT_GID="$(getent group "$AGENT_USER" | awk -F: '{print $3}')"
   OTHER_PRIMARY_USERS="$(getent passwd | awk -F: -v gid="$AGENT_GID" -v agent="$AGENT_USER" '$4 == gid && $1 != agent { print $1 }')"
@@ -94,7 +96,7 @@ if [[ "$STAGING" == "0" ]]; then
   fi
   MIGRATION_JOURNAL=/var/lib/baft-tunnel-control/migration-v1.units
   # Resume a partially completed migration even if the directory mode was already changed.
-  if [[ "$CONTROL_DIR_STATE" != "root:baft-tunnel-agent 770" || -e "$MIGRATION_JOURNAL" || -L "$MIGRATION_JOURNAL" ]]; then
+  if [[ "$CONTROL_DIR_STATE" != "root:baft-tunnel-agent 770" || "$CONTROL_PARENT_STATE" != "root:root 755" || -L "$CONTROL_PARENT" || -L "$CONTROL_DIR" || -e "$MIGRATION_JOURNAL" || -L "$MIGRATION_JOURNAL" ]]; then
     bash "$SCRIPT_DIR/migrate-agent-control-dir.sh" --control-dir "$CONTROL_DIR" --tmpfiles "$TMPF"
   else
     systemd-tmpfiles --create "$TMPF"
