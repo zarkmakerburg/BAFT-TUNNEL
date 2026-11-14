@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+trap 'rc=$?; echo "BAFT_AGENT_CONTROL_MIGRATION_TEST=FAIL line=${LINENO} command=${BASH_COMMAND@Q} exit=$rc" >&2' ERR
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 HELPER="$ROOT/scripts/migrate-agent-control-dir.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/baft-control-migration.XXXXXX")"
