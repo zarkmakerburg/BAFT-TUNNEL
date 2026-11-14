@@ -115,7 +115,7 @@ cat > "$BIN/chmod" <<'SH'
 if [[ "${2:-}" == "$FAKE_CONTROL_DIR" ]]; then
   printf 'chmod %s\n' "$1" >> "$FAKE_LOG"
   owner="$(awk '{print $1}' "$FAKE_CONTROL_STATE")"
-  printf '%s %s\n' "$owner" "${1#0}" > "$FAKE_CONTROL_STATE"
+  printf '%s %o\n' "$owner" "$((8#$1))" > "$FAKE_CONTROL_STATE"
 else
   exec /usr/bin/chmod "$@"
 fi
@@ -169,7 +169,7 @@ grep -Fxq "$AGENT_SERVICE" "$CASE/state/active"
 ! grep -Fxq "start $INACTIVE_AGENT" "$CASE/log" || false
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
 [[ "$(sed -n '1p' "$CASE/log")" == "chown root:baft-tunnel-agent" ]]
-[[ "$(sed -n '2p' "$CASE/log")" == "chmod 0770" ]]
+[[ "$(sed -n '2p' "$CASE/log")" == "chmod 00770" ]]
 [[ "$(sed -n '3p' "$CASE/log")" == "stop $AGENT_PATH" ]]
 [[ "$(sed -n '4p' "$CASE/log")" == "stop $AGENT_PATH2" ]]
 [[ "$(sed -n '5p' "$CASE/log")" == "stop $AGENT_SERVICE" ]]
@@ -288,6 +288,15 @@ expect_fail
 # cannot be replanted and block every retry.
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
 grep -Fxq 'chown root:baft-tunnel-agent' "$CASE/log"
+# After root removes the refused request, a rerun completes on the already-safe
+# directory without stopping units, and never activates the inactive agent.
+rm -f "$REQUEST_FILE"
+: > "$CASE/log"
+run_helper
+! grep -q '^stop ' "$CASE/log" || false
+! grep -Fxq "start $INACTIVE_AGENT" "$CASE/log" || false
+grep -Fxq "$AGENT_SERVICE" "$CASE/state/active"
+[[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
 
 # If access cannot be revoked, refuse before any unit transition.
 setup_case

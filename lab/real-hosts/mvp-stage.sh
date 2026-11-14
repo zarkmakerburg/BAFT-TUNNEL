@@ -127,7 +127,7 @@ for k in sys.argv[1].split("."): d = d.get(k, "") if isinstance(d, dict) else ""
 print(d)' "$1"; }
 unit_active() { ssh_host "$1" "systemctl is-active --quiet baft-tunnel@$2.service"; }
 unit_stop() { # side instance : stop through the control helper, wait for inactive
-  ssh_host "$1" "setpriv --reuid=baft-tunnel --regid=baft-tunnel --init-groups touch /run/baft-tunnel/control/$2.stop; for n in \$(seq 1 40); do systemctl is-active --quiet baft-tunnel@$2.service || exit 0; sleep 0.5; done; exit 1"
+  ssh_host "$1" "setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups touch /run/baft-tunnel/control/$2.stop; for n in \$(seq 1 40); do systemctl is-active --quiet baft-tunnel@$2.service || exit 0; sleep 0.5; done; exit 1"
 }
 mvp_wait() { # seconds : until 64 KiB passes again
   local t0=$SECONDS

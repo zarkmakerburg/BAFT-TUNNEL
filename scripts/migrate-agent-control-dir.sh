@@ -197,7 +197,7 @@ restore_units() {
 INITIAL_STATE="$(directory_state)"
 if [[ -d "$CONTROL_DIR" && "$INITIAL_STATE" != "$EXPECTED" ]]; then
   chown root:baft-tunnel-agent "$CONTROL_DIR" || die "could not revoke tunnel access to the control directory"
-  chmod 0770 "$CONTROL_DIR" || die "could not revoke tunnel access to the control directory"
+  chmod 00770 "$CONTROL_DIR" || die "could not revoke tunnel access to the control directory"
   [[ "$(directory_state)" == "$EXPECTED" ]] || die "control directory did not reach $EXPECTED after revoking tunnel access"
 fi
 
