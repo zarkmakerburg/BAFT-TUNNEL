@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Host-wide, fail-closed migration of the root control request directory.
+# Recovery: inspect and resolve the reported condition, preserve pending request files,
+# then rerun the same install-agent-control.sh --instance NAME registration. Never
+# delete this journal or manually restart watchers while the directory boundary is unsafe.
 set -Eeuo pipefail
 
 CONTROL_DIR=/run/baft-tunnel/control
