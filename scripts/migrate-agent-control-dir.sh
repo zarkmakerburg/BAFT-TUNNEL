@@ -20,6 +20,16 @@ die() { echo "agent-control-migration: $*" >&2; exit 2; }
 EXPECTED='root:baft-tunnel-agent 770'
 VERBS=(start stop enable disable setup pki)
 JOURNAL="$STATE_DIR/migration-v1.units"
+CONTROL_PARENT="${CONTROL_DIR%/*}"
+[[ "$CONTROL_PARENT" != "$CONTROL_DIR" ]] || die "control directory must have a parent directory"
+[[ ! -L "$CONTROL_PARENT" ]] || die "control directory parent must not be a symlink"
+if [[ ! -e "$CONTROL_PARENT" ]]; then
+  install -d -o root -g root -m 0755 "$CONTROL_PARENT"
+fi
+[[ -d "$CONTROL_PARENT" && ! -L "$CONTROL_PARENT" ]] || die "invalid control directory parent"
+[[ "$(stat -c '%U:%G %a' "$CONTROL_PARENT")" == "root:root 755" ]] ||
+  die "control directory parent must be root-owned with mode 0755"
+[[ ! -L "$CONTROL_DIR" ]] || die "control directory must not be a symlink"
 TMPFILES_APPLIED=0
 
 [[ ! -L "$STATE_DIR" ]] || die "state directory must not be a symlink"
