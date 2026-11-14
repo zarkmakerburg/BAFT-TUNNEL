@@ -173,6 +173,12 @@ BIN_DEST="$BIN_DIR/baft-tunnel"
 UNIT_DEST="$UNIT_DIR/baft-tunnel@.service"
 # Scripts and units for `baft-tunnel menu` (same relative layout as the release tree).
 LIB_DEST="$ROOT_PREFIX/usr/local/lib/baft-tunnel"
+ENGINE_STORE="$ROOT_PREFIX/usr/local/lib/baft-tunnel-engines"
+
+# The engine store is installation-owned. Never follow or replace a symlink here.
+if [[ -e "$ENGINE_STORE" || -L "$ENGINE_STORE" ]]; then
+  [[ -d "$ENGINE_STORE" && ! -L "$ENGINE_STORE" ]] || die "refusing non-directory or symlinked engine store: $ENGINE_STORE"
+fi
 
 if [[ -z "$BINARY" ]]; then
   [[ -x "$BIN_DEST" && -f "$UNIT_DEST" ]] || die "binary/template not installed yet; pass --binary as well"
@@ -259,6 +265,13 @@ if [[ -n "$BINARY" ]]; then
   [[ ! -e "$UNIT_DEST" ]] || { cp -p "$UNIT_DEST" "$BACKUP_DIR/baft-tunnel@.service"; : > "$BACKUP_DIR/had-unit"; }
   [[ ! -d "$LIB_DEST" ]] || { cp -a "$LIB_DEST" "$BACKUP_DIR/lib"; : > "$BACKUP_DIR/had-lib"; }
 fi
+if [[ -n "$BAFT_ENGINE" ]]; then
+  : > "$BACKUP_DIR/scope-engine-store"
+  if [[ -d "$ENGINE_STORE" ]]; then
+    cp -a "$ENGINE_STORE" "$BACKUP_DIR/engine-store"
+    : > "$BACKUP_DIR/had-engine-store"
+  fi
+fi
 if [[ -n "$INSTANCE" ]]; then
   printf '%s\n' "$INSTANCE" > "$BACKUP_DIR/scope-credential"
   mkdir -m 0700 "$BACKUP_DIR/credential"
@@ -299,6 +312,12 @@ rollback_install() {
       rm -rf "$LIB_DEST.new.$$"
       if [[ -f "$BACKUP_DIR/had-lib" ]]; then rm -rf "$LIB_DEST"; cp -a "$BACKUP_DIR/lib" "$LIB_DEST"; else rm -rf "$LIB_DEST"; fi
     fi
+    if [[ -n "$BAFT_ENGINE" ]]; then
+      rm -rf "$ENGINE_STORE"
+      if [[ -f "$BACKUP_DIR/had-engine-store" ]]; then
+        cp -a "$BACKUP_DIR/engine-store" "$ENGINE_STORE"
+      fi
+    fi
     if [[ "$STAGING" == "0" ]]; then remove_created_account; fi
     if [[ "$CRED_TOUCHED" == "1" ]]; then restore_credential; fi
     if [[ "$STAGING" == "0" ]]; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
@@ -330,7 +349,6 @@ fi
 if [[ -n "$BAFT_ENGINE" ]]; then
   # Root-owned store outside LIB_DEST (which every --binary install replaces). The engine
   # store refuses a binary whose SHA-256 differs from the manifest built into BIN_DEST.
-  ENGINE_STORE="$ROOT_PREFIX/usr/local/lib/baft-tunnel-engines"
   install -d -m 0755 "$ENGINE_STORE"
   if [[ "$STAGING" == "0" ]]; then chown root:root "$ENGINE_STORE"; fi
   "$BIN_DEST" engine manifest > "$BACKUP_DIR/engine-manifest.json"
