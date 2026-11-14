@@ -137,6 +137,7 @@ expect_fail() {
 # order, safe ownership is verified, then only the prior active units return.
 setup_case
 mkdir -p "$CASE/state-dir"
+chmod 0700 "$CASE/state-dir"
 run_helper
 [[ ! -e "$CASE/state-dir/migration-v1.units" ]]
 grep -Fxq "$CONTROL" "$CASE/state/active"
