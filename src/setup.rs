@@ -342,9 +342,20 @@ pub struct Bundle {
     pub tunnel_port: u16,
     /// Noise public key, or the SHA-256 pin of the node certificate for tcp-tls.
     pub public: String,
-    /// tcp-tls serve nodes: the name the forwarding peer must verify.
+    /// tcp-tls/baft serve nodes: the name the forwarding peer must verify.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_name: Option<String>,
+    /// BAFT v2 pairing binds both nodes to the same exact external engine artifact.
+    /// Omitted for v1 tcp-tls/Noise bundles to preserve their canonical checksum bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_sha256: Option<String>,
+}
+
+pub(crate) fn valid_bundle_version(version: u8, engine: &str) -> bool {
+    matches!(
+        (version, engine),
+        (1, "tcp-tls" | "noise-tcp") | (2, "baft")
+    )
 }
 
 impl Bundle {
@@ -387,6 +398,8 @@ struct State {
     tunnel_port: u16,
     peer_host: Option<String>,
     own_public: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    engine_sha256: Option<String>,
     #[serde(default = "default_config_file")]
     config_file: String,
 }
@@ -457,8 +470,13 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
         )
     };
     let engine = engine_name(req.engine);
+    let engine_sha256 = if req.engine == EngineKind::Baft {
+        Some(crate::baft_engine::pinned_sha256()?)
+    } else {
+        None
+    };
     let bundle = Bundle {
-        version: 1,
+        version: if req.engine == EngineKind::Baft { 2 } else { 1 },
         tunnel_id: req.tunnel_id.clone(),
         engine: engine.into(),
         direction: req.direction.as_str().into(),
@@ -474,6 +492,7 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
         } else {
             None
         },
+        engine_sha256: engine_sha256.clone(),
     };
     let state = State {
         engine: engine.into(),
@@ -487,6 +506,7 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
         tunnel_port: req.tunnel_port,
         peer_host: req.peer_host.clone(),
         own_public: public,
+        engine_sha256,
         config_file: config_file.clone(),
     };
     write_new(
@@ -696,10 +716,35 @@ pub fn join(dir: &Path, bundle_path: &Path, checksum: &str) -> Result<PathBuf> {
     if !same_checksum(checksum, &bundle.checksum()) {
         bail!("bundle checksum does not match the value you provided; do not continue");
     }
-    if bundle.version != 1 {
-        bail!("unsupported bundle version");
+    if !valid_bundle_version(bundle.version, &state.engine) {
+        bail!(
+            "unsupported pairing bundle version for engine {}",
+            state.engine
+        );
     }
     let mismatch = |what: &str| anyhow::anyhow!("bundle {what} does not match this node's setup");
+    if state.engine == "baft" {
+        let local_pin = state
+            .engine_sha256
+            .as_deref()
+            .context("BAFT pairing state has no pinned engine digest; run setup init again")?;
+        let current_pin = crate::baft_engine::pinned_sha256()?;
+        if local_pin != current_pin {
+            return Err(mismatch("local BAFT engine digest changed since init"));
+        }
+        let peer_pin = bundle
+            .engine_sha256
+            .as_deref()
+            .context("BAFT v2 bundle has no engine digest")?;
+        if peer_pin.len() != 64 || !peer_pin.bytes().all(|b| b.is_ascii_hexdigit()) {
+            bail!("BAFT bundle engine digest must be a 64-digit hexadecimal SHA-256");
+        }
+        if peer_pin != local_pin {
+            return Err(mismatch("BAFT engine digest"));
+        }
+    } else if state.engine_sha256.is_some() || bundle.engine_sha256.is_some() {
+        return Err(mismatch("unexpected engine digest"));
+    }
     if bundle.engine != state.engine {
         return Err(mismatch("engine"));
     }
@@ -1296,6 +1341,9 @@ mod tests {
         let serve_bundle: Bundle =
             serde_json::from_slice(&std::fs::read(&a.bundle_path).unwrap()).unwrap();
         assert_eq!(serve_bundle.engine, "baft");
+        assert_eq!(serve_bundle.version, 2);
+        let pinned = crate::baft_engine::pinned_sha256().unwrap();
+        assert_eq!(serve_bundle.engine_sha256.as_deref(), Some(pinned.as_str()));
         assert_eq!(
             serve_bundle.server_name.as_deref(),
             Some("abroad.baft-tunnel.invalid")
@@ -1317,6 +1365,31 @@ mod tests {
         assert_eq!(forward["peer_fingerprint"], serve_bundle.public);
         assert_eq!(forward["server_name"], "abroad.baft-tunnel.invalid");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn baft_join_rejects_a_different_engine_digest_without_writing_config() {
+        let root = temp("baft-digest-mismatch");
+        let ca = crate::tls::tests::make_ca(&root, "ca");
+        let sd = install_pki_uri(&root, "serve", "abroad", &ca, "urn:baft:node:abroad");
+        let fd = install_pki_uri(&root, "forward", "iran", &ca, "urn:baft:node:iran");
+        let baft_side = |role, node, peer, dir: &PathBuf| {
+            let mut req = tls_side(&root, role, node, peer, dir.clone());
+            req.engine = EngineKind::Baft;
+            req
+        };
+        let a = init(&baft_side(Role::Serve, "abroad", "iran", &sd), None).unwrap();
+        let b = init(&baft_side(Role::Forward, "iran", "abroad", &fd), None).unwrap();
+        let mut bundle: Bundle =
+            serde_json::from_slice(&std::fs::read(&a.bundle_path).unwrap()).unwrap();
+        bundle.engine_sha256 = Some("00".repeat(32));
+        let tampered = root.join("different-engine.json");
+        write_new(&tampered, 0o644, &serde_json::to_vec(&bundle).unwrap()).unwrap();
+        let error = join(&fd, &tampered, &bundle.checksum()).unwrap_err();
+        assert!(format!("{error:#}").contains("BAFT engine digest"));
+        assert!(!fd.join(CONFIG_FILE).exists());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = b;
     }
 
     #[test]

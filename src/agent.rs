@@ -732,6 +732,18 @@ fn inspect_bundle(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             );
         }
     };
+    if !crate::setup::valid_bundle_version(bundle.version, &bundle.engine) {
+        return (
+            422,
+            json!({"error": "pairing bundle version does not match its engine profile"}),
+        );
+    }
+    if (bundle.engine == "baft") != bundle.engine_sha256.is_some() {
+        return (
+            422,
+            json!({"error": "BAFT v2 bundles require an engine digest; other engines must omit it"}),
+        );
+    }
     let checksum = bundle.checksum();
     let checksum_match = req
         .checksum
@@ -759,6 +771,15 @@ fn inspect_bundle(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
         ] {
             if !ok {
                 problems.push(what);
+            }
+        }
+        if s["engine"] == "baft" {
+            if s["engine_sha256"] != json!(bundle.engine_sha256) {
+                problems.push("engine_sha256");
+            }
+            let current = crate::baft_engine::pinned_sha256().ok();
+            if current.as_deref() != s["engine_sha256"].as_str() {
+                problems.push("local_engine_sha256");
             }
         }
     }
