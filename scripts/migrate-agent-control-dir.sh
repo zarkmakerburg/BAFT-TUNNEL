@@ -45,7 +45,7 @@ active_units() {
     [[ -n "$unit" ]] || continue
     state="$(systemctl is-active "$unit" 2>/dev/null || true)"
     case "$state" in
-      active|activating|deactivating|unknown) printf '%s\\n' "$unit" ;;
+      active|activating|deactivating|unknown) printf '%s\n' "$unit" ;;
     esac
   done < <(systemctl list-units --type="$kind" --all --no-legend --plain "$pattern" | awk 'NF { print $1 }')
 }
