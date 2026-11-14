@@ -25,6 +25,7 @@ add_state() {
   printf '%s\n' "$unit" >> "$file"
 }
 cmd=$1; shift
+[[ "${LIST_UNITS_FAIL:-}" == 1 && "$cmd" == list-units ]] && exit 1
 case "$cmd" in
   list-units)
     kind= pattern= all=0
@@ -140,6 +141,7 @@ grep -Fxq "$CONTROL" "$CASE/state/active"
 grep -Fxq "$AGENT_PATH" "$CASE/state/active"
 grep -Fxq "$AGENT_SERVICE" "$CASE/state/active"
 ! grep -Fxq "$INACTIVE_AGENT" "$CASE/log"
+[[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
 [[ "$(sed -n '1p' "$CASE/log")" == "stop $CONTROL" ]]
 [[ "$(sed -n '2p' "$CASE/log")" == "stop $CONTROL2" ]]
 [[ "$(sed -n '3p' "$CASE/log")" == "stop $AGENT_PATH" ]]
@@ -158,6 +160,12 @@ printf 'MISSING\\n' > "$FAKE_CONTROL_STATE"
 run_helper
 [[ -d "$FAKE_CONTROL_DIR" ]]
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
+
+# If systemd cannot enumerate loaded units, do not assume the snapshot is empty.
+setup_case
+LIST_UNITS_FAIL=1 run_helper >"$CASE/out" 2>&1 && exit 1
+! grep -q '^stop ' "$CASE/log"
+grep -q 'could not enumerate root control helper services' "$CASE/out"
 
 # Active root helper and pre-existing pending request must refuse before stopping.
 setup_case
