@@ -258,6 +258,19 @@ printf 'MISSING\\n' > "$FAKE_CONTROL_STATE"
 run_helper
 [[ -d "$FAKE_CONTROL_DIR" ]]
 [[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
+# L-03: a missing directory quiesces the snapshot, then restores exactly the prior active units.
+grep -Fxq "stop $AGENT_SERVICE" "$CASE/log"
+grep -Fxq "start $AGENT_SERVICE" "$CASE/log"
+grep -Fxq "$CONTROL" "$CASE/state/active"
+grep -Fxq "$AGENT_SERVICE" "$CASE/state/active"
+! grep -Fxq "start $INACTIVE_AGENT" "$CASE/log" || false
+[[ ! -e "$CASE/state-dir/migration-v1.units" ]]
+# L-02: rerunning on the already-safe directory is idempotent and stops nothing.
+: > "$CASE/log"
+run_helper
+! grep -q '^stop ' "$CASE/log" || false
+! grep -Fxq "start $INACTIVE_AGENT" "$CASE/log" || false
+[[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
 
 # If systemd cannot enumerate loaded units, do not assume the snapshot is empty.
 setup_case

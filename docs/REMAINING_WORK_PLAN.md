@@ -294,3 +294,12 @@ No new engines or protocols, no Fleet or billing, no React migration, no `noise-
 - Both Direct integrity probes passed; ordinary data paths passed at 65,536 and 2,097,289 bytes before and after; audit resource/request-hash, agent restart persistence, cooldown and cleanup passed.
 - Tamper negative evidence is the controlled in-memory relay unit test merged in PR #193; it flips one payload byte and the production initiator rejects with `SHA-256 mismatch`. No live two-host tamper injection is claimed. This matches ADR-0028's controlled test-harness corruption requirement.
 - Scope: B2 accepted for Direct only. Reverse remains gated by ADR-0021. No release, deploy or Phase 2 transition.
+
+
+### 2026-11-14 — PR #199 control-request boundary (Draft, not merged)
+
+- Owner human review of `02d05213434399c527ea941db3cfa00291063be9`: **APPROVED WITH CONDITIONS** (H-01..H-03 resolved; L-01..L-04 Low, documented in `SECURITY_ASSESSMENT.md`). Not a merge authorization.
+- Evidence at `02d0521`, **CI PASSED / CONTAINER SYSTEMD PASSED** (GitHub Ubuntu 22.04 runner, real systemd 249): phase1-rust [43617041465](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43617041465) with `BAFT_AGENT_CONTROL_MIGRATION_TEST`, `BAFT_AGENT_CONTROL_MIGRATION_SYSTEMD_TEST` (2 active, 1 inactive; `baft-tunnel` write/list denied, agent write allowed, no unit transitions) and `BAFT_AGENT_CONTROL_UPGRADE_TEST` (update.sh path) = PASS; phase0, package/signature and CodSpeed success.
+- **NOT VERIFIED**: standalone VM, real two-host LAB, Production. No release or deploy.
+- B4 stays blocked: PR #199 must merge first (owner authorization), then B4 needs its own design/ADR-0019 phase F work and a REAL-LAB run through the Wizard path.
+

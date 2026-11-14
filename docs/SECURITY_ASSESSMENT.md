@@ -194,9 +194,36 @@ Existing installs (H-01): `update.sh` runs `install-agent-control.sh --upgrade-b
 changes the binary. That refreshes the control/agent unit templates and the tmpfiles entry, re-checks
 the exclusive agent group and always runs the same fail-closed migration helper, also on an
 already-migrated directory, so a refused pending request is refused again on every rerun until root
-removes it. If it refuses, nothing else is updated and the reason is printed. `UPDATE_OK` reports `control_boundary=root:baft-tunnel-agent-0770`
+removes it. Order on refusal: the control/agent unit templates and the tmpfiles entry are already
+refreshed and the directory is already set to `root:baft-tunnel-agent 0770` (safe direction), but
+`daemon-reload` has not run, no unit is stopped or started, and `update.sh` does not back up, install
+the binary or restart anything; it exits non-zero and prints the reason. `UPDATE_OK` reports `control_boundary=root:baft-tunnel-agent-0770`
 only after the directory was verified; a staged tree reports `staged-not-verified`, a host without the
 control helper `not-installed`. Evidence: the real-systemd agent-service test upgrades a recreated
 pre-boundary install through `update.sh` (`BAFT_AGENT_CONTROL_UPGRADE_TEST=PASS`), and the
 real-systemd migration test checks write denial for `baft-tunnel` and write access for
 `baft-tunnel-agent` with unchanged unit states (H-02).
+
+### PR #199 Low observations (owner human review of `02d0521`, APPROVED WITH CONDITIONS)
+
+Accepted as non-blocking; documented here, not represented as resolved.
+
+- **L-01 (Low) upgrade refusal wording.** Clarified above: on refusal the templates/tmpfiles entry are
+  refreshed and access is revoked, but the binary, backups and unit states are not changed.
+- **L-02 (Low) helper runs every time.** Registration and `update.sh` always run the migration helper,
+  also on an already-safe directory, so the pending-request and active-root-helper checks are never
+  skipped. Consequence: a running root helper, a pending request or a crash-looping agent makes the
+  run fail (fail-closed, retryable, reason printed). Regression: `test-agent-control-migration.sh`
+  reruns on a safe directory (no stops, no inactive start) and after a refusal (still refused).
+- **L-03 (Low) missing control directory.** If `/run/baft-tunnel/control` is missing (fresh install,
+  or removed), the helper snapshots active agent/control units, stops them, applies tmpfiles and
+  restores exactly the previously active ones. Active agents and control watchers therefore stop
+  briefly. Regression: the missing-directory case in `test-agent-control-migration.sh` asserts stop,
+  restore of prior active units and no start of inactive ones.
+- **L-04 (Low) pre-existing non-request files.** The migration refuses pending request files
+  (`*.start|stop|enable|disable|setup|pki`) but does not sweep other files the tunnel account may have
+  planted before migration (e.g. a forged `*.setup-result`). After migration the tunnel account
+  cannot reach them, and the setup and PKI helper clients delete their result file before each
+  request. No broad deletion is added; a cleanup policy needs defined ownership and recovery and is
+  a separate follow-up.
+
