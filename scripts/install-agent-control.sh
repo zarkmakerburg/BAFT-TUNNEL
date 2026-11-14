@@ -11,7 +11,7 @@
 #   install-agent-control.sh --remove --instance NAME [--destdir ROOT]
 set -Eeuo pipefail
 # BAFT_ERR_DIAGNOSTIC: preserve the failing command location on strict-mode exits.
-trap 'rc=$?; printf 'install-agent-control: unhandled command failure (exit=%s, line=%s, function=%s)\\n' "$rc" "${BASH_LINENO[0]:-?}" "${FUNCNAME[1]:-main}" >&2; exit "$rc"' ERR
+trap 'rc=$?; printf "%s\\n" "install-agent-control: unhandled command failure (exit=$rc, line=${BASH_LINENO[0]:-?}, function=${FUNCNAME[1]:-main})" >&2; exit "$rc"' ERR
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$SCRIPT_DIR/../systemd/control"
 AGENT_SRC="$SCRIPT_DIR/../systemd/agent"
