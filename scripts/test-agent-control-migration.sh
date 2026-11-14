@@ -44,7 +44,7 @@ case "$cmd" in
         [[ "$unit" == $pattern ]] || continue
         if [[ "$kind" == path && "$unit" == *.path ]] ||
            [[ "$kind" == service && "$unit" == *.service ]]; then
-          printf '%s loaded active running fake\\n' "$unit"
+          printf '%s loaded active running fake\n' "$unit"
         fi
       done < "$FAKE_STATE_DIR/$state_file"
     done
