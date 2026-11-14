@@ -192,6 +192,67 @@ fi
 [[ -z "$(compgen -G "$STAGE/etc/systemd/system/baft-tunnel-agent@*" || true)" ]]
 [[ ! -L "$STAGE/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@iran.path" && ! -e "$STAGE/var/lib/baft-tunnel-agent" ]]
 
+# Engine-store pointer rollback after engine install succeeds but verification fails.
+# This fake CLI exercises install.sh's transaction/rollback shell path without a production failpoint.
+ENGINE_FAKE="$TMP/engine-fake"
+cat > "$ENGINE_FAKE" <<'EOF_ENGINE_FAKE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "\${1:-}" == "--version" ]]; then echo "baft-tunnel engine-test"; exit 0; fi
+if [[ "\${1:-}" == "engine" && "\${2:-}" == "manifest" ]]; then
+  printf '{"engines":[{"id":"baft"]}\n'
+  exit 0
+fi
+if [[ "\${1:-}" == "engine" && "\${2:-}" == "install" ]]; then
+  shift 2
+  store=""; asset=""
+  while (($#)); do
+    case "$1" in
+      --store) store="$2"; shift 2 ;;
+      --binary) asset="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -n "$store" && -n "$asset" ]]
+  digest="$(sha256sum "$asset" | awk '{print $1}')"
+  engine_dir="$store/baft"
+  mkdir -p "$engine_dir/releases/$digest"
+  cp "$asset" "$engine_dir/releases/$digest/engine"
+  if [[ -L "$engine_dir/current" ]]; then
+    old="$(readlink "$engine_dir/current")"
+    ln -sfn "$old" "$engine_dir/previous"
+  fi
+  ln -sfn "releases/$digest" "$engine_dir/current"
+  exit 0
+fi
+if [[ "\${1:-}" == "engine" && "\${2:-}" == "verify" ]]; then
+  [[ "\${BAFT_TEST_FAIL_VERIFY:-0}" != "1" ]] || exit 42
+  exit 0
+fi
+echo "unexpected fake CLI invocation: $*" >&2
+exit 64
+EOF_ENGINE_FAKE
+chmod 755 "$ENGINE_FAKE"
+ENGINE_FAIL_STAGE="$TMP/engine-fail-stage"
+"$INSTALL" --binary "$ENGINE_FAKE" --destdir "$ENGINE_FAIL_STAGE" >/dev/null
+ENGINE_DIR="$ENGINE_FAIL_STAGE/usr/local/lib/baft-tunnel-engines/baft"
+OLD_CURRENT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+OLD_PREVIOUS="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+mkdir -p "$ENGINE_DIR/releases/$OLD_CURRENT" "$ENGINE_DIR/releases/$OLD_PREVIOUS"
+printf 'old-current\n' > "$ENGINE_DIR/releases/$OLD_CURRENT/engine"
+printf 'old-previous\n' > "$ENGINE_DIR/releases/$OLD_PREVIOUS/engine"
+ln -s "releases/$OLD_CURRENT" "$ENGINE_DIR/current"
+ln -s "releases/$OLD_PREVIOUS" "$ENGINE_DIR/previous"
+printf 'candidate-engine\n' > "$TMP/engine-candidate"
+if BAFT_TEST_FAIL_VERIFY=1 "$INSTALL" --binary "$ENGINE_FAKE" --baft-engine "$TMP/engine-candidate" --destdir "$ENGINE_FAIL_STAGE" >"$TMP/engine-fail.log" 2>&1; then
+  echo "engine verification failure unexpectedly succeeded" >&2
+  exit 1
+fi
+[[ "$(readlink "$ENGINE_DIR/current")" == "releases/$OLD_CURRENT" ]]
+[[ "$(readlink "$ENGINE_DIR/previous")" == "releases/$OLD_PREVIOUS" ]]
+[[ -f "$ENGINE_DIR/releases/$OLD_CURRENT/engine" && -f "$ENGINE_DIR/releases/$OLD_PREVIOUS/engine" ]]
+[[ "$(grep -c 'previous files restored' "$TMP/engine-fail.log")" == "1" ]]
+
 # --baft-engine: needs --binary, and a binary whose digest is not the built-in pin is refused
 # with the previous install restored and no engine made current.
 if bash "$INSTALL" --baft-engine "$FAKE" --destdir "$TMP/engine-only" >/dev/null 2>&1; then
