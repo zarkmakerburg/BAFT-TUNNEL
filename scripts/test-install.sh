@@ -161,8 +161,8 @@ grep -Fq 'group $AGENT_USER must be exclusive to the dedicated agent account' "$
 grep -Fq 'id -gn "$AGENT_USER"' "$ROOT/scripts/install-agent-control.sh"
 grep -Fq 'getent passwd | awk -F: -v gid="$AGENT_GID"' "$ROOT/scripts/install-agent-control.sh"
 grep -Fq 'OTHER_PRIMARY_USERS' "$ROOT/scripts/install-agent-control.sh"
-grep -Fq 'pending control request exists at $request' "$ROOT/scripts/install-agent-control.sh"
-grep -Fq 'control request appeared during directory migration' "$ROOT/scripts/install-agent-control.sh"
+grep -Fq 'pending control request exists' "$ROOT/scripts/migrate-agent-control-dir.sh"
+grep -Fq 'request appeared during directory migration' "$ROOT/scripts/migrate-agent-control-dir.sh"
 grep -Fq 'root:baft-tunnel-agent 770' "$ROOT/scripts/install-agent-control.sh"
 if "$UNINSTALL" --destdir "$STAGE" --purge-config >/dev/null 2>&1; then
   echo "uninstall accepted config purge without --yes" >&2
