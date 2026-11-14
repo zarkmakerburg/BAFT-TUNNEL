@@ -151,6 +151,14 @@ grep -Fxq "$AGENT_SERVICE" "$CASE/state/active"
 [[ "$(sed -n '11p' "$CASE/log")" == "start $AGENT_PATH2" ]]
 [[ "$(sed -n '12p' "$CASE/log")" == "start $AGENT_SERVICE" ]]
 
+# A fresh install may not have created the shared request directory yet.
+setup_case
+rm -rf "$FAKE_CONTROL_DIR"
+printf 'MISSING\\n' > "$FAKE_CONTROL_STATE"
+run_helper
+[[ -d "$FAKE_CONTROL_DIR" ]]
+[[ "$(cat "$FAKE_CONTROL_STATE")" == 'root:baft-tunnel-agent 770' ]]
+
 # Active root helper and pre-existing pending request must refuse before stopping.
 setup_case
 printf '%s\n' 'baft-tunnel-control-setup@iran.service' >> "$CASE/state/active"
