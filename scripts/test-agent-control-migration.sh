@@ -196,9 +196,10 @@ expect_fail
 setup_case
 mkdir -p "$CASE/state-dir"
 chmod 0700 "$CASE/state-dir"
-ln -s "$CASE/lock-target" "$CASE/state-dir/migration.lock"
+ln -s "$CASE/journal-target" "$CASE/state-dir/migration-v1.units"
 expect_fail
 ! grep -q '^stop ' "$CASE/log"
+grep -q 'migration journal must not be a symlink' "$CASE/out"
 
 # A concurrent migration holding the lock must prevent a second invocation.
 setup_case
