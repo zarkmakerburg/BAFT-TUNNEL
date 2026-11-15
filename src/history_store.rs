@@ -337,6 +337,8 @@ fn write_atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
             .create(true)
             .truncate(true)
             .mode(0o600)
+            // Never write through a planted link at the temporary name (audit A-01).
+            .custom_flags(libc::O_NOFOLLOW)
             .open(&tmp)?;
         f.write_all(&bytes)?;
         f.sync_all()?;
@@ -415,6 +417,20 @@ mod tests {
         )
         .unwrap();
         assert!(LongHistory::open(Some(&d), T0 + 60).load_error.is_some());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_planted_link_at_the_temporary_name_is_not_followed() {
+        let d = dir("tmplink");
+        let target = d.join("target");
+        std::fs::write(&target, "keep").unwrap();
+        std::os::unix::fs::symlink(&target, d.join("history.json.tmp")).unwrap();
+        let mut h = LongHistory::open(Some(&d), T0);
+        h.record(T0, true, Some(1.0), None);
+        h.flush(T0);
+        assert!(h.write_error.is_some());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
         let _ = std::fs::remove_dir_all(&d);
     }
 
