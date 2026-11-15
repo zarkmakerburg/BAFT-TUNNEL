@@ -183,7 +183,7 @@ Effort: **S** = one small PR; **M** = one or two PRs, about a day with CI; **L**
 | S5 | Full independent pre-stable security review | — | — | O6 |
 | S6 | ~~Licence review of distributing the AGPL BAFT engine~~ Closed 2026-11-09: the owner confirmed BAFT is theirs and its use is allowed, so shipping it as a separate AGPL binary (ADR-0019) needs no further review. Left as a release check in U6: the bundle keeps the engine's source link and the licence texts and SBOM of its third-party modules. Copying BAFT code into BAFT-TUNNEL's own Rust is a separate act: ADR-0019 still asks for the other BAFT contributors' consent ([BAFT_ENGINE_INTEGRATION_DESIGN.md](BAFT_ENGINE_INTEGRATION_DESIGN.md) §15) and its own ADR; nothing in this plan does that | — | — | — |
 | S7 | IPv6 evidence (the catalog says `unknown`) if the LAB hosts have IPv6 | S | Yes | — |
-| S8 | CRL reload without restarting the unit (today every activation drops connections) | M | Yes | — |
+| S8 | **Implemented (CI only, not LAB):** the tcp-tls listener reloads changed CA/CRL/cert/key files for new connections (fail closed if the new files do not load); `apply-crl.sh apply … --no-restart` and `push-crl.sh --no-restart` activate without a restart. Live sessions are not re-checked, so a revocation that must cut them off keeps the default restart. Original scope: CRL reload without restarting the unit (today every activation drops connections) | M | Yes | — |
 | S9 | Acceptance on fresh VMs instead of cleaned shared hosts | S | Yes | O4 |
 | S10 | Find the source of the nftables address-set drift on the abroad host, so firewall neutrality can be claimed | — | — | O2 |
 

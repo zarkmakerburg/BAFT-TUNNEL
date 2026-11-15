@@ -6,7 +6,7 @@
 //! is subject to the same fail-closed authorization. The engine id is `tcp-tls` for the
 //! built-in TLS 1.3 mutual-authentication engine.
 
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use futures::future::BoxFuture;
@@ -15,7 +15,7 @@ use tokio::{
     net::TcpStream,
     time::timeout,
 };
-use tokio_rustls::{TlsAcceptor, TlsConnector};
+use tokio_rustls::TlsConnector;
 
 use crate::{handshake, noise, session_status::Stage};
 
@@ -37,14 +37,18 @@ pub trait StreamEngine: Send + Sync + 'static {
 
 /// TLS 1.3 + mutual certificate authentication, SHA-256 pin(s) and URI SAN identity.
 pub struct TlsEngine {
-    acceptor: Option<TlsAcceptor>,
+    acceptor: Option<Arc<crate::tls::ReloadingAcceptor>>,
     connector: Option<(TlsConnector, rustls::pki_types::ServerName<'static>)>,
     peer_id: String,
     peer_pins: String,
 }
 
 impl TlsEngine {
-    pub fn listener(acceptor: TlsAcceptor, peer_id: String, peer_pins: String) -> Self {
+    pub fn listener(
+        acceptor: Arc<crate::tls::ReloadingAcceptor>,
+        peer_id: String,
+        peer_pins: String,
+    ) -> Self {
         Self {
             acceptor: Some(acceptor),
             connector: None,
@@ -78,7 +82,9 @@ impl StreamEngine for TlsEngine {
             let acceptor = self
                 .acceptor
                 .as_ref()
-                .context("engine is not configured as a listener")?;
+                .context("engine is not configured as a listener")?
+                .current()
+                .context(Stage::SecureChannel)?;
             let secure = timeout(HANDSHAKE_TIMEOUT, acceptor.accept(socket))
                 .await
                 .context("TLS handshake timeout")

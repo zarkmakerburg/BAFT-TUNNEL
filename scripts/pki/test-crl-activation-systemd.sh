@@ -125,4 +125,13 @@ if find "$TMP" -maxdepth 1 \( -name '.current.crl.rollback.*' -o -name '.current
   echo 'CRL systemd test: temporary rollback/staging files leaked' >&2; exit 1
 fi
 
-echo "BAFT_CRL_SYSTEMD_ACTIVATION=PASS (systemd $systemd_version, successful restart, one-shot restart failure, atomic rollback and service recovery, root-only lock/backup)"
+# S8: --no-restart activates the CRL without restarting the unit (same main PID).
+openssl ca -gencrl -batch -config "$TMP/openssl.cnf" -out "$TMP/candidate-norestart.crl" >/dev/null 2>&1
+pid_before="$(sudo systemctl show -p MainPID --value "$SERVICE")"
+sudo "$APPLY" apply "$TMP/ca.crt" "$TMP/current.crl" "$TMP/candidate-norestart.crl" "$INSTANCE" --no-restart >"$TMP/norestart.log" 2>&1
+grep -q 'CRL_APPLY=PASS' "$TMP/norestart.log" || { cat "$TMP/norestart.log" >&2; exit 1; }
+pid_after="$(sudo systemctl show -p MainPID --value "$SERVICE")"
+[[ "$pid_before" == "$pid_after" && "$pid_after" != 0 ]] || { echo 'CRL systemd test: --no-restart restarted the unit' >&2; exit 1; }
+[[ "$(openssl crl -in "$TMP/current.crl" -noout -fingerprint -sha256)" == "$(openssl crl -in "$TMP/candidate-norestart.crl" -noout -fingerprint -sha256)" ]] || { echo 'CRL systemd test: --no-restart did not install the CRL' >&2; exit 1; }
+
+echo "BAFT_CRL_SYSTEMD_ACTIVATION=PASS (systemd $systemd_version, successful restart, one-shot restart failure, atomic rollback and service recovery, root-only lock/backup, no-restart activation)"

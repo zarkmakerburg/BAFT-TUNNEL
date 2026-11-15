@@ -7,12 +7,16 @@ usage() {
   cat <<'USAGE'
 Usage:
   apply-crl.sh check CA_CERT CURRENT_CRL CANDIDATE_CRL
-  apply-crl.sh apply CA_CERT CURRENT_CRL CANDIDATE_CRL INSTANCE
+  apply-crl.sh apply CA_CERT CURRENT_CRL CANDIDATE_CRL INSTANCE [--no-restart]
 
 check validates signature, CRL number monotonicity, and candidate validity
 without changing files or services. apply additionally requires root/systemd,
 atomically replaces CURRENT_CRL, restarts baft-tunnel@INSTANCE.service, and
 restores the previous CRL if restart/active-state verification fails.
+With --no-restart the unit keeps running: new connections use the new CRL
+(the listener reloads changed TLS files, the dialer reloads on every reconnect),
+live sessions are not dropped and are not re-checked against it. Use the default
+restart when a revocation must cut off existing sessions.
 USAGE
 }
 die() { echo "apply-crl: $*" >&2; exit 2; }
@@ -21,11 +25,13 @@ die() { echo "apply-crl: $*" >&2; exit 2; }
 ACTION="$1"; shift
 case "$ACTION" in
   check) [[ $# == 3 ]] || { usage; exit 2; } ;;
-  apply) [[ $# == 4 ]] || { usage; exit 2; } ;;
+  apply) [[ $# == 4 || ( $# == 5 && "${5}" == "--no-restart" ) ]] || { usage; exit 2; } ;;
   *) usage; die "unknown action: $ACTION" ;;
 esac
 CA_CERT="$1"; CURRENT_CRL="$2"; CANDIDATE_CRL="$3"
 INSTANCE="${4:-}"
+NO_RESTART=0
+[[ "${5:-}" == "--no-restart" ]] && NO_RESTART=1
 
 for file in "$CA_CERT" "$CURRENT_CRL" "$CANDIDATE_CRL"; do
   [[ -f "$file" && ! -L "$file" && -r "$file" ]] || die "expected readable regular non-symlink file: $file"
@@ -176,7 +182,7 @@ install -o root -g root -m 0644 "$CANDIDATE_CRL" "$STAGED"
 "$0" check "$CA_CERT" "$CURRENT_CRL" "$STAGED" >/dev/null
 mv -f "$STAGED" "$CURRENT_CRL"
 activation_status=0
-systemctl restart "$SERVICE" || activation_status=$?
+if [[ "$NO_RESTART" == 1 ]]; then :; else systemctl restart "$SERVICE" || activation_status=$?; fi
 if [[ "$activation_status" == 0 ]]; then
   systemctl is-active --quiet "$SERVICE" || activation_status=$?
 fi
@@ -192,7 +198,7 @@ INSTALLED=2
 install -o root -g root -m 0644 "$BACKUP" "$STAGED"
 mv -f "$STAGED" "$CURRENT_CRL"
 INSTALLED=1
-if systemctl restart "$SERVICE" && systemctl is-active --quiet "$SERVICE"; then
+if { [[ "$NO_RESTART" == 1 ]] || systemctl restart "$SERVICE"; } && systemctl is-active --quiet "$SERVICE"; then
   rm -f "$BACKUP"
   INSTALLED=1
   echo "CRL_APPLY=ROLLED_BACK service=$SERVICE activation_status=$activation_status" >&2
