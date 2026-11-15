@@ -19,6 +19,18 @@ Evidence levels follow the project rule: CI ≠ VM ≠ LAB ≠ Production. Every
 
 A soak probe failure is accepted only when the host journals prove an external path outage in that window (tunnel TCP timeout plus an incoming SSH reset or an unanswered SYN on the same host), with automatic recovery, 0 restarts and flat fd/RSS. Any other failure fails the gate. Accepted-outage runs are listed in the release notes.
 
+## Local browser pass of the first-run flows (CI/local-browser evidence, not LAB)
+
+Run on 2026-11-15 in a cloud container, with Chromium (Playwright) against a real `baft-tunnel agent` built from 76c12cb (panel and `src/` unchanged since), running as `baft-tunnel-agent` with the root setup and PKI helpers emulated by a loop in place of the systemd path units. Loopback only; no LAB host was touched.
+
+| Flow | Script | Result |
+|---|---|---|
+| Panel pairing (wizard to joined, noise-tcp, peer bundle and checksum) | `scripts/panel-qa/panel-pairing.js` | PASS, 11 of 11 in English and 11 of 11 in Persian. |
+| PKI enrollment (CSR by the root PKI helper, signed on a throwaway offline CA with `scripts/pki/baft-pki.sh`, certificate, CA and CRL installed through the panel) | `scripts/panel-qa/pki-real-agent.js` (new, no mocked API) | PASS, 15 of 15 in English and 15 of 15 in Persian: Init stays locked until the install, the CSR holds no private key, the shown fingerprint matches the issued certificate, no 5xx, no page errors. |
+| BAFT guided setup (signed rc.12 engine `e4f04837…` installed in the engine store with the installer's own `engine install`/`engine verify` commands) | `scripts/panel-qa/wizard-baft.js` | PASS, 12 of 12 (English and Persian): BAFT shown as Preview and selectable, protocol v1 kept, peer certificate name kept. |
+
+Found and fixed during the pass: `panel-pairing.js` did not fill this server's certificate name, which the wizard requires since D2 made tcp-tls the default (a stale test, not a product change). Environment notes, not product defects: without the engine in the store the BAFT choice is disabled with an install hint, and without `/etc/baft-tunnel/pki` at root:baft-tunnel 0750 (as `install.sh` creates it) the PKI helper refuses CSR creation with a clear reason.
+
 ## Earlier context (not on the rc.12 binary)
 
 - Probe-loss root cause: on 2026-11-15 the Iran host's network path dropped for 30–60 s at 07:16Z, 11:56Z, 15:27Z, 17:47Z and 18:57Z; each matched tunnel TCP timeouts, unanswered reconnects and (for most) incoming SSH resets on the Iran host, with 0 process restarts.
@@ -28,10 +40,11 @@ A soak probe failure is accepted only when the host journals prove an external p
 
 1. **Short outages on the operator's path still drop in-flight requests.** The tunnel detects a dead link in about 20 s and reconnects without a restart; requests in flight at that moment fail. Accepted-outage soak run: 43744552137 (1 of 272 probes).
 2. **Integrity probe needs protocol v2 on both nodes.** `setup init` defaults to protocol v1; with v1 the Integrity tier stays Unknown (ADR-0028, no silent downgrade). One probe start per 60 s per link, so the second node probing right after the first reports `rate_limited`.
-3. **Not verified in a browser on the LAB:** panel pairing, PKI enrollment (CSR/certificate upload) and BAFT guided setup in the new dashboard. These flows are LAB-proven through the agent API on earlier builds (panel pairing run 42779915532, D2 run 42996224181, B4 run 43644908151) and keep the same code paths; PKI enrollment has local browser QA with a mocked agent; pairing and the BAFT wizard have no browser run on the new dashboard.
+3. **Not verified in a browser on the LAB:** panel pairing, PKI enrollment (CSR/certificate upload) and BAFT guided setup in the new dashboard. They passed a local browser run against a real agent built from the release commit (see above), and are LAB-proven through the agent API on earlier builds (panel pairing run 42779915532, D2 run 42996224181, B4 run 43644908151).
 4. **Open Low/Medium dashboard items** from the independent review, listed in `docs/PANEL_REDESIGN_PARITY.md` (hardcoded capability pills, `|| 0` KPI defaults, colour-only chart legend, small chart text on narrow cards, drawer/RTL details, lazy toast live region, language switch rebuilds the shell).
 5. **Host drift on the abroad LAB host** (unrelated firewall/listener changes during runs) stays an operational note (S10), not a product finding.
-6. Reverse and BAFT remain Preview; Ready stays Unknown by design; no CAP_NET_ADMIN in any component; firewall status stays Unknown (ADR-0030).
+6. **Agent HTTP reason phrase:** some error statuses (for example 409) carry the wrong reason phrase text (`Request Header Fields Too Large`); the status code and JSON body are correct. Cosmetic Low, fixed after 0.2.0.
+7. Reverse and BAFT remain Preview; Ready stays Unknown by design; no CAP_NET_ADMIN in any component; firewall status stays Unknown (ADR-0030).
 
 ## Review of the delta since the pre-Stable audit
 
