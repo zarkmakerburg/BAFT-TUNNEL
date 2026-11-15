@@ -160,6 +160,10 @@ Two merged streams are outside this queue and carry no product claim: CodSpeed p
 4. Monitoring, alerts and operational history.
 5. Third-party integration API for external customer/subscription panels if the owner prioritizes it.
 
+### 5a. Optional add-on packs (after Stable 0.2.0)
+
+**Adaptive Traffic Policy Pack — Proposed, not started.** Optional add-on (one shared engine, profiles Balanced/Gaming/Trading/Streaming/Bulk, Traffic Policy Engine, Adaptive Optimization) that tunes BAFT-TUNNEL's own queueing, scheduling and fairness. Userspace only (no `CAP_NET_ADMIN`, ADR-0030); no claim about internet path latency; does not manage users or replace Xray/panels. Priority: after Stable 0.2.0 and Phase 6 gates; it must not delay core work or LAB use for them. Plan, phases, acceptance matrix and benchmark plan: [ADAPTIVE_TRAFFIC_POLICY_PACK.md](ADAPTIVE_TRAFFIC_POLICY_PACK.md). Decision: [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) (Proposed). Epic [#226](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/226), work items #227-#242. Every phase is Proposed; no profile is ready without measured evidence against Balanced and Baseline.
+
 ### P3 — new protocol/transport options
 
 WebSocket/TLS, uTLS sidecar, QUIC/UDP, Relay, multi-engine failover and automatic rotation are gated research. Do not begin them while P0 remains open unless there is an explicit owner priority change and a written acceptance plan. Do not claim traffic invisibility or censorship resistance.
