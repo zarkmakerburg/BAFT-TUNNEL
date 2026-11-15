@@ -22,6 +22,8 @@ mod control_socket;
 mod engine;
 #[path = "../src/engine_store.rs"]
 mod engine_store;
+#[path = "../src/firewall_read.rs"]
+mod firewall_read;
 #[path = "../src/handshake.rs"]
 mod handshake;
 #[path = "../src/integrity_probe.rs"]

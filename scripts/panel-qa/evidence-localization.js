@@ -14,7 +14,7 @@ const codes = [
   'pf.service_port.serve_accepting','pf.service_port.serve_waiting','pf.service_port.forward_busy','pf.service_port.forward_free',
   'pf.tunnel_port.pass','pf.tunnel_port.warning','pf.service_unit.pass','pf.service_unit.warning',
   'pf.peer_reachability.pass','pf.peer_reachability.warning','pf.peer_reachability.blocked','pf.peer_reachability.error','pf.peer_reachability.unknown',
-  'pf.peer_identity.unknown','pf.firewall.unknown',
+  'pf.peer_identity.unknown','pf.firewall.unknown','pf.firewall.open','pf.firewall.allowed','pf.firewall.no_rule','pf.firewall.blocked_rule','pf.firewall.complex','pf.firewall.unavailable','pf.firewall.helper_missing',
   'diag.source.unit_session','diag.source.active_tcp_probe','diag.source.last_failure','diag.source.config','diag.source.none','diag.source.unit_counters',
   'diag.tcp_reachability.pass','diag.tcp_reachability.fail','diag.tcp_reachability.unknown','diag.tcp_reachability.not_applicable',
   'diag.secure_channel.pass','diag.secure_channel.fail','diag.secure_channel.unknown',

@@ -8,6 +8,7 @@ mod config;
 mod control_socket;
 mod engine;
 mod engine_store;
+mod firewall_read;
 mod handshake;
 mod integrity_probe;
 pub mod key_custody;
@@ -40,6 +41,14 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Root firewall read helper (ADR-0030): fixed command of baft-tunnel-control-firewall@NAME.
+    /// Reads one TCP port from /run/baft-tunnel/control/NAME.firewall, lists the firewall
+    /// read-only and writes /run/baft-tunnel/firewall/NAME.json. Not for interactive use.
+    #[command(hide = true)]
+    FirewallReadHelper {
+        #[arg(long)]
+        instance: String,
+    },
     /// Accept authenticated peers and forward streams to one fixed destination.
     Serve {
         #[arg(long)]
@@ -636,6 +645,23 @@ async fn run() -> Result<()> {
         Command::NoiseKeygen { out } => {
             let public = engine::write_noise_keypair(&out)?;
             println!("{public}");
+            Ok(())
+        }
+        Command::FirewallReadHelper { instance } => {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if unsafe { libc::geteuid() } != 0 {
+                bail!("the firewall read helper runs as root from its systemd unit only");
+            }
+            let doc = firewall_read::run(
+                &instance,
+                std::path::Path::new(apply::CONTROL_DIR),
+                std::path::Path::new(firewall_read::RESULT_DIR),
+                &firewall_read::read_system,
+            )?;
+            println!(
+                "firewall read helper for {instance}: port={} backend={} verdict={}",
+                doc["port"], doc["backend"], doc["verdict"]
+            );
             Ok(())
         }
         Command::AgentToken { out } => {

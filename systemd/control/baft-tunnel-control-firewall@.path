@@ -1,0 +1,9 @@
+[Unit]
+Description=BAFT-TUNNEL agent request to read the firewall for instance %i (read-only)
+
+[Path]
+PathExists=/run/baft-tunnel/control/%i.firewall
+Unit=baft-tunnel-control-firewall@%i.service
+
+[Install]
+WantedBy=multi-user.target

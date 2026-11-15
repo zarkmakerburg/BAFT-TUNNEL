@@ -141,7 +141,7 @@ fn direction_model() -> Value {
             "not_claimed": "available, stable or production-ready Reverse for any engine"
         },
         "nat": "the dialing side needs outbound reachability to the listener's tunnel port; the listener needs that port reachable inbound",
-        "firewall": "inbound allow on the listener's tunnel port; not inspected by the agent (unknown)"
+        "firewall": "inbound allow on the listener's tunnel port; read only through the optional root firewall helper (ADR-0030); unknown without it"
     })
 }
 
