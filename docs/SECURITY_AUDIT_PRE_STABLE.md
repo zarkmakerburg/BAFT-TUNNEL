@@ -195,4 +195,6 @@ After both passes, nothing found at Critical, High or Medium in the components m
 and A-07 (Low) are release-process hardening recommended before the first stable tag. Still not
 audited: `install-agent-control.sh` (reviewed in PR #199), `quick-install.sh`, the reverse ingress
 relay and `integrity_probe.rs` beyond a skim, `run_lifecycle`, panel code outside the B4..B6 diffs,
-repository rulesets and branch protection settings. Evidence level stays source review + CI.
+repository rulesets and branch protection settings. Not covered at all: PR #215 (S8 TLS file reload
+without restart, `apply-crl --no-restart`), merged as `5e21146` after the audited SHA; it changes the
+TLS trust path and needs its own review before the Stable gate. Evidence level stays source review + CI.
