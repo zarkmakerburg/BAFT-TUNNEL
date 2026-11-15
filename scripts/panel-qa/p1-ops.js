@@ -42,6 +42,7 @@ const audit = { entries: [{ audit_version: 2, ts: now - 20, actor: { kind: 'api_
   await p.goto(base + '/#/tunnels'); await p.waitForTimeout(600);
   txt = await p.locator('.content').innerText();
   ok('tunnels show end-to-end state, peer and last verified', /در حال انتقال داده|Carrying traffic/.test(txt) && /iran/.test(txt));
+  await p.goto(base + '/#/diagnostics'); await p.waitForTimeout(500);
   await p.locator('button', { hasText: /اجرای عیب‌یابی|Run diagnostics/ }).click(); await p.waitForTimeout(500);
   txt = await p.locator('.content').innerText();
   ok('diagnostics POST issued and tiers rendered separately', posted === 1 && /مسیر داده|Data path/.test(txt) && /یکپارچگی|Integrity/.test(txt));

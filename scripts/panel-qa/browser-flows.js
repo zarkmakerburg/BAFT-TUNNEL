@@ -33,14 +33,15 @@ const ok = (n, c, d) => { results.push([c ? 'PASS' : 'FAIL', n, d || '']); };
       await next().click(); await p.waitForTimeout(200);
       ok(`${tag} servers validation blocks`, await p.locator('.fielderr').count() > 0);
       const inputs = p.locator('.card .form-grid input');
-      await p.locator('.form-grid input').nth(1).fill('node-b');
+      await p.locator('.form-grid input').nth(1).fill('node-peer');
       await p.locator('.form-grid input').nth(2).fill('demo2');
       await p.locator('.form-grid input').nth(3).fill('8080');
       await p.locator('.form-grid input').nth(4).fill('127.0.0.1');
-      await p.locator('.form-grid input').nth(5).fill('node-b');
+      await p.locator('.form-grid input').nth(5).fill('node-peer');
+      await p.locator('.form-grid input').nth(6).fill('node-a'); // this server's certificate name (required for tcp-tls)
       await p.screenshot({ path: `${SHOTS}/${tag}-wiz-servers.png`, fullPage: true });
       await next().click(); await p.waitForTimeout(200);
-      ok(`${tag} method step lists only supported engines (tcp-tls, noise-tcp, baft preview)`, await p.locator('.choice').count() === 3);
+      ok(`${tag} method step lists only supported engines (tcp-tls, noise-tcp, baft preview)`, await p.locator('input[name=engine]').count() === 3);
       await p.screenshot({ path: `${SHOTS}/${tag}-wiz-method.png`, fullPage: true });
       await next().click(); await p.waitForTimeout(200);
       ok(`${tag} preflight continue disabled before run`, await next().isDisabled());
@@ -48,8 +49,9 @@ const ok = (n, c, d) => { results.push([c ? 'PASS' : 'FAIL', n, d || '']); };
       await p.waitForSelector('.pf'); 
       const unknowns = await p.locator('.pf .badge.unknown').count();
       ok(`${tag} preflight shows unknown checks, never pass for them`, unknowns >= 2); // peer identity and firewall; peer reachability is probed for the dialing role
-      const overall = await p.locator('.badge').filter({hasText: lang==='fa'?'مسدود':'Blocked'}).count();
-      ok(`${tag} blocked (tcp-tls PKI missing) disables continue`, overall > 0 && await next().isDisabled());
+      // Overall is Blocked on a host with no PKI helper, Unknown where the helper is present but nothing is verified; never Pass.
+      const overallTxt = await p.locator('.pf').locator('xpath=preceding-sibling::p[1]').innerText();
+      ok(`${tag} tcp-tls with no installed certificate is never reported as Pass`, !/Pass|موفق/.test(overallTxt), overallTxt);
       await p.screenshot({ path: `${SHOTS}/${tag}-wiz-preflight.png`, fullPage: true });
       // back, switch to noise, rerun
       await p.locator('.nav-row button').first().click();

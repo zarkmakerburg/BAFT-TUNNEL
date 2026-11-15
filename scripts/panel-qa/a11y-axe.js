@@ -11,7 +11,7 @@ const path = require('path');
 const PANEL = path.resolve(__dirname, '../../panel');
 const AXE = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
 const FAIL_ON = (process.env.BAFT_A11Y_FAIL_ON || 'critical,serious').split(',');
-const PAGES = ['overview', 'servers', 'tunnels', 'setup', 'agent', 'activity', 'settings'];
+const PAGES = ['overview', 'tunnels', 'servers', 'monitoring', 'setup', 'diagnostics', 'activity', 'agent', 'settings'];
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
 
 function serve() {

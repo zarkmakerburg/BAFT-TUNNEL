@@ -1,5 +1,79 @@
 # BAFT-TUNNEL Design System
 
+This file has two parts. **Part A** is the design system of the local Agent panel (`panel/`), implemented in `panel/panel.css`, `panel/ui.js` and `panel/app.js` (ADR-0032). **Part B** is the earlier design standard for the future Central Fleet Console; it is unchanged and still does not authorize any Central Fleet work.
+
+---
+
+# Part A — Local panel: "Weave"
+
+## A1. Philosophy
+The panel is an operations console for one node. Four rules decide every design question:
+1. **Truth before polish.** Every value comes from an endpoint or is shown as Unknown / Unavailable / Error. Unknown is never styled as healthy. "Ready" does not exist as a state (ADR-0028, READINESS_CONTRACT).
+2. **Status is never colour alone.** Every state is glyph + word + colour.
+3. **Progressive disclosure.** Routine tasks first; evidence, receipts and raw configuration are one click away and never hidden from advanced users.
+4. **RTL is a layout, not a mirror.** Persian RTL and English LTR share one stylesheet written with logical properties; technical identifiers keep LTR order.
+
+Identity: the mark is two strands crossing between two endpoints (*baft* = weave); the accent is a cool cyan on deep navy, restrained so status colours stay the loudest thing on screen.
+
+## A2. Tokens (all defined once in `panel/panel.css`)
+| Group | Tokens |
+|---|---|
+| Surface | `--bg --nav --surface --surface-2 --surface-3 --line --line-strong` |
+| Text | `--fg --muted` (muted ≥ 4.5:1 on every surface, both themes) |
+| Accent | `--accent --accent-fg --accent-soft --accent-line` |
+| Status | `--ok --warn --bad --unknown --info` + `-bg` tints |
+| Chart | `--chart-1 --chart-2 --chart-grid` |
+| Radius | `--r-sm 6 · --r 10 · --r-lg 14 · --r-pill` |
+| Spacing | 4 · 8 · 12 · 16 · 24 · 32 · 48 (`--s1…--s7`) |
+| Type | `--fs-0 .78 · --fs-1 .85 · --fs-2 .94 (body) · --fs-3 1.05 · --fs-4 1.25 · --fs-5 1.7` rem; line-height 1.65; tabular numerals |
+| Font | `Vazirmatn` if installed, else system UI / Noto Sans Arabic; no web fonts (offline, strict CSP) |
+| Elevation | `--shadow` (cards), `--shadow-lg` (overlays only); depth is mostly borders, not shadows |
+| Size | `--ctl 40px` (44px on coarse pointers), `--sidebar 248`, `--rail 64`, `--tabbar 64`, `--topbar 60` |
+| Motion | `--t-fast 120ms · --t-base 200ms · --ease cubic-bezier(.2,.7,.2,1)` |
+
+Themes: `data-theme` = `dark` (default) · `light` · `auto` (follows the OS).
+
+## A3. Status semantics (six states)
+| State | Glyph | Meaning | Source in the panel |
+|---|---|---|---|
+| Healthy | ✓ | Evidence observed (pass / carrying traffic / listening) | `ok` |
+| Warning | ! | Degraded or needs attention (no session, stale, expiring) | `warn` |
+| Critical | ✕ | Failed (down, not responding, expired) | `bad` |
+| Offline | ○ | Deliberately stopped | `off` |
+| Connecting | ◌ | In progress (pulsing glyph) | `conn` / `info` |
+| Unknown | ? | Not measured; dashed outline | `unknown` |
+
+Data states every page handles: **loading** (skeleton), **empty**, **unavailable** (endpoint not offered in this mode, 404), **error** (request failed; never replaced by a default), **stale** (data older than 15 s: dimmed + "Updated … ago" in warning colour), **partial** (banner naming the sources that failed), **success** (toast + receipt).
+
+## A4. Layout and responsive behaviour
+- Shell: sidebar (grouped: Operate · Set up · Troubleshoot · System) + top bar (breadcrumb/title, freshness, state badge, command palette, notifications, theme, language).
+- ≥ 900 px: sidebar, full (248) or icon rail (64, user choice, `Ctrl/⌘ B`). 1100 px and below: palette collapses to an icon.
+- < 900 px (tablet and phone): sidebar becomes a **drawer** (native `<dialog>`, scroll locked, focus returned) opened from the top-bar menu button, plus a bottom tab bar (Overview · Tunnels · Create · Diagnostics · More). Tables become labelled cards.
+- < 700 px: theme/language move to Settings and the palette; the state badge shows its glyph (the word stays for screen readers).
+- Breakpoints: 420 · 700 · 900 · 1100. Content max width 1320.
+
+## A5. Components (`panel/ui.js`)
+Badge/pill · KPI card · Card · Key-value list · Empty/Unavailable/Error block · Skeleton · Warning list · Segmented control · Command palette (`Ctrl/⌘ K`, combobox/listbox, arrow keys) · Notification popover · Navigation drawer · Confirm dialog (names the action and its consequence; used for Start/Stop/Restart) · Toast (polite live region). All overlays are native `<dialog>`: focus trap, Esc, inert background, focus restored to the opener.
+
+Charts (`panel/charts.js`) are dependency-free SVG with `role="img"` and a text alternative; time axes stay left-to-right in RTL (conventional for series), numbers use locale digits.
+
+## A6. Motion
+Purposeful only: view enter (6 px rise, 200 ms), drawer/dialog entrance, skeleton shimmer, pulse on *Connecting*. No parallax, no decorative loops, nothing that moves while an operator reads values. `prefers-reduced-motion` removes all animation and transitions.
+
+## A7. Accessibility rules
+Semantic landmarks, one `h1` per page, skip link, visible 2 px focus ring, 44 px targets on touch, labelled controls, `aria-live` for results and toasts, `aria-busy` while loading, `aria-current` in navigation, status never by colour alone, forced-colors borders. CI runs axe-core (critical/serious fail) over every page in fa/en, dark/light, desktop/mobile (`scripts/panel-qa/a11y-axe.js`).
+
+## A8. RTL and mixed content
+`dir` and `lang` are set on `<html>`; layout uses `inline-*`/`block-*` logical properties only; directional icons use `.flip`. IDs, IPs, ports, URLs, hashes, versions and commands are wrapped in `<bdi dir="ltr">` (`BAFT.ltr`) or `<code>`/`<pre>` with `dir="ltr"`. Numbers and dates use `fa-IR` / `en-GB` through `Intl`. Radio groups, tables, dialogs and the drawer are verified per component (`scripts/panel-qa/screenshots.js`), not by a global `direction: rtl`.
+
+## A9. What we took from the research (and what we did not)
+Patterns adopted, not code or dependencies (the panel is dependency-free, served by the agent under CSP `script-src 'self'`): shadcn/ui **sidebar** (collapsible icon rail, `Ctrl/⌘ B`, sheet-style mobile navigation, 16 rem widths), shadcn **command** (combobox palette, arrow/Enter), shadcn **data-table** conventions (labelled empty state, sr-only action labels), component.gallery conventions for badge, stepper, empty state, drawer; Motion's 0.2–0.3 s ease-out defaults; the awesome-design-md section list for this document. Not adopted: React/Tailwind/Radix (build chain and supply-chain surface, ADR-0032), Aceternity/Magic UI/React Bits effects (decorative), Spline and 3dicons (weight), mapcn (MapLibre + Tailwind; there is no multi-node geography in the backend), illustration packs (no screen needs one). See ADR-0032 for the sites that could not be consulted.
+
+---
+
+# Part B — Central Fleet Console standard (future, unchanged)
+
+
 **Status:** Initial design standard for the future Central Fleet Console.  
 **Scope:** Product UX, visual language, interaction patterns, accessibility, responsive behavior, motion, and design QA.  
 **Authority:** This document supplements (and does not override) `docs/PRODUCT_UX_ACCEPTANCE.md`, the accepted architecture decisions, security model, or phase gates. It does not authorize Central Fleet implementation, deployment, enrollment, or changes to the local Agent panel.
