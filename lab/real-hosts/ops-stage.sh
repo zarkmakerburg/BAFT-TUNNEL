@@ -155,6 +155,11 @@ op_evidence() { # label min_bytes : diagnostics, status and traffic on both node
   local label="$1" need="$2" side peer
   for side in iran abroad; do
     peer=abroad; [[ "$side" == abroad ]] && peer=iran
+    # Status reports carrying_traffic only for traffic inside its 60 s window, so measure fresh
+    # traffic right before reading each side (the previous side's reads can take that long).
+    probe_host iran 65536 >/dev/null || { echo "Direct tunnel did not carry data before reading $side evidence ($label)" >&2; exit 1; }
+    sleep 6   # the agents sample unit counters every 5 s
+    echo "op-evidence-read utc=$(date -u +%H:%M:%S) side=$side label=$label"
     p1_api "$side" GET /v1/traffic >"$LOCAL_TMP/op-traffic-$label-$side.json"
     p1_api "$side" POST /v1/diagnostics >"$LOCAL_TMP/op-diag-$label-$side.json"
     p1_api "$side" GET /v1/status >"$LOCAL_TMP/op-status-$label-$side.json"
