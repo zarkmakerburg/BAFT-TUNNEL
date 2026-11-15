@@ -22,18 +22,18 @@ pub mod engine;
 pub mod engine_store;
 #[path = "../../src/handshake.rs"]
 pub mod handshake;
+#[path = "../../src/history_store.rs"]
+pub mod history_store;
 #[path = "../../src/integrity_probe.rs"]
 pub mod integrity_probe;
 #[path = "../../src/key_custody.rs"]
 pub mod key_custody;
 #[path = "../../src/noise.rs"]
 pub mod noise;
-#[path = "../../src/pki_helper.rs"]
-pub mod pki_helper;
-#[path = "../../src/history_store.rs"]
-pub mod history_store;
 #[path = "../../src/observe.rs"]
 pub mod observe;
+#[path = "../../src/pki_helper.rs"]
+pub mod pki_helper;
 #[path = "../../src/runtime_host.rs"]
 pub mod runtime_host;
 #[path = "../../src/session_status.rs"]
@@ -101,4 +101,47 @@ pub fn handshake_server(data: &[u8]) {
         .await;
         let _ = writer.await;
     });
+}
+
+fn scratch_dir(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("baft-fuzz-{name}-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+
+/// Authenticated routes that parse a request body (plan, preflight, bundle inspect, desired, verify).
+pub fn agent_authed(data: &[u8]) {
+    let (selector, body) = data.split_first().map_or((0, &[][..]), |(s, b)| (*s, b));
+    let dir = scratch_dir("authed");
+    let _ = agent::fuzz_authed(selector, body, &dir);
+}
+
+/// The Apply request body and the plan inside it.
+pub fn apply_body(data: &[u8]) {
+    agent::fuzz_apply_body(data);
+}
+
+/// Runtime evidence files a unit publishes (session, counters, last failure) as the agent reads them.
+pub fn evidence_files(data: &[u8]) {
+    let dir = scratch_dir("evidence");
+    for name in [
+        session_status::FILE,
+        session_status::COUNTERS_FILE,
+        session_status::FAILURE_FILE,
+    ] {
+        let _ = std::fs::write(dir.join(name), data);
+    }
+    let ev = observe::read(&dir, None);
+    if let Some(c) = ev.counters.as_ref().and_then(observe::sample) {
+        let _ = observe::rates(&[c, c]);
+    }
+}
+
+/// The persisted history file as read back on agent start.
+pub fn history_file(data: &[u8]) {
+    let dir = scratch_dir("history");
+    let _ = std::fs::write(dir.join("history.json"), data);
+    let h = history_store::LongHistory::open(Some(&dir), 1_700_000_000);
+    let _ = h.view(1_700_000_000);
+    let _ = h.alerts(1_700_000_000);
 }

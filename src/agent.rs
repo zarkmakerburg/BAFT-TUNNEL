@@ -458,6 +458,51 @@ pub fn fuzz_route(head: &str, body: &[u8]) -> (u16, Value) {
     runtime.block_on(route(head, body, &ctx))
 }
 
+/// Fuzz entry: authenticated POST/PUT routes that need no root helper and no real systemd,
+/// with a throw-away state directory. `selector` picks the route, `body` is the request body.
+#[allow(dead_code)] // used by the fuzz harness only
+pub fn fuzz_authed(selector: u8, body: &[u8], state_dir: &Path) -> (u16, Value) {
+    const ROUTES: [(&str, &str); 5] = [
+        ("POST", "/v1/setup/plan"),
+        ("POST", "/v1/setup/preflight"),
+        ("POST", "/v1/setup/bundle/inspect"),
+        ("PUT", "/v1/desired"),
+        ("POST", "/v1/verify"),
+    ];
+    let (method, path) = ROUTES[selector as usize % ROUTES.len()];
+    let config = serde_json::from_value(json!({
+        "mode": "forward", "listen": "127.0.0.1:1", "remote": "192.0.2.1:8443",
+        "server_name": "x", "local_id": "a", "peer_id": "b", "tunnel_id": "t",
+        "direction": "direct", "peer_fingerprint": "00", "key": "/nonexistent/key.pem"
+    }))
+    .expect("fixed config");
+    let token = "t".repeat(40);
+    let ctx = Ctx::new(config, token.clone(), Some(state_dir.to_path_buf()));
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(route(&head, body, &ctx))
+}
+
+/// Fuzz entry: the Apply request body (strict struct) and the plan it carries.
+#[allow(dead_code)] // used by the fuzz harness only
+pub fn fuzz_apply_body(data: &[u8]) {
+    if let Ok(req) = serde_json::from_slice::<ApplyBody>(data) {
+        let _ = setup_plan(req.plan.to_string().as_bytes());
+        let _ = (
+            req.confirm,
+            req.idempotency_key.len(),
+            req.bundle,
+            req.checksum,
+        );
+    }
+}
+
 /// The panel is a fixed set of files compiled into the binary; they hold no secrets and no data.
 const PANEL_ASSETS: &[(&str, &str, &str)] = &[
     (
