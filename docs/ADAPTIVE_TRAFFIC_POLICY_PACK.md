@@ -23,7 +23,8 @@ All items are **Proposed**. Nothing is In Progress or Done.
 | 0 | TP-0.2 accept ADR-0031, schema, engine scope | [#228](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/228) | ADR |
 | 1 Measurement | TP-1.1 in-tunnel metrics | [#229](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/229) | ADR |
 | 1 | TP-1.2 benchmark harness and Baseline | [#230](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/230) | benchmark, LAB later |
-| 2 Policy engine | TP-2.1 queues, scheduler, fairness | [#231](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/231) | ADR, benchmark |
+| 2 Policy engine | TP-2.0 engine-agnostic policy interface, per-engine capabilities | [#245](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/245) | ADR |
+| 2 | TP-2.1 queues, scheduler, fairness | [#231](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/231) | ADR, benchmark |
 | 2 | TP-2.2 starvation, fairness, overhead tests | [#232](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/232) | benchmark |
 | 3 Static profiles | TP-3.1 schema and Balanced | [#233](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/233) | ADR |
 | 3 | TP-3.2 Gaming | [#234](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/234) | benchmark, LAB |
@@ -35,8 +36,16 @@ All items are **Proposed**. Nothing is In Progress or Done.
 | 5 Integration and UX | TP-5.1 API and CLI | [#240](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/240) | ADR |
 | 5 | TP-5.2 panel (fa/en) | [#241](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/241) | UI QA |
 | 5 | TP-5.3 documentation | [#242](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/242) | results |
+| Prerequisite track | TP-U UDP/datagram carrier (separate transport feature; needed for Gaming/Trading benefit claims) | [#244](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/244) | ADR, security audit, benchmark, LAB |
 
-The suggested order is unchanged from the request (0 to 5). One dependency note: the measurement foundation (Phase 1) must precede the engine because the overhead budget and every acceptance check rely on it. Phase 5 API/CLI (TP-5.1) can start with TP-3.1 since the schema exists then.
+### UDP, other engines and per-engine rules (amendment 2026-11-15)
+
+- **UDP/datagram carrier (#244):** its own ADR, independent audit, acceptance matrix and real two-host LAB. After Stable 0.2.0. Not needed for Phase 2, Balanced, Streaming or Bulk. It must land before Gaming/Trading acceptance (TP-3.2, TP-3.3); until then those profiles make no benefit claim that depends on avoiding TCP head-of-line blocking.
+- **Engine-agnostic interface (#245):** engines declare capabilities (priority enforcement, write pacing, RTT/queue observation, datagram). Missing capability means Unsupported/Unknown.
+- **What policy can control:** admission, queueing, scheduling and pacing before data reaches the engine, plus backpressure. **What it cannot:** internal queues, congestion window, retransmission, FEC and wire behaviour of engines with their own congestion control (BAFT engine, ADR-0019 separate binary; a future QUIC engine). Effect there is measured and may be nil. BAFT engine stays out of scope until a later ADR.
+- **Per-engine acceptance:** a claim belongs to (engine, carrier, profile). No engine inherits another's results; each tuple needs its own benchmarks vs Balanced and Baseline with an evidence level; otherwise it shows Unsupported/Unknown.
+
+The suggested order is unchanged from the request (0 to 5), with TP-2.0 first in Phase 2 and the UDP track running separately. One dependency note: the measurement foundation (Phase 1) must precede the engine because the overhead budget and every acceptance check rely on it. Phase 5 API/CLI (TP-5.1) can start with TP-3.1 since the schema exists then.
 
 ## 4. Dependencies and prerequisites
 
