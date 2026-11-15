@@ -1,6 +1,6 @@
 // Visual + layout QA against a REAL running agent: screenshots of every page and overlay at four
 // viewports in Persian RTL and English LTR, plus automatic checks (no horizontal overflow, no console
-// or CSP errors, correct dir, sidebar side, no unflipped technical identifiers).
+// or CSP errors, correct dir, sidebar side).
 //   BAFT_TOKEN_FILE=<token> [BAFT_URL=http://127.0.0.1:18080] [BAFT_SHOTS=<dir>] [BAFT_THEMES=dark,light] node screenshots.js
 const { chromium } = require('playwright');
 const fs = require('fs');

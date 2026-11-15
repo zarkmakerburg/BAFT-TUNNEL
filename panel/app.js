@@ -213,7 +213,7 @@
     input.focus();
   }
   BAFT.logout = function () {
-    BAFT.token = ''; store('token', null);
+    BAFT.token = ''; store('token', null); BAFT.data = null; BAFT.wiz = null; BAFT.fetchedAt = 0;
     if (BAFT.ui && BAFT.ui.closeAll) { BAFT.ui.closeAll(); }
     renderLogin();
   };
@@ -312,10 +312,12 @@
   /* force=true: navigation or an explicit refresh. force=false: the 5 s loop, which never interrupts
      an open overlay, a running action, a chart being read, or a page that manages its own state. */
   function render(force) {
-    var id = currentId(), seq = ++renderSeq, U = BAFT.ui;
+    var id = currentId(), U = BAFT.ui, seq;
     var page = BAFT.pages.filter(function (p) { return p.id === id; })[0];
     var sameView = ui.content.dataset.page === id;
-    if (!force && (U.overlayOpen() || BAFT.busy > 0 || Date.now() < BAFT.holdUntil)) { return; }
+    var ae = document.activeElement;
+    if (!force && (U.overlayOpen() || BAFT.busy > 0 || Date.now() < BAFT.holdUntil || (ae && ui.content.contains(ae) && /^(BUTTON|SELECT|INPUT|TEXTAREA|SUMMARY|A)$/.test(ae.tagName)))) { return; }
+    seq = ++renderSeq;
     markActive(id);
     ui.title.textContent = t('nav.' + id);
     ui.crumb.textContent = t('nav.g.' + (page.group || 'system'));
@@ -336,8 +338,11 @@
       ui.foot.replaceChildren(h('span', { class: 'side-id' }, c.local_identity ? BAFT.ltr(c.local_identity) : (s && s.instance ? BAFT.ltr(s.instance) : t('unknown'))),
         h('span', { class: 'side-ver' }, s ? BAFT.ltr('v' + s.version) : '—'));
       // Setup mode (no configuration yet): only the wizard and settings make sense.
-      var node = setup && id !== 'setup' && id !== 'settings' ? BAFT.setupPending(s)
-        : s || id === 'settings' ? page.render({ data: data, h: h, t: t }) : BAFT.unreachable();
+      var node;
+      try {
+        node = setup && id !== 'setup' && id !== 'settings' ? BAFT.setupPending(s)
+          : s || id === 'settings' ? page.render({ data: data, h: h, t: t }) : BAFT.unreachable();
+      } catch (err) { node = h('div', { class: 'banner bad', role: 'alert' }, h('p', { text: t('ui.err.render') }), h('button', { type: 'button', onclick: function () { render(true); } }, t('ui.retry'))); }
       var keep = document.activeElement && ui.content.contains(document.activeElement) ? document.activeElement.id : '';
       var wrap = h('div', { class: sameView ? 'view' : 'view enter' }, s && !setup ? partialNotice(page, data.meta) : null, node);
       ui.content.removeAttribute('aria-busy');
@@ -366,7 +371,7 @@
   });
   document.addEventListener('keydown', function (e) {
     if (!BAFT.token || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) { return; }
-    var k = e.key.toLowerCase();
+    var k = e.code === 'KeyK' ? 'k' : e.code === 'KeyB' ? 'b' : '';
     if (k === 'k') { e.preventDefault(); BAFT.ui.palette(); }
     else if (k === 'b') { e.preventDefault(); BAFT.setNav(BAFT.nav === 'rail' ? 'full' : 'rail'); }
   });

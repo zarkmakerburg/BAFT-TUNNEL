@@ -25,3 +25,7 @@ Baseline: `d47171a` (main). Classification: **Preserve** (unchanged behaviour), 
 | Removed | none | | | |
 
 Deliberately not built (no backend): users/access management, tunnel editing, multi-tunnel list, peer health, maps, historical audit search.
+
+## Independent review follow-up (commit after 1d6140e)
+
+An independent read-only review of 1d6140e found 15 items. Fixed in code: integrity probe badge kind, invented "not listening" warning when status is unknown, render-sequence stranding on skeleton, periodic refresh no longer replaces the page while an interactive control inside it has focus, render errors shown as an alert instead of an endless skeleton, shortcuts use physical key codes (work on Persian layouts), chart legend kept LTR, stale state shown as a topbar warning line instead of dimming below AA, logout clears wizard/data. Still OPEN (not fixed in this PR, listed honestly): hardcoded capability pills on Agent/Servers, `|| 0` defaults in some KPIs, "no samples" shown for unavailable history, chart legend colour-only up/down, 10px SVG text on narrow cards, drawer aria-current and RTL border/rail icon, toast live region created lazily, language switch rebuilds shell. Screenshot QA and axe results in this document refer to the earlier build unless re-run; re-run status is stated in the PR.

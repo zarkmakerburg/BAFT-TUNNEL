@@ -234,7 +234,7 @@
         [t('tier.data_path'), tn ? tierPill((tiers.data_path || {}).result) : pill('unknown', t('state.unknown'))],
         [t('tier.integrity'), tn ? tierPill((tiers.integrity || {}).result) : pill('unknown', t('state.unknown'))],
         [t('verify.last'), tiers.integrity && tiers.integrity.last_probe
-          ? h('span', null, pill(tiers.integrity.last_probe.result, t('verify.result.' + tiers.integrity.last_probe.result)), ' · ' + BAFT.ago(tiers.integrity.last_probe.timestamp))
+          ? h('span', null, pill(tiers.integrity.last_probe.result === 'pass' ? 'ok' : tiers.integrity.last_probe.result === 'fail' ? 'bad' : 'unknown', t('verify.result.' + tiers.integrity.last_probe.result)), ' · ' + BAFT.ago(tiers.integrity.last_probe.timestamp))
           : t('never')],
         [t('f.verified'), tn && tn.last_verified_unix ? BAFT.ago(tn.last_verified_unix) : t('f.verified.none')],
         [t('ts.lastfail'), tn && tn.last_failure ? t('tier.' + tn.last_failure.stage) + ' · ' + BAFT.ago(tn.last_failure.at_unix) : t('ts.nofail')]]),

@@ -68,7 +68,8 @@
   };
   /* Warnings come only from real data; each has severity, affected resource, reason and a next step. */
   U.warnings = function (d) {
-    var s = d.status || {}, c = U.conf(d), sec = d.security || {}, out = [];
+    if (!d.status || d.status.setup_pending) { return []; }
+    var s = d.status, c = U.conf(d), sec = d.security || {}, out = [];
     if (!s.listener_accepting) { out.push({ sev: 'bad', res: c.tunnel_id, text: t('warn.listener', { t: c.tunnel_id || '—' }), next: t('warn.listener.next'), href: '#/tunnels' }); }
     if (sec.tls) {
       var cs = sec.certificate_seconds_remaining, ls = sec.crl_seconds_remaining;
