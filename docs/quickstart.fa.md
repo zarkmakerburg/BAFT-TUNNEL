@@ -31,6 +31,14 @@ cd "$PKG"
 
 تا وقتی تأیید Cosign موفق نشده و Checksum بسته OK نشده، ادامه نده. بررسی Checksum بدون تأیید امضا مشخص نمی‌کند چه کسی بسته را منتشر کرده است.
 
+**نصب سریع (جایگزین مرحله‌های ۱ و ۲).** اسکریپت `scripts/quick-install.sh` همین تأیید Cosign و Checksum را انجام می‌دهد و بعد Agent را نصب و ثبت می‌کند:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/main/scripts/quick-install.sh | sudo bash -s -- --register t1
+```
+
+به‌طور پیش‌فرض فقط آخرین نسخهٔ **پایدار (Stable)** نصب می‌شود. تا وقتی نسخهٔ پایدار منتشر نشده، اسکریپت با خطا متوقف می‌شود و چیزی نصب نمی‌کند. برای نصب نسخهٔ Preview (پیش‌انتشار) باید صریحاً `--channel prerelease` را بدهی، یا یک نسخهٔ مشخص را با `--tag vX.Y.Z-rc.N` انتخاب کنی.
+
 ## ۲. نصب و ثبت Agent محلی
 
 روی هر سرور یک نام Instance یکتا انتخاب کن (در مثال t1):

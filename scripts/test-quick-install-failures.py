@@ -32,6 +32,14 @@ with tempfile.TemporaryDirectory(prefix="baft-installer-negative-") as td:
     shim("curl", r'''url="${!#}"
 out=""
 while (($#)); do if [[ "$1" == -o ]]; then out="$2"; shift 2; else shift; fi; done
+if [[ "$url" == */releases\?per_page=* ]]; then
+  if [[ "$BAFT_RELEASES" == prerelease-only ]]; then
+    printf '%s\n' '[{"tag_name":"v1.2.4-rc.1","draft":false,"prerelease":true}]'
+  else
+    printf '%s\n' '[{"tag_name":"v1.2.4-rc.1","draft":false,"prerelease":true},{"tag_name":"v1.2.3","draft":false,"prerelease":false}]'
+  fi
+  exit 0
+fi
 if [[ "$url" == */releases/tags/* ]]; then
   printf '%s\n' '{"tag_name":"v1.2.3","draft":false,"prerelease":false}'
   exit 0
@@ -74,4 +82,23 @@ chmod +x "$root/cosign-linux-amd64"
         if proc.returncode == 0:
             raise SystemExit(f"FAIL: installer accepted {label}\n{proc.stdout}")
         print(f"PASS: rejected {label} (exit {proc.returncode})")
+    # Channel selection (audit A-11): stable by default, prereleases only on opt-in.
+    env["BAFT_TEST_MODE"] = "ok"
+    def resolve(args, releases):
+        env["BAFT_RELEASES"] = releases
+        return subprocess.run([str(INSTALLER), "--verify-only", *args], env=env, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+    proc = resolve([], "prerelease-only")
+    if proc.returncode == 0 or "no stable release is published yet" not in proc.stdout \
+            or "--channel prerelease" not in proc.stdout or "Release:" in proc.stdout:
+        raise SystemExit(f"FAIL: default channel fell back to a prerelease\n{proc.stdout}")
+    print("PASS: default channel refuses prerelease-only list and names the opt-in")
+    proc = resolve([], "mixed")
+    if "Release: v1.2.3\n" not in proc.stdout or "Channel: Preview" in proc.stdout:
+        raise SystemExit(f"FAIL: default channel did not pick the stable release\n{proc.stdout}")
+    print("PASS: default channel skips a newer prerelease")
+    proc = resolve(["--channel", "prerelease"], "prerelease-only")
+    if "Release: v1.2.4-rc.1\n" not in proc.stdout or "Channel: Preview" not in proc.stdout:
+        raise SystemExit(f"FAIL: --channel prerelease did not select the prerelease\n{proc.stdout}")
+    print("PASS: --channel prerelease opts in to Preview")
 print("QUICK_INSTALL_NEGATIVE_TESTS=PASS")

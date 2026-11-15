@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Verify and install the latest signed BAFT-TUNNEL release on Ubuntu x86_64.
+# Verify and install the latest signed stable BAFT-TUNNEL release on Ubuntu x86_64.
+# Preview/prerelease builds need an explicit --channel prerelease or --tag (audit A-11).
 # One line: curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/main/scripts/quick-install.sh | sudo bash -s -- --register t1
 set -Eeuo pipefail
 umask 077
@@ -11,21 +12,24 @@ COSIGN_SHA256="7a6b86904016cc271e854aee54ca5b8ec5bd7fe28369e8775025c7ece029e2a4"
 INSTANCE=""
 AGENT_LISTEN=""
 TAG=""
-STABLE=0
+CHANNEL="stable"
 VERIFY_ONLY=0
+CHANNEL_SET=0
 
 usage() {
   cat <<'USAGE'
 BAFT-TUNNEL quick installer (Ubuntu Linux x86_64)
 
 Usage:
-  quick-install.sh --register NAME [--tag vX.Y.Z[-rc.N]] [--stable]
+  quick-install.sh --register NAME [--channel stable|prerelease | --tag vX.Y.Z[-rc.N]]
                    [--agent-listen 127.0.0.1:PORT]
 
 Options:
   --register NAME       Required instance name; installs the local panel agent.
+  --channel CHANNEL     stable (default): latest stable release only.
+                        prerelease: latest release including Preview/prerelease.
   --tag TAG             Install this exact published release (instead of latest).
-  --stable              Select the latest stable release; default includes Preview.
+  --stable              Same as --channel stable (kept for compatibility).
   --agent-listen ADDR   Agent listen address (loopback only; default 127.0.0.1:18080).
   --verify-only         Verify and extract-check the signed package; do not install.
   -h, --help            Show this help.
@@ -54,7 +58,8 @@ while (($#)); do
   case "$1" in
     --register) (($# >= 2)) || die "--register needs a name"; INSTANCE="$2"; shift 2 ;;
     --tag) (($# >= 2)) || die "--tag needs a value"; TAG="$2"; shift 2 ;;
-    --stable) STABLE=1; shift ;;
+    --channel) (($# >= 2)) || die "--channel needs stable or prerelease"; CHANNEL="$2"; CHANNEL_SET=1; shift 2 ;;
+    --stable) CHANNEL="stable"; CHANNEL_SET=1; shift ;;
     --agent-listen) (($# >= 2)) || die "--agent-listen needs an address"; AGENT_LISTEN="$2"; shift 2 ;;
     --verify-only) VERIFY_ONLY=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -69,8 +74,9 @@ elif [[ -n "$INSTANCE" ]]; then
 fi
 if [[ -n "$TAG" ]]; then
   [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || die "invalid release tag"
-  (( STABLE == 0 )) || die "--tag and --stable cannot be combined"
+  (( CHANNEL_SET == 0 )) || die "--tag cannot be combined with --channel or --stable"
 fi
+case "$CHANNEL" in stable|prerelease) ;; *) die "--channel must be stable or prerelease" ;; esac
 if [[ -n "$AGENT_LISTEN" ]]; then
   [[ "$AGENT_LISTEN" =~ ^(127\.0\.0\.1|\[::1\]):([0-9]{1,5})$ ]] &&
     (( BASH_REMATCH[2] >= 1 && BASH_REMATCH[2] <= 65535 )) ||
@@ -95,6 +101,7 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT HUP INT TERM
 
 echo "BAFT-TUNNEL: resolving the requested signed release..."
+PINNED_TAG="$TAG"
 if [[ -n "$TAG" ]]; then
   RELEASE_JSON="$(github_api_get "$API/releases/tags/$TAG")" ||
     die "release $TAG was not found or GitHub API is unavailable"
@@ -103,15 +110,19 @@ else
     die "cannot retrieve the GitHub releases list"
   RELEASE_JSON="$(python3 -c '
 import json, re, sys
-stable = sys.argv[1] == "1"
+stable = sys.argv[1] == "stable"
 items = json.load(sys.stdin)
 for item in items:
     tag = item.get("tag_name", "")
     if not item.get("draft") and (not stable or not item.get("prerelease")) and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?", tag):
         print(json.dumps(item))
         break
-' "$STABLE" <<<"$RELEASES_JSON")"
-  [[ -n "$RELEASE_JSON" ]] || die "no published release found for the requested channel"
+' "$CHANNEL" <<<"$RELEASES_JSON")"
+  if [[ -z "$RELEASE_JSON" ]]; then
+    [[ "$CHANNEL" == "stable" ]] &&
+      die "no stable release is published yet. To install a Preview (prerelease) build, re-run with --channel prerelease or --tag vX.Y.Z-rc.N"
+    die "no published release found for the requested channel"
+  fi
 fi
 
 RELEASE_META="$(python3 -c '
@@ -126,7 +137,8 @@ DRAFT="$(printf '%s\n' "$RELEASE_META" | sed -n '2p')"
 PRERELEASE="$(printf '%s\n' "$RELEASE_META" | sed -n '3p')"
 [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || die "GitHub returned an invalid release tag"
 [[ "$DRAFT" == "false" ]] || die "refusing to install a draft release"
-if (( STABLE == 1 )) && [[ "$PRERELEASE" != "false" ]]; then
+# A pinned --tag is an explicit choice; only channel selection is gated here.
+if [[ -z "$PINNED_TAG" && "$CHANNEL" == "stable" && "$PRERELEASE" != "false" ]]; then
   die "the selected release is a prerelease, not a stable release"
 fi
 

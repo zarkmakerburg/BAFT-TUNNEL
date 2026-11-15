@@ -213,7 +213,7 @@ directories under the release root only) before extraction, and refuses drafts.
 
 | ID | Severity | Status | Title |
 |----|----------|--------|-------|
-| A-11 | Info | Open, decide before 0.2.0 | Without `--tag` or `--stable`, the quick installer picks the newest release including prereleases; once a stable exists, the documented default should probably be `--stable` |
+| A-11 | Info | Fixed (owner decision, delegated) | The quick installer now selects stable releases only by default; with no stable release it exits non-zero naming `--channel prerelease`. Prereleases need `--channel prerelease` or an exact `--tag` (LAB workflows pin `--tag`). Tested in `scripts/test-quick-install-failures.py` |
 
 A-06 fixed after rc.9 was published: `release.yml` now has a `build` job (`contents: read`,
 `checks: read`, no `id-token`) that builds everything and uploads `dist/`, and a
