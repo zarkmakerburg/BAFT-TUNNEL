@@ -25,6 +25,7 @@ jobs:
     permissions:
       contents: write   # create release/tag
       id-token: write   # keyless signing via GitHub OIDC (no private key anywhere)
+      checks: read      # stable tags: required checks must be green on the tagged commit
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
@@ -51,6 +52,20 @@ jobs:
           case "$tag" in *-*) pre=true ;; *) pre=false ;; esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+      - name: Require green required checks for a stable tag
+        # Prerelease tags (vX.Y.Z-rc.N) are checked by tag-prerelease.yml before tagging and keep
+        # their behaviour. A stable tag is pushed by hand, so check here (audit A-07).
+        if: ${{ steps.v.outputs.prerelease == 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          for check in rust ubuntu-2204-baseline lab-config; do
+            ok="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs?check_name=$check" \
+              --jq '[.check_runs[]|select(.conclusion=="success")]|length')"
+            [[ "$ok" -ge 1 ]] || { echo "::error::required check $check is not green on $sha; a stable release needs green reviewed main"; exit 1; }
+          done
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal
       - name: Build release binary
