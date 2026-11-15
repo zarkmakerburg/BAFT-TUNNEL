@@ -1,0 +1,88 @@
+# Adaptive Traffic Policy Pack: plan
+
+**Status: Proposed (registered 2026-11-15). Nothing below is implemented or measured.**
+Decision: [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md). Epic: [#226](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/226). Roadmap entry: [PRODUCT_ROADMAP.md §5a](PRODUCT_ROADMAP.md).
+
+## 1. Scope
+
+An optional add-on that tunes how BAFT-TUNNEL carries traffic, using one shared engine and five profiles: **Balanced** (default and fail-safe), **Gaming**, **Trading**, **Streaming**, **Bulk Transfer**. It adds a Traffic Policy Engine (queues, priorities, scheduling, fairness, starvation prevention) and Adaptive Optimization (slow, bounded, reversible tuning from measured conditions).
+
+Out of scope: user/UUID/subscription/quota management, VPN protocols, replacing Xray or its panels, kernel shaping, `CAP_NET_ADMIN`, claims about internet path latency or distance.
+
+## 2. Priority and position
+
+Strictly after Stable 0.2.0 and the Phase 6 hardening gates. It is not part of the MVP and must not delay core work. Phase 0 (research, ADR) is documentation only and may run alongside; Phases 1-5 start after 0.2.0 ships. LAB is shared: one user at a time, only after the 0.2.0 acceptance thread releases it.
+
+## 3. Phases, work items, status
+
+All items are **Proposed**. Nothing is In Progress or Done.
+
+| Phase | Item | Issue | Needs |
+|---|---|---|---|
+| 0 Research and architecture | TP-0.1 research: hook points, TCP/UDP, OS limits | [#227](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/227) | research |
+| 0 | TP-0.2 accept ADR-0031, schema, engine scope | [#228](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/228) | ADR |
+| 1 Measurement | TP-1.1 in-tunnel metrics | [#229](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/229) | ADR |
+| 1 | TP-1.2 benchmark harness and Baseline | [#230](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/230) | benchmark, LAB later |
+| 2 Policy engine | TP-2.1 queues, scheduler, fairness | [#231](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/231) | ADR, benchmark |
+| 2 | TP-2.2 starvation, fairness, overhead tests | [#232](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/232) | benchmark |
+| 3 Static profiles | TP-3.1 schema and Balanced | [#233](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/233) | ADR |
+| 3 | TP-3.2 Gaming | [#234](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/234) | benchmark, LAB |
+| 3 | TP-3.3 Trading | [#235](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/235) | benchmark, LAB |
+| 3 | TP-3.4 Streaming | [#236](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/236) | benchmark, LAB |
+| 3 | TP-3.5 Bulk Transfer | [#237](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/237) | benchmark, LAB |
+| 4 Adaptive | TP-4.1 controller, hysteresis | [#238](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/238) | ADR, benchmark, LAB |
+| 4 | TP-4.2 fail-safe, rollback, multi-condition tests | [#239](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/239) | benchmark, LAB |
+| 5 Integration and UX | TP-5.1 API and CLI | [#240](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/240) | ADR |
+| 5 | TP-5.2 panel (fa/en) | [#241](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/241) | UI QA |
+| 5 | TP-5.3 documentation | [#242](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/242) | results |
+
+The suggested order is unchanged from the request (0 to 5). One dependency note: the measurement foundation (Phase 1) must precede the engine because the overhead budget and every acceptance check rely on it. Phase 5 API/CLI (TP-5.1) can start with TP-3.1 since the schema exists then.
+
+## 4. Dependencies and prerequisites
+
+- Phase 0 needs only the current source and ADR-0018/0024/0030. Phases 1-5 need Stable 0.2.0 shipped.
+- Phase 1 reuses ADR-0024 style metrics (unit, interval, provenance, freshness).
+- Phases 3-4 acceptance needs a repeatable impairment method that works without `CAP_NET_ADMIN` on LAB hosts (open question, TP-1.2).
+- Panel work reuses the existing agent API and fa/en panel conventions.
+
+## 5. Risks and decisions required
+
+| Risk | Handling |
+|---|---|
+| TCP carrier head-of-line blocking limits Gaming/Trading gains; no UDP path yet | TP-0.1 quantifies it; evidence gate may conclude "no gain over Balanced" and the profile is dropped or documented as limited |
+| Policy layer adds CPU/latency in the hot path | overhead budget set in TP-0.2, measured in TP-2.2, off by default |
+| Prioritisation harms other flows | mandatory bounded-wait and share limits; fairness tests |
+| Adaptive loop oscillates | hysteresis, dwell time, rate limit, fail-safe to Balanced (TP-4.x) |
+| Benchmarks mislead (simulation passed off as real) | evidence labels per result; simulation never counts as LAB |
+| BAFT Go engine not covered | stated limit; separate decision if wanted |
+| Scope creep into user management | ADR-0031 rule 4 and out-of-scope list |
+
+Decisions needed before code: classification method, engine coverage, schema, overhead budget, impairment method. All go through TP-0.2 and ADRs.
+
+## 6. Acceptance criteria (every profile, all required)
+
+Each profile is compared against **Balanced** and **Baseline** (pack off), with the evidence level recorded:
+
+1. Latency (p50/p95/p99) and jitter under idle and under competing bulk load.
+2. Packet loss (measured) or loss proxy, labelled which.
+3. Throughput/goodput.
+4. CPU and memory overhead.
+5. Fairness and no starvation of other flows (bounded wait, share bounds).
+6. Congestion and network-impairment scenarios (loss, jitter, path change, carrier kill).
+7. Long-run stability (maximum 60 minutes per project policy; longer is not planned).
+8. Results published with evidence label: CI-simulated, VM, real two-host LAB. Simulation is never reported as LAB.
+
+A profile with a name and settings but without this evidence is **not** ready. Production is never claimed.
+
+## 7. Benchmark plan
+
+1. TP-1.2 defines scenarios: idle, interactive plus bulk mix, sustained congestion, loss, jitter, carrier kill/recovery, many small flows.
+2. Baseline = pack off; reference = Balanced. Each scenario repeated with fixed seeds/durations; report medians and spread.
+3. Stage A, CI/VM (simulated, labelled). Stage B, real two-host LAB after 0.2.0 and by schedule, one run at a time, isolated and cleaned up.
+4. Results stored in `docs/` with run IDs and exact SHAs, following the HQ evidence format.
+
+## 8. Estimated order and delivery points
+
+Order: TP-0.1, TP-0.2 (docs, after 0.2.0 may start earlier as docs only) -> TP-1.1, TP-1.2 -> TP-2.1, TP-2.2 -> TP-3.1 then 3.2-3.5 -> TP-4.1, TP-4.2 -> TP-5.1-5.3.
+
+Delivery points: D0 ADR accepted; D1 measurement and baseline published; D2 policy engine behind a switch with fairness proof; D3 Balanced plus first profile with LAB evidence; D4 remaining profiles; D5 adaptive with fail-safe; D6 API/CLI/panel/docs, shipped as Preview. No dates are promised; none of these is started.
