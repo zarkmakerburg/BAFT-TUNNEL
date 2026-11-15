@@ -50,7 +50,7 @@
 | No central enrollment / enrolled inventory | Open, post-MVP | L1 |
 | Servers page is not a Fleet | Open, post-MVP | L2 |
 | No live throughput counters | **Done** (in-memory history 1 h) | PR #109 `/v1/traffic`, panel PR #120; persistence B5 |
-| No read-only firewall inspection | Open | B3 |
+| No read-only firewall inspection | Unknown by decision (ADR-0030, needs `CAP_NET_ADMIN`) | B3 |
 | Audit actor/target; machine-readable evidence codes | Audit **done**; evidence codes **merged** in `main` (`311b706`, duplicate-key fix `62d7ee6`) | PR #109; B1 (closed) |
 | No billing in core | By design | — |
 | No production release | Open | Prereleases only: `v0.1.0-phase1-pre`, `rc.2`, `rc.3` (superseded), `rc.4` |
@@ -65,7 +65,7 @@
 | 4 | Audit actor/target/resource | **Done**; remote Job receipts wait for L1 | L1 |
 | 5 | Traffic counters with units, interval, freshness | **Done**; history only in memory (1 h) | B5 |
 | 6 | Machine-readable Preflight/Diagnostics evidence codes | **Done**: merged in `main` as `311b706` (localized structured evidence) with `62d7ee6` (duplicate `diag.next.*` keys removed, regression assertion added); historical exact-head CI evidence in PR #168 | B1 (closed) |
-| 7 | Read-only firewall visibility | Not started | B3 |
+| 7 | Read-only firewall visibility | Unknown by decision (ADR-0030) | — |
 | 8 | Safe "Add from Link" | Code done (U5b): `baft-tunnel://pair?v=1&b=` link, paste or upload, checksum compare and preview | LAB run 42779915532 PASS |
 
 ### 3.3 P2 list
@@ -167,7 +167,7 @@ Effort: **S** = one small PR; **M** = one or two PRs, about a day with CI; **L**
 |---|---|---|---|---|---|
 | B1 | P1-6: structured Preflight/Diagnostics evidence `code` + `params`; panel localizes evidence/source/remediation/next actions in fa/en | — | S–M | — | **Merged**: `311b706` (localized structured evidence) and `62d7ee6` (duplicate-key removal plus regression assertion); historical exact-head CI on `cc37f48` / `ec730c3` in PR #168 |
 | B2 | In-product integrity probe ("Test tunnel"): an authenticated, size- and rate-bounded probe stream answered by the serve node, SHA-256 compared; the `integrity` tier can pass for this probe only; [ADR-0028](ADR-0028-authenticated-integrity-probe.md) covers the stream-open contract change | U7 | M | REAL-LAB + CI | **Accepted for Direct**: run [43407066796](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43407066796), fixed candidate `b15b0a3f49e0e5b7c4fcaaec3b3da49cd22514c6`, binary SHA-256 `726e292afe323becd9cd6c4d79c7fb0cd4ae69013334369e304176b248c69e89`; bidirectional probes, audit/request hashes, restart/cooldown, pre/post data path and cleanup PASS. Controlled tampered-payload relay test in PR #193 rejects with SHA-256 mismatch (unit-level, not live two-host tamper). Apply `ready` remains Unknown. Reverse remains gated. |
-| B3 | P1-7 read-only firewall visibility: a root read helper with a fixed command, filtered to the tunnel port; tier `firewall` pass/fail/unknown; no mutation; ADR | U2 | M | Read-only | LAB shows the tier without changing a rule |
+| B3 | P1-7 firewall visibility. **Resolved as Unknown by decision** ([ADR-0030](ADR-0030-read-only-firewall-visibility.md), 2026-11-15): listing live rules needs `CAP_NET_ADMIN` even for root (measured), which the owner does not accept in any BAFT-TUNNEL component, so the `firewall` tier stays Unknown and no helper is built | U2 | S (docs) | — | Docs only; reopen needs an owner decision |
 | B4 | BAFT configurable (ADR-0019 phase F): `setup plan/init/join` for `baft` (Direct), Engine Store install in `install.sh`, Apply start/stop, Wizard selectable; status and traffic stay unknown | U5b | L | Yes | LAB with the signed engine through the Wizard path |
 | B5 | Bounded persistence of counter and diagnostics history beyond 1 h; panel alerts for CRL/certificate expiry, tunnel down and stale evidence | U2 | M | — | Unit + browser QA |
 | B6 | Automated accessibility audit in `scripts/panel-qa` (axe); physical phone pass | U5a | S | — | Report attached to the PR; O3 |
