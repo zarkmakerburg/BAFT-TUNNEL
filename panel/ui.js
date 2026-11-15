@@ -135,6 +135,7 @@
     var d;
     var tree = h('nav', { 'aria-label': t('ui.nav.main'), class: 'drawer-nav' }, BAFT.navTree());
     d = overlay('drawer', t('ui.nav.main'), h('div', { class: 'ov-body' }, h('div', { class: 'ov-head' }, h('div', { class: 'brand' }, BAFT.mark(), h('span', { class: 'brand-name', text: t('app') })), U.closeBtn(d || { close: function () { } })), tree), opener);
+    Array.prototype.forEach.call(tree.querySelectorAll('a'), function (a) { if (a.getAttribute('href') === location.hash) { a.setAttribute('aria-current', 'page'); } });
     // The close button was created before `d` existed; rebind it.
     var cb = d.querySelector('.ov-head .icon-btn'); if (cb) { cb.onclick = function () { d.close(); }; }
     tree.addEventListener('click', function (e) { if (e.target.closest('a')) { d.close(); } });

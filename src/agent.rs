@@ -399,8 +399,8 @@ async fn handle(mut stream: TcpStream, ctx: &Ctx) -> Result<()> {
         return respond(&mut stream, 421, &json!({"error": "misdirected request"})).await;
     }
     let body = &buf[head_end..head_end + length];
-    if let Some((kind, text)) = static_asset(&head) {
-        return respond_static(&mut stream, kind, text).await;
+    if let Some((kind, bytes)) = static_asset(&head) {
+        return respond_static(&mut stream, kind, bytes).await;
     }
     let (status, out) = route(&head, body, ctx).await;
     respond(&mut stream, status, &out).await
@@ -547,7 +547,23 @@ const PANEL_ASSETS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-fn static_asset(head: &str) -> Option<(&'static str, &'static str)> {
+/// Self-hosted Persian font (Vazirmatn, SIL OFL 1.1; licence text in panel/fonts/OFL.txt).
+const FONT_ASSETS: &[(&str, &[u8])] = &[
+    (
+        "/fonts/Vazirmatn-Regular.woff2",
+        include_bytes!("../panel/fonts/Vazirmatn-Regular.woff2"),
+    ),
+    (
+        "/fonts/Vazirmatn-Medium.woff2",
+        include_bytes!("../panel/fonts/Vazirmatn-Medium.woff2"),
+    ),
+    (
+        "/fonts/Vazirmatn-Bold.woff2",
+        include_bytes!("../panel/fonts/Vazirmatn-Bold.woff2"),
+    ),
+];
+
+fn static_asset(head: &str) -> Option<(&'static str, &'static [u8])> {
     let mut parts = head.split("\r\n").next()?.split(' ');
     if parts.next()? != "GET" {
         return None;
@@ -556,20 +572,23 @@ fn static_asset(head: &str) -> Option<(&'static str, &'static str)> {
         "/" => "/index.html",
         other => other,
     };
+    if let Some((_, bytes)) = FONT_ASSETS.iter().find(|(name, _)| *name == path) {
+        return Some(("font/woff2", *bytes));
+    }
     PANEL_ASSETS
         .iter()
         .find(|(name, _, _)| *name == path)
-        .map(|(_, kind, text)| (*kind, *text))
+        .map(|(_, kind, text)| (*kind, text.as_bytes()))
 }
 
-async fn respond_static(stream: &mut TcpStream, kind: &str, text: &str) -> Result<()> {
+async fn respond_static(stream: &mut TcpStream, kind: &str, body: &[u8]) -> Result<()> {
     let head = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
-        text.len()
+        "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
+        body.len()
     );
     timeout(IO_TIMEOUT, async {
         stream.write_all(head.as_bytes()).await?;
-        stream.write_all(text.as_bytes()).await?;
+        stream.write_all(body).await?;
         stream.shutdown().await
     })
     .await??;

@@ -72,7 +72,7 @@
     var ts = s.tunnel ? tunnelState(s.tunnel) : listenState(s);
     var n = ws.filter(function (w) { return w.sev !== 'info'; }).length;
     var kpis = h('div', { class: 'grid kpis' },
-      kpi(t('kpi.tunnels'), c.tunnel_id ? BAFT.ltr(c.tunnel_id) : '—', s.tunnel ? t('ts.why') : t('state.why.local'), ts),
+      kpi(t('kpi.tunnels'), c.tunnel_id ? BAFT.ltr(c.tunnel_id) : '—', s.tunnel ? t('ts.why') : '', ts),
       kpi(t('ov.avail'), st.avail == null ? t('unknown') : BAFT.fmtNum(st.avail, 1) + '%', st.avail == null ? t('empty.history') : t('ov.window', { n: BAFT.fmtNum(hist.length, 0) }), st.avail == null ? { k: 'unknown', l: t('unknown') } : null),
       tr ? kpi(t('kpi.traffic'), BAFT.ltr(fmtBytes((tr.bytes_from_peer || 0) + (tr.bytes_to_peer || 0))), t('kpi.traffic.live', { ago: BAFT.ago(tr.sampled_unix) }), tr.fresh ? { k: 'ok', l: t('fresh') } : { k: 'warn', l: t('stale') })
          : kpi(t('kpi.traffic'), t('kpi.traffic.value'), t('kpi.traffic.hint'), { k: 'unknown', l: t('unknown') }),
@@ -86,6 +86,7 @@
     if (d.meta.history === 'error') { timeline = empty(t('ui.err.history'), null, 'error'); latency = empty(t('ui.err.history'), null, 'error'); src = null; }
     return h('div', null,
       fresh ? h('div', { class: 'banner info' }, h('h2', { text: t('ov.start.title') }), h('p', { text: t('ov.start.body') }), h('a', { class: 'btn primary', href: '#/setup', text: t('ov.start.cta') })) : null,
+      h('div', { class: 'hero hero-' + ts.k, role: 'status' }, pill(ts.k, ts.l), h('p', { class: 'hero-text', text: s.tunnel ? t('ts.why') : t('state.why.local') }), n ? h('a', { class: 'more-link', href: '#/diagnostics' }, t('ui.needs.action') + ': ' + BAFT.fmtNum(n, 0)) : null),
       kpis,
       h('div', { class: 'split' },
         h('div', { class: 'stack' },

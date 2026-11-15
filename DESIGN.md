@@ -416,3 +416,11 @@ Design acceptance is not runtime acceptance. A visually complete screen does not
 
 ---
 This document defines design constraints and evaluation criteria. It does not claim that the Central Fleet Console is implemented or that any referenced third-party component has been adopted.
+
+### A9. Polish layer (follow-up to ADR-0032)
+
+- Typeface: Vazirmatn (SIL OFL 1.1) is self-hosted in the binary (`/fonts/*.woff2`, licence in `panel/fonts/OFL.txt`); CSP gained `font-src 'self'` only. Weights 400/500/700.
+- Overview hero strip: one state in one glance (word + glyph + colour), never colour alone.
+- Motion: card hover lift (1px), staggered entrance of grid children, badge colour transition; all 120-200 ms and removed under `prefers-reduced-motion`.
+- Chart text raised to a readable size on narrow cards; chart legend stays LTR in RTL.
+- Not added: particles, animated backgrounds, 3D, external UI libraries or CDN assets.
