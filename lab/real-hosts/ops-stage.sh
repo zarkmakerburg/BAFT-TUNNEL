@@ -236,17 +236,32 @@ PID_CLI0="$(mainpid iran $CLI)"; PID_SRV0="$(mainpid abroad $SRV)"
 end=$((SECONDS + OPS_SOAK)); OP_ROUNDS=0; OP_FAILS=0; OP_MAXLAT=0
 while (( SECONDS < end )); do
   t0=$SECONDS
-  if probe_host iran 65536 >/dev/null 2>&1; then :; else OP_FAILS=$((OP_FAILS + 1)); fi
+  # A failed probe stays a failure; its reason (ssh status, probe message) is kept for diagnosis.
+  if out="$(probe_host iran 65536 2>&1)"; then :; else
+    rc=$?; OP_FAILS=$((OP_FAILS + 1)); echo "SOAK_PROBE_FAIL utc=$(date -u +%FT%TZ) round=$OP_ROUNDS bytes=65536 rc=$rc took_s=$((SECONDS - t0)) out=$(tr '\n' ' ' <<<"$out" | cut -c1-300)" >&2
+  fi
   lat=$((SECONDS - t0)); (( lat > OP_MAXLAT )) && OP_MAXLAT=$lat
   OP_ROUNDS=$((OP_ROUNDS + 1))
-  if (( OP_ROUNDS % 30 == 0 )); then probe_host iran 2097289 >/dev/null 2>&1 || OP_FAILS=$((OP_FAILS + 1)); fi
+  if (( OP_ROUNDS % 30 == 0 )); then
+    t1=$SECONDS
+    if out="$(probe_host iran 2097289 2>&1)"; then :; else
+      rc=$?; OP_FAILS=$((OP_FAILS + 1)); echo "SOAK_PROBE_FAIL utc=$(date -u +%FT%TZ) round=$OP_ROUNDS bytes=2097289 rc=$rc took_s=$((SECONDS - t1)) out=$(tr '\n' ' ' <<<"$out" | cut -c1-300)" >&2
+    fi
+  fi
   sleep 10
 done
 probe_host iran 2097289
 read -r pf1 pr1 pn1 <<<"$(unit_stats iran $CLI)"; read -r sf1 sr1 sn1 <<<"$(unit_stats abroad $SRV)"
 OP_SOAK_LINE="soak_s=$OPS_SOAK rounds=$OP_ROUNDS failed_probes=$OP_FAILS max_probe_s=$OP_MAXLAT public_fd=$pf0->$pf1 public_rss_kb=$pr0->$pr1 service_fd=$sf0->$sf1 service_rss_kb=$sr0->$sr1 restarts=$pn0->$pn1/$sn0->$sn1"
 echo "OPS_SOAK $OP_SOAK_LINE"
-(( OP_FAILS == 0 )) || { echo "probes failed during the soak" >&2; exit 1; }
+if (( OP_FAILS != 0 )); then
+  for pair in "iran $CLI" "abroad $SRV"; do
+    read -r dside dinst <<<"$pair"
+    echo "=== $dside: baft-tunnel@$dinst journal warnings during the soak ===" >&2
+    ssh_host "$dside" "journalctl -u baft-tunnel@$dinst.service --since '-$((OPS_SOAK / 60 + 5)) min' --no-pager -o short-iso | grep -viE 'E2E_PAYLOAD_OK' | tail -40" >&2 || true
+  done
+  echo "probes failed during the soak" >&2; exit 1
+fi
 [[ "$pn0" == "$pn1" && "$sn0" == "$sn1" && "$(mainpid iran $CLI)" == "$PID_CLI0" && "$(mainpid abroad $SRV)" == "$PID_SRV0" ]] || { echo "a unit restarted during the soak" >&2; exit 1; }
 (( pf1 <= pf0 + 8 && sf1 <= sf0 + 8 )) || { echo "fd growth during the soak" >&2; exit 1; }
 (( pr1 <= pr0 * 2 + 20480 && sr1 <= sr0 * 2 + 20480 )) || { echo "memory growth during the soak" >&2; exit 1; }
