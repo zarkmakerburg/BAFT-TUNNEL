@@ -63,7 +63,8 @@ jobs:
           printf '%s\n' "$LAB_SSH_PRIVATE_KEY" > "$key"; printf '%s\n' "$LAB_SSH_KNOWN_HOSTS" > "$kh"
           chmod 0600 "$key" "$kh"; unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS
           trap 'rm -f "$key" "$kh"' EXIT
-          mask() { sed -E 's/[0-9]{1,3}(\.[0-9]{1,3}){3}/<ip>/g; s/([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}/<ip6>/g'; }
+          # Keep the leading timestamp token (HH:MM:SS looks like IPv6) and mask addresses in the rest.
+          mask() { perl -pe 'my ($t, $r) = /^(\S*)(.*)$/s; $r =~ s/\b\d{1,3}(?:\.\d{1,3}){3}\b/<ip>/g; $r =~ s/(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{1,4}\b/<ip6>/g; $_ = $t . $r;'; }
           remote="journalctl --list-boots --no-pager | tail -5
           echo '--- baft-tunnel units (without per-stream lines) ---'
           journalctl -u 'baft-tunnel*' --since '$SINCE UTC' --until '$UNTIL UTC' --no-pager -o short-iso-precise --utc | grep -vE 'yamux stream (accepted|opened)|fixed destination connected|E2E_PAYLOAD_OK' | tail -200

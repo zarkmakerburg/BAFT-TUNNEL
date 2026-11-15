@@ -21,6 +21,75 @@ use crate::{handshake, noise, session_status::Stage};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Dead-path detection for the long-lived tunnel TCP connection. A middlebox can silently
+/// blackhole one flow while new flows still work; without these bounds the session is only
+/// declared dead after Yamux's fixed 30 s ping timeout (30-45 s of stalled traffic in LAB runs
+/// 43685882260 and 43706415887). The kernel aborts the socket once sent data (Yamux pings every
+/// `tunnel::KEEPALIVE_INTERVAL`) stays unacknowledged this long, so the supervisor reconnects.
+pub(crate) const TCP_USER_TIMEOUT: Duration = Duration::from_secs(20);
+const TCP_KEEPIDLE: Duration = Duration::from_secs(10);
+const TCP_KEEPINTVL: Duration = Duration::from_secs(5);
+const TCP_KEEPCNT: u32 = 3;
+
+/// Bound how long a silently dead tunnel connection can stay open (both dial and accept side).
+/// Unprivileged per-socket options only; a failure is reported and the connection still works
+/// with the default kernel timeouts.
+pub(crate) fn tune_tunnel_socket(socket: &TcpStream) {
+    if let Err(error) = set_dead_peer_bounds(socket) {
+        eprintln!("tunnel socket: could not set dead-peer timeouts: {error}");
+    }
+    let _ = socket.set_nodelay(true);
+}
+
+#[cfg(target_os = "linux")]
+fn set_dead_peer_bounds(socket: &TcpStream) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let fd = socket.as_raw_fd();
+    let set = |level: libc::c_int, name: libc::c_int, value: libc::c_int| -> std::io::Result<()> {
+        // SAFETY: `fd` is a live socket owned by `socket` for the duration of this call and
+        // `value` is a plain c_int passed by pointer with its exact size.
+        let rc = unsafe {
+            libc::setsockopt(
+                fd,
+                level,
+                name,
+                (&value as *const libc::c_int).cast(),
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    };
+    set(libc::SOL_SOCKET, libc::SO_KEEPALIVE, 1)?;
+    set(
+        libc::IPPROTO_TCP,
+        libc::TCP_KEEPIDLE,
+        TCP_KEEPIDLE.as_secs() as libc::c_int,
+    )?;
+    set(
+        libc::IPPROTO_TCP,
+        libc::TCP_KEEPINTVL,
+        TCP_KEEPINTVL.as_secs() as libc::c_int,
+    )?;
+    set(
+        libc::IPPROTO_TCP,
+        libc::TCP_KEEPCNT,
+        TCP_KEEPCNT as libc::c_int,
+    )?;
+    set(
+        libc::IPPROTO_TCP,
+        libc::TCP_USER_TIMEOUT,
+        TCP_USER_TIMEOUT.as_millis() as libc::c_int,
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_dead_peer_bounds(_socket: &TcpStream) -> std::io::Result<()> {
+    Ok(())
+}
 
 pub trait SecureStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> SecureStream for T {}
@@ -79,6 +148,7 @@ impl StreamEngine for TlsEngine {
 
     fn accept(&self, socket: TcpStream) -> BoxFuture<'_, Result<BoxedSecureStream>> {
         Box::pin(async move {
+            tune_tunnel_socket(&socket);
             let acceptor = self
                 .acceptor
                 .as_ref()
@@ -108,6 +178,7 @@ impl StreamEngine for TlsEngine {
                 .context("remote connect timeout")
                 .context(Stage::Tcp)?
                 .context(Stage::Tcp)?;
+            tune_tunnel_socket(&socket);
             let secure = timeout(
                 HANDSHAKE_TIMEOUT,
                 connector.connect(server_name.clone(), socket),
@@ -231,6 +302,7 @@ impl StreamEngine for NoiseEngine {
 
     fn accept(&self, socket: TcpStream) -> BoxFuture<'_, Result<BoxedSecureStream>> {
         Box::pin(async move {
+            tune_tunnel_socket(&socket);
             let secure = timeout(
                 HANDSHAKE_TIMEOUT,
                 noise::accept(
@@ -255,6 +327,7 @@ impl StreamEngine for NoiseEngine {
                 .context("remote connect timeout")
                 .context(Stage::Tcp)?
                 .context(Stage::Tcp)?;
+            tune_tunnel_socket(&socket);
             let secure = timeout(
                 HANDSHAKE_TIMEOUT,
                 noise::initiate(
@@ -281,6 +354,38 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn tunnel_socket_gets_dead_peer_bounds() {
+        use std::os::fd::AsRawFd;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let socket = TcpStream::connect(addr).await.unwrap();
+        tune_tunnel_socket(&socket);
+        let get = |level: libc::c_int, name: libc::c_int| -> libc::c_int {
+            let mut value: libc::c_int = 0;
+            let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            // SAFETY: valid fd, value/len point to a correctly sized c_int.
+            let rc = unsafe {
+                libc::getsockopt(
+                    socket.as_raw_fd(),
+                    level,
+                    name,
+                    (&mut value as *mut libc::c_int).cast(),
+                    &mut len,
+                )
+            };
+            assert_eq!(rc, 0);
+            value
+        };
+        assert_eq!(get(libc::SOL_SOCKET, libc::SO_KEEPALIVE), 1);
+        assert_eq!(get(libc::IPPROTO_TCP, libc::TCP_KEEPIDLE), 10);
+        assert_eq!(get(libc::IPPROTO_TCP, libc::TCP_KEEPINTVL), 5);
+        assert_eq!(get(libc::IPPROTO_TCP, libc::TCP_KEEPCNT), 3);
+        assert_eq!(get(libc::IPPROTO_TCP, libc::TCP_USER_TIMEOUT), 20_000);
+        assert_eq!(get(libc::IPPROTO_TCP, libc::TCP_NODELAY), 1);
+    }
 
     fn pair(
         tunnel_server: &str,
