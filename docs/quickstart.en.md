@@ -22,7 +22,7 @@ curl -fL "$BASE/SHA256SUMS" -o SHA256SUMS
 curl -fL "$BASE/SHA256SUMS.cosign.bundle" -o SHA256SUMS.cosign.bundle
 
 cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
-  --certificate-identity-regexp '^https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/(heads/main|tags/v.*)$' \
+  --certificate-identity "https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/tags/$TAG" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 sha256sum --ignore-missing --check SHA256SUMS
 tar -xzf "$PKG.tar.gz"
