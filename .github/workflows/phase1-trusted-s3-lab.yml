@@ -128,8 +128,8 @@ jobs:
           LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
           LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
           # The harness copies MVP_BINARY by basename; it must be named baft-tunnel.
-          MVP_BINARY: ${{ runner.temp }}/u7-inputs/rc7/extract/baft-tunnel-${{ inputs.target_tag }}-linux-x86_64/baft-tunnel
-          MVP_PKG: ${{ runner.temp }}/u7-inputs/rc7/baft-tunnel-${{ inputs.target_tag }}-linux-x86_64.tar.gz
+          MVP_BINARY: ${{ runner.temp }}/u7-inputs/extract/baft-tunnel-${{ inputs.target_tag }}-linux-x86_64/baft-tunnel
+          MVP_PKG: ${{ runner.temp }}/u7-inputs/baft-tunnel-${{ inputs.target_tag }}-linux-x86_64.tar.gz
           MVP_SOURCE: signed-release:${{ inputs.target_tag }}
           LAB_AGENT_SVC: '1'
           LAB_REBOOT: '1'
