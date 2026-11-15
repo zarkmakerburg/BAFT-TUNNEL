@@ -33,6 +33,9 @@ const link = 'baft-tunnel://pair?v=1&b=' + Buffer.from(PEER, 'utf8').toString('b
   await p.locator('.choice').nth(1).click(); // serve
   const f = p.locator('.form-grid input');
   await f.nth(0).fill('abroad'); await f.nth(1).fill('iran'); await f.nth(2).fill('qademo'); await f.nth(3).fill('18190');
+  // Since D2 the default engine is tcp-tls, so this server's certificate name is required on this step
+  // even though noise-tcp is chosen on the next one (it is not used for noise-tcp).
+  if (await f.count() > 4) { await f.nth(4).fill('abroad.lab.invalid'); }
   await next().click(); await p.waitForTimeout(200);
   await p.locator('.choice').filter({ hasText: 'noise-tcp' }).click();
   await next().click(); await p.waitForTimeout(200);
