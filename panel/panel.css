@@ -2,6 +2,11 @@
    duration is a token defined once below; components use tokens only. Logical properties only, so one
    stylesheet serves Persian RTL and English LTR. No inline styles anywhere (strict CSP). */
 
+/* Self-hosted Persian font (Vazirmatn, SIL OFL 1.1, served from the agent itself: CSP allows font-src 'self' only). */
+@font-face{font-family:"Vazirmatn UI";font-weight:400;font-style:normal;font-display:swap;src:url(/fonts/Vazirmatn-Regular.woff2) format("woff2")}
+@font-face{font-family:"Vazirmatn UI";font-weight:500;font-style:normal;font-display:swap;src:url(/fonts/Vazirmatn-Medium.woff2) format("woff2")}
+@font-face{font-family:"Vazirmatn UI";font-weight:700;font-style:normal;font-display:swap;src:url(/fonts/Vazirmatn-Bold.woff2) format("woff2")}
+
 /* ---- tokens: dark (default) ---- */
 :root,:root[data-theme=dark]{
   --bg:#0a0f1e;--nav:#0d1427;--surface:#121a31;--surface-2:#182242;--surface-3:#212d54;--line:#26325a;--line-strong:#34426f;
@@ -215,7 +220,7 @@ code{background:var(--bg);border-radius:var(--r-sm);padding:1px 6px;direction:lt
 .chart-wrap{direction:ltr}
 .chart{width:100%;height:auto;display:block}
 .chart-ring{max-width:140px;margin-inline:auto}
-.chart text{fill:var(--muted);font-size:10px;font-family:var(--font)}
+.chart text{fill:var(--muted);font-size:16px;font-family:var(--font)}
 .chart .grid-line{stroke:var(--chart-grid);stroke-width:1}
 .chart .line{fill:none;stroke:var(--chart-1);stroke-width:2;stroke-linejoin:round}
 .chart .area{fill:var(--chart-1);opacity:.14}
@@ -239,7 +244,7 @@ dialog.ov::backdrop{background:var(--scrim)}
 .ov-head{display:flex;align-items:center;justify-content:space-between;gap:var(--s3)}
 .ov-dialog{width:min(440px,calc(100vw - 32px));border-radius:var(--r-lg);margin:auto;animation:rise var(--t-base) var(--ease)}
 .ov-drawer{margin:0;inset-block:0;inset-inline-start:0;inset-inline-end:auto;width:min(320px,88vw);height:100vh;height:100dvh;border-radius:0;border-block:0;border-inline-start:0;animation:slide-in var(--t-base) var(--ease)}
-[dir=rtl] .ov-drawer{border-inline-start:1px solid var(--line-strong);border-inline-end:0;animation-name:slide-in-rtl}
+[dir=rtl] .ov-drawer{animation-name:slide-in-rtl}
 @keyframes slide-in{from{transform:translateX(-24px);opacity:0}to{transform:none;opacity:1}}
 @keyframes slide-in-rtl{from{transform:translateX(24px);opacity:0}to{transform:none;opacity:1}}
 .ov-popover{margin:0;inset-block-start:calc(var(--topbar) - 4px);inset-inline-end:var(--s4);inset-inline-start:auto;width:min(420px,calc(100vw - 24px));max-height:calc(100dvh - var(--topbar) - 16px);border-radius:var(--r-lg);animation:rise var(--t-base) var(--ease)}
@@ -296,5 +301,19 @@ dialog.ov::backdrop{background:var(--scrim)}
 @media (max-width:420px){.kpis{grid-template-columns:1fr}}
 
 /* ---- motion: purposeful and optional ---- */
+
+/* ---- hero status strip on Overview: state in one glance, word + glyph + colour ---- */
+.hero{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s3);padding:var(--s4);margin-block-end:var(--s4);border:1px solid var(--line);border-inline-start:4px solid var(--unknown);border-radius:var(--r-lg);background:linear-gradient(90deg,var(--surface-2),var(--surface))}
+.hero-ok{border-inline-start-color:var(--ok)}.hero-warn{border-inline-start-color:var(--warn)}.hero-bad{border-inline-start-color:var(--bad)}
+.hero .badge{font-size:var(--fs-3)}.hero-text{margin:0;color:var(--muted);flex:1 1 16rem}
+/* ---- polish: motion and depth. All short, all off under prefers-reduced-motion. ---- */
+.card{transition:border-color var(--t-fast) var(--ease),box-shadow var(--t-fast) var(--ease),transform var(--t-fast) var(--ease)}
+.card:hover{border-color:var(--line-strong,var(--accent));transform:translateY(-1px)}
+.view.enter .grid>*{animation:rise var(--t-base) var(--ease) backwards}
+.view.enter .grid>*:nth-child(2){animation-delay:40ms}.view.enter .grid>*:nth-child(3){animation-delay:80ms}
+.view.enter .grid>*:nth-child(4){animation-delay:120ms}.view.enter .grid>*:nth-child(n+5){animation-delay:160ms}
+.badge{transition:background-color var(--t-fast) var(--ease),color var(--t-fast) var(--ease)}
+.legend{direction:ltr}
+@media (prefers-reduced-motion:reduce){.card:hover{transform:none}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 @media (forced-colors:active){.badge,.choice,.card{border:1px solid CanvasText}}

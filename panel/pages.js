@@ -86,6 +86,7 @@
     if (d.meta.history === 'error') { timeline = empty(t('ui.err.history'), null, 'error'); latency = empty(t('ui.err.history'), null, 'error'); src = null; }
     return h('div', null,
       fresh ? h('div', { class: 'banner info' }, h('h2', { text: t('ov.start.title') }), h('p', { text: t('ov.start.body') }), h('a', { class: 'btn primary', href: '#/setup', text: t('ov.start.cta') })) : null,
+      h('div', { class: 'hero hero-' + ts.k, role: 'status' }, pill(ts.k, ts.l), h('p', { class: 'hero-text', text: s.tunnel ? t('ts.why') : t('state.why.local') }), n ? h('a', { class: 'more-link', href: '#/diagnostics' }, t('ui.needs.action') + ': ' + BAFT.fmtNum(n, 0)) : null),
       kpis,
       h('div', { class: 'split' },
         h('div', { class: 'stack' },
