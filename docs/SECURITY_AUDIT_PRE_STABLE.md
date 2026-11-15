@@ -230,9 +230,8 @@ setting the owner applies; it was not inspected.
 After all four passes, nothing was found at Critical, High or Medium in the components marked "Full" or
 in the fourth-pass components. A-06, A-07 and A-11 are fixed. The first stable release made through
 the split workflow is its first real signing run; a dry run on the branch exercised build and
-hand-over only. The `v*` tag rulesets are drafted but **not applied** (the session cannot write
-repository rulesets); until the owner applies them, tag immutability rests on the A-07 gate and on
-admin discipline. Still not audited: `integrity_probe.rs` beyond a skim, `observe.rs`,
+hand-over only. The `v*` tag rulesets (A-13) are applied and were checked by reading the
+configuration back, not by creating tags. Still not audited: `integrity_probe.rs` beyond a skim, `observe.rs`,
 `runtime_host.rs`, `session_status.rs`, `main.rs` CLI wiring, `scripts/menu.sh`, and `install.sh`
 outside the reviewed diffs. Evidence level stays source review + CI.
 
@@ -249,5 +248,5 @@ outside the reviewed diffs. Evidence level stays source review + CI.
 | ID | Severity | Status | Title |
 |----|----------|--------|-------|
 | A-12 | Info | Accepted (by design) | All registered instances share one agent account and one admin token (SA-07), so the agent of one instance can drop control requests for another registered instance. One trust domain per host; documented, not a boundary |
-| A-13 | Low | Open, owner action | No `v*` tag ruleset existed. Drafted: (1) `v*` tags cannot be deleted, updated or force-moved, no bypass; (2) creating a stable `v*` tag (excluding `v*-rc.*` and `v0.0.0-dryrun.*`) is restricted to repository admins, so `tag-prerelease.yml` keeps working. The session proxy refuses ruleset writes, so the owner must apply them (the JSON definitions were handed over with the report) |
+| A-13 | Low | Resolved | No `v*` tag ruleset existed. Applied 2026-11-15: ruleset 27302115 `v-tags-immutable` (deletion, update, non_fast_forward on `refs/tags/v*`, no bypass) and 27302116 `v-stable-tags-admin-create` (creation limited to the Admin role; excludes `v*-rc.*` and `v0.0.0-dryrun.*`). Verified by reading the configuration back through the API only, not by creating or moving tags. Side effect: no `v*` tag, rc included, can ever be moved or deleted. Definitions and apply steps: `docs/security/tag-rulesets/` |
 
