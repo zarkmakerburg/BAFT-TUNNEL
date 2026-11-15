@@ -89,6 +89,8 @@ done
 
 echo "--- guided setup with --direction direct: init, bundle exchange, join ---"
 rcommon="--engine tcp-tls --direction direct --tunnel-id opsacc --service-port $MSVC --tunnel-port $MTP --dir $EB"
+# The measured Integrity probe (POST /v1/verify) needs protocol v2 on both nodes; v1 is the default and reports Integrity as unknown.
+if (( VERIFY == 1 )); then rcommon="$rcommon --protocol-version 2"; fi
 sum_a="$(ssh_host abroad "$UB setup init $rcommon --role serve --node-id abroad --peer-id iran --instance $SRV" | awk '/^Checksum/{print $NF}')"
 sum_i="$(ssh_host iran "$UB setup init $rcommon --role forward --node-id iran --peer-id abroad --peer-host '$LAB_ABROAD_HOST' --instance $CLI" | awk '/^Checksum/{print $NF}')"
 [[ "$sum_a" =~ ^[0-9a-f-]{32,}$ && "$sum_i" =~ ^[0-9a-f-]{32,}$ ]] || { echo "setup init printed no checksum" >&2; exit 1; }
