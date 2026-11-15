@@ -8,12 +8,12 @@ on:
       - 'fuzz/**'
       - '.github/workflows/fuzz-smoke.yml'
   schedule:
-    # Weekly longer run on main (300 s per target).
+    # Weekly longer run on main (600 s per target, 8 targets).
     - cron: '41 4 * * 1'
   workflow_dispatch:
     inputs:
       seconds:
-        description: Seconds per target (default 30 for PRs)
+        description: Seconds per target (default 600 weekly, 30 for PRs)
         required: false
         default: '300'
 permissions:
@@ -21,7 +21,7 @@ permissions:
 jobs:
   fuzz:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
@@ -32,10 +32,10 @@ jobs:
           cargo +nightly-2026-11-07 install cargo-fuzz --version 0.13.2 --locked
       - name: Fuzz each parser for a short time
         env:
-          SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || (github.event_name == 'schedule' && '300') || '30' }}
+          SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || (github.event_name == 'schedule' && '600') || '30' }}
         run: |
           cd fuzz
-          for target in config_json pairing_bundle agent_http handshake_server; do
+          for target in config_json pairing_bundle agent_http handshake_server agent_authed apply_body evidence_files history_file; do
             echo "== $target"
             cargo +nightly-2026-11-07 fuzz run "$target" -- -max_total_time="$SECONDS_PER_TARGET" -max_len=4096
           done
