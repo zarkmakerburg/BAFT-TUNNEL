@@ -170,7 +170,7 @@ Effort: **S** = one small PR; **M** = one or two PRs, about a day with CI; **L**
 | B3 | P1-7 firewall visibility. **Resolved as Unknown by decision** ([ADR-0030](ADR-0030-read-only-firewall-visibility.md), 2026-11-15): listing live rules needs `CAP_NET_ADMIN` even for root (measured), which the owner does not accept in any BAFT-TUNNEL component, so the `firewall` tier stays Unknown and no helper is built | U2 | S (docs) | — | Docs only; reopen needs an owner decision |
 | B4 | BAFT configurable (ADR-0019 phase F): `setup plan/init/join` for `baft` (Direct), Engine Store install in `install.sh`, Apply start/stop, Wizard selectable; status and traffic stay unknown | U5b | L | Yes | LAB with the signed engine through the Wizard path |
 | B5 | Bounded persistence of counter and diagnostics history beyond 1 h; panel alerts for CRL/certificate expiry, tunnel down and stale evidence | U2 | M | — | Unit + browser QA |
-| B6 | Automated accessibility audit in `scripts/panel-qa` (axe); physical phone pass | U5a | S | — | Report attached to the PR; O3 |
+| B6 | Automated accessibility audit in `scripts/panel-qa/a11y-axe.js` (axe-core 4.10.2, wcag2a/2aa/21a/21aa + best-practice; 7 pages × fa/en × dark/light × desktop/mobile; critical/serious fail CI, wired into the `panel-ui` job); physical phone pass | U5a | S | — | **Automated part done (CI evidence only)**: first run found serious `color-contrast` on dark-theme primary buttons and info badges, fixed by a lighter dark accent with dark button text; remaining moderate `heading-order` notes (h3 after h1 on 16 page-runs) are open. Physical phone pass (O3) and a formal audit are not done and are not claimed |
 
 ### Tier S — hardening toward Stable (Phase 6)
 

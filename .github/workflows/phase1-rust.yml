@@ -111,7 +111,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install pinned Playwright
-        run: 'npm install --prefix "$RUNNER_TEMP/baft-panel-qa" --no-save --no-audit --no-fund playwright@1.56.1'
+        run: 'npm install --prefix "$RUNNER_TEMP/baft-panel-qa" --no-save --no-audit --no-fund playwright@1.56.1 axe-core@4.10.2'
       - name: Install Chromium
         # GitHub-hosted Ubuntu runners provide the OS libraries; avoid apt network
         # dependency resolution here and install only the pinned Playwright browser.
@@ -127,6 +127,10 @@ jobs:
         env:
           NODE_PATH: ${{ runner.temp }}/baft-panel-qa/node_modules
         run: node scripts/panel-qa/pki-enrollment.js
+      - name: Automated accessibility audit (axe-core; critical/serious violations fail)
+        env:
+          NODE_PATH: ${{ runner.temp }}/baft-panel-qa/node_modules
+        run: node scripts/panel-qa/a11y-axe.js
 
   offline-ca-container:
     runs-on: ubuntu-24.04
