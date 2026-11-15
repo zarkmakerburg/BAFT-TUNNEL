@@ -119,7 +119,7 @@ cmp -s "$KEY1" "$CRED_DIR/node-key"
 write_fake 0.3.0
 # One step: binary plus agent service and control helper for an instance (--register).
 "$INSTALL" --binary "$FAKE" --register iran --agent-listen 127.0.0.1:18085 --destdir "$STAGE" >/dev/null
-for v in start stop enable disable setup pki firewall; do
+for v in start stop enable disable setup pki; do
   [[ -f "$STAGE/etc/systemd/system/baft-tunnel-control-$v@.path" && -f "$STAGE/etc/systemd/system/baft-tunnel-control-$v@.service" ]]
 done
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel setup helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-setup@.service"
@@ -129,10 +129,6 @@ grep -qx 'TimeoutStartSec=60s' "$STAGE/etc/systemd/system/baft-tunnel-control-pk
 grep -qx 'ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
 grep -qx 'ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control' "$STAGE/etc/systemd/system/baft-tunnel-control-setup@.service"
 grep -qx 'CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
-grep -qx 'ExecStart=/usr/local/bin/baft-tunnel firewall-read-helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-firewall@.service"
-grep -qx 'PathExists=/run/baft-tunnel/control/%i.firewall' "$STAGE/etc/systemd/system/baft-tunnel-control-firewall@.path"
-grep -qx 'd /run/baft-tunnel/firewall 0750 root baft-tunnel-agent -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
-! grep -Eq 'nft (add|delete|flush|insert|replace)|iptables( |-restore)' "$STAGE/etc/systemd/system/baft-tunnel-control-firewall@.service"
 grep -qx 'ExecStart=/usr/bin/systemctl --no-block enable --now baft-tunnel@%i.service' "$STAGE/etc/systemd/system/baft-tunnel-control-enable@.service"
 AGENT_UNIT="$STAGE/etc/systemd/system/baft-tunnel-agent@.service"
 grep -qx 'User=baft-tunnel-agent' "$AGENT_UNIT" && ! grep -q '^User=baft-tunnel$' "$AGENT_UNIT"

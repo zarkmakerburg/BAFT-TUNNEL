@@ -48,7 +48,7 @@ fi
 UNIT_DIR="$ROOT_PREFIX/etc/systemd/system"
 TMPF="$ROOT_PREFIX/etc/tmpfiles.d/baft-tunnel-control.conf"
 STATE="$ROOT_PREFIX/var/lib/baft-tunnel-agent"
-VERBS=(start stop enable disable setup pki firewall)
+VERBS=(start stop enable disable setup pki)
 FILES=(); for v in "${VERBS[@]}"; do FILES+=("baft-tunnel-control-$v@.path" "baft-tunnel-control-$v@.service"); done
 CTL_PATHS=(); for v in "${VERBS[@]}"; do CTL_PATHS+=("baft-tunnel-control-$v@$INSTANCE.path"); done
 AGENT_UNITS=("baft-tunnel-agent@$INSTANCE.path" "baft-tunnel-agent@$INSTANCE.service")
@@ -130,8 +130,6 @@ if [[ "$STAGING" == "0" ]]; then
   fi
   [[ "$(stat -c '%U %a' "$STATE/token")" == "$AGENT_USER 600" ]] || die "$STATE/token must be $AGENT_USER, mode 0600"
   enforce_control_boundary
-  # Read-only firewall result directory (ADR-0030); idempotent, also on already-migrated hosts.
-  install -d -o root -g "$AGENT_USER" -m 0750 /run/baft-tunnel/firewall
   systemctl enable --now "${CTL_PATHS[@]}"
   # The agent starts now: in setup mode (panel pairing) until NAME.json exists, then normally.
   systemctl enable --now "baft-tunnel-agent@$INSTANCE.path"

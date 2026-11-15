@@ -1134,48 +1134,19 @@ async fn preflight(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             "this side listens, so it cannot test the peer from here; not verified".into(),
         )),
     }
-    checks.push(check(
-        "peer_identity",
-        "unknown",
-        "the peer's identity can only be verified during pairing; not verified".into(),
-    ));
-    checks.push(firewall_check(&req).await);
-    (200, preflight_report(checks))
-}
-
-/// Firewall visibility (ADR-0030): only a root read helper can list the firewall. Without the
-/// helper, or for the connecting side, the result stays Unknown.
-async fn firewall_check(req: &crate::setup::PlanRequest) -> Value {
-    let unknown = |code: &str, why: &str| {
-        check_code("firewall", "unknown", why.into(), code.into(), json!({}))
-    };
-    let (Some(name), true) = (req.instance.clone(), req.role == crate::setup::Role::Serve) else {
-        return unknown(
-            "pf.firewall.unknown",
-            "the firewall is read only for the listening side with a registered agent instance; not verified",
-        );
-    };
-    let port = req.tunnel_port;
-    let res = tokio::task::spawn_blocking(move || {
-        crate::firewall_read::request(
-            &name,
-            port,
-            std::path::Path::new(crate::apply::CONTROL_DIR),
-            std::path::Path::new(crate::firewall_read::RESULT_DIR),
-            crate::firewall_read::WAIT,
-        )
-    })
-    .await;
-    match res {
-        Ok(Ok(v)) => {
-            let (result, code, text, params) = crate::firewall_read::to_check(&v);
-            check_code("firewall", result, text, code, params)
-        }
-        _ => unknown(
-            "pf.firewall.helper_missing",
-            "the read-only firewall helper is not installed or did not answer; not verified",
+    for (id, why) in [
+        (
+            "peer_identity",
+            "the peer's identity can only be verified during pairing; not verified",
         ),
+        (
+            "firewall",
+            "the agent does not inspect firewall rules; not verified",
+        ),
+    ] {
+        checks.push(check(id, "unknown", why.into()));
     }
+    (200, preflight_report(checks))
 }
 
 /// One outbound TCP connect to the peer's tunnel port (no data is sent). It proves only that
