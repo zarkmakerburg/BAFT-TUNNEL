@@ -227,10 +227,27 @@ setting the owner applies; it was not inspected.
 
 ## Stable gate statement
 
-After both passes, nothing found at Critical, High or Medium in the components marked "Full". A-06 and
-A-07 are fixed. The first stable release made through the split workflow is its first real signing
-run; a dry run on the branch exercised build and hand-over only. Still not
-audited: `install-agent-control.sh` (reviewed in PR #199), the reverse ingress
-relay and `integrity_probe.rs` beyond a skim, `run_lifecycle`, panel code outside the B4..B6 diffs,
-repository rulesets and branch protection settings. PR #215 (merged as `5e21146` after the audited
-SHA) is reviewed in the third pass below. Evidence level stays source review + CI.
+After all four passes, nothing was found at Critical, High or Medium in the components marked "Full" or
+in the fourth-pass components. A-06, A-07 and A-11 are fixed. The first stable release made through
+the split workflow is its first real signing run; a dry run on the branch exercised build and
+hand-over only. The `v*` tag rulesets are drafted but **not applied** (the session cannot write
+repository rulesets); until the owner applies them, tag immutability rests on the A-07 gate and on
+admin discipline. Still not audited: `integrity_probe.rs` beyond a skim, `observe.rs`,
+`runtime_host.rs`, `session_status.rs`, `main.rs` CLI wiring, `scripts/menu.sh`, and `install.sh`
+outside the reviewed diffs. Evidence level stays source review + CI.
+
+## Fourth pass (main `71c6c19`, owner decision via the coordinator)
+
+| Component | Coverage | Result |
+|-----------|----------|--------|
+| `scripts/install-agent-control.sh` + `systemd/control/*`, `systemd/agent/*` | Full | Instance name and `--listen` validated before use; token created once as the agent user (0600, never printed); request directory enforced `root:baft-tunnel-agent 0770` through the fail-closed migration helper; group exclusivity checked; each root helper runs one fixed `systemctl` command for `baft-tunnel@%i` only; agent unit has an empty capability set, `ProtectSystem=strict`, syscall filter. A-12 |
+| Reverse ingress relay (`tunnel.rs` `IngressSide`, reverse branch of `serve_versioned`, `run_forward_session_versioned`) | Full | Streams open only after the TLS/Noise handshake and the protocol handshake authorize the peer; a new authenticated session replaces the old one (old one is signalled before the queue lock is taken); waiting user connections are bounded by a semaphore and `INGRESS_QUEUE_MAX_WAIT`; the queue is bounded; stream slots are bounded and excess connections are dropped; relays use the idle timeout. No finding |
+| `run_lifecycle` (`apply.rs`) and `tunnel_lifecycle` (`agent.rs`) | Full | Instance comes from the agent's own `--instance`, never from the request; `confirm: true` and a bounded idempotency key required; one lock; config parsed and `validate_public()`d (agent never reads the private key); direction must be offered by the engine; only `/etc/baft-tunnel`; receipt and audit line per action. No finding |
+| Panel outside B4..B6 (`app.js`, `pages.js`, `charts.js`, `i18n.js`, `index.html`) | Full | No `innerHTML`/`eval`/HTML sinks; the `h()` helper builds text-only DOM; all links are constant in-app hashes; API calls send the token as a Bearer header (no cookies, so no CSRF); token kept in `sessionStorage`; the agent serves a strict CSP (`default-src 'none'`, `script-src 'self'`, `frame-ancestors 'none'`), `nosniff`, `no-referrer`, `no-store`. No finding |
+| Repository settings | Read only | `main` protection: required checks `rust`, `ubuntu-2204-baseline`, `lab-config`; reviews required; no force push or deletion; admins not enforced; not strict (branch need not be up to date). Rulesets: none before this pass. A-13 |
+
+| ID | Severity | Status | Title |
+|----|----------|--------|-------|
+| A-12 | Info | Accepted (by design) | All registered instances share one agent account and one admin token (SA-07), so the agent of one instance can drop control requests for another registered instance. One trust domain per host; documented, not a boundary |
+| A-13 | Low | Open, owner action | No `v*` tag ruleset existed. Drafted: (1) `v*` tags cannot be deleted, updated or force-moved, no bypass; (2) creating a stable `v*` tag (excluding `v*-rc.*` and `v0.0.0-dryrun.*`) is restricted to repository admins, so `tag-prerelease.yml` keeps working. The session proxy refuses ruleset writes, so the owner must apply them (the JSON definitions were handed over with the report) |
+
