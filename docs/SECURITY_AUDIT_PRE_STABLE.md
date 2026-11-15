@@ -40,10 +40,14 @@ Stable gate on the strength of this document.
 `quick-install.sh`, `backup.sh`/`restore.sh`/`rollback.sh`, `release.yml` and cosign verification,
 `phase1-trusted-b4-baft-lab.yml`, `panel` code outside the diff, LAB scripts, fuzz harness.
 `cargo audit` was not run locally (CI runs it; see below).
-Fact check: `git diff --stat dc0e947..7011e3b` is empty for `tunnel.rs`, `noise.rs`, `handshake.rs`,
-`control_socket.rs`, `authorization.rs`, `key_custody.rs`, `runtime_host.rs`, `apply.rs`,
-`install-agent-control.sh`, `quick-install.sh`, `backup.sh`, `restore.sh`, `rollback.sh` and
-`release.yml`: they are byte-identical to what the PR #199 review and the earlier assessment saw.
+Correction (second pass): these files are unchanged since `dc0e947`, but that is not coverage. The
+PR #199 review covered only the control-request boundary (`install-agent-control.sh`,
+`migrate-agent-control-dir.sh`, `update.sh`, units and tests), and the 2026-11-09 assessment read
+`apply.rs` and `release.yml` at `4852ecf`, out-scoped the transport, and did not name
+`control_socket.rs`, `authorization.rs`, `key_custody.rs` or the backup scripts. Since `4852ecf`
+`apply.rs` (+489/-83), `release.yml` (+62/-36), `tunnel.rs` (+539), `tls.rs` (+254),
+`handshake.rs` (+185), `authorization.rs` (+147) changed and `control_socket.rs`, `backup.sh`,
+`restore.sh` are new. They were therefore audited in the second pass below.
 
 | ID | Severity | Status | Area |
 |----|----------|--------|------|
@@ -124,8 +128,73 @@ why the serving side is weaker than tcp-tls, which pins on both sides.
 SA-07 (token = admin) and SA-11 accepted; L-01..L-04 documented. Reverse stays Preview and BAFT
 stays Preview/Direct.
 
+## Second pass (same audited SHA `7011e3b`)
+
+Owner decision (via the coordinator, under the owner's delegation): the Stable gate needs the parts
+not covered above. Read-only review unless stated.
+
+| Component | What was read | Depth |
+|-----------|---------------|-------|
+| Transport engines | `engine.rs` (TLS listener/dialer: TLS 1.3 only, mandatory CRL with expiry, pin + URI SAN identity on both sides; Noise engine), `tls.rs` (`client_config`, `server_config`, `verify_local_certificate`, legacy P-256 key normalisation, `roots`), `noise.rs` (IK, pinned statics both directions, prologue binds ids/tunnel/direction, record bounds) | Full |
+| Session authorization | `handshake.rs` (hello binding, nonces, `verify_peer_identity`, `verify_peer_fingerprint`, `validate_fingerprint`), `authorization.rs` (full) | Full |
+| Tunnel server/client | `tunnel.rs`: `PendingGuard`, `serve_versioned` accept path, `closed_without_data`, `server_session_versioned`, `serve_streams_versioned` (fixed destination, per-stream capability authorization, slot limits), `connect_peer_staged`, `yamux_config` | Full for listed; reverse ingress relay and `integrity_probe.rs` skimmed |
+| Control socket | `control_socket.rs` non-test part (full) | Full |
+| Key custody | `key_custody.rs` non-test part (full) | Full |
+| Apply | `apply.rs`: `write_new`, `tracked`, `SystemUnits` request/state/session, `run_with` (create-only, rollback of created files only), `persist`, `replay` | Full for listed; `run_lifecycle`/`run_stop` skimmed |
+| Release | `release.yml` (full) | Full |
+| Backup/restore/rollback | `backup.sh`, `restore.sh`, `rollback.sh` (full) | Full |
+
+Dynamic: the A-05 unit test (new) and the existing `pending_guard` tests were run locally (3/3 pass).
+
+| ID | Severity | Status | Title |
+|----|----------|--------|-------|
+| A-05 | Low | Fixed (second-pass PR) | Pre-auth per-source limit counted each IPv6 address separately |
+| A-06 | Low | Open, recommended before Stable | Release build runs in the job that holds the OIDC signing permission |
+| A-07 | Low | Open, recommended before Stable | A pushed stable tag releases without a required-checks gate |
+| A-08 | Info | Accepted | Agent reads the tunnel's `session.json` by path after a metadata check |
+
+**A-05 (Low, fixed).** The unauthenticated-connection limit (32 global, 2 per source) keyed IPv6 by
+full address, so one host with a /64 could hold all 32 pending slots for up to the pre-auth window
+(peek 10 s + engine handshake 10 s + protocol hello 10 s) and block new peer sessions; established
+sessions are unaffected. Fix: IPv6 counted per /64, IPv4-mapped IPv6 as IPv4
+(`pending_source`), test `pending_guard_counts_ipv6_per_64_and_mapped_ipv4_as_ipv4`. Residual: 16
+distinct IPv4 sources can still fill the global pool (design limit, unchanged).
+
+**A-06 (Low).** `release.yml` builds the binary, the Go engine and `cargo-cyclonedx` in the same job
+that has `id-token: write`, so code run at build time (build scripts, Go toolchain modules) can
+request an OIDC token and sign arbitrary blobs as `release.yml@refs/tags/...`. Dependencies are
+locked and audited, and a compromised dependency would already poison the signed binary, so the
+extra impact is limited to signing other blobs. Recommendation: build in a job without
+`id-token`, sign in a separate job that only downloads `dist/`.
+
+**A-07 (Low).** `tag-prerelease.yml` checks `rust`, `ubuntu-2204-baseline`, `lab-config` before
+tagging, but only for `-rc.N`. A stable `vX.Y.Z` tag can only be pushed by hand, and `release.yml`
+then requires only "ancestor of main". Recommendation before 0.2.0: a tag ruleset restricting
+`v*` creation, and the same required-checks loop in `release.yml` (or a stable path in
+`tag-prerelease.yml`). Repository rulesets were not inspected (no API access used for that).
+
+**A-08 (Info).** `SystemUnits::session` checks `symlink_metadata` then reads
+`/run/baft-tunnel/NAME/session.json`, a tunnel-writable directory; a compromised tunnel could swap in
+a link. The value is used only when it parses as JSON with `state=authorized` and the unit's main
+PID, so at most a status display is affected.
+
+Second-pass items verified without findings: TLS 1.3 only with early data off; CRL mandatory with
+expiry enforced on both sides; both TLS sides check the certificate pin and the exact
+`urn:baft-tunnel:node:<peer>` URI SAN; Noise IK pins the peer static key on both sides and binds
+ids, tunnel and direction in the prologue; the hello is checked field by field and authorization
+rejects unknown, duplicate or missing capabilities; integrity probes are v2-only and rate limited;
+each stream connects only the fixed destination; the control socket accepts only the
+`baft-tunnel-agent` uid via `SO_PEERCRED`, one fixed 13-byte request, opens its directory with
+`O_NOFOLLOW` and checks owner/mode; systemd credentials resolve only inside
+`CREDENTIALS_DIRECTORY`; apply creates files with `create_new` and rolls back only what it created;
+restore verifies the checksum, an allowlist of paths, and refuses links and special files.
+
 ## Stable gate statement
 
-For the components with "Full" coverage above, nothing found blocks Stable 0.2.0. Before using this
-as the security gate, the "not audited" list needs either a re-review or an explicit decision that
-the earlier assessments (2026-11-09, PR #199) still cover it because the code is unchanged.
+After both passes, nothing found at Critical, High or Medium in the components marked "Full". A-06
+and A-07 (Low) are release-process hardening recommended before the first stable tag. Still not
+audited: `install-agent-control.sh` (reviewed in PR #199), `quick-install.sh`, the reverse ingress
+relay and `integrity_probe.rs` beyond a skim, `run_lifecycle`, panel code outside the B4..B6 diffs,
+repository rulesets and branch protection settings. Not covered at all: PR #215 (S8 TLS file reload
+without restart, `apply-crl --no-restart`), merged as `5e21146` after the audited SHA; it changes the
+TLS trust path and needs its own review before the Stable gate. Evidence level stays source review + CI.
