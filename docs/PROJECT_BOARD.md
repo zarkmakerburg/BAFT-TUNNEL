@@ -2,6 +2,12 @@
 
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
+## به‌روزرسانی 2026-11-15
+
+- `main` در `b61765f` (۸ Check موفق، فقط سطح CI)؛ آخرین نسخه: `v0.1.0-rc.8` (Pre-release، نه پایدار).
+- B4 انجام شد (PR #201؛ LAB واقعی دو‌سروره [43644908151](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43644908151)). ارتقای rc.7→rc.8 روی LAB واقعی موفق: [43670274992](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43670274992) (۲۶۸ دور، بدون Probe ناموفق).
+- باز: B3 (فایروال `Unknown`؛ طراحی مبتنی بر `CAP_NET_ADMIN` پذیرفته نیست)، B5، B6، S10، ممیزی امنیتی پیش از Stable. #197 و #173 بسته شدند.
+
 ## وضعیت در 2026-11-13
 
 - **Baseline بررسی‌شده:** `main` در SHA `82d77b3113ba6d966d1792f772940c70c0dfb4bc` (ادغام PR #194؛ اصلاح حسابداری اتصال‌های Health Check در Harness B2). U7 روی والد محصول `1219f547` اجرا شد.
