@@ -314,6 +314,15 @@ dialog.ov::backdrop{background:var(--scrim)}
 .view.enter .grid>*:nth-child(4){animation-delay:120ms}.view.enter .grid>*:nth-child(n+5){animation-delay:160ms}
 .badge{transition:background-color var(--t-fast) var(--ease),color var(--t-fast) var(--ease)}
 .legend{direction:ltr}
-@media (prefers-reduced-motion:reduce){.card:hover{transform:none}}
-@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+/* Reduced motion (per modern-web-guidance "motion"): no blanket kill-switch. Spatial movement is dropped and
+   entrances keep a plain fade; persistent loops stop; colour/border transitions stay. */
+@media (prefers-reduced-motion:reduce){
+  @keyframes rise{from{opacity:0}to{opacity:1}}
+  @keyframes slide-in{from{opacity:0}to{opacity:1}}
+  @keyframes slide-in-rtl{from{opacity:0}to{opacity:1}}
+  .sk,.badge.conn .glyph{animation:none}
+  .card:hover{transform:none}
+  .shell{transition:none}
+  html{scroll-behavior:auto}
+}
 @media (forced-colors:active){.badge,.choice,.card{border:1px solid CanvasText}}
