@@ -1,4 +1,10 @@
-use std::{fs::File, io::BufReader, path::Path, sync::Arc};
+use std::{
+    fs::File,
+    io::BufReader,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use rustls::{
@@ -293,6 +299,60 @@ pub fn client_config(ca: &Path, crl: &Path, cert: &Path, key: &Path) -> Result<A
     // Forwarded application data is never sent as TLS 1.3 0-RTT early data.
     config.enable_early_data = false;
     Ok(Arc::new(config))
+}
+
+/// Server TLS material that follows the files on disk (S8). A CRL, CA or certificate that was
+/// replaced is picked up by the next accepted connection without restarting the unit, so
+/// activating a refreshed CRL no longer drops live sessions. Sessions already established are
+/// not re-evaluated: a revocation that must cut them off still needs a restart. Fail closed:
+/// when the files changed and the new material does not load, connections are refused until it does.
+pub struct ReloadingAcceptor {
+    files: [PathBuf; 4],
+    state: Mutex<AcceptorState>,
+}
+
+type FileStamp = (u64, u64, SystemTime);
+type AcceptorState = (
+    Vec<Option<FileStamp>>,
+    std::result::Result<TlsAcceptor, String>,
+);
+
+fn stamp(path: &Path) -> Option<FileStamp> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.ino(), m.len(), m.modified().ok()?))
+}
+
+impl ReloadingAcceptor {
+    pub fn new(ca: &Path, crl: &Path, cert: &Path, key: &Path) -> Result<Self> {
+        let files: [PathBuf; 4] = [ca, crl, cert, key].map(Path::to_path_buf);
+        let acceptor = server_config(ca, crl, cert, key)?;
+        let stamps = files.iter().map(|f| stamp(f)).collect();
+        Ok(Self {
+            files,
+            state: Mutex::new((stamps, Ok(acceptor))),
+        })
+    }
+
+    /// The acceptor for the next connection: rebuilt only when a file changed.
+    pub fn current(&self) -> Result<TlsAcceptor> {
+        let now: Vec<Option<FileStamp>> = self.files.iter().map(|f| stamp(f)).collect();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.0 != now {
+            let [ca, crl, cert, key] = &self.files;
+            state.1 = server_config(ca, crl, cert, key).map_err(|e| format!("{e:#}"));
+            if let Err(reason) = &state.1 {
+                eprintln!("TLS material changed but does not load; refusing connections: {reason}");
+            } else {
+                eprintln!("TLS material changed on disk; reloaded for new connections");
+            }
+            state.0 = now;
+        }
+        state
+            .1
+            .clone()
+            .map_err(|reason| anyhow::anyhow!("TLS material does not load: {reason}"))
+    }
 }
 
 pub fn server_config(ca: &Path, crl: &Path, cert: &Path, key: &Path) -> Result<TlsAcceptor> {
@@ -698,6 +758,29 @@ pub(crate) mod tests {
             expired_client_failed || expired_client_server_failed,
             "client must reject server authentication when its configured CRL is expired"
         );
+
+        // S8: the listener follows the files: a replaced CRL is used by the next connection,
+        // an unloadable replacement refuses connections, and restoring the file recovers.
+        let live_crl = directory.join("live.crl");
+        fs::copy(&crl_path, &live_crl).unwrap();
+        let reloading =
+            ReloadingAcceptor::new(&ca_path, &live_crl, &server_cert_path, &server_key_path)
+                .unwrap();
+        let first = reloading.current().unwrap();
+        assert!(Arc::ptr_eq(
+            first.config(),
+            reloading.current().unwrap().config()
+        ));
+        fs::copy(&expired_crl_path, &live_crl).unwrap();
+        let second = reloading.current().unwrap();
+        assert!(!Arc::ptr_eq(first.config(), second.config()));
+        fs::write(&live_crl, "not a crl").unwrap();
+        assert!(
+            reloading.current().is_err(),
+            "unloadable material must fail closed"
+        );
+        fs::copy(&crl_path, &live_crl).unwrap();
+        assert!(reloading.current().is_ok(), "restoring the file recovers");
 
         // A certificate signed by a different CA must not pass client authentication.
         let mut rogue_ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();

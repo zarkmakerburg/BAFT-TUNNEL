@@ -10,7 +10,7 @@ usage() {
   cat <<'USAGE'
 Usage:
   push-crl.sh [--dry-run] [--sudo] --crl FILE --host USER@HOST[:PORT] [--host ...] \
-      --remote-ca PATH --remote-crl PATH --instance NAME [--remote-apply PATH] [--known-hosts FILE] [--key FILE]
+      --remote-ca PATH --remote-crl PATH --instance NAME [--remote-apply PATH] [--known-hosts FILE] [--key FILE] [--no-restart]
 
 Refuses to push a CRL bundle that crl-status.sh reports as under 72 hours or expired.
 --dry-run prints the plan and contacts nothing.
@@ -19,7 +19,7 @@ USAGE
 die() { echo "push-crl: $*" >&2; exit 2; }
 
 DRY=0; SUDO=""; CRL=""; REMOTE_CA=""; REMOTE_CRL=""; INSTANCE=""
-REMOTE_APPLY="/usr/local/lib/baft-tunnel/apply-crl.sh"; KNOWN_HOSTS=""; KEY=""
+APPLY_EXTRA=""; REMOTE_APPLY="/usr/local/lib/baft-tunnel/apply-crl.sh"; KNOWN_HOSTS=""; KEY=""
 HOSTS=()
 while (($#)); do
   case "$1" in
@@ -31,6 +31,7 @@ while (($#)); do
     --remote-crl) REMOTE_CRL="${2:?}"; shift 2 ;;
     --remote-apply) REMOTE_APPLY="${2:?}"; shift 2 ;;
     --instance) INSTANCE="${2:?}"; shift 2 ;;
+    --no-restart) APPLY_EXTRA=" --no-restart"; shift ;;
     --known-hosts) KNOWN_HOSTS="${2:?}"; shift 2 ;;
     --key) KEY="${2:?}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -70,7 +71,7 @@ for target in "${HOSTS[@]}"; do
   rc=0
   scp "${ssh_args[@]}" -P "$port" "$CRL" "$user@$host:$stage/candidate.crl" >/dev/null || rc=$?
   if ((rc == 0)); then
-    ssh "${ssh_args[@]}" -p "$port" "$user@$host" "${SUDO}'$REMOTE_APPLY' apply '$REMOTE_CA' '$REMOTE_CRL' '$stage/candidate.crl' '$INSTANCE'" || rc=$?
+    ssh "${ssh_args[@]}" -p "$port" "$user@$host" "${SUDO}'$REMOTE_APPLY' apply '$REMOTE_CA' '$REMOTE_CRL' '$stage/candidate.crl' '$INSTANCE'${APPLY_EXTRA}" || rc=$?
   fi
   ssh "${ssh_args[@]}" -p "$port" "$user@$host" "rm -rf '$stage'" || true
   if ((rc != 0)); then

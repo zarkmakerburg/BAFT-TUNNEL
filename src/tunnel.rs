@@ -337,8 +337,12 @@ pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> R
             options.direction,
         )?),
         None => {
-            let acceptor =
-                tls::server_config(&options.ca, &options.crl, &options.cert, &options.key)?;
+            let acceptor = Arc::new(tls::ReloadingAcceptor::new(
+                &options.ca,
+                &options.crl,
+                &options.cert,
+                &options.key,
+            )?);
             Arc::new(TlsEngine::listener(
                 acceptor,
                 options.peer_id.clone(),
