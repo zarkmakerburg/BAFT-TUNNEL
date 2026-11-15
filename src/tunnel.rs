@@ -163,6 +163,7 @@ impl PendingGuard {
         per_ip: &Arc<std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, usize>>>,
         ip: std::net::IpAddr,
     ) -> Option<Self> {
+        let ip = pending_source(ip);
         let permit = pending.clone().try_acquire_owned().ok()?;
         let mut map = per_ip.lock().unwrap_or_else(|e| e.into_inner());
         let count = map.entry(ip).or_insert(0);
@@ -176,6 +177,20 @@ impl PendingGuard {
             per_ip: per_ip.clone(),
             ip,
         })
+    }
+}
+
+/// The per-source key for the unauthenticated limit: IPv4 (also IPv4-mapped IPv6) by address,
+/// other IPv6 by /64, since one host or subscriber line usually holds a whole /64 (audit A-05).
+fn pending_source(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip {
+        std::net::IpAddr::V4(_) => ip,
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => std::net::IpAddr::V4(v4),
+            None => std::net::IpAddr::V6(std::net::Ipv6Addr::from(
+                u128::from(v6) & !((1u128 << 64) - 1),
+            )),
+        },
     }
 }
 
@@ -2241,6 +2256,21 @@ mod tests {
         assert_eq!(pending.available_permits(), MAX_PENDING_HANDSHAKES - 2);
         drop(g1);
         assert!(PendingGuard::try_new(&pending, &per_ip, a).is_some());
+    }
+
+    #[test]
+    fn pending_guard_counts_ipv6_per_64_and_mapped_ipv4_as_ipv4() {
+        let pending = Arc::new(Semaphore::new(MAX_PENDING_HANDSHAKES));
+        let per_ip = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        let _a = PendingGuard::try_new(&pending, &per_ip, ip("2001:db8:1:2::1")).unwrap();
+        let _b = PendingGuard::try_new(&pending, &per_ip, ip("2001:db8:1:2::ffff")).unwrap();
+        // A third address in the same /64 is the same source; another /64 is not.
+        assert!(PendingGuard::try_new(&pending, &per_ip, ip("2001:db8:1:2:abcd::9")).is_none());
+        assert!(PendingGuard::try_new(&pending, &per_ip, ip("2001:db8:1:3::1")).is_some());
+        let _c = PendingGuard::try_new(&pending, &per_ip, ip("198.51.100.7")).unwrap();
+        let _d = PendingGuard::try_new(&pending, &per_ip, ip("::ffff:198.51.100.7")).unwrap();
+        assert!(PendingGuard::try_new(&pending, &per_ip, ip("198.51.100.7")).is_none());
     }
 
     #[test]
