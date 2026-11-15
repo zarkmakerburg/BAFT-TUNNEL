@@ -53,3 +53,27 @@ name = "handshake_server"
 path = "fuzz_targets/handshake_server.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "agent_authed"
+path = "fuzz_targets/agent_authed.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "apply_body"
+path = "fuzz_targets/apply_body.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "evidence_files"
+path = "fuzz_targets/evidence_files.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "history_file"
+path = "fuzz_targets/history_file.rs"
+test = false
+doc = false
