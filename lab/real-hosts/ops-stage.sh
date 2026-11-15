@@ -151,6 +151,19 @@ except urllib.error.HTTPError as e:
     print(e.read().decode())
 PY"
 }
+op_verify() { # side label : POST /v1/verify (measured integrity probe) -> JSON saved to op-verify-LABEL-SIDE.json
+  local side="$1" label="$2" key="lab-$2-$1-$RANDOM$RANDOM"
+  ssh_host "$side" "python3 - <<'PY'
+import urllib.request, json
+tok = open('$AGD/token').read().strip()
+r = urllib.request.Request('http://127.0.0.1:$MAG/v1/verify', data=json.dumps({'idempotency_key': '$key'}).encode(), method='POST', headers={'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json'})
+try:
+    print(urllib.request.urlopen(r, timeout=60).read().decode())
+except urllib.error.HTTPError as e:
+    print(e.read().decode())
+PY" >"$LOCAL_TMP/op-verify-$label-$side.json"
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("integrity-probe side=%s label=%s result=%s reason=%s bytes=%s sha256_match=%s" % (sys.argv[2], sys.argv[3], d.get("result"), d.get("reason"), d.get("bytes"), d.get("sha256_match")))' "$LOCAL_TMP/op-verify-$label-$side.json" "$side" "$label"
+}
 op_evidence() { # label min_bytes : diagnostics, status and traffic on both nodes must agree with the measured tunnel
   local label="$1" need="$2" side peer
   for side in iran abroad; do
@@ -161,8 +174,20 @@ op_evidence() { # label min_bytes : diagnostics, status and traffic on both node
     sleep 6   # the agents sample unit counters every 5 s
     echo "op-evidence-read utc=$(date -u +%H:%M:%S) side=$side label=$label"
     p1_api "$side" GET /v1/traffic >"$LOCAL_TMP/op-traffic-$label-$side.json"
+    if (( VERIFY == 1 )); then op_verify "$side" "$label"; fi
     p1_api "$side" POST /v1/diagnostics >"$LOCAL_TMP/op-diag-$label-$side.json"
     p1_api "$side" GET /v1/status >"$LOCAL_TMP/op-status-$label-$side.json"
+    if (( VERIFY == 1 )); then
+      python3 - "$LOCAL_TMP/op-verify-$label-$side.json" "$LOCAL_TMP/op-diag-$label-$side.json" "$side" <<'PY' || { cat "$LOCAL_TMP/op-verify-$label-$side.json" "$LOCAL_TMP/op-diag-$label-$side.json" >&2; echo "measured Integrity on $side ($label) is not a pass after /v1/verify" >&2; exit 1; }
+import json, sys
+v, d, side = json.load(open(sys.argv[1])), json.load(open(sys.argv[2])), sys.argv[3]
+r = {t["id"]: t["result"] for t in d["tiers"]}
+print("verify-tier side=%s probe=%s integrity_tier=%s" % (side, v.get("result"), r.get("integrity")))
+# The forward (iran) node owns the user ingress, so its probe must be a real pass; the serve node's result is recorded only.
+if side == "iran":
+    assert v.get("result") == "pass" and v.get("sha256_match") is True and r.get("integrity") == "pass", (v, r)
+PY
+    fi
     python3 - "$LOCAL_TMP/op-traffic-$label-$side.json" "$LOCAL_TMP/op-diag-$label-$side.json" "$LOCAL_TMP/op-status-$label-$side.json" "$peer" "$need" "$side" <<'PY' || { cat "$LOCAL_TMP"/op-*-"$label-$side".json >&2; echo "Direct evidence ($label) on $side does not match the measured tunnel" >&2; exit 1; }
 import json, sys
 tr, dg, st = (json.load(open(f)) for f in sys.argv[1:4]); peer, need, side = sys.argv[4], int(sys.argv[5]), sys.argv[6]
@@ -395,11 +420,23 @@ echo "--- revocation: iran (forward) certificate revoked, new CRL on the serve n
 bash scripts/pki/baft-pki.sh revoke-node "$RP/ca" "$RP/issued-iran/node.crt" "$RP/revoked" >/dev/null
 copy_to_host abroad "$RP/revoked/ca.crl"
 ssh_host abroad "install -m 0644 '$REMOTE_DIR/ca.crl' $EB/ca.crl"
+if (( CRL_LIVE == 1 )); then
+  # S8 live reload: the serve node is NOT restarted. It must pick the new CRL up on the next accepted connection,
+  # so only the forward node is killed (systemd restarts it) to force a fresh handshake with its revoked certificate.
+  SRV_PID0="$(ssh_host abroad "systemctl show -p MainPID --value baft-tunnel@$SRV.service")"
+  ssh_host iran "kill -KILL \$(systemctl show -p MainPID --value baft-tunnel@$CLI.service)"
+  sleep 12
+  SRV_PID1="$(ssh_host abroad "systemctl show -p MainPID --value baft-tunnel@$SRV.service")"
+  [[ -n "$SRV_PID0" && "$SRV_PID0" != 0 && "$SRV_PID0" == "$SRV_PID1" ]] || { echo "serve node was restarted during the live CRL reload (pid $SRV_PID0 -> $SRV_PID1)" >&2; exit 1; }
+  echo "CRL_LIVE_RESULT serve_pid_unchanged=1 serve_pid=$SRV_PID1 revoked_refused_without_restart=pending_probe"
+else
 unit_stop abroad $SRV || { echo "could not stop $SRV" >&2; exit 1; }
 [[ "$(op_apply abroad $SRV serve op-srv-0005 | jf result)" == applied ]] || { echo "serve node with the new CRL was not applied" >&2; exit 1; }
 sleep 12
+fi
 if probe_host iran 4096 >/dev/null 2>&1; then echo "revoked forward certificate still carried data" >&2; exit 1; fi
 ssh_host abroad "journalctl -u baft-tunnel@$SRV --no-pager -n 200 | grep -qi revok" || { echo "serve-node log shows no revocation refusal" >&2; exit 1; }
+if (( CRL_LIVE == 1 )); then echo "CRL_LIVE_RESULT revoked_refused_without_restart=1 serve_pid_unchanged=1 serve_pid=$SRV_PID1"; fi
 p1_api iran POST /v1/diagnostics >"$LOCAL_TMP/op-diag-revoked.json"
 python3 - "$LOCAL_TMP/op-diag-revoked.json" <<'PY' || { cat "$LOCAL_TMP/op-diag-revoked.json" >&2; echo "forward-node diagnostics did not attribute the revocation to the secure channel" >&2; exit 1; }
 import json, sys
