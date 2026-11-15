@@ -1,0 +1,150 @@
+name: Phase 1 trusted signed prerelease agent-service and reboot LAB (S3)
+
+# Real two-host run of the agent-service stage against a signed prerelease: install --register,
+# lifecycle through the agent, one real reboot of both LAB hosts (owner-delegated, once per run),
+# measured integrity (/v1/verify) before diagnostics, and before/after host drift (firewall rules,
+# listeners, unit files) for S10. Not combined with the soak/upgrade run.
+on:
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: Signed prerelease tag under acceptance
+        required: true
+        type: string
+      confirm:
+        description: Type RUN_TRUSTED_PHASE1_LAB to authorize the bounded two-host run including one reboot of each LAB host
+        required: true
+        type: string
+        default: ''
+
+env:
+  NEXT: ${{ inputs.target_tag }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-trusted-lab-hosts
+  cancel-in-progress: false
+
+jobs:
+  validate-release-tag:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require explicit approval and a prerelease tag on main
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == RUN_TRUSTED_PHASE1_LAB ]] || { echo 'Explicit confirmation is required' >&2; exit 2; }
+          [[ "$NEXT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || { echo 'target_tag must be a prerelease tag' >&2; exit 2; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the tag to be an ancestor of main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "refs/tags/$NEXT:refs/tags/$NEXT"
+          git merge-base --is-ancestor "$(git rev-parse "$NEXT^{commit}")" "$GITHUB_SHA"
+
+  verify-release-assets:
+    needs: validate-release-tag
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+        with:
+          cosign-release: v2.5.3
+      - name: Download NEXT package, binary, and signed manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/u7/rc7"
+          gh release download "$NEXT" --repo zarkmakerburg/BAFT-TUNNEL \
+            --pattern "baft-tunnel-$NEXT-linux-x86_64.tar.gz" \
+            --pattern "baft-tunnel-$NEXT-linux-x86_64" \
+            --pattern 'SHA256SUMS' --pattern 'SHA256SUMS.cosign.bundle' \
+            --dir "$RUNNER_TEMP/u7/rc7"
+      - name: Verify NEXT tag identity, checksums, safe package layout, and binary identity
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/u7/rc7"
+          chmod 0755 "baft-tunnel-$NEXT-linux-x86_64"
+          cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity "https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/tags/$NEXT" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          sha256sum --ignore-missing --check SHA256SUMS
+          bash "$GITHUB_WORKSPACE/lab/real-hosts/prepare-ops-package.sh" \
+            "baft-tunnel-$NEXT-linux-x86_64.tar.gz" \
+            "baft-tunnel-$NEXT-linux-x86_64" extract >/dev/null
+          "extract/baft-tunnel-$NEXT-linux-x86_64/baft-tunnel" --version
+          # Also exercise the public one-line installer verification path for this exact tag.
+          bash "$GITHUB_WORKSPACE/scripts/quick-install.sh" --verify-only --tag "$NEXT"
+      - name: Upload only verified release inputs for trusted orchestration
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4.6.2
+        with:
+          name: baft-tunnel-s3-signed-release-inputs
+          path: |
+            ${{ runner.temp }}/u7/rc7/baft-tunnel-${{ inputs.target_tag }}-linux-x86_64.tar.gz
+            ${{ runner.temp }}/u7/rc7/extract/baft-tunnel-${{ inputs.target_tag }}-linux-x86_64/baft-tunnel
+          if-no-files-found: error
+          retention-days: 1
+
+  two-host-s3-lab:
+    needs: [validate-release-tag, verify-release-assets]
+    runs-on: ubuntu-22.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 60
+    steps:
+      # Only trusted main orchestration is checked out; release artifacts are verified inputs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download verified release inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # actions/download-artifact v4.3.0
+        with:
+          name: baft-tunnel-s3-signed-release-inputs
+          path: ${{ runner.temp }}/u7-inputs
+      - name: Run trusted two-host agent-service stage with one real reboot
+        env:
+          LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+          LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
+          LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          LAB_SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+          LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+          LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+          LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+          LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+          # The harness copies MVP_BINARY by basename; it must be named baft-tunnel.
+          MVP_BINARY: ${{ runner.temp }}/u7-inputs/rc7/extract/baft-tunnel-${{ inputs.target_tag }}-linux-x86_64/baft-tunnel
+          MVP_PKG: ${{ runner.temp }}/u7-inputs/rc7/baft-tunnel-${{ inputs.target_tag }}-linux-x86_64.tar.gz
+          MVP_SOURCE: signed-release:${{ inputs.target_tag }}
+          LAB_AGENT_SVC: '1'
+          LAB_REBOOT: '1'
+          LAB_OPS: '0'
+          LAB_MVP: '0'
+          LAB_REVERSE: '0'
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$LAB_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/u7-lab-id_ed25519"
+          printf '%s\n' "$LAB_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/u7-lab-known_hosts"
+          chmod 0600 "$RUNNER_TEMP/u7-lab-id_ed25519" "$RUNNER_TEMP/u7-lab-known_hosts"
+          unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS
+          export SSH_KEY_FILE="$RUNNER_TEMP/u7-lab-id_ed25519"
+          export SSH_KNOWN_HOSTS_FILE="$RUNNER_TEMP/u7-lab-known_hosts"
+          trap 'rm -f "$RUNNER_TEMP/u7-lab-id_ed25519" "$RUNNER_TEMP/u7-lab-known_hosts"' EXIT
+          chmod 0755 "$MVP_BINARY"
+          [[ -x "$MVP_BINARY" && -f "$MVP_PKG" ]]
+          bash lab/real-hosts/phase1-two-host-e2e.sh
