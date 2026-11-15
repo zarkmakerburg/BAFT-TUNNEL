@@ -31,6 +31,14 @@ cd "$PKG"
 
 Do not continue unless Cosign verification succeeds and the package checksum reports OK. A checksum without signature verification does not establish who published the package.
 
+**Quick installer (alternative to steps 1 and 2).** `scripts/quick-install.sh` performs the same Cosign and checksum verification, then installs and registers the Agent:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/main/scripts/quick-install.sh | sudo bash -s -- --register t1
+```
+
+By default it installs only the latest **stable** release. Until a stable release is published it stops with an error and installs nothing. To install a Preview (prerelease) build you must opt in explicitly with `--channel prerelease`, or pin an exact release with `--tag vX.Y.Z-rc.N`.
+
 ## 2. Install and register the local Agent
 
 On each host, choose a unique instance name (example: t1):
