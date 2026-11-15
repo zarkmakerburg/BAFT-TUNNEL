@@ -30,6 +30,8 @@ pub mod key_custody;
 pub mod noise;
 #[path = "../../src/pki_helper.rs"]
 pub mod pki_helper;
+#[path = "../../src/history_store.rs"]
+pub mod history_store;
 #[path = "../../src/observe.rs"]
 pub mod observe;
 #[path = "../../src/runtime_host.rs"]

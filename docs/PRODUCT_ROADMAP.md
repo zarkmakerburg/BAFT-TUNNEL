@@ -147,7 +147,7 @@ Two merged streams are outside this queue and carry no product claim: CodSpeed p
 2. Real authenticated peer/session/data-path diagnostic endpoint; TCP-only reachability must remain a lower evidence tier. — **Done** (ADR-0024, PR #109, LAB 42545941726).
 3. End-to-end tunnel state and last-verified timestamp. — **Done** (PR #109).
 4. Complete audit actor, target and resource identity. — **Done** for local Apply (PR #109); remote Job receipts wait for item 1.
-5. Measured throughput/byte counters and history with units, interval, provenance and freshness. — **Done** (PR #109, panel PR #120); history beyond one hour is B5.
+5. Measured throughput/byte counters and history with units, interval, provenance and freshness. — **Done** (PR #109, panel PR #120); 24 h persisted history and availability/stale alerts are B5 (implemented, CI evidence only).
 6. Machine-readable Preflight/Diagnostics evidence codes + params and localized explanations. — **Done**: merged in `311b706` with the duplicate-key fix `62d7ee6`: B1.
 7. Read-only firewall visibility. — _Not started_: B3.
 8. Safe “Add from Link” import with versioned schema, checksum, strict validation and preview. — _Not started_; delivered as the panel bundle import in U5b.

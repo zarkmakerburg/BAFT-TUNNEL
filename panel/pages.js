@@ -51,7 +51,11 @@
       if (ls != null && ls < 7 * 86400) { out.push({ sev: ls < 3 * 86400 ? 'bad' : 'warn', res: 'CRL', text: t(ls <= 0 ? 'warn.crl.expired' : 'warn.crl'), next: t('warn.crl.next') }); }
       if (c.peer_certificate_pin_configured === false) { out.push({ sev: 'warn', res: c.tunnel_id, text: t('warn.pin'), next: t('warn.pin.next') }); }
     }
-    if (st.avail != null && st.hist.length >= 12 && st.avail < 90) { out.push({ sev: 'warn', res: c.tunnel_id, text: t('warn.avail'), next: t('warn.avail.next') }); }
+    ((d.history || {}).alerts || []).forEach(function (a) {
+      var ev = a.evidence || {};
+      out.push({ sev: 'warn', res: c.tunnel_id, text: t('alert.' + a.id, { p: BAFT.fmtNum(ev.availability_percent, 1), n: BAFT.fmtNum(ev.probes, 0) }), next: t('warn.avail.next') });
+    });
+    if (d.traffic && d.traffic.available && d.traffic.fresh === false) { out.push({ sev: 'warn', res: c.tunnel_id, text: t('warn.stale'), next: t('warn.stale.next') }); }
     if (d.audit === null) { out.push({ sev: 'info', res: 'Agent', text: t('warn.audit'), next: t('warn.audit.next') }); }
     return out;
   }
@@ -92,6 +96,31 @@
     return h('div', null, kv(rows), chart, h('p', { class: 'sub', text: t('tr.source') }));
   }
 
+  /* 24 h persisted history: real one-minute buckets, nothing interpolated. */
+  function runsList(runs) {
+    if (!runs || !runs.length) { return null; }
+    return h('div', null, h('h3', { text: t('lh.runs') }), h('ul', { class: 'warns' }, runs.slice(-5).reverse().map(function (r) {
+      return h('li', null, h('div', { class: 'top' }, pill(r.verified ? 'ok' : 'warn', t(r.verified ? 'lh.verified' : 'lh.notverified')), h('span', { class: 'sub', text: BAFT.fmtTime(r.at_unix) })),
+        h('div', { class: 'sub', text: r.tiers.map(function (x) { return x[0] + ': ' + x[1]; }).join(' · ') }));
+    })));
+  }
+  function longBody(lh) {
+    var sm = (lh && lh.samples) || [];
+    if (!sm.length) { return empty(t('empty.history')); }
+    var tot = lh.totals || {}, pct = tot.probes ? tot.up / tot.probes * 100 : null;
+    var av = sm.map(function (x) { return { x: x.t, y: x.probes ? x.up / x.probes * 100 : null }; });
+    var by = sm.map(function (x) { return { x: x.t, y: (x.from_peer_bytes || 0) + (x.to_peer_bytes || 0) }; });
+    var rows = [[t('ov.avail'), pct == null ? '—' : BAFT.fmtNum(pct, 1) + '%'],
+      [t('tr.from'), BAFT.ltr(fmtBytes(tot.from_peer_bytes))], [t('tr.to'), BAFT.ltr(fmtBytes(tot.to_peer_bytes))]];
+    return h('div', null, kv(rows),
+      C.line(av, { label: t('ov.avail') + ' (%)', fmtX: BAFT.fmtTime, fmtY: function (v) { return BAFT.fmtNum(v, 0); } }),
+      C.line(by, { label: t('tr.bytes.min'), fmtX: BAFT.fmtTime, fmtY: function (v) { return fmtBytes(v); } }),
+      h('p', { class: 'sub', text: t('lh.src', { m: BAFT.fmtNum((lh.bucket_s || 60) / 60, 0), h: BAFT.fmtNum((lh.retention_s || 0) / 3600, 0) }) }),
+      runsList(lh && lh.runs),
+      lh.persisted ? null : h('p', { class: 'sub', text: t('lh.nopersist') }),
+      lh.load_error || lh.write_error ? h('p', { class: 'sub', text: t('lh.error') + ': ' + (lh.write_error || lh.load_error) }) : null);
+  }
+
   /* ---- Overview ---- */
   BAFT.register({ id: 'overview', icon: 'overview', order: 1, primary: true, needs: ['history', 'security', 'audit', 'desired', 'traffic'], render: function (ctx) {
     var d = ctx.data, s = d.status, c = conf(d), st = stats(d), ws = warnings(d), hist = st.hist, tr = d.traffic && d.traffic.available ? d.traffic : null;
@@ -121,7 +150,8 @@
         h('div', { class: 'stack' },
           card(t('ov.health'), h('div', null, timeline, src, avail)),
           card(t('ov.latency'), latency),
-          card(t('ov.traffic.title'), trafficBody(tr))),
+          card(t('ov.traffic.title'), trafficBody(tr)),
+          card(t('lh.title'), longBody(d.history ? Object.assign({ runs: d.history.diagnostics_runs }, d.history.long) : null))),
         h('div', { class: 'stack' },
           card(t('ov.warnings'), warnList(ws)),
           card(t('ov.recent'), recent, '', h('a', { href: '#/activity', text: t('nav.activity') })))));

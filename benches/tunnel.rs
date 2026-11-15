@@ -24,6 +24,8 @@ mod engine;
 mod engine_store;
 #[path = "../src/handshake.rs"]
 mod handshake;
+#[path = "../src/history_store.rs"]
+mod history_store;
 #[path = "../src/integrity_probe.rs"]
 mod integrity_probe;
 #[path = "../src/key_custody.rs"]

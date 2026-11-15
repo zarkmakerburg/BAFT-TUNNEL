@@ -49,7 +49,7 @@
 | No end-to-end peer/session/data-path result in the status API | **Done** | ADR-0024, PR #109, CI 42545957126, LAB 42545941726 |
 | No central enrollment / enrolled inventory | Open, post-MVP | L1 |
 | Servers page is not a Fleet | Open, post-MVP | L2 |
-| No live throughput counters | **Done** (in-memory history 1 h) | PR #109 `/v1/traffic`, panel PR #120; persistence B5 |
+| No live throughput counters | **Done** (in-memory 1 h, plus 24 h persisted one-minute buckets) | PR #109 `/v1/traffic`, panel PR #120; B5 (CI evidence only) |
 | No read-only firewall inspection | Unknown by decision (ADR-0030, needs `CAP_NET_ADMIN`) | B3 |
 | Audit actor/target; machine-readable evidence codes | Audit **done**; evidence codes **merged** in `main` (`311b706`, duplicate-key fix `62d7ee6`) | PR #109; B1 (closed) |
 | No billing in core | By design | — |
@@ -63,7 +63,7 @@
 | 2 | Peer-aware diagnostics | **Done** (ADR-0024) | BAFT has no diagnostics (unknown by design); B4 |
 | 3 | End-to-end tunnel state and last verified time | **Done** | — |
 | 4 | Audit actor/target/resource | **Done**; remote Job receipts wait for L1 | L1 |
-| 5 | Traffic counters with units, interval, freshness | **Done**; history only in memory (1 h) | B5 |
+| 5 | Traffic counters with units, interval, freshness | **Done**; 5 s samples in memory (1 h) plus 24 h persisted one-minute buckets (B5, CI only) | — |
 | 6 | Machine-readable Preflight/Diagnostics evidence codes | **Done**: merged in `main` as `311b706` (localized structured evidence) with `62d7ee6` (duplicate `diag.next.*` keys removed, regression assertion added); historical exact-head CI evidence in PR #168 | B1 (closed) |
 | 7 | Read-only firewall visibility | Unknown by decision (ADR-0030) | — |
 | 8 | Safe "Add from Link" | Code done (U5b): `baft-tunnel://pair?v=1&b=` link, paste or upload, checksum compare and preview | LAB run 42779915532 PASS |
@@ -75,7 +75,7 @@
 | 1 | Fleet inventory, groups, version and health freshness | Not started | L2 |
 | 2 | Remote orchestration via scoped Jobs | Not started | L2 |
 | 3 | Update/rollback and backup/restore with restore acceptance | **Done locally** (ADR-0025, PR #111; LAB 42635190485 Direct, 42619848756 Reverse): same-version only; panel shows read-only guidance | Cross-version S2; remote Jobs L2 |
-| 4 | Monitoring, alerts, operational history | Not started | B5, L4 |
+| 4 | Monitoring, alerts, operational history | **Partly done** (B5: 24 h persisted history, availability and stale-counter alerts; CI only) | L4 |
 | 5 | Third-party integration API | Not started; owner priority | L4 |
 
 ### 3.4 Phase 6 (hardening and stable)
@@ -169,7 +169,7 @@ Effort: **S** = one small PR; **M** = one or two PRs, about a day with CI; **L**
 | B2 | In-product integrity probe ("Test tunnel"): an authenticated, size- and rate-bounded probe stream answered by the serve node, SHA-256 compared; the `integrity` tier can pass for this probe only; [ADR-0028](ADR-0028-authenticated-integrity-probe.md) covers the stream-open contract change | U7 | M | REAL-LAB + CI | **Accepted for Direct**: run [43407066796](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43407066796), fixed candidate `b15b0a3f49e0e5b7c4fcaaec3b3da49cd22514c6`, binary SHA-256 `726e292afe323becd9cd6c4d79c7fb0cd4ae69013334369e304176b248c69e89`; bidirectional probes, audit/request hashes, restart/cooldown, pre/post data path and cleanup PASS. Controlled tampered-payload relay test in PR #193 rejects with SHA-256 mismatch (unit-level, not live two-host tamper). Apply `ready` remains Unknown. Reverse remains gated. |
 | B3 | P1-7 firewall visibility. **Resolved as Unknown by decision** ([ADR-0030](ADR-0030-read-only-firewall-visibility.md), 2026-11-15): listing live rules needs `CAP_NET_ADMIN` even for root (measured), which the owner does not accept in any BAFT-TUNNEL component, so the `firewall` tier stays Unknown and no helper is built | U2 | S (docs) | — | Docs only; reopen needs an owner decision |
 | B4 | BAFT configurable (ADR-0019 phase F): `setup plan/init/join` for `baft` (Direct), Engine Store install in `install.sh`, Apply start/stop, Wizard selectable; status and traffic stay unknown | U5b | L | Yes | LAB with the signed engine through the Wizard path |
-| B5 | Bounded persistence of counter and diagnostics history beyond 1 h; panel alerts for CRL/certificate expiry, tunnel down and stale evidence | U2 | M | — | Unit + browser QA |
+| B5 | **Implemented (CI evidence only; not LAB):** `history.json` and `diagnostics-history.json` in the agent state dir, 24 h, one-minute buckets, 100 diagnostics runs, `/v1/history` fields `long`, `alerts`, `diagnostics_runs`; availability 1 h/24 h alerts need enough real probes. Original scope: bounded persistence of counter and diagnostics history beyond 1 h; panel alerts for CRL/certificate expiry, tunnel down and stale evidence | U2 | M | — | Unit + browser QA |
 | B6 | Automated accessibility audit in `scripts/panel-qa/a11y-axe.js` (axe-core 4.10.2, wcag2a/2aa/21a/21aa + best-practice; 7 pages × fa/en × dark/light × desktop/mobile; critical/serious fail CI, wired into the `panel-ui` job); physical phone pass | U5a | S | — | **Automated part done (CI evidence only)**: first run found serious `color-contrast` on dark-theme primary buttons and info badges, fixed by a lighter dark accent with dark button text; remaining moderate `heading-order` notes (h3 after h1 on 16 page-runs) are open. Physical phone pass (O3) and a formal audit are not done and are not claimed |
 
 ### Tier S — hardening toward Stable (Phase 6)
