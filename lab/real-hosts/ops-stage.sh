@@ -260,6 +260,16 @@ if [[ "$OP_INITIAL_SHA" != "$MVP_SHA" ]]; then
   OP_CROSS_VERSION=1
 fi
 
+soak_diag() { # reason : evidence at the moment a soak probe fails (journals without per-stream noise, tunnel sockets, load); max 3 per run
+  (( ${SOAK_DIAG_N:-0} < 3 )) || return 0
+  SOAK_DIAG_N=$(( ${SOAK_DIAG_N:-0} + 1 ))
+  local dside dinst
+  for pair in "iran $CLI" "abroad $SRV"; do
+    read -r dside dinst <<<"$pair"
+    echo "=== SOAK_DIAG $1 $dside baft-tunnel@$dinst (last 150 s, without per-stream lines) ===" >&2
+    ssh_host "$dside" "journalctl -u baft-tunnel@$dinst.service --since '-150 sec' --no-pager -o short-iso | grep -vE 'yamux stream (accepted|opened)|fixed destination connected|E2E_PAYLOAD_OK' | tail -40; echo '--- sockets on the tunnel port ---'; ss -tin state all '( sport = :$MTP or dport = :$MTP )' | head -30; echo '--- load, memory, conntrack ---'; cat /proc/loadavg; awk '/MemAvailable/{print}' /proc/meminfo; cat /proc/sys/net/netfilter/nf_conntrack_count /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || true" >&2 || true
+  done
+}
 echo "--- stability: ${OPS_SOAK}s of traffic every ~10 s over the installed Direct tunnel ---"
 read -r pf0 pr0 pn0 <<<"$(unit_stats iran $CLI)"; read -r sf0 sr0 sn0 <<<"$(unit_stats abroad $SRV)"
 PID_CLI0="$(mainpid iran $CLI)"; PID_SRV0="$(mainpid abroad $SRV)"
@@ -269,6 +279,7 @@ while (( SECONDS < end )); do
   # A failed probe stays a failure; its reason (ssh status, probe message) is kept for diagnosis.
   if out="$(probe_host iran 65536 2>&1)"; then :; else
     rc=$?; OP_FAILS=$((OP_FAILS + 1)); echo "SOAK_PROBE_FAIL utc=$(date -u +%FT%TZ) round=$OP_ROUNDS bytes=65536 rc=$rc took_s=$((SECONDS - t0)) out=$(tr '\n' ' ' <<<"$out" | cut -c1-300)" >&2
+    soak_diag "round=$OP_ROUNDS"
   fi
   lat=$((SECONDS - t0)); (( lat > OP_MAXLAT )) && OP_MAXLAT=$lat
   OP_ROUNDS=$((OP_ROUNDS + 1))
@@ -276,6 +287,7 @@ while (( SECONDS < end )); do
     t1=$SECONDS
     if out="$(probe_host iran 2097289 2>&1)"; then :; else
       rc=$?; OP_FAILS=$((OP_FAILS + 1)); echo "SOAK_PROBE_FAIL utc=$(date -u +%FT%TZ) round=$OP_ROUNDS bytes=2097289 rc=$rc took_s=$((SECONDS - t1)) out=$(tr '\n' ' ' <<<"$out" | cut -c1-300)" >&2
+      soak_diag "round=$OP_ROUNDS-large"
     fi
   fi
   sleep 10
