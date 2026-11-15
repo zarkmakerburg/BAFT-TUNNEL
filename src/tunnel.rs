@@ -39,7 +39,9 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(200);
 const MAX_STREAM_WINDOW_SIZE: u32 = 4 * 1024 * 1024;
 pub(crate) const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 pub(crate) const MAX_BACKOFF: Duration = Duration::from_secs(60);
-pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+/// Yamux ping cadence. Short enough that a stalled path always has unacknowledged data in
+/// flight, so `engine::TCP_USER_TIMEOUT` can end a silently dead session quickly.
+pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 const STREAM_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Reverse ingress: how long a user connection may wait for the service node's session before it is
