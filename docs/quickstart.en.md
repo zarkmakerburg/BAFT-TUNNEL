@@ -1,6 +1,6 @@
 # BAFT-TUNNEL — Quick start (English)
 
-> **Signed pre-release v0.1.0-rc.7; not a stable release.** Start in a test environment. Trusted two-host acceptance passed on 2026-11-11 in [U7 run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428). This proves the bounded Direct workflow below, not production readiness.
+> **Latest signed pre-release v0.1.0-rc.8; not a stable release.** Start in a test environment. Trusted two-host acceptance passed on 2026-11-11 for the earlier signed rc.7 in [U7 run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428). This proves the bounded Direct workflow below, not production readiness.
 
 ## Supported path and requirements
 
@@ -14,7 +14,7 @@
 On each host, download the package and signed checksum files from the same release. You need curl, cosign, sha256sum and tar installed:
 
 ```bash
-TAG=v0.1.0-rc.7
+TAG=v0.1.0-rc.8
 BASE="https://github.com/zarkmakerburg/BAFT-TUNNEL/releases/download/$TAG"
 PKG="baft-tunnel-$TAG-linux-x86_64"
 curl -fL "$BASE/$PKG.tar.gz" -o "$PKG.tar.gz"

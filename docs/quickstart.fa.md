@@ -1,6 +1,6 @@
 # BAFT-TUNNEL — شروع سریع
 
-> **نسخهٔ پیش‌انتشار امضاشدهٔ v0.1.0-rc.7؛ هنوز نسخهٔ پایدار نیست.** ابتدا فقط در محیط آزمایشی استفاده کن. پذیرش واقعی دو‌میزبانه در [اجرای U7 شمارهٔ 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) در تاریخ 2026-11-11 موفق شد. این نتیجه فقط مسیر Direct این راهنما را پوشش می‌دهد و به معنی آمادگی Production نیست.
+> **آخرین نسخهٔ پیش‌انتشار امضاشدهٔ v0.1.0-rc.8؛ هنوز نسخهٔ پایدار نیست.** ابتدا فقط در محیط آزمایشی استفاده کن. پذیرش واقعی دو‌میزبانه برای rc.7 قبلی در [اجرای U7 شمارهٔ 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) در تاریخ 2026-11-11 موفق شد. این نتیجه فقط مسیر Direct این راهنما را پوشش می‌دهد و به معنی آمادگی Production نیست.
 
 ## مسیر پشتیبانی‌شده و پیش‌نیازها
 
@@ -14,7 +14,7 @@
 روی هر دو سرور، بسته و فایل‌های امضای همان Release را دریافت کن. ابزارهای curl، cosign، sha256sum و tar باید نصب باشند:
 
 ```bash
-TAG=v0.1.0-rc.7
+TAG=v0.1.0-rc.8
 BASE="https://github.com/zarkmakerburg/BAFT-TUNNEL/releases/download/$TAG"
 PKG="baft-tunnel-$TAG-linux-x86_64"
 curl -fL "$BASE/$PKG.tar.gz" -o "$PKG.tar.gz"
