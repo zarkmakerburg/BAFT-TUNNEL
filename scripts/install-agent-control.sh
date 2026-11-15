@@ -131,7 +131,7 @@ if [[ "$STAGING" == "0" ]]; then
   [[ "$(stat -c '%U %a' "$STATE/token")" == "$AGENT_USER 600" ]] || die "$STATE/token must be $AGENT_USER, mode 0600"
   enforce_control_boundary
   # Read-only firewall result directory (ADR-0030); idempotent, also on already-migrated hosts.
-  systemd-tmpfiles --create "$TMPF" || die "systemd-tmpfiles failed for $TMPF"
+  install -d -o root -g "$AGENT_USER" -m 0750 /run/baft-tunnel/firewall
   systemctl enable --now "${CTL_PATHS[@]}"
   # The agent starts now: in setup mode (panel pairing) until NAME.json exists, then normally.
   systemctl enable --now "baft-tunnel-agent@$INSTANCE.path"
