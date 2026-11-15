@@ -231,9 +231,11 @@ After all four passes, nothing was found at Critical, High or Medium in the comp
 in the fourth-pass components. A-06, A-07 and A-11 are fixed. The first stable release made through
 the split workflow is its first real signing run; a dry run on the branch exercised build and
 hand-over only. The `v*` tag rulesets (A-13) are applied and were checked by reading the
-configuration back, not by creating tags. Still not audited: `integrity_probe.rs` beyond a skim, `observe.rs`,
-`runtime_host.rs`, `session_status.rs`, `main.rs` CLI wiring, `scripts/menu.sh`, and `install.sh`
-outside the reviewed diffs. Evidence level stays source review + CI.
+configuration back, not by creating tags. The fifth pass (main `05aa2dc`) closed the remaining "not audited" list: every
+component named in earlier passes as not audited has now been read in full. Nothing outside the
+repository was audited: third-party crates beyond `cargo audit`/`cargo deny`, the BAFT engine's
+own source (separate AGPL binary, pinned by SHA-256), GitHub Actions runners and the hosts. Evidence
+level stays source review + CI.
 
 ## Fourth pass (main `71c6c19`, owner decision via the coordinator)
 
@@ -249,4 +251,22 @@ outside the reviewed diffs. Evidence level stays source review + CI.
 |----|----------|--------|-------|
 | A-12 | Info | Accepted (by design) | All registered instances share one agent account and one admin token (SA-07), so the agent of one instance can drop control requests for another registered instance. One trust domain per host; documented, not a boundary |
 | A-13 | Low | Resolved | No `v*` tag ruleset existed. Applied 2026-11-15: ruleset 27302115 `v-tags-immutable` (deletion, update, non_fast_forward on `refs/tags/v*`, no bypass) and 27302116 `v-stable-tags-admin-create` (creation limited to the Admin role; excludes `v*-rc.*` and `v0.0.0-dryrun.*`). Verified by reading the configuration back through the API only, not by creating or moving tags. Side effect: no `v*` tag, rc included, can ever be moved or deleted. Definitions and apply steps: `docs/security/tag-rulesets/` |
+
+## Fifth pass (main `05aa2dc`, owner decision via the coordinator)
+
+| Component | Coverage | Result |
+|-----------|----------|--------|
+| `src/integrity_probe.rs` | Full | Fixed-size frames (magic, exact length, 32-byte nonce, 64 KiB payload streamed through a 4 KiB stack buffer); no peer-controlled length reaches an allocation; trailing bytes rejected both ways; nonce echo plus SHA-256 and byte count checked; 10 s end-to-end deadline on both sides; one active probe per instance and one start per 60 s; failures typed, only mismatch/malformed is `fail`. No finding |
+| `src/observe.rs` | Full | Evidence files read with `symlink_metadata` (regular file only), size-capped at 4 KiB before and during the read; session and counters accepted only when the recorded pid is alive and matches the unit's main pid; rate maths skips counter resets and pid changes. No finding |
+| `src/session_status.rs` | Full | Writes only under systemd `RUNTIME_DIRECTORY` (absolute, existing; unit sets `baft-tunnel:baft-tunnel 0750`), temp file then rename, mode 0644, no secrets (ids, pid, counters). A-15 |
+| `src/runtime_host.rs` | Full | Manifest `deny_unknown_fields`, schema pinned, id/commit/sha256/https source/relative artifact/limits validated; binary must be a regular file not group/other writable and match the pinned SHA-256 before start; child gets a cleared environment and null stdin, `kill_on_drop`; restart budget and backoff bounded. A-14 |
+| `src/main.rs` | Full | CLI dispatch only. Root helpers refuse unless euid 0 and take paths that are fixed constants; the agent refuses root unless `--allow-root`; the agent validates only public config (never reads the private key); `menu` execs `menu.sh` next to the installed binary. No finding |
+| `scripts/install.sh` | Full | Instance/register names validated; node key must be a regular non-symlink PEM ≤ 16 KiB; symlinked credential directories, files and drop-ins refused; unmanaged drop-ins never overwritten; credential written 0600 root:root via temp + rename, encrypted mode fails closed; engine store and pointers checked (directory, not symlink, `releases/<sha256>` targets); full rollback on failure; `/etc/baft-tunnel` root:baft-tunnel 0750. A-16 |
+| `scripts/menu.sh` | Full | No `eval`/`sh -c`; every value typed by the operator is checked against a regex before use and passed as an array element; commands are echoed with `printf %q` before running; checksum normalised and confirmed. A-16 |
+
+| ID | Severity | Status | Title |
+|----|----------|--------|-------|
+| A-14 | Info | Accepted | `runtime_host` checks the engine binary's SHA-256 and then starts it by path, and restarts re-exec without re-checking. Safe because the engine store is root-owned (`install.sh` sets `root:root`, releases are content-addressed) and the mode check refuses group/other-writable files; it would not hold for a store owned by the tunnel user. Same root cause as A-02 |
+| A-15 | Info | Accepted | `session_status` writes its temp file with `std::fs::write`, which follows a planted link. Only the tunnel user can write its 0750 runtime directory, so there is no cross-user boundary; noted for consistency with A-01 |
+| A-16 | Info | Open (docs/UX) | The root menu still offers noise-tcp pairing including Reverse, and `install.sh` ends by suggesting that menu pairing, while the quickstart says to use the panel Wizard for the supported tcp-tls path. The menu starts units with `systemctl` directly, so the panel's direction gate does not apply there. Root-only and documented as Experimental; align the text before 0.2.0 |
 
