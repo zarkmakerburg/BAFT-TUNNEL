@@ -150,4 +150,17 @@ if awk '/^  verify-release-assets:/{inside=1} /^  two-host-u7-lab:/{inside=0} in
   echo 'Upgrade release verification job has access to secrets' >&2
   exit 1
 fi
+rel="$root/.github/workflows/release.yml"
+# Audit A-06: only the signing job may request an OIDC token; the build job runs third-party code.
+grep -q '^  build:' "$rel"
+grep -q '^  sign-and-publish:' "$rel"
+test "$(grep -c 'id-token: write' "$rel")" = 1
+if awk '/^  build:/{inside=1} /^  sign-and-publish:/{inside=0} inside && /id-token|contents: write/{found=1} END{exit !found}' "$rel"; then
+  echo 'Release build job can sign or write releases' >&2
+  exit 1
+fi
+if awk '/^  sign-and-publish:/{inside=1} inside && /cargo |build-baft-engine|cargo-cyclonedx/{found=1} END{exit !found}' "$rel"; then
+  echo 'Release signing job builds code' >&2
+  exit 1
+fi
 echo 'Trusted workflow secret-boundary tests: PASS'

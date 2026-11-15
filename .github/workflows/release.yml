@@ -8,6 +8,10 @@ on:
         description: "Optional release notes (default: auto-generated)"
         type: string
         default: ""
+      dry_run:
+        description: "Build and hand over to the signing job, but do not sign or publish (any ref)"
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
@@ -17,15 +21,20 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  release:
+  # Audit A-06: building (third-party build scripts, Go modules, cargo-cyclonedx) runs in a job
+  # without id-token, so nothing executed at build time can obtain the signing identity. The
+  # signing job only checks out the tag, downloads dist/ and signs it.
+  build:
     # Build on the oldest supported target (Ubuntu 22.04, glibc 2.35): a binary
     # linked on 24.04 needs GLIBC_2.39 and fails to start on 22.04 hosts (rc.3).
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     permissions:
-      contents: write   # create release/tag
-      id-token: write   # keyless signing via GitHub OIDC (no private key anywhere)
+      contents: read
       checks: read      # stable tags: required checks must be green on the tagged commit
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
@@ -33,8 +42,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Require a version tag on reviewed main history
+        env:
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
         run: |
           set -euo pipefail
+          if [[ "$DRY_RUN" == true ]]; then echo "dry run: no tag required; nothing will be signed or published"; exit 0; fi
           [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
             || { echo "::error::release workflow must run from a version tag; branch identities are not accepted"; exit 1; }
           git fetch --no-tags origin main
@@ -44,10 +56,12 @@ jobs:
         id: v
         env:
           REF_NAME: ${{ github.ref_name }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
         run: |
           set -euo pipefail
           test -f Cargo.toml || { echo "::error::Cargo.toml not found on this ref"; exit 1; }
           tag="$REF_NAME"
+          if [[ "$DRY_RUN" == true ]]; then tag="v0.0.0-dryrun.$GITHUB_RUN_ID"; fi
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::invalid release tag"; exit 1; }
           case "$tag" in *-*) pre=true ;; *) pre=false ;; esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -135,16 +149,55 @@ jobs:
           cargo +1.88.0 install cargo-cyclonedx --version 0.5.7 --locked
           cargo +1.88.0 cyclonedx --format json --override-filename sbom
           mv sbom.json "dist/baft-tunnel-${TAG}.sbom.cdx.json"
+      - name: Hand the unsigned artifacts to the signing job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4.6.2
+        with:
+          name: release-dist-unsigned
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  sign-and-publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: write   # create the GitHub release
+      id-token: write   # keyless signing via GitHub OIDC (no private key anywhere)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+      - name: Receive the artifacts built from this ref
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # actions/download-artifact v4.3.0
+        with:
+          name: release-dist-unsigned
+          path: dist
+      - name: Check the hand-over is complete
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          for f in "baft-tunnel-${TAG}-linux-x86_64" "baft-tunnel-${TAG}-linux-x86_64.tar.gz" \
+                   "baft-engine-${TAG}-linux-amd64" "baft-engine-${TAG}-licenses.tar.gz" \
+                   "engine-manifest-${TAG}.json" "baft-tunnel-${TAG}.sbom.cdx.json"; do
+            [[ -f "dist/$f" && ! -L "dist/$f" ]] || { echo "::error::missing release artifact $f"; exit 1; }
+          done
+          [[ "$(find dist -mindepth 1 | wc -l)" == 6 ]] || { echo "::error::unexpected files in the hand-over"; exit 1; }
       - name: Checksums
         working-directory: dist
         run: sha256sum -- * > SHA256SUMS
-      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+      - if: ${{ !inputs.dry_run }}
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
         with:
           cosign-release: v2.5.3
       - name: Sign SHA256SUMS (keyless, GitHub OIDC)
+        if: ${{ !inputs.dry_run }}
         working-directory: dist
         run: cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
       - name: Self-verify before publishing
+        if: ${{ !inputs.dry_run }}
         working-directory: dist
         env:
           ID: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml
@@ -154,10 +207,11 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           sha256sum -c SHA256SUMS
       - name: Publish GitHub Release
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.v.outputs.tag }}
-          PRE: ${{ steps.v.outputs.prerelease }}
+          TAG: ${{ needs.build.outputs.tag }}
+          PRE: ${{ needs.build.outputs.prerelease }}
           NOTES: ${{ inputs.notes }}
         run: |
           set -euo pipefail
@@ -166,7 +220,8 @@ jobs:
           [ "$PRE" = "true" ] && flags+=(--prerelease)
           gh release create "$TAG" dist/* "${flags[@]}"
       - name: Verify the published release through the public quick installer
+        if: ${{ !inputs.dry_run }}
         env:
-          TAG: ${{ steps.v.outputs.tag }}
+          TAG: ${{ needs.build.outputs.tag }}
           GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/quick-install.sh --verify-only --tag "$TAG"
