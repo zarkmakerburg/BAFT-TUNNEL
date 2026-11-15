@@ -102,6 +102,8 @@ done
 
 echo "--- guided setup as root, no manual chown: init, bundle exchange, join ---"
 acommon="--engine tcp-tls --direction direct --tunnel-id asvc --service-port $MSVC --tunnel-port $MTP --dir $EB"
+# The panel browser pass measures the integrity probe, which needs protocol v2 on both nodes (ADR-0028).
+if (( PANEL_BROWSER == 1 )); then acommon="$acommon --protocol-version 2"; fi
 sum_a="$(ssh_host abroad "$UB setup init $acommon --role serve --node-id abroad --peer-id iran --instance $SRV" | awk '/^Checksum/{print $NF}')"
 sum_i="$(ssh_host iran "$UB setup init $acommon --role forward --node-id iran --peer-id abroad --peer-host '$LAB_ABROAD_HOST' --instance $CLI" | awk '/^Checksum/{print $NF}')"
 [[ "$sum_a" =~ ^[0-9a-f-]{32,}$ && "$sum_i" =~ ^[0-9a-f-]{32,}$ ]] || { echo "setup init printed no checksum" >&2; exit 1; }
@@ -208,6 +210,27 @@ for side in iran abroad; do
     { echo "agent state on $side holds a secret" >&2; exit 1; }
 done
 
+AS_PANEL=0
+if (( PANEL_BROWSER == 1 )); then
+  echo "--- panel in a real browser on the forward node (SSH port forward to its loopback agent): integrity probe, Restart / Stop / Start ---"
+  PB_PORT=18195; PB_TOKEN="$LOCAL_TMP/panel-token"
+  ( umask 077; ssh_host iran "cat $AGS/token" > "$PB_TOKEN" ) || { echo "could not read the agent token on iran" >&2; exit 1; }
+  ssh -i "$SSH_KEY_FILE" -p "$IRAN_SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ExitOnForwardFailure=yes \
+    -o LogLevel=ERROR -N -L "127.0.0.1:$PB_PORT:127.0.0.1:$MAG" "$IRAN_USER@$LAB_IRAN_HOST" &
+  PB_SSH=$!
+  for n in $(seq 1 20); do curl -fsS -o /dev/null "http://127.0.0.1:$PB_PORT/v1/health" 2>/dev/null && break; sleep 1; done
+  sleep 61   # the integrity probe allows one start per 60 s; earlier stages may have started one
+  pb_rc=0
+  BAFT_AGENT_URL="http://127.0.0.1:$PB_PORT" BAFT_TOKEN_FILE="$PB_TOKEN" BAFT_SHOTS="${LAB_PANEL_SHOTS:-$LOCAL_TMP}" \
+    node scripts/panel-qa/lab-panel-live.js || pb_rc=$?
+  kill "$PB_SSH" 2>/dev/null || true; wait "$PB_SSH" 2>/dev/null || true; rm -f "$PB_TOKEN"
+  (( pb_rc == 0 )) || { ssh_host iran "journalctl -u baft-tunnel@$CLI -u baft-tunnel-agent@$CLI -n 40 --no-pager" >&2 || true; echo "panel browser pass on the real LAB failed" >&2; exit 1; }
+  as_wait 60 >/dev/null || { echo "no data through the tunnel after the panel Start" >&2; exit 1; }
+  [[ "$(as_boot iran)" == "active enabled" ]] || { echo "tunnel unit is not active and enabled after the panel Start" >&2; exit 1; }
+  AS_PANEL=1
+fi
+
 AS_REBOOT_S=none; AS_REBOOT_DATA=0
 if [[ "$AGENT_REBOOT" == 1 ]]; then
   echo "--- real reboot of both hosts (owner-approved, once): agent and tunnel must come back with no command from us ---"
@@ -279,4 +302,4 @@ for side in iran abroad; do
     AS_DRIFT+=("$side")
   fi
 done
-echo "AGENT_SERVICE_RESULT source=${MVP_SOURCE} binary_sha256=${AS_SHA} clean_hosts=1 install_register_one_step=1 setup_no_manual_chown=1 agent_self_start=${AS_AGENT_SELF_START} agent_user=baft-tunnel-agent agent_loopback=1 start_enabled_at_boot=1 start_data_s=${AS_START_S} integrity_64k_2m=1 replay=1 running_refused=1 diag_next_running=${AS_NEXT} restart_new_process=1 restart_data_s=${AS_RESTART_S} stop_disabled=1 stop_no_data=1 diag_next_stopped=start stopped_refused=1 start_again=1 state_secret_free=1 reboot=${AGENT_REBOOT} reboot_back_s=${AS_REBOOT_S} reboot_data_64k_2m=${AS_REBOOT_DATA} uninstalled=1 users_removed=1 baft_fw_rules=0 host_drift=${AS_DRIFT[*]:-none}"
+echo "AGENT_SERVICE_RESULT source=${MVP_SOURCE} panel_browser=${AS_PANEL} binary_sha256=${AS_SHA} clean_hosts=1 install_register_one_step=1 setup_no_manual_chown=1 agent_self_start=${AS_AGENT_SELF_START} agent_user=baft-tunnel-agent agent_loopback=1 start_enabled_at_boot=1 start_data_s=${AS_START_S} integrity_64k_2m=1 replay=1 running_refused=1 diag_next_running=${AS_NEXT} restart_new_process=1 restart_data_s=${AS_RESTART_S} stop_disabled=1 stop_no_data=1 diag_next_stopped=start stopped_refused=1 start_again=1 state_secret_free=1 reboot=${AGENT_REBOOT} reboot_back_s=${AS_REBOOT_S} reboot_data_64k_2m=${AS_REBOOT_DATA} uninstalled=1 users_removed=1 baft_fw_rules=0 host_drift=${AS_DRIFT[*]:-none}"
