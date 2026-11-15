@@ -149,7 +149,7 @@ Dynamic: the A-05 unit test (new) and the existing `pending_guard` tests were ru
 | ID | Severity | Status | Title |
 |----|----------|--------|-------|
 | A-05 | Low | Fixed (second-pass PR) | Pre-auth per-source limit counted each IPv6 address separately |
-| A-06 | Low | Open, recommended before Stable | Release build runs in the job that holds the OIDC signing permission |
+| A-06 | Low | Fixed (release split PR) | Release build runs in the job that holds the OIDC signing permission |
 | A-07 | Low | Open, recommended before Stable | A pushed stable tag releases without a required-checks gate |
 | A-08 | Info | Accepted | Agent reads the tunnel's `session.json` by path after a metadata check |
 
@@ -215,15 +215,21 @@ directories under the release root only) before extraction, and refuses drafts.
 |----|----------|--------|-------|
 | A-11 | Info | Open, decide before 0.2.0 | Without `--tag` or `--stable`, the quick installer picks the newest release including prereleases; once a stable exists, the documented default should probably be `--stable` |
 
-A-06 (build and signing in one job) is still open: splitting the job changes how `-rc` releases are
-built, and an rc.9 prerelease is about to be cut by another thread. It follows in its own PR, merged
-only after rc.9 is out. A tag ruleset that restricts who may create `v*` tags is a repository
+A-06 fixed after rc.9 was published: `release.yml` now has a `build` job (`contents: read`,
+`checks: read`, no `id-token`) that builds everything and uploads `dist/`, and a
+`sign-and-publish` job (`contents: write`, `id-token: write`) that checks out the same ref, receives
+exactly the six expected artifacts, writes `SHA256SUMS`, signs, self-verifies, publishes and runs
+the quick-installer check. The signing identity stays `release.yml@refs/tags/<TAG>`, so existing
+verifiers are unchanged. A `dry_run` dispatch input builds and hands over on any ref but skips
+signing and publishing; `lab/trusted/test-workflow-boundary.sh` now fails if the build job gains
+`id-token`/`contents: write` or the signing job builds code. A tag ruleset that restricts who may create `v*` tags is a repository
 setting the owner applies; it was not inspected.
 
 ## Stable gate statement
 
-After both passes, nothing found at Critical, High or Medium in the components marked "Full". A-07 is
-fixed by this PR; A-06 (Low) follows in its own PR after rc.9 and should land before the first stable tag. Still not
+After both passes, nothing found at Critical, High or Medium in the components marked "Full". A-06 and
+A-07 are fixed. The first stable release made through the split workflow is its first real signing
+run; a dry run on the branch exercised build and hand-over only. Still not
 audited: `install-agent-control.sh` (reviewed in PR #199), the reverse ingress
 relay and `integrity_probe.rs` beyond a skim, `run_lifecycle`, panel code outside the B4..B6 diffs,
 repository rulesets and branch protection settings. PR #215 (merged as `5e21146` after the audited
