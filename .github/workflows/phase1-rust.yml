@@ -118,6 +118,8 @@ jobs:
         run: '"$RUNNER_TEMP/baft-panel-qa/node_modules/.bin/playwright" install chromium'
       - name: Check panel JavaScript and real-host LAB script syntax
         run: |
+          node --check panel/app.js
+          node --check panel/ui.js
           node --check panel/pages.js
           node --check panel/i18n.js
           node scripts/panel-qa/evidence-localization.js

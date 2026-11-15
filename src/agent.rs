@@ -531,6 +531,11 @@ const PANEL_ASSETS: &[(&str, &str, &str)] = &[
         include_str!("../panel/app.js"),
     ),
     (
+        "/ui.js",
+        "text/javascript; charset=utf-8",
+        include_str!("../panel/ui.js"),
+    ),
+    (
         "/pages.js",
         "text/javascript; charset=utf-8",
         include_str!("../panel/pages.js"),
@@ -4438,7 +4443,8 @@ mod tests {
         assert!(pages.contains("'/v1/verify'"));
         assert!(pages.contains("verify.title"));
         assert!(pages.contains("'/v1/tunnel/lifecycle'"));
-        assert!(pages.contains("window.confirm(t('life.confirm.' + action))"));
+        assert!(pages.contains("U.confirm(t('life.act.' + action), t('life.confirm.' + action)"));
+        assert!(!pages.contains("window.confirm"));
     }
 
     #[test]

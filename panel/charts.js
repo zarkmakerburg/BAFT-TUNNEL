@@ -65,7 +65,7 @@
   function ring(frac, center, tone, label) {
     var S = 120, r = 46, c = 2 * Math.PI * r, f = Math.max(0, Math.min(1, frac || 0));
     var svg = root(S, S, label || center);
-    svg.setAttribute('style', 'max-width:140px;margin-inline:auto');
+    svg.setAttribute('class', 'chart chart-ring');
     svg.appendChild(el('circle', { cx: 60, cy: 60, r: r, class: 'track' }));
     var arc = el('circle', { cx: 60, cy: 60, r: r, class: 'arc ' + (tone || 'info'), 'stroke-dasharray': (f * c).toFixed(1) + ' ' + c.toFixed(1), transform: 'rotate(-90 60 60)' });
     svg.appendChild(arc);
