@@ -9,6 +9,7 @@ mod control_socket;
 mod engine;
 mod engine_store;
 mod handshake;
+mod history_store;
 mod integrity_probe;
 pub mod key_custody;
 mod noise;

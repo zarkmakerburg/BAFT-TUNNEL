@@ -112,6 +112,8 @@ pub struct Ctx {
     runtime_dir: Option<PathBuf>,
     /// Unit counter readings, oldest first, deduplicated by sample time.
     traffic: std::sync::Mutex<std::collections::VecDeque<crate::observe::TrafficSample>>,
+    /// 24 h of one-minute buckets persisted in `state_dir` (B5).
+    long: std::sync::Mutex<crate::history_store::LongHistory>,
     /// systemd access for the bound instance: state reads, and start/stop/enable/disable requests
     /// through the root control helper (ADR-0023). Tests substitute a fake.
     units: Arc<dyn crate::apply::Units + Send + Sync>,
@@ -144,6 +146,7 @@ impl Ctx {
         token: String,
         state_dir: Option<PathBuf>,
     ) -> Self {
+        let long = crate::history_store::LongHistory::open(state_dir.as_deref(), unix_now());
         Self {
             config,
             token,
@@ -153,6 +156,7 @@ impl Ctx {
             instance: None,
             runtime_dir: None,
             traffic: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            long: std::sync::Mutex::new(long),
             units: Arc::new(crate::apply::SystemUnits::default()),
             config_dir: PathBuf::from("/etc/baft-tunnel"),
             setup: Arc::new(crate::setup_helper::SystemSetupHelper::default()),
@@ -242,6 +246,17 @@ impl Ctx {
             .unwrap_or_default()
     }
 
+    fn record_long(&self, sample: Sample, traffic: Option<crate::observe::TrafficSample>) {
+        let mut long = self.long.lock().unwrap_or_else(|e| e.into_inner());
+        long.record(
+            sample.ts,
+            sample.up,
+            sample.rtt_ms,
+            traffic.map(|t| (t.pid, t.from_peer, t.to_peer)),
+        );
+        long.flush_if_due(sample.ts);
+    }
+
     fn record(&self, sample: Sample) {
         let mut history = self.history.lock().unwrap_or_else(|e| e.into_inner());
         if history.len() >= HISTORY_LEN {
@@ -291,14 +306,15 @@ async fn sampler(ctx: Arc<Ctx>) {
         }
         let sample = ctx.probe().await;
         ctx.record(sample);
-        if let Some(t) = ctx
+        let traffic = ctx
             .evidence(None)
             .counters
             .as_ref()
-            .and_then(crate::observe::sample)
-        {
+            .and_then(crate::observe::sample);
+        if let Some(t) = traffic {
             ctx.record_traffic(t);
         }
+        ctx.record_long(sample, traffic);
     }
 }
 
@@ -2332,7 +2348,16 @@ fn history(ctx: &Ctx) -> Value {
         .iter()
         .map(|s| json!({"t": s.ts, "up": s.up, "rtt_ms": s.rtt_ms}))
         .collect();
-    json!({"interval_s": SAMPLE_SECONDS, "capacity": HISTORY_LEN, "samples": samples})
+    let now = unix_now();
+    let long = ctx.long.lock().unwrap_or_else(|e| e.into_inner());
+    json!({
+        "interval_s": SAMPLE_SECONDS,
+        "capacity": HISTORY_LEN,
+        "samples": samples,
+        "long": long.view(now),
+        "alerts": long.alerts(now),
+        "diagnostics_runs": long.diagnostics_runs(now),
+    })
 }
 
 /// Certificate and CRL lifetime, when the engine uses them. Values are seconds (negative = expired).
@@ -3416,6 +3441,27 @@ async fn run_diagnostics(ctx: &Ctx, config: &RuntimeConfig) -> Value {
     });
     if let Some(dir) = &ctx.state_dir {
         let _ = write_private(dir, DIAGNOSTICS_FILE, report.to_string().as_bytes());
+        ctx.long
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record_diagnostics(crate::history_store::DiagRun {
+                at_unix: now,
+                highest_passed_tier: highest.as_str().unwrap_or("none").to_string(),
+                verified,
+                tiers: report["tiers"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|t| {
+                                (
+                                    t["id"].as_str().unwrap_or("").to_string(),
+                                    t["result"].as_str().unwrap_or("").to_string(),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            });
         let digest = hex::encode(Sha256::digest(report.to_string().as_bytes()));
         let _ = audit(
             dir,
@@ -4176,6 +4222,38 @@ mod tests {
             !probe.up && probe.rtt_ms.is_none(),
             "nothing listens on port 1"
         );
+    }
+
+    #[tokio::test]
+    async fn long_history_persists_across_agent_restart() {
+        let dir = state_dir("longhist");
+        let ctx = Ctx::new(sample(), TOKEN.into(), Some(dir.clone()));
+        let now = unix_now();
+        ctx.record_long(
+            Sample {
+                ts: now,
+                up: true,
+                rtt_ms: Some(2.0),
+            },
+            Some(crate::observe::TrafficSample {
+                t: now,
+                pid: 5,
+                from_peer: 10,
+                to_peer: 20,
+            }),
+        );
+        ctx.long.lock().unwrap().flush(now);
+        let again = Ctx::new(sample(), TOKEN.into(), Some(dir));
+        let (code, body) = get_json(&again, "/v1/history").await;
+        assert_eq!(code, 200);
+        assert_eq!(body["long"]["persisted"], true);
+        assert_eq!(
+            body["long"]["samples"].as_array().unwrap().len(),
+            1,
+            "{body}"
+        );
+        assert_eq!(body["long"]["totals"]["probes"], 1);
+        assert!(body["alerts"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
