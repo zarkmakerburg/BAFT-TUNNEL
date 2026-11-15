@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn runtime_limits_come_from_the_runtime_and_reverse_makes_no_initiator_claim() {
         let doc = catalog();
-        assert_eq!(doc["runtime"]["keepalive_interval_s"], 15);
+        assert_eq!(doc["runtime"]["keepalive_interval_s"], 5);
         assert_eq!(doc["runtime"]["reconnect"]["max_backoff_s"], 60);
         assert_eq!(doc["direction_model"]["reverse"]["state"], "unavailable");
         assert_eq!(
