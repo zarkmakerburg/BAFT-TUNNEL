@@ -189,12 +189,33 @@ each stream connects only the fixed destination; the control socket accepts only
 `CREDENTIALS_DIRECTORY`; apply creates files with `create_new` and rolls back only what it created;
 restore verifies the checksum, an allowlist of paths, and refuses links and special files.
 
+## Third pass: PR #215 and release gating (main `b8538f2`)
+
+Read: the full #215 diff (`tls.rs` `ReloadingAcceptor`, `engine.rs` listener, `tunnel.rs` call
+site, `apply-crl.sh`, `push-crl.sh`). Dynamic: none beyond CI (the PR's own reload test).
+
+| ID | Severity | Status | Title |
+|----|----------|--------|-------|
+| A-07 | Low | Fixed (this PR) | `release.yml` now requires `rust`, `ubuntu-2204-baseline`, `lab-config` green on the tagged commit for a stable tag; `-rc` tags unchanged |
+| A-09 | Info | Accepted | `apply-crl --no-restart` keeps live sessions of a newly revoked peer until they reconnect (documented in the script; default still restarts) |
+| A-10 | Info | Accepted | The listener `stat`s four TLS files per accepted connection before the handshake; bounded by the pre-auth limits |
+
+Verified in #215: a changed file set is rebuilt with the same TLS 1.3 / mandatory-CRL verifier; a
+file that does not load makes the listener refuse new connections (fail closed) until a loadable
+version appears; peer pins and URI identity checks are unchanged; the files stay root-owned and
+`apply-crl.sh` still enforces the CRL number order; `--no-restart` is a constant string in the
+remote command.
+
+A-06 (build and signing in one job) is still open: splitting the job changes how `-rc` releases are
+built, and an rc.9 prerelease is about to be cut by another thread. It follows in its own PR, merged
+only after rc.9 is out. A tag ruleset that restricts who may create `v*` tags is a repository
+setting the owner applies; it was not inspected.
+
 ## Stable gate statement
 
 After both passes, nothing found at Critical, High or Medium in the components marked "Full". A-06
 and A-07 (Low) are release-process hardening recommended before the first stable tag. Still not
 audited: `install-agent-control.sh` (reviewed in PR #199), `quick-install.sh`, the reverse ingress
 relay and `integrity_probe.rs` beyond a skim, `run_lifecycle`, panel code outside the B4..B6 diffs,
-repository rulesets and branch protection settings. Not covered at all: PR #215 (S8 TLS file reload
-without restart, `apply-crl --no-restart`), merged as `5e21146` after the audited SHA; it changes the
-TLS trust path and needs its own review before the Stable gate. Evidence level stays source review + CI.
+repository rulesets and branch protection settings. PR #215 (merged as `5e21146` after the audited
+SHA) is reviewed in the third pass below. Evidence level stays source review + CI.
