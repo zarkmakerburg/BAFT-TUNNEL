@@ -211,4 +211,4 @@ fi
 echo
 echo "BAFT-TUNNEL $TAG installed and verified for instance $INSTANCE."
 echo "Panel: use an SSH tunnel to 127.0.0.1:18080; read its token with: sudo cat /var/lib/baft-tunnel-agent/token"
-echo "The tunnel itself was not started. Pair the two nodes from the panel or: sudo baft-tunnel menu"
+echo "The tunnel itself was not started. Set it up in the panel Wizard (supported tcp-tls path): ssh -L 18080:127.0.0.1:18080 HOST, then open http://127.0.0.1:18080/"

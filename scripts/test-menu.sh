@@ -38,7 +38,7 @@ has 'منوی اصلی'; has 'جفت‌کردن دو نود'; has 'خداحاف�
 A="$TMP/a"; B="$TMP/b"
 for stage in "$A" "$B"; do
   menu "$stage" "1\n$BIN_SRC\nmain\n12\n"
-  has 'install.sh --binary'; has 'Installed '; has 'Next step:'; has 'Pair the two nodes'
+  has 'install.sh --binary'; has 'Installed '; has 'Next step (supported): set up the tunnel in the panel Wizard'; has 'Legacy/advanced only: noise-tcp'
   has 'Registered instance main'; has 'Bye.'
   [[ -x "$stage/usr/local/bin/baft-tunnel" ]] || fail "binary not installed"
   [[ -f "$stage/usr/local/lib/baft-tunnel/scripts/menu.sh" ]] || fail "menu not installed in lib"
@@ -50,7 +50,7 @@ menu "$A" "1\n0\n12\n"; has 'An installation exists'
 
 # 2) Pairing: init on A (serve) and B (forward), join on B with A's bundle.
 menu "$A" "3\n1\n2\n1\nabroad\niran\nmain\n18080\n\n12\n"
-has 'setup init --engine noise-tcp --role serve'; has 'Checksum (compare'; has 'scp '
+has 'Legacy/advanced: this creates a noise-tcp tunnel'; has 'panel Wizard (tcp-tls)'; has 'setup init --engine noise-tcp --role serve'; has 'Checksum (compare'; has 'scp '
 SUM_A="$(sed -n 's/^Checksum (compare with the other node out of band): //p' "$TMP/out")"
 [[ "$SUM_A" =~ ^[0-9a-f]{8}(-[0-9a-f]{8}){3}$ ]] || fail "no checksum from init"
 menu "$B" "3\n1\n1\n1\niran\nabroad\nmain\n18080\n\n203.0.113.10\n12\n"
@@ -102,7 +102,7 @@ if command -v script >/dev/null 2>&1; then
   { printf '\033[B\033[B\r'; sleep 0.5; printf '\033'; sleep 0.5; printf 'q'; sleep 0.5; } |
     timeout 20 script -qec "bash '$MENU' --lang en --destdir '$TMP/tty'" /dev/null > "$TMP/out" 2>&1 ||
     fail "pty run failed"
-  has '|____/_/   \_\_|'; has '3. Pair the two nodes (init / join)'; has 'This node first'; has 'Bye.'
+  has '|____/_/   \_\_|'; has '3. Pair the two nodes: legacy noise-tcp (advanced)'; has 'This node first'; has 'Bye.'
   has 'Up/Down: move'
 fi
 echo "BAFT_MENU_TEST=PASS (banner, fa/en, install+register+next step, init/join with checksum compare, clean join error, config plan, staged service actions, backup/restore, rollback next step, uninstall, dry run, arrow/Enter/Esc/q on a pty)"

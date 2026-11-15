@@ -447,9 +447,11 @@ echo "No tunnel was enabled, started, or restarted."
 if [[ -n "$BINARY" ]]; then
   NEXT_NAME="${REGISTER:-main}"
   echo
-  echo "Next step: pair this node with the other node (run on both, one with --role serve):"
-  echo "  sudo baft-tunnel menu   ->  Pair the two nodes"
-  echo "  or: sudo baft-tunnel setup init --engine noise-tcp --role forward|serve --direction direct \\"
+  echo "Next step (supported): set up the tunnel in the panel Wizard (tcp-tls) on both nodes:"
+  echo "  ssh -L 18080:127.0.0.1:18080 HOST, open http://127.0.0.1:18080/ and follow Create tunnel"
+  echo "  (needs the agent: install.sh --register $NEXT_NAME, or sudo baft-tunnel menu -> Register)."
+  echo "Legacy/advanced only: noise-tcp pairing (Experimental; Reverse is Preview), on both nodes:"
+  echo "  sudo baft-tunnel setup init --engine noise-tcp --role forward|serve --direction direct \\"
   echo "        --node-id THIS_NODE --peer-id OTHER_NODE --tunnel-id $NEXT_NAME --service-port PORT \\"
   echo "        [--peer-host OTHER_NODE_IP  (forward only)] --instance $NEXT_NAME"
 fi

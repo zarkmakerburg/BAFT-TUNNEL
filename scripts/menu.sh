@@ -83,7 +83,8 @@ EN=(
   [main]="Main menu"
   [m_install]="Install or upgrade"
   [m_register]="Register an instance with the local agent (panel)"
-  [m_pair]="Pair the two nodes (init / join)"
+  [m_pair]="Pair the two nodes: legacy noise-tcp (advanced)"
+  [pair_legacy]="Legacy/advanced: this creates a noise-tcp tunnel (Experimental; Reverse is Preview). The supported setup is the panel Wizard (tcp-tls): ssh -L 18080:127.0.0.1:18080 HOST, then open http://127.0.0.1:18080/."
   [m_config]="Configuration (plan / validate / apply)"
   [m_service]="Tunnel: start / stop / restart"
   [m_status]="Status and diagnostics"
@@ -121,7 +122,7 @@ EN=(
   [other_instance]="Other name..."
   [no_instances]="No instance configuration found in %s yet; type a name."
   [next]="Next step:"
-  [next_install]="Pair this node with the other node: menu > Pair the two nodes > This node first (init). Do the same on the other node, then exchange bundles and run join."
+  [next_install]="Set up the tunnel in the panel Wizard (supported tcp-tls path): register the agent (menu > Register), open the panel through SSH and follow Create tunnel on both nodes. Menu pairing is legacy noise-tcp (advanced)."
   [next_register]="The agent runs now: pair from the panel (Create tunnel) or with setup init/join; it loads %s/%s.json by itself. Panel: ssh -L 18080:127.0.0.1:18080 HOST, then open http://127.0.0.1:18080/ (token: sudo cat /var/lib/baft-tunnel-agent/token)."
   [p_init]="This node first: create key and pairing bundle (init)"
   [p_join]="I have the other node's bundle: check and write config (join)"
@@ -185,7 +186,8 @@ FA=(
   [main]="منوی اصلی"
   [m_install]="نصب یا ارتقا"
   [m_register]="ثبت اینستنس در agent محلی (پنل)"
-  [m_pair]="جفت‌کردن دو نود (init / join)"
+  [m_pair]="جفت‌کردن دو نود: noise-tcp قدیمی (پیشرفته)"
+  [pair_legacy]="قدیمی/پیشرفته: این گزینه تونل noise-tcp می‌سازد (آزمایشی؛ Reverse پیش‌نمایش است). مسیر پشتیبانی‌شده Wizard پنل (tcp-tls) است: ssh -L 18080:127.0.0.1:18080 HOST و بعد http://127.0.0.1:18080/ را باز کنید."
   [m_config]="پیکربندی (بازبینی / اعتبارسنجی / اعمال)"
   [m_service]="تونل: شروع / توقف / راه‌اندازی دوباره"
   [m_status]="وضعیت و عیب‌یابی"
@@ -222,7 +224,7 @@ FA=(
   [other_instance]="نام دیگر..."
   [no_instances]="هنوز پیکربندی اینستنسی در %s نیست؛ نام را بنویسید."
   [next]="قدم بعدی:"
-  [next_install]="این نود را با نود دیگر جفت کنید: منو > جفت‌کردن دو نود > اول این نود (init). روی نود دیگر هم همین را انجام دهید، بعد bundleها را مبادله و join را اجرا کنید."
+  [next_install]="تونل را در Wizard پنل بسازید (مسیر پشتیبانی‌شدهٔ tcp-tls): agent را ثبت کنید (منو > ثبت)، پنل را از طریق SSH باز کنید و روی هر دو نود «ساخت تونل» را دنبال کنید. جفت‌کردن از منو روش قدیمی noise-tcp (پیشرفته) است."
   [next_register]="agent همین حالا روشن است: از پنل (ساخت تونل) یا با setup init/join جفت کنید؛ %s/%s.json را خودش بارگذاری می‌کند. پنل: ssh -L 18080:127.0.0.1:18080 HOST و بعد http://127.0.0.1:18080/ (توکن: sudo cat /var/lib/baft-tunnel-agent/token)."
   [p_init]="اول این نود: ساخت کلید و bundle جفت‌سازی (init)"
   [p_join]="bundle نود دیگر را دارم: بررسی و نوشتن پیکربندی (join)"
@@ -622,6 +624,7 @@ do_pair_join() {
 }
 
 do_pair() {
+  say "$(t pair_legacy)"
   choose "$(t m_pair)" "$(t p_init)" "$(t p_join)"
   case "$CHOICE" in 0) do_pair_init ;; 1) do_pair_join ;; esac
 }
