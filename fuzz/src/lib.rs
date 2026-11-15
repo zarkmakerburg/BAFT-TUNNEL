@@ -20,6 +20,8 @@ pub mod control_socket;
 pub mod engine;
 #[path = "../../src/engine_store.rs"]
 pub mod engine_store;
+#[path = "../../src/firewall_read.rs"]
+pub mod firewall_read;
 #[path = "../../src/handshake.rs"]
 pub mod handshake;
 #[path = "../../src/integrity_probe.rs"]
