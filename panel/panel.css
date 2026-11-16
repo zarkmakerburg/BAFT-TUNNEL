@@ -326,3 +326,4 @@ dialog.ov::backdrop{background:var(--scrim)}
   html{scroll-behavior:auto}
 }
 @media (forced-colors:active){.badge,.choice,.card{border:1px solid CanvasText}}
+@media (max-width:600px){.chart:not(.chart-ring) text{font-size:22px}}
