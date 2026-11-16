@@ -627,6 +627,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/traffic"
             | "/v1/diagnostics"
             | "/v1/support"
+            | "/v1/update"
             | "/v1/verify"
             | "/v1/tunnel/lifecycle"
             | "/v1/setup/bundle"
@@ -649,6 +650,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
     match (method, path) {
         ("GET", "/v1/status") => (200, status(ctx, config).await),
         ("GET", "/v1/traffic") => (200, traffic(ctx)),
+        ("GET", "/v1/update") => (200, update_notice(ctx)),
         ("GET", "/v1/support") => (200, support_bundle(ctx, config).await),
         ("GET", "/v1/diagnostics") => get_diagnostics(ctx),
         ("POST", "/v1/diagnostics") => (200, run_diagnostics(ctx, config).await),
@@ -3241,6 +3243,62 @@ fn traffic(ctx: &Ctx) -> Value {
     })
 }
 
+const UPDATE_FILE: &str = "update-check.json";
+
+/// `vX.Y.Z` / `X.Y.Z` as a comparable triple; anything else (including prerelease tags) is None.
+fn parse_release(v: &str) -> Option<(u64, u64, u64)> {
+    let mut it = v.strip_prefix('v').unwrap_or(v).split('.');
+    let t = (
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+    );
+    if it.next().is_some() {
+        return None;
+    }
+    Some(t)
+}
+
+/// ADR-0034: compare the running version with the tag `update-check.sh` recorded. The agent
+/// never goes online. Releases up to v0.2.1 report 0.1.0, which is "unknown", never a guess.
+fn update_state(installed: &str, latest: Option<&str>) -> &'static str {
+    let Some(latest) = latest.and_then(parse_release) else {
+        return "unchecked";
+    };
+    if installed == "0.1.0" {
+        return "unknown_installed";
+    }
+    match parse_release(installed) {
+        None => "unknown_installed",
+        Some(i) if latest > i => "update_available",
+        Some(_) => "current",
+    }
+}
+
+fn update_notice(ctx: &Ctx) -> Value {
+    let installed = env!("CARGO_PKG_VERSION");
+    let file: Option<Value> = ctx
+        .state_dir
+        .as_ref()
+        .and_then(|d| std::fs::read(d.join(UPDATE_FILE)).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    let latest = file
+        .as_ref()
+        .and_then(|f| f["latest_tag"].as_str())
+        .filter(|t| parse_release(t).is_some() && t.starts_with('v'));
+    let state = update_state(installed, latest);
+    let shown = matches!(state, "update_available" | "unknown_installed");
+    json!({
+        "state": state,
+        "installed": installed,
+        "latest_tag": latest,
+        "checked_unix": file.as_ref().and_then(|f| f["checked_unix"].as_u64()),
+        "command": latest.filter(|_| shown).map(|t| format!(
+            "curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/{t}/scripts/quick-install.sh | sudo bash -s -- --register NAME"
+        )),
+    })
+}
+
 /// Secret-free support bundle: only the outputs of the read-only endpoints above, which never
 /// carry key material, bundle contents or the agent token, plus the newest audit entries.
 async fn support_bundle(ctx: &Ctx, config: &RuntimeConfig) -> Value {
@@ -4446,6 +4504,54 @@ mod tests {
         );
         assert_eq!(body["long"]["totals"]["probes"], 1);
         assert!(body["alerts"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn update_state_never_guesses() {
+        assert_eq!(update_state("0.2.2", None), "unchecked");
+        assert_eq!(update_state("0.2.2", Some("junk")), "unchecked");
+        assert_eq!(update_state("0.2.2", Some("v0.3.0-rc.1")), "unchecked");
+        assert_eq!(update_state("0.1.0", Some("v0.2.1")), "unknown_installed");
+        assert_eq!(update_state("0.2.2", Some("v0.2.2")), "current");
+        assert_eq!(update_state("0.2.3", Some("v0.2.2")), "current");
+        assert_eq!(update_state("0.2.2", Some("v0.2.10")), "update_available");
+        assert_eq!(update_state("0.2.2", Some("v1.0.0")), "update_available");
+        assert_eq!(
+            update_state("0.3.0-rc.1", Some("v0.3.0")),
+            "unknown_installed"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_endpoint_reads_only_the_recorded_file() {
+        let dir = state_dir("update");
+        let ctx = Ctx::new(sample(), TOKEN.into(), Some(dir.clone()));
+        let (code, body) = get_json(&ctx, "/v1/update").await;
+        assert_eq!(code, 200);
+        assert_eq!(body["state"], "unchecked");
+        assert!(body["command"].is_null());
+        std::fs::write(
+            dir.join(UPDATE_FILE),
+            r#"{"latest_tag":"v9.9.9","checked_unix":1700000000}"#,
+        )
+        .unwrap();
+        let (_, body) = get_json(&ctx, "/v1/update").await;
+        assert_eq!(body["state"], "update_available", "{body}");
+        assert_eq!(body["latest_tag"], "v9.9.9");
+        assert!(
+            body["command"]
+                .as_str()
+                .unwrap()
+                .contains("/v9.9.9/scripts/quick-install.sh")
+        );
+        std::fs::write(
+            dir.join(UPDATE_FILE),
+            r#"{"latest_tag":"v1.0.0; rm -rf /"}"#,
+        )
+        .unwrap();
+        let (_, body) = get_json(&ctx, "/v1/update").await;
+        assert_eq!(body["state"], "unchecked");
+        assert!(body["latest_tag"].is_null());
     }
 
     #[tokio::test]
