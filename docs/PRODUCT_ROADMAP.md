@@ -280,6 +280,7 @@ R1, R3 and R5 need no LAB and can run in parallel. R4 and R6 share the LAB and r
 - **UDP/datagram carrier** ([#244](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/244)): separate transport feature with its own ADR, security audit and LAB. It is a prerequisite only for Gaming/Trading benefit claims; Balanced, Streaming and Bulk proceed on TCP/Yamux.
 - **Fleet / control plane** (draft [PR #171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171), after 0.4.0; its ADR number collides with ADR-0029 on `main` and must be renumbered if revived) stays Draft and untouched.
 - **External security review** stays paused by the owner; it is required before any v1.0 claim.
+- **Research (0.3.x/0.4.0): tcp-tls sustained transfers on the Iran path.** LAB evidence, 2026-11-16 16:00-17:50Z, Iran LAB host only, runs 43897433228, 43910396414 and forensics 43934069639: 2 MB probes over tcp-tls repeatedly stopped after about 0.5-1 MB. The abroad node logged "Connection reset by peer" while the Iran node timed out, with 0 restarts, flat fd/RSS and automatic recovery. The same binary passed 2 MB probes for one hour at 14:00-15:00Z. Not yet known: whether a middlebox causes it, whether it depends on time of day, flow length or TLS fingerprint, and whether other carriers behave differently. First step: measurement only (repeatable probe at several times of day plus a non-tunnel TLS bulk control). No censorship-resistance or workaround claim until it is measured. Related: Policy Pack TP-0.1 (#227).
 
 ### 9.6 Housekeeping
 
