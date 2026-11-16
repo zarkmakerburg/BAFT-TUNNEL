@@ -194,6 +194,28 @@ probe_host iran 65536
 sleep 12
 echo "--- diagnostics, status, traffic counters and audit on both nodes (Reverse) ---"
 ra_evidence apply $((65536 + 2097289))
+echo "--- ADR-0037: in-product integrity probe started from each node (Reverse) ---"
+for side in iran abroad; do
+  ssh_host "$side" "python3 - <<'PY'
+import urllib.request, json
+tok = open('$AGD/token').read().strip()
+r = urllib.request.Request('http://127.0.0.1:$MAG/v1/verify', data=json.dumps({'idempotency_key': 'ra-verify-$side-0001'}).encode(), method='POST', headers={'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json'})
+try:
+    print(urllib.request.urlopen(r, timeout=60).read().decode())
+except urllib.error.HTTPError as e:
+    print(e.read().decode())
+PY" >"$LOCAL_TMP/ra-verify-$side.json"
+  p1_api "$side" POST /v1/diagnostics >"$LOCAL_TMP/ra-verify-diag-$side.json"
+  python3 - "$LOCAL_TMP/ra-verify-$side.json" "$LOCAL_TMP/ra-verify-diag-$side.json" "$side" <<'PY' || { cat "$LOCAL_TMP/ra-verify-$side.json" >&2; echo "Reverse integrity probe from $side is not a pass" >&2; exit 1; }
+import json, sys
+v, d, side = json.load(open(sys.argv[1])), json.load(open(sys.argv[2])), sys.argv[3]
+r = {t["id"]: t["result"] for t in d["tiers"]}
+assert v.get("result") == "pass" and v.get("sha256_match") is True and v.get("direction") == "reverse", v
+assert r.get("integrity") == "pass", r
+print("reverse-integrity-probe side=%s result=%s bytes=%s integrity_tier=%s" % (side, v["result"], v.get("bytes"), r["integrity"]))
+PY
+  ssh_host "$side" "grep -Eq 'integrity_probe/tunnel/revacc/peer/[a-z]+/direction/reverse' $AGD/audit.log" || { echo "no Reverse integrity_probe audit entry on $side" >&2; exit 1; }
+done
 for side in iran abroad; do
   ssh_host "$side" "python3 -c 'import json,sys; [json.loads(l) for l in open(sys.argv[1])]' $AGD/audit.log && grep -q '\"actor\"' $AGD/audit.log && ! grep -qs -- \"\$(cat $AGD/token)\" $AGD/audit.log && ! grep -rqs -- \"\$(cat $AGD/token)\" $AGD/receipts && ! grep -rqs 'PRIVATE KEY' $AGD/receipts" ||
     { echo "audit log or receipts on $side lack actor fields or hold a secret" >&2; exit 1; }
@@ -330,4 +352,4 @@ for side in iran abroad; do
     RA_FW_DRIFT+=("$side")
   fi
 done
-echo "REVERSE_ACCEPT_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} update_sha256=${RA_NEW_SHA} setup_direction_reverse=1 apply_start_public=applied apply_start_service=applied non_root=1 outbound_only=1 receipt_session=${RA_SESSION} receipt_ready=${RA_READY} integrity_64k_2m=1 evidence_diag_status_traffic=1 replay=1 running_refused=1 ${RA_SOAK_LINE} service_sigkill_s=${RA_SVC_KILL_S} public_sigkill_s=${RA_PUB_KILL_S} service_apply_restart_s=${RA_SVC_APPLY_S} public_apply_restart_s=${RA_PUB_APPLY_S} backup_restore=1 restore_owners_modes_identical=1 restore_recovery_s=${RA_RESTORE_S} update_ok=1 update_recovery_s=${RA_UPDATE_S} bad_update_rolled_back=1 rollback_recovery_s=${RA_ROLLBACK_S} revoked_refused=1 uninstalled=1 listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=${RA_FW_DRIFT[*]:-none} cross_version_update=0"
+echo "REVERSE_ACCEPT_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} update_sha256=${RA_NEW_SHA} setup_direction_reverse=1 apply_start_public=applied apply_start_service=applied non_root=1 outbound_only=1 receipt_session=${RA_SESSION} receipt_ready=${RA_READY} integrity_64k_2m=1 integrity_probe_public=pass integrity_probe_service=pass evidence_diag_status_traffic=1 replay=1 running_refused=1 ${RA_SOAK_LINE} service_sigkill_s=${RA_SVC_KILL_S} public_sigkill_s=${RA_PUB_KILL_S} service_apply_restart_s=${RA_SVC_APPLY_S} public_apply_restart_s=${RA_PUB_APPLY_S} backup_restore=1 restore_owners_modes_identical=1 restore_recovery_s=${RA_RESTORE_S} update_ok=1 update_recovery_s=${RA_UPDATE_S} bad_update_rolled_back=1 rollback_recovery_s=${RA_ROLLBACK_S} revoked_refused=1 uninstalled=1 listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=${RA_FW_DRIFT[*]:-none} cross_version_update=0"

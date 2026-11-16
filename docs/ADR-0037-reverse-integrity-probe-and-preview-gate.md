@@ -29,8 +29,11 @@ side and the service node runs the stream server on the yamux **client** side. T
 4. **Gate (capabilities, preflight, wizard, Apply).** tcp-tls Reverse is offered as **Preview** only after an independent
    two-host acceptance run on the exact commit that opens the gate. That run, done by the LAB/B5 owner and not by the
    implementing thread, must add to the ADR-0021 checks: an in-product integrity probe started from **each** node with a
-   `pass` audit entry, and the protocol-v2 handshake on both nodes. Until it passes, the gate stays closed and the change that
-   opens it stays unmerged. noise-tcp and baft Reverse stay unavailable.
+   `pass` audit entry, and the protocol-v2 handshake on both nodes. noise-tcp and baft Reverse stay unavailable.
+   Trusted LAB workflows only build commits already in `main`, and Apply refuses a direction the catalogue does not offer, so
+   the gate-opening commit is merged to `main` first (no tag, no release) and the run uses
+   `phase1-trusted-reverse-lab.yml` on that SHA. No release (rc or Stable) may contain the open gate until the run passes; if it
+   fails, the gate commit is reverted before the next release.
 5. **Never claimed.** Reverse is not Stable and not production-ready. A probe pass is scoped to that peer, tunnel, direction and
    time and never sets Apply `ready`. No firewall change and no CAP_NET_ADMIN (ADR-0030).
 
