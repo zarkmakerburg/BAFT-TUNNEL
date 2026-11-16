@@ -1,0 +1,55 @@
+name: LAB HTTPS installer by IP (R6)
+
+# Runs the public one-line installer with --ip on the abroad LAB host for a signed release tag:
+# signed package, install --register, nginx HTTPS front end with an own CA bound to the host IP.
+# Checks from the GitHub runner and from the host itself, then removes everything it added
+# (front end, BAFT-TUNNEL install, nginx if it was not installed before, users it created).
+# Host addresses are LAB secrets and are masked in all output.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Signed release tag to install (for example v0.2.1-rc.1)
+        required: true
+        type: string
+      confirm:
+        description: Type RUN_TRUSTED_PHASE1_LAB to authorize the install and cleanup on the abroad LAB host
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-trusted-lab-hosts
+  cancel-in-progress: false
+
+jobs:
+  https-ip:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate inputs
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == RUN_TRUSTED_PHASE1_LAB ]] || { echo 'Explicit confirmation is required' >&2; exit 2; }
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo 'tag must be a release tag' >&2; exit 2; }
+      - name: Install with --ip, check HTTPS, clean up
+        env:
+          TAG: ${{ inputs.tag }}
+          LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
+          LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          LAB_SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+          LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+          LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+        run: bash lab/real-hosts/https-ip-stage.sh

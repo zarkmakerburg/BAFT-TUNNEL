@@ -163,4 +163,17 @@ if awk '/^  sign-and-publish:/{inside=1} inside && /cargo |build-baft-engine|car
   echo 'Release signing job builds code' >&2
   exit 1
 fi
+# HTTPS --ip installer LAB (R6): main-only, explicit confirmation, abroad credentials only, tag-pinned installer.
+hi="$root/.github/workflows/lab-https-ip-installer.yml"
+grep -F "if: \${{ github.ref == 'refs/heads/main' }}" "$hi" >/dev/null
+grep -F 'ref: ${{ github.sha }}' "$hi" >/dev/null
+grep -F '[[ "$CONFIRM" == RUN_TRUSTED_PHASE1_LAB ]]' "$hi" >/dev/null
+grep -F 'environment: baft-tunnel-lab' "$hi" >/dev/null
+grep -F 'group: baft-tunnel-trusted-lab-hosts' "$hi" >/dev/null
+test "$(grep -c 'secrets\.' "$hi")" = 3
+if grep -q 'LAB_IRAN' "$hi"; then echo 'HTTPS installer LAB reaches the Iran host' >&2; exit 1; fi
+hs="$root/lab/real-hosts/https-ip-stage.sh"
+grep -F 'raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/$TAG/scripts/quick-install.sh' "$hs" >/dev/null
+grep -F 'unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS' "$hs" >/dev/null
+grep -F 'trap cleanup EXIT' "$hs" >/dev/null
 echo 'Trusted workflow secret-boundary tests: PASS'
