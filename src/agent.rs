@@ -3259,7 +3259,7 @@ fn parse_release(v: &str) -> Option<(u64, u64, u64)> {
     Some(t)
 }
 
-/// ADR-0034: compare the running version with the tag `update-check.sh` recorded. The agent
+/// ADR-0035: compare the running version with the tag `update-check.sh` recorded. The agent
 /// never goes online. Releases up to v0.2.1 report 0.1.0, which is "unknown", never a guess.
 fn update_state(installed: &str, latest: Option<&str>) -> &'static str {
     let Some(latest) = latest.and_then(parse_release) else {

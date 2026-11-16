@@ -1,4 +1,4 @@
-# ADR-0034: update notice without an online agent or a root panel
+# ADR-0035: update notice without an online agent or a root panel
 
 Status: accepted (2026-11-16, owner's delegated decision authority). Roadmap: 0.3.0 O3. Builds on ADR-0025.
 

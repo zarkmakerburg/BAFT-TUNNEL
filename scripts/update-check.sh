@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Record the newest signed stable BAFT-TUNNEL release for the panel's update notice (ADR-0034).
+# Record the newest signed stable BAFT-TUNNEL release for the panel's update notice (ADR-0035).
 # Operator-run (or from the menu / a timer the operator adds). The agent itself never goes online:
 # it only reads the small file this script writes. Nothing is installed or changed on the host.
 #
