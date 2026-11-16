@@ -545,7 +545,7 @@ if (( SELF_SIGNED == 1 )); then
   echo "  Panel cert SHA-256:       $LFP"
   echo "  CA file (public):         $CA_CRT"
   echo "    copy it:  scp root@$(url_host):$CA_CRT ./baft-panel-ca.crt   then compare the fingerprint above"
-  echo "    check:    curl --cacert ./baft-panel-ca.crt $LINK"
+  echo "    check:    curl --cacert ./baft-panel-ca.crt ${BASE_URL}v1/health   (needs the web-path cookie; see the login box)"
   echo "The CA can only certify this host name/IP (name constraint). Renewal: automatic (daily timer)."
 else
   echo "Certificate: Let's Encrypt$([[ $STAGING -eq 1 ]] && echo ' STAGING (not browser-trusted)'), renewed automatically (certbot.timer)."
