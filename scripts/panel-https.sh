@@ -508,8 +508,6 @@ grep -qi '^set-cookie: baft_gate=' <<<"$gate_hdr" && grep -Eqi '^location: (http
   echo "HOST=$HOST"; echo "KIND=$KIND"; echo "SELF_SIGNED=$SELF_SIGNED"; echo "HTTPS_PORT=$HTTPS_PORT"
 } >"$STATE/state.new"
 mv -f "$STATE/state.new" "$STATE/state"
-printf 'https://%s%s/\n' "$(url_host)" "$SUFFIX" >"$STATE/link.new"   # link only, never the token
-mv -f "$STATE/link.new" "$STATE/link"
 CHANGED=0   # success: nothing to roll back
 
 # ---------------------------------------------------------------- report

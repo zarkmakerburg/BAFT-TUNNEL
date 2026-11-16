@@ -323,7 +323,6 @@ if (( NO_HTTPS == 0 )) && [[ -f "$PKG/scripts/panel-https.sh" ]]; then
   HARGS=(--agent-listen "${AGENT_LISTEN:-127.0.0.1:18080}")
   if [[ -n "$HTTPS_HOST" ]]; then
     HARGS+=("--$HTTPS_KIND" "$HTTPS_HOST")
-    [[ ! -t 1 ]] || HARGS+=(--show-token)   # the login token is shown in the final console box only
     [[ -z "$HTTPS_EMAIL" ]] || HARGS+=(--email "$HTTPS_EMAIL")
     (( HTTPS_SELF == 0 )) || HARGS+=(--self-signed)
   else
@@ -364,8 +363,6 @@ fi
 # Interactive menu (installed with the package) when a real terminal is attached. Ask first, so the
 # menu's screen redraw never hides the panel link and login box printed above.
 if (( NO_MENU == 0 )) && [[ -t 1 && -r /dev/tty ]] && command -v baft-tunnel >/dev/null 2>&1; then
-  # The menu redraws the whole screen, which used to wipe the HTTPS link/token box (or the failure
-  # reason) printed above. Keep it visible until the operator presses Enter.
   echo
   printf 'Press Enter to open the BAFT-TUNNEL menu, or type q and Enter to finish here: ' >/dev/tty
   MENU_ANSWER=""
