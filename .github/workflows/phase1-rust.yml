@@ -102,6 +102,13 @@ jobs:
         run: |
           bash -n scripts/pki/test-panel-pairing.sh
           timeout 600 bash scripts/pki/test-panel-pairing.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"
+      - name: Test panel HTTPS front end on Ubuntu 22.04 nginx (own-CA issuance, auth pass-through, idempotence, rollback; certbot and systemctl shimmed)
+        run: |
+          bash -n scripts/panel-https.sh scripts/test-panel-https.sh
+          sudo systemctl stop nginx apache2 2>/dev/null || true
+          sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx
+          sudo systemctl stop nginx 2>/dev/null || true
+          sudo timeout 300 bash scripts/test-panel-https.sh
 
   panel-ui:
     runs-on: ubuntu-24.04
