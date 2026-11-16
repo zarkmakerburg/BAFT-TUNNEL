@@ -128,6 +128,20 @@ jobs:
         if: failure()
         run: sudo docker logs pebble 2>&1 | tail -40 || true
 
+  ubuntu-2404-pipe-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: curl-pipe-bash survives apt and needrestart on Ubuntu 24.04, and panel HTTPS front end works on 24.04 nginx
+        run: |
+          bash -n scripts/test-pipe-install-2404.sh
+          sudo timeout 300 bash scripts/test-pipe-install-2404.sh
+          sudo systemctl stop nginx 2>/dev/null || true
+          sudo apt-get install -y -qq nginx
+          sudo systemctl stop nginx 2>/dev/null || true
+          sudo timeout 300 bash scripts/test-panel-https.sh
+
   panel-ui:
     runs-on: ubuntu-24.04
     timeout-minutes: 12
