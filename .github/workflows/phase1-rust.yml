@@ -117,7 +117,7 @@ jobs:
           {"pebble":{"listenAddress":"0.0.0.0:14000","managementListenAddress":"0.0.0.0:15000","certificate":"/test/certs/localhost/cert.pem","privateKey":"/test/certs/localhost/key.pem","httpPort":80,"tlsPort":443,"ocspResponderURL":"","externalAccountBindingRequired":false}}
           JSON
           sudo docker run -d --name pebble --network host -e PEBBLE_VA_NOSLEEP=1 -e PEBBLE_WFE_NONCEREJECT=0 \
-            -v "$D/pebble.json:/cfg/pebble.json:ro" ghcr.io/letsencrypt/pebble:2.7.0 -config /cfg/pebble.json
+            -v /etc/hosts:/etc/hosts:ro -v "$D/pebble.json:/cfg/pebble.json:ro" ghcr.io/letsencrypt/pebble:2.7.0 -config /cfg/pebble.json
           sudo docker cp pebble:/test/certs/pebble.minica.pem "$D/minica.pem"
           for i in $(seq 1 30); do curl -sk https://localhost:14000/dir >/dev/null && break; sleep 1; done
           sudo systemctl stop nginx 2>/dev/null || true
