@@ -278,9 +278,9 @@ R1, R3 and R5 need no LAB and can run in parallel. R4 and R6 share the LAB and r
 
 - **Adaptive Traffic Policy Pack** (epic [#226](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/226), [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md), Proposed, nothing implemented): TP-0.1 (#227) research first, then measurement, then the engine-agnostic policy interface (#245) before any profile. Userspace only. No latency claim about the internet path.
 - **UDP/datagram carrier** ([#244](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/244)): separate transport feature with its own ADR, security audit and LAB. It is a prerequisite only for Gaming/Trading benefit claims; Balanced, Streaming and Bulk proceed on TCP/Yamux.
-- **Fleet / control plane** (draft [PR #171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171); its ADR number collides with ADR-0029 on `main` and must be renumbered if revived) and the HQ foundation (draft [PR #169](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/169)) stay untouched.
+- **Fleet / control plane** (draft [PR #171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171), after 0.4.0; its ADR number collides with ADR-0029 on `main` and must be renumbered if revived) stays Draft and untouched.
 - **External security review** stays paused by the owner; it is required before any v1.0 claim.
 
 ### 9.6 Housekeeping
 
-Draft PRs #197 (B4, superseded by merged #201) and #173 (B1 docs, superseded) are still open and can be closed once their branches are confirmed to hold no unmerged work. [PROJECT_BOARD.md](PROJECT_BOARD.md) and the body of HQ Issue #2 still describe the rc.7/rc.8 state; the Issue #2 log is append-only, so the correction goes in as a new entry.
+Draft PRs #197 (B4, superseded by merged #201), #173 (B1 docs, superseded) and #169 (HQ command-center foundation, removed from the project by the owner's decision on 2026-11-16) are closed; their branches are kept until a merged-PR mapping is verified. #171 (Central Fleet ADR) stays Draft and is scheduled after 0.4.0. [PROJECT_BOARD.md](PROJECT_BOARD.md) is refreshed; the body of HQ Issue #2 still describes rc.7 and the log is append-only, so the correction goes in as a new entry.
