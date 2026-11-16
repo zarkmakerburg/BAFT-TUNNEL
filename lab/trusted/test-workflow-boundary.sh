@@ -186,7 +186,8 @@ grep -F 'group: baft-tunnel-trusted-lab-hosts' "$hd" >/dev/null
 grep -F 'type: choice' "$hd" >/dev/null
 test "$(grep -c 'secrets\.' "$hd")" = 4
 hds="$root/lab/real-hosts/https-domain-stage.sh"
-grep -F 'raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/$TAG/scripts/quick-install.sh' "$hds" >/dev/null
+grep -F 'raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/$IREF/scripts/quick-install.sh' "$hds" >/dev/null
+grep -F 'main) IREF="${GITHUB_SHA:?}"' "$hds" >/dev/null
 grep -F 'unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS' "$hds" >/dev/null
 grep -F 'trap cleanup EXIT' "$hds" >/dev/null
 echo 'Trusted workflow secret-boundary tests: PASS'

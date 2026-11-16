@@ -14,7 +14,15 @@ grep -Fq -- '--verify-only' <<<"$HELP"
 grep -Fq '7a6b86904016cc271e854aee54ca5b8ec5bd7fe28369e8775025c7ece029e2a4' "$SCRIPT"
 grep -Fq 'verify-blob "$TMP/SHA256SUMS"' "$SCRIPT"
 # The exact identity includes the requested tag; branch and foreign identities cannot match.
-grep -Fq -- '--certificate-identity "https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$TAG"' "$SCRIPT"
+grep -Fq 'IDENTITY="https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$TAG"' "$SCRIPT"
+test "$(grep -c -- '--certificate-identity "$IDENTITY"' "$SCRIPT")" = 2
+test "$(grep -c -- '--certificate-oidc-issuer https://token.actions.githubusercontent.com' "$SCRIPT")" = 2
+# Offline path (ADR-0034): pinned trust only, no network, same pins, fails closed; block matches trusted_root.json.
+grep -Fq -- '--bundle "$TMP/SHA256SUMS.cosign.bundle" --offline' "$SCRIPT"
+grep -Fq 'SIGSTORE_ROOT_FILE="$TMP/sigstore/fulcio.pem"' "$SCRIPT"
+grep -Fq 'die "release signature verification failed (online and with the pinned Sigstore trust root); nothing was installed"' "$SCRIPT"
+if grep -Eq 'sha256sum --check SHA256SUMS.*\|\||insecure|--insecure-ignore' "$SCRIPT"; then echo 'checksum-only or insecure fallback found' >&2; exit 1; fi
+bash "$ROOT/scripts/sigstore/refresh-trust.sh" --check >/dev/null
 python3 - <<'PYIDENTITY'
 base = "https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@"
 expected = base + "refs/tags/v1.2.3-rc.4"

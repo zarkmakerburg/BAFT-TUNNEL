@@ -51,3 +51,7 @@ installer and verifier; publish a new tag after this change is merged.
   minisign with the key stored only as an Environment secret.
 - The release workflow must exist on the default branch. Manual runs must select an existing
   version tag; the tag commit must be contained in `main`.
+
+## Installer trust root (offline verification)
+
+`quick-install.sh` verifies the release signature online first. When the Sigstore TUF CDN is unreachable, for example from Iran, it verifies the same bundle with the same pins against the Sigstore trust root pinned in the script (ADR-0034). Refresh that pin with `scripts/sigstore/refresh-trust.sh --update` whenever Sigstore rotates keys, and before the Fulcio chain expires; `--check` prints the date. Review the diff and ship it in the next release.

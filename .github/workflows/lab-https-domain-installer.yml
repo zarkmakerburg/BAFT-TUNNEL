@@ -26,6 +26,14 @@ on:
         options:
           - staging
           - production
+      installer:
+        description: Installer source (tag = quick-install.sh at the release tag; main = this main commit)
+        required: true
+        type: choice
+        default: tag
+        options:
+          - tag
+          - main
       confirm:
         description: Type RUN_TRUSTED_PHASE1_LAB to authorize the install and cleanup on the LAB host
         required: true
@@ -63,6 +71,7 @@ jobs:
           TAG: ${{ inputs.tag }}
           DOMAIN: ${{ inputs.domain }}
           ACME: ${{ inputs.acme }}
+          INSTALLER: ${{ inputs.installer }}
           LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
           LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
           LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
