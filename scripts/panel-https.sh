@@ -321,13 +321,23 @@ install_packages() {
   (( SKIP_APT == 0 )) || die "required packages missing (${pkgs[*]}) and --skip-apt given"
   command -v apt-get >/dev/null 2>&1 || die "install ${pkgs[*]} manually (apt-get not found)"
   say "installing: ${pkgs[*]}"
-  DEBIAN_FRONTEND=noninteractive apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${pkgs[@]}"
+  # No stdin for apt (it must not read a piped installer) and no needrestart run mid-install
+  # (Ubuntu 24.04 otherwise restarts services, including the agent, and floods the terminal).
+  DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq </dev/null
+  DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y -qq --no-install-recommends "${pkgs[@]}" </dev/null
 }
 install_packages
 command -v nginx >/dev/null 2>&1 || die "nginx is not available"
 
 install -d -m 0711 "$STATE"   # traverse-only: nginx must reach $WEBROOT; files inside stay 0600 (umask 077)
+# Secret web path (the "gate"): /GATE/ sets a cookie and every other panel URL answers 404 without it,
+# so the panel is not discoverable by scanning the domain. Kept across re-runs; never logged by nginx.
+GATE_FILE="$STATE/gate"
+if [[ ! -s "$GATE_FILE" ]]; then
+  ( umask 077; python3 -I -c 'import secrets; print(secrets.token_urlsafe(12))' >"$GATE_FILE.new" ) && mv -f "$GATE_FILE.new" "$GATE_FILE"
+fi
+GATE="$(tr -d '[:space:]' <"$GATE_FILE")"
+[[ "$GATE" =~ ^[A-Za-z0-9_-]{16}$ ]] || die "invalid web path in $GATE_FILE; delete it and re-run"
 install -d -m 0755 "$WEBROOT"
 if [[ -f "$CONF" ]]; then BACKUP="$STATE/backup.conf"; cp -p "$CONF" "$BACKUP"; fi
 CHANGED=1
@@ -382,7 +392,14 @@ server {
     add_header Referrer-Policy no-referrer always;
     client_max_body_size 2m;
     if (\$host != "$HOST") { return 421; }
+    location = /$GATE/ {
+        access_log off;
+        add_header Set-Cookie "baft_gate=$GATE; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=31536000" always;
+        add_header Cache-Control "no-store" always;
+        return 302 /;
+    }
     location / {
+        if (\$cookie_baft_gate != "$GATE") { return 404; }
         limit_req zone=baft_panel burst=60 nodelay;
         proxy_pass http://$UPSTREAM;
         proxy_http_version 1.1;
@@ -466,18 +483,26 @@ fi
 # ---------------------------------------------------------------- smoke test
 CURL_OPTS=(--noproxy "*" --max-time 20 --connect-to "$HOST:$HTTPS_PORT:127.0.0.1:$HTTPS_PORT")
 if (( SELF_SIGNED == 1 )); then CURL_OPTS+=(--cacert "$CA_CRT"); elif (( STAGING == 1 )); then CURL_OPTS+=(-k); fi
-LINK="https://$(url_host)$SUFFIX/"
-say "smoke test: $LINK"
+BASE_URL="https://$(url_host)$SUFFIX/"
+LINK="$BASE_URL$GATE/"
+NOCOOKIE_OPTS=("${CURL_OPTS[@]}")
+CURL_OPTS+=(-H "Cookie: baft_gate=$GATE")
+say "smoke test: $BASE_URL (through the web path)"
 ok=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do   # a reload returns before the new workers serve
-  if curl -fsS "${CURL_OPTS[@]}" -o /dev/null "${LINK}v1/health" 2>/dev/null; then ok=1; break; fi
+  if curl -fsS "${CURL_OPTS[@]}" -o /dev/null "${BASE_URL}v1/health" 2>/dev/null; then ok=1; break; fi
   sleep 1
 done
 (( ok == 1 )) ||
   die "HTTPS smoke test failed: /v1/health is not reachable through the proxy (is the agent running on $AGENT_LISTEN?)"
-unauth="$(curl -sS "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' "${LINK}v1/status" || true)"
+unauth="$(curl -sS "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' "${BASE_URL}v1/status" || true)"
 [[ "$unauth" == 401 ]] || die "smoke test: unauthenticated /v1/status returned '$unauth', expected 401 (authentication must stay enforced)"
-curl -fsS "${CURL_OPTS[@]}" -o /dev/null "$LINK" || die "smoke test: the panel page is not served over HTTPS"
+curl -fsS "${CURL_OPTS[@]}" -o /dev/null "$BASE_URL" || die "smoke test: the panel page is not served over HTTPS"
+gate_code="$(curl -sS "${NOCOOKIE_OPTS[@]}" -o /dev/null -w '%{http_code}' "${BASE_URL}v1/health" 2>/dev/null || true)"
+[[ "$gate_code" == 404 ]] || die "smoke test: the panel answered '$gate_code' without the web path cookie, expected 404"
+gate_hdr="$(curl -sS "${NOCOOKIE_OPTS[@]}" -o /dev/null -D - "$LINK" 2>/dev/null | tr -d '\r' || true)"
+grep -qi '^set-cookie: baft_gate=' <<<"$gate_hdr" && grep -Eqi '^location: (https://[^/]+)?/$' <<<"$gate_hdr" ||
+  die "smoke test: the web path does not set the panel cookie"
 
 {
   echo "HOST=$HOST"; echo "KIND=$KIND"; echo "SELF_SIGNED=$SELF_SIGNED"; echo "HTTPS_PORT=$HTTPS_PORT"
@@ -493,16 +518,20 @@ box() {  # draw a framed block around the given lines
   for l in "$@"; do printf '| %-*s |\n' "$w" "$l"; done
   printf '+-%s-+\n' "$(printf '%*s' "$w" '' | tr ' ' '-')"
 }
-LOGIN_LINES=("BAFT-TUNNEL panel - HTTPS login" "" "Link  : $LINK")
+if [[ -t 1 ]]; then
+  LOGIN_LINES=("BAFT-TUNNEL panel - HTTPS login" "" "Link     : $LINK")
+else
+  LOGIN_LINES=("BAFT-TUNNEL panel - HTTPS login" "" "Link     : $BASE_URL<web path>/  (web path: sudo cat $GATE_FILE)")
+fi
 if (( NO_TOKEN == 1 )); then
-  LOGIN_LINES+=("Token : not printed (--no-print-token). Read: sudo cat $TOKEN_FILE")
+  LOGIN_LINES+=("Password : not printed (--no-print-token). Read: sudo cat $TOKEN_FILE")
 elif [[ -f "$STATE/credentials-shown" && $SHOW_TOKEN -eq 0 ]]; then
-  LOGIN_LINES+=("Token : unchanged since first run. Read: sudo cat $TOKEN_FILE")
+  LOGIN_LINES+=("Password : unchanged since first run. Read: sudo cat $TOKEN_FILE")
 elif [[ -t 1 ]]; then
-  LOGIN_LINES+=("Token : $(cat "$TOKEN_FILE")" "" "Paste the token on the login page. Shown once here;" "stored 0600 in $TOKEN_FILE")
+  LOGIN_LINES+=("Password : $(cat "$TOKEN_FILE")" "" "Open the link, then paste the password on the login page." "Shown once here; stored 0600 in $TOKEN_FILE. Keep the link private.")
   : >"$STATE/credentials-shown"
 else
-  LOGIN_LINES+=("Token : output is not a terminal, so it is not printed." "Read: sudo cat $TOKEN_FILE")
+  LOGIN_LINES+=("Password : output is not a terminal, so it is not printed." "Read: sudo cat $TOKEN_FILE")
 fi
 echo
 box "${LOGIN_LINES[@]}"
@@ -516,7 +545,7 @@ if (( SELF_SIGNED == 1 )); then
   echo "  Panel cert SHA-256:       $LFP"
   echo "  CA file (public):         $CA_CRT"
   echo "    copy it:  scp root@$(url_host):$CA_CRT ./baft-panel-ca.crt   then compare the fingerprint above"
-  echo "    check:    curl --cacert ./baft-panel-ca.crt $LINK"
+  echo "    check:    curl --cacert ./baft-panel-ca.crt ${BASE_URL}v1/health   (needs the web-path cookie; see the login box)"
   echo "The CA can only certify this host name/IP (name constraint). Renewal: automatic (daily timer)."
 else
   echo "Certificate: Let's Encrypt$([[ $STAGING -eq 1 ]] && echo ' STAGING (not browser-trusted)'), renewed automatically (certbot.timer)."

@@ -145,3 +145,9 @@ pub fn history_file(data: &[u8]) {
     let _ = h.view(1_700_000_000);
     let _ = h.alerts(1_700_000_000);
 }
+
+/// State-directory files read back by `/v1/update` and `/v1/host/tunnels`.
+pub fn state_files(data: &[u8]) {
+    let dir = scratch_dir("statefiles");
+    agent::fuzz_state_files(data, &dir);
+}

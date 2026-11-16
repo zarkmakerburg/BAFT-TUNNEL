@@ -17,3 +17,11 @@ The agent/panel is a non-root, loopback-only service that checks the `Host` head
 
 ## Evidence levels
 CI sandbox only: own-CA issuance, name constraint, auth pass-through, foreign-Host refusal, idempotence, rollback and nginx config for the domain path are tested with `scripts/test-panel-https.sh` (certbot and systemctl shimmed). A real Let's Encrypt issuance and renewal is **not** verified until run on a host with a public domain.
+
+## Amendment (2026-11-16): secret web path, password wording, installer output
+- **Web path.** On first setup the host gets a random 16-character web path, stored 0600 in `/var/lib/baft-tunnel-https/gate` and reused on later runs. Opening `https://HOST/<web path>/` sets an HttpOnly, Secure, SameSite=Strict cookie and redirects to `/`. Without that cookie, nginx answers 404 for the panel and the API, so a scan of the domain does not reveal the panel. The web-path request is never written to the access log. The bearer token is still the real authentication; the web path only hides the panel.
+- **Login box.** The box shows `Link` (with the web path) and `Password` (the existing 0600 API token). Both are printed only to a terminal. Without a terminal, the box says where to read each one. The smoke test checks the 404 without the cookie, the cookie being set, health, the 401 and the page.
+- **Installer output.** The installer always ends with the HTTPS panel link, or with `HTTPS setup FAILED` and the reason plus the retry command.
+  - The whole script is one brace group, so `curl | bash` is parsed completely before it runs and a stdin-reading child cannot swallow lines.
+  - Child scripts and apt get no stdin, and needrestart is suspended during apt.
+  - The interactive menu now opens only after Enter, so its screen redraw cannot hide the link and password box.

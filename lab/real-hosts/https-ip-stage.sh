@@ -95,6 +95,9 @@ ssh_h "find /etc/baft-tunnel-https /var/lib/baft-tunnel-https -name '*.key' -per
 ssh_h "! grep -q 'PRIVATE KEY' /etc/baft-tunnel-https/ca.crt" || fail 'CA certificate file holds a private key'
 ( umask 077; ssh_h "cat /var/lib/baft-tunnel-agent/token" > "$W/token" ) || fail 'could not read the agent token'
 [[ -s "$W/token" ]] || fail 'empty agent token'
+( umask 077; ssh_h "cat /var/lib/baft-tunnel-https/gate 2>/dev/null || true" > "$W/gate" )
+CK=(); GATEP=0
+if [[ -s "$W/gate" ]]; then GATEP=1; CK=(-H "Cookie: baft_gate=$(cat "$W/gate")"); fi
 
 code() { local c; c="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$@" 2>/dev/null)" || true; echo "${c:-000}"; }
 PATH_USED=runner
@@ -102,18 +105,20 @@ if [[ "$(code --cacert "$W/ca.crt" "https://$HOST/v1/health")" == 000 ]]; then
   PATH_USED=host
 fi
 if [[ "$PATH_USED" == runner ]]; then
-  H="$(code --cacert "$W/ca.crt" "https://$HOST/v1/health")"
-  U="$(code --cacert "$W/ca.crt" "https://$HOST/v1/status")"
-  A="$(code --cacert "$W/ca.crt" -H "Authorization: Bearer $(cat "$W/token")" "https://$HOST/v1/status")"
-  P="$(code --cacert "$W/ca.crt" "https://$HOST/")"
+  G="$(code --cacert "$W/ca.crt" "https://$HOST/v1/health")"
+  H="$(code --cacert "$W/ca.crt" "${CK[@]}" "https://$HOST/v1/health")"
+  U="$(code --cacert "$W/ca.crt" "${CK[@]}" "https://$HOST/v1/status")"
+  A="$(code --cacert "$W/ca.crt" "${CK[@]}" -H "Authorization: Bearer $(cat "$W/token")" "https://$HOST/v1/status")"
+  P="$(code --cacert "$W/ca.crt" "${CK[@]}" "https://$HOST/")"
+  (( GATEP == 0 )) || [[ "$G" == 404 ]] || fail "panel answered $G without the web path cookie"
   # Without the own CA the certificate must not verify (no silent fallback to an untrusted chain).
   X="$(code "https://$HOST/v1/health")"
 else
   echo 'runner cannot reach 443 on the LAB host; checking through the host itself (pinned CA, --resolve)'
   r="--resolve $HOST:443:127.0.0.1 --cacert /etc/baft-tunnel-https/ca.crt"
   out="$(ssh_h "c() { x=\$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \"\$@\" 2>/dev/null); echo \${x:-000}; }
-    t=\$(cat /var/lib/baft-tunnel-agent/token)
-    echo \$(c $r https://$HOST/v1/health) \$(c $r https://$HOST/v1/status) \$(c $r -H \"Authorization: Bearer \$t\" https://$HOST/v1/status) \$(c $r https://$HOST/) \$(c --resolve $HOST:443:127.0.0.1 https://$HOST/v1/health)")"
+    t=\$(cat /var/lib/baft-tunnel-agent/token); g=\$(cat /var/lib/baft-tunnel-https/gate 2>/dev/null); k=\"Cookie: baft_gate=\$g\"
+    echo \$(c $r -H \"\$k\" https://$HOST/v1/health) \$(c $r -H \"\$k\" https://$HOST/v1/status) \$(c $r -H \"\$k\" -H \"Authorization: Bearer \$t\" https://$HOST/v1/status) \$(c $r -H \"\$k\" https://$HOST/) \$(c --resolve $HOST:443:127.0.0.1 https://$HOST/v1/health)")"
   read -r H U A P X <<<"$out"
 fi
 echo "checks via $PATH_USED: health=$H unauth=$U auth=$A page=$P no_ca=$X"
@@ -124,6 +129,6 @@ echo "checks via $PATH_USED: health=$H unauth=$U auth=$A page=$P no_ca=$X"
 [[ "$X" == 000 ]] || fail "certificate verified without the own CA ($X)"
 ssh_h "! ss -Hltn | awk '{print \$4}' | grep -Eq '^(0\.0\.0\.0|\[::\]|\*):18080\$'" || fail 'the agent listens publicly on 18080'
 ssh_h "cat /etc/nginx/conf.d/baft-tunnel-panel.conf" | grep -Eq 'ssl_protocols TLSv1\.(2 TLSv1\.)?3;' && TLS=1 || TLS=0
-rm -f "$W/token"
+rm -f "$W/token" "$W/gate"
 
-echo "HTTPS_IP_RESULT tag=$TAG installer=quick-install path=$PATH_USED ip_san=1 name_constraint=$NC health=$H unauth=$U auth=$A page=$P no_ca_rejected=1 tls12plus=$TLS agent_loopback=1"
+echo "HTTPS_IP_RESULT tag=$TAG web_path=$GATEP installer=quick-install path=$PATH_USED ip_san=1 name_constraint=$NC health=$H unauth=$U auth=$A page=$P no_ca_rejected=1 tls12plus=$TLS agent_loopback=1"

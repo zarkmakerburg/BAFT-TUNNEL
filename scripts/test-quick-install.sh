@@ -23,6 +23,20 @@ grep -Fq 'SIGSTORE_ROOT_FILE="$TMP/sigstore/fulcio.pem"' "$SCRIPT"
 grep -Fq 'die "release signature verification failed (online and with the pinned Sigstore trust root); nothing was installed"' "$SCRIPT"
 if grep -Eq 'sha256sum --check SHA256SUMS.*\|\||insecure|--insecure-ignore' "$SCRIPT"; then echo 'checksum-only or insecure fallback found' >&2; exit 1; fi
 bash "$ROOT/scripts/sigstore/refresh-trust.sh" --check >/dev/null
+# curl | bash safety: the script is one brace group (parsed completely before it runs) and no child
+# reads the piped script; the HTTPS outcome is always stated before the menu, which is opt-in.
+test "$(grep -v '^#' "$SCRIPT" | sed -n '1p')" = '{'
+test "$(tail -n1 "$SCRIPT")" = '}'
+grep -Fq -- '--register "$INSTANCE" </dev/null' "$SCRIPT"
+grep -Fq 'bash "$PKG/scripts/panel-https.sh" "${HARGS[@]}" </dev/null' "$SCRIPT"
+grep -Fq 'HTTPS setup FAILED' "$SCRIPT"
+grep -Fq 'Panel (HTTPS): $PANEL_LINK' "$SCRIPT"
+grep -Fq 'Press Enter to open the BAFT-TUNNEL menu' "$SCRIPT"
+grep -Fq 'NEEDRESTART_SUSPEND=1 apt-get install' "$ROOT/scripts/panel-https.sh"
+# Behavioural: piping the script to bash while a stdin-reading child runs must not lose lines.
+pipe_demo="$TMP_TEST/pipe-demo.sh"
+printf '%s\n' '{' 'cat >/dev/null' 'echo LINE_AFTER_CHILD' '}' >"$pipe_demo"
+[[ "$(bash <"$pipe_demo")" == LINE_AFTER_CHILD ]]
 python3 - <<'PYIDENTITY'
 base = "https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@"
 expected = base + "refs/tags/v1.2.3-rc.4"
@@ -96,5 +110,22 @@ fi
 if "$SCRIPT" --register t1 --agent-listen 0.0.0.0:18080 >/dev/null 2>&1; then
   echo 'non-loopback agent listen address was accepted' >&2; exit 1
 fi
+# Regression (LAB run 43879430384): the HTTPS outcome block must survive set -e on the default
+# port 443. Run the real block from the script against a temporary state directory.
+HB="$(mktemp -d)"
+awk '/# Success is what panel-https.sh recorded/{p=1} p{print} p&&/^  fi$/{exit}' "$SCRIPT" \
+  | sed "s#/var/lib/baft-tunnel-https#$HB#g" >"$HB/block.sh"
+grep -q 'HTTPS_OK=1' "$HB/block.sh"
+printf 'abcdEFGH12345678\n' >"$HB/gate"
+for case in 'h.example|443|https://h.example/' 'h.example||https://h.example/' \
+            'h.example|8443|https://h.example:8443/' '2001:db8::1|443|https://[2001:db8::1]/'; do
+  IFS='|' read -r h port want <<<"$case"
+  printf 'HOST=%s\nHTTPS_PORT=%s\n' "$h" "$port" >"$HB/state"
+  got="$(bash -c 'set -Eeuo pipefail; HTTPS_OK=0; PANEL_LINK=""; HTTPS_RC=0; source "$1"; echo "$HTTPS_OK|$PANEL_LINK"' _ "$HB/block.sh")" \
+    || { echo "HTTPS outcome block exited non-zero for host=$h port=${port:-none}" >&2; exit 1; }
+  [[ "$got" == "1|${want}<web path>/ (web path: sudo cat $HB/gate)" ]] \
+    || { echo "HTTPS outcome block gave '$got' for host=$h port=${port:-none}" >&2; exit 1; }
+done
+rm -rf "$HB"
 python3 "$ROOT/scripts/test-quick-install-failures.py"
 echo QUICK_INSTALL_TEST=PASS
