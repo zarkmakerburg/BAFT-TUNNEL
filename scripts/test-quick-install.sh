@@ -23,6 +23,20 @@ grep -Fq 'SIGSTORE_ROOT_FILE="$TMP/sigstore/fulcio.pem"' "$SCRIPT"
 grep -Fq 'die "release signature verification failed (online and with the pinned Sigstore trust root); nothing was installed"' "$SCRIPT"
 if grep -Eq 'sha256sum --check SHA256SUMS.*\|\||insecure|--insecure-ignore' "$SCRIPT"; then echo 'checksum-only or insecure fallback found' >&2; exit 1; fi
 bash "$ROOT/scripts/sigstore/refresh-trust.sh" --check >/dev/null
+# curl | bash safety: the script is one brace group (parsed completely before it runs) and no child
+# reads the piped script; the HTTPS outcome is always stated before the menu, which is opt-in.
+test "$(grep -v '^#' "$SCRIPT" | sed -n '1p')" = '{'
+test "$(tail -n1 "$SCRIPT")" = '}'
+grep -Fq -- '--register "$INSTANCE" </dev/null' "$SCRIPT"
+grep -Fq 'bash "$PKG/scripts/panel-https.sh" "${HARGS[@]}" </dev/null' "$SCRIPT"
+grep -Fq 'HTTPS setup FAILED' "$SCRIPT"
+grep -Fq 'Panel (HTTPS): $PANEL_LINK' "$SCRIPT"
+grep -Fq 'Press Enter to open the BAFT-TUNNEL menu' "$SCRIPT"
+grep -Fq 'NEEDRESTART_SUSPEND=1 apt-get install' "$ROOT/scripts/panel-https.sh"
+# Behavioural: piping the script to bash while a stdin-reading child runs must not lose lines.
+pipe_demo="$TMP_TEST/pipe-demo.sh"
+printf '%s\n' '{' 'cat >/dev/null' 'echo LINE_AFTER_CHILD' '}' >"$pipe_demo"
+[[ "$(bash <"$pipe_demo")" == LINE_AFTER_CHILD ]]
 python3 - <<'PYIDENTITY'
 base = "https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@"
 expected = base + "refs/tags/v1.2.3-rc.4"

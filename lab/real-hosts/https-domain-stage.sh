@@ -121,8 +121,8 @@ else
   ssh_h "bash /usr/local/lib/baft-tunnel/scripts/panel-https.sh --domain $DOMAIN --staging" 2>&1 | mask | tee "$W/install.log" ||
     fail 'panel-https.sh --domain --staging failed'
 fi
-grep -qF "Link  : https://$DOMAIN/" "$W/install.log" && LINK=1 || LINK=0
-grep -qF 'Token : output is not a terminal, so it is not printed.' "$W/install.log" && TOKBOX=1 || TOKBOX=0
+grep -Eq "Link +: https://${DOMAIN//./\\.}/" "$W/install.log" && LINK=1 || LINK=0
+grep -Eq '(Token|Password) : output is not a terminal, so it is not printed.' "$W/install.log" && TOKBOX=1 || TOKBOX=0
 grep -qF "Certificate: Let's Encrypt" "$W/install.log" || fail 'installer did not report a Let'"'"'s Encrypt certificate'
 (( LINK == 1 )) || fail 'the login box does not show the https link for the domain'
 
@@ -138,6 +138,18 @@ echo "issuer: $ISSUER | expires in ${DAYS} days"
 (( DAYS >= 30 )) || fail "certificate expires in $DAYS days"
 
 ( umask 077; ssh_h "cat /var/lib/baft-tunnel-agent/token" > "$W/token" ) || fail 'could not read the agent token'
+# Releases with the secret web path (panel answers 404 without its cookie): prove the gate, then use it.
+GATEP=0; NOGATE=na
+( umask 077; ssh_h "cat /var/lib/baft-tunnel-https/gate 2>/dev/null || true" > "$W/gate" )
+if [[ -s "$W/gate" ]]; then
+  GATEP=1
+  NOGATE="$(code "${TRUST[@]}" "https://$DOMAIN/v1/health")"
+  [[ "$NOGATE" == 404 ]] || fail "panel answered $NOGATE without the web path cookie"
+  SC="$(curl -sS "${TRUST[@]}" --max-time 20 -o /dev/null -D - "https://$DOMAIN/$(cat "$W/gate")/" 2>/dev/null | tr -d '\r' | grep -ci '^set-cookie: baft_gate=' || true)"
+  [[ "$SC" == 1 ]] || fail 'the web path does not set the panel cookie'
+  TRUST+=(-H "Cookie: baft_gate=$(cat "$W/gate")")
+fi
+rm -f "$W/gate"
 H="$(code "${TRUST[@]}" "https://$DOMAIN/v1/health")"
 U="$(code "${TRUST[@]}" "https://$DOMAIN/v1/status")"
 A="$(code "${TRUST[@]}" -H "Authorization: Bearer $(cat "$W/token")" "https://$DOMAIN/v1/status")"
@@ -157,4 +169,4 @@ ssh_h "! ss -Hltn | awk '{print \$4}' | grep -Eq '^(0\.0\.0\.0|\[::\]|\*):18080\
 (( DRY == 1 )) || fail 'certbot renew --dry-run failed'
 
 SIGPATH=online; grep -qF "Signature verified offline" "$W/install.log" "$W/pkg.log" 2>/dev/null && SIGPATH=offline
-echo "HTTPS_DOMAIN_RESULT tag=$TAG installer_ref=$INSTALLER signature=$SIGPATH domain=$DOMAIN side=$SIDE acme=$ACME installer=$([[ $ACME == production ]] && echo quick-install-domain || echo quick-install+panel-https-staging) dns=$DNS aaaa=$AAAA port80=$R80 port443=$R443 days_left=$DAYS health=$H unauth=$U auth=$A page=$P http_redirect=1 login_link=$LINK token_not_printed_non_tty=$TOKBOX certbot_timer=$TIMER renew_dry_run=$DRY deploy_hook=$HOOK agent_loopback=1"
+echo "HTTPS_DOMAIN_RESULT tag=$TAG installer_ref=$INSTALLER signature=$SIGPATH web_path=$GATEP no_cookie=$NOGATE domain=$DOMAIN side=$SIDE acme=$ACME installer=$([[ $ACME == production ]] && echo quick-install-domain || echo quick-install+panel-https-staging) dns=$DNS aaaa=$AAAA port80=$R80 port443=$R443 days_left=$DAYS health=$H unauth=$U auth=$A page=$P http_redirect=1 login_link=$LINK token_not_printed_non_tty=$TOKBOX certbot_timer=$TIMER renew_dry_run=$DRY deploy_hook=$HOOK agent_loopback=1"

@@ -77,7 +77,15 @@ grep -q "$(cat "$T/token")" <<<"$OUT" && fail "token printed to a non-terminal"
 [[ "$(cat /var/lib/baft-tunnel-https/link)" == "https://$IP:$HP/" ]] || fail "link state file wrong"
 grep -q "$(cat "$T/token")" /var/lib/baft-tunnel-https/link && fail "token leaked into link file"
 CA=/etc/baft-tunnel-https/ca.crt
-curl() { command curl -sS --noproxy "*" --max-time 10 --cacert "$CA" --connect-to "$IP:$HP:127.0.0.1:$HP" "$@"; }
+GATE="$(cat /var/lib/baft-tunnel-https/gate)"
+[[ "$GATE" =~ ^[A-Za-z0-9_-]{16}$ ]] || fail "no web path"
+grep -q "$GATE" <<<"$OUT" && fail "web path printed to a non-terminal"
+ncurl() { command curl -sS --noproxy "*" --max-time 10 --cacert "$CA" --connect-to "$IP:$HP:127.0.0.1:$HP" "$@"; }
+curl() { ncurl -H "Cookie: baft_gate=$GATE" "$@"; }
+[[ "$(ncurl -o /dev/null -w '%{http_code}' https://$IP:$HP/v1/health)" == 404 ]] || fail "panel reachable without the web path"
+[[ "$(ncurl -o /dev/null -w '%{http_code}' https://$IP:$HP/)" == 404 ]] || fail "panel page reachable without the web path"
+ncurl -o /dev/null -D - "https://$IP:$HP/$GATE/" | tr -d '\r' | grep -qi "^set-cookie: baft_gate=$GATE;.*HttpOnly" || fail "web path does not set the cookie"
+grep -q "$GATE" /var/log/nginx/baft-panel.access.log 2>/dev/null && fail "web path written to the nginx access log"
 [[ "$(curl -o /dev/null -w '%{http_code}' https://$IP:$HP/v1/health)" == 200 ]] || fail "health via https"
 [[ "$(curl -o /dev/null -w '%{http_code}' https://$IP:$HP/v1/status)" == 401 ]] || fail "auth must stay enforced"
 [[ "$(curl -sS -k --max-time 10 -H 'Host: evil.example' -o /dev/null -w '%{http_code}' https://127.0.0.1:$HP/)" == 421 ]] || fail "foreign Host accepted"
@@ -125,7 +133,7 @@ SH
   grep -qi pebble <<<"$ISS" || fail "unexpected issuer: $ISS"
   SERVED="$(echo | openssl s_client -connect "127.0.0.1:$HP" -servername panel.baft.test 2>/dev/null | openssl x509 -noout -issuer)"
   grep -qi pebble <<<"$SERVED" || fail "nginx does not serve the issued certificate: $SERVED"
-  CODE="$(command curl -sS --noproxy "*" --cacert "$T/pebble-root.pem" --max-time 10 -o /dev/null -w '%{http_code}' --connect-to "panel.baft.test:$HP:127.0.0.1:$HP" "https://panel.baft.test:$HP/" 2>&1)" || true
+  CODE="$(command curl -sS --noproxy "*" --cacert "$T/pebble-root.pem" --max-time 10 -H "Cookie: baft_gate=$(cat /var/lib/baft-tunnel-https/gate)" -o /dev/null -w '%{http_code}' --connect-to "panel.baft.test:$HP:127.0.0.1:$HP" "https://panel.baft.test:$HP/" 2>&1)" || true
   [[ "$CODE" == 200 ]] || fail "panel not served over the issued certificate (got: $CODE)"
   unset CURL_CA_BUNDLE
   echo "PEBBLE_ACME=PASS ($ISS)"

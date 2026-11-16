@@ -2,6 +2,10 @@
 # Verify and install the latest signed stable BAFT-TUNNEL release on Ubuntu x86_64.
 # Preview/prerelease builds need an explicit --channel prerelease or --tag (audit A-11).
 # One line: curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/main/scripts/quick-install.sh | sudo bash -s -- --register t1
+# The whole script is one brace group, so bash reads it completely before running anything:
+# with `curl ... | bash` a child process that reads stdin (apt, dpkg, needrestart) can then no
+# longer swallow the rest of the script and make lines silently disappear.
+{
 set -Eeuo pipefail
 umask 077
 
@@ -306,14 +310,15 @@ if (( VERIFY_ONLY == 1 )); then
 fi
 
 if [[ -n "$AGENT_LISTEN" ]]; then
-  bash "$PKG/scripts/install.sh" --binary "$PKG/baft-tunnel" --register "$INSTANCE" --agent-listen "$AGENT_LISTEN"
+  bash "$PKG/scripts/install.sh" --binary "$PKG/baft-tunnel" --register "$INSTANCE" --agent-listen "$AGENT_LISTEN" </dev/null
 else
-  bash "$PKG/scripts/install.sh" --binary "$PKG/baft-tunnel" --register "$INSTANCE"
+  bash "$PKG/scripts/install.sh" --binary "$PKG/baft-tunnel" --register "$INSTANCE" </dev/null
 fi
 
 echo
 echo "BAFT-TUNNEL $TAG installed and verified for instance $INSTANCE."
 HTTPS_OK=0
+PANEL_LINK=""
 if (( NO_HTTPS == 0 )) && [[ -f "$PKG/scripts/panel-https.sh" ]]; then
   HARGS=(--agent-listen "${AGENT_LISTEN:-127.0.0.1:18080}")
   if [[ -n "$HTTPS_HOST" ]]; then
@@ -324,26 +329,51 @@ if (( NO_HTTPS == 0 )) && [[ -f "$PKG/scripts/panel-https.sh" ]]; then
   else
     HARGS+=(--interactive)
   fi
-  if bash "$PKG/scripts/panel-https.sh" "${HARGS[@]}"; then
-    HTTPS_OK=1
+  if bash "$PKG/scripts/panel-https.sh" "${HARGS[@]}" </dev/null; then
+    HTTPS_RC=0
   else
-    echo "HTTPS setup failed and was rolled back; BAFT-TUNNEL itself is installed (panel stays loopback-only)." >&2
-    echo "Retry later: sudo bash $PKG/scripts/panel-https.sh ... or re-run this installer with --domain/--ip." >&2
+    HTTPS_RC=$?
+  fi
+  # Success is what panel-https.sh recorded, not only its exit code (an empty interactive answer exits 0).
+  if (( HTTPS_RC == 0 )) && [[ -f /var/lib/baft-tunnel-https/state ]]; then
+    PANEL_HOST="$(sed -n 's/^HOST=//p' /var/lib/baft-tunnel-https/state | head -n1)"
+    PANEL_PORT="$(sed -n 's/^HTTPS_PORT=//p' /var/lib/baft-tunnel-https/state | head -n1)"
+    if [[ -n "$PANEL_HOST" ]]; then
+      [[ "$PANEL_HOST" == *:* ]] && PANEL_HOST="[$PANEL_HOST]"
+      PANEL_LINK="https://$PANEL_HOST$([[ -n "$PANEL_PORT" && "$PANEL_PORT" != 443 ]] && echo ":$PANEL_PORT")/"
+      if [[ -s /var/lib/baft-tunnel-https/gate ]]; then
+        # The secret web path goes to a terminal only, like the password.
+        if [[ -t 1 ]]; then PANEL_LINK+="$(tr -d '[:space:]' </var/lib/baft-tunnel-https/gate)/"
+        else PANEL_LINK+="<web path>/ (web path: sudo cat /var/lib/baft-tunnel-https/gate)"; fi
+      fi
+      HTTPS_OK=1
+    fi
+  elif (( HTTPS_RC != 0 )); then
+    echo "HTTPS setup FAILED (exit $HTTPS_RC; the reason is printed above) and was rolled back." >&2
+    echo "BAFT-TUNNEL itself is installed; the panel stays loopback-only." >&2
+    echo "Fix the reason, then retry: sudo bash /usr/local/lib/baft-tunnel/scripts/panel-https.sh --domain NAME (or --ip ADDRESS)" >&2
   fi
 fi
+echo
 echo "The tunnel itself was not started. Set it up in the panel Wizard (supported tcp-tls path)."
-if (( HTTPS_OK == 0 )); then
+if (( HTTPS_OK == 1 )); then
+  echo "Panel (HTTPS): $PANEL_LINK   password (login token): sudo cat /var/lib/baft-tunnel-agent/token"
+else
   echo "Panel (loopback only): ssh -L 18080:127.0.0.1:18080 HOST, open http://127.0.0.1:18080/ ; token: sudo cat /var/lib/baft-tunnel-agent/token"
 fi
-# Interactive menu (installed with the package) when a real terminal is attached.
+# Interactive menu (installed with the package) when a real terminal is attached. Ask first, so the
+# menu's screen redraw never hides the panel link and login box printed above.
 if (( NO_MENU == 0 )) && [[ -t 1 && -r /dev/tty ]] && command -v baft-tunnel >/dev/null 2>&1; then
   # The menu redraws the whole screen, which used to wipe the HTTPS link/token box (or the failure
   # reason) printed above. Keep it visible until the operator presses Enter.
   echo
-  printf 'Read the result above (panel link/login or the failure reason). Press Enter to open the menu, Ctrl-C to skip: ' >/dev/tty
-  IFS= read -r _ </dev/tty || true
-  baft-tunnel menu </dev/tty || true
-  if [[ -r /var/lib/baft-tunnel-https/link ]]; then
-    echo "Panel (HTTPS): $(cat /var/lib/baft-tunnel-https/link)  token: sudo cat /var/lib/baft-tunnel-agent/token"
+  printf 'Press Enter to open the BAFT-TUNNEL menu, or type q and Enter to finish here: ' >/dev/tty
+  MENU_ANSWER=""
+  IFS= read -r MENU_ANSWER </dev/tty || MENU_ANSWER=q
+  if [[ "${MENU_ANSWER,,}" != q* ]]; then
+    baft-tunnel menu </dev/tty || true
+    if (( HTTPS_OK == 1 )); then echo "Panel (HTTPS): $PANEL_LINK"; fi
   fi
 fi
+exit 0
+}
