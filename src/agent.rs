@@ -3557,18 +3557,35 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-async fn respond(stream: &mut TcpStream, code: u16, body: &Value) -> Result<()> {
-    let reason = match code {
+/// Reason phrase for a status line. Unlisted codes get a phrase for their class,
+/// never the phrase of a different status.
+fn reason_phrase(code: u16) -> &'static str {
+    match code {
         200 => "OK",
+        400 => "Bad Request",
         401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
         413 => "Payload Too Large",
         421 => "Misdirected Request",
         422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
-        _ => "Request Header Fields Too Large",
-    };
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        c if (200..300).contains(&c) => "Success",
+        c if (400..500).contains(&c) => "Client Error",
+        c if (500..600).contains(&c) => "Server Error",
+        _ => "Unknown",
+    }
+}
+
+async fn respond(stream: &mut TcpStream, code: u16, body: &Value) -> Result<()> {
+    let reason = reason_phrase(code);
     let payload = serde_json::to_vec(body)?;
     let head = format!(
         "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
@@ -3585,6 +3602,29 @@ async fn respond(stream: &mut TcpStream, code: u16, body: &Value) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reason_phrases_match_their_status() {
+        for (code, phrase) in [
+            (200, "OK"),
+            (401, "Unauthorized"),
+            (404, "Not Found"),
+            (405, "Method Not Allowed"),
+            (409, "Conflict"),
+            (413, "Payload Too Large"),
+            (421, "Misdirected Request"),
+            (422, "Unprocessable Entity"),
+            (431, "Request Header Fields Too Large"),
+            (500, "Internal Server Error"),
+            (502, "Bad Gateway"),
+            (503, "Service Unavailable"),
+        ] {
+            assert_eq!(super::reason_phrase(code), phrase, "status {code}");
+        }
+        // An unlisted status must not borrow another status's phrase.
+        assert_eq!(super::reason_phrase(418), "Client Error");
+        assert_eq!(super::reason_phrase(599), "Server Error");
+    }
+
     use super::*;
 
     const TOKEN: &str = "tttttttttttttttttttttttttttttttttttttttt";
