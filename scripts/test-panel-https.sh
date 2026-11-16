@@ -27,7 +27,7 @@ cat >"$BIN/systemctl" <<'SH'
 case "$*" in
   "is-active --quiet nginx") pgrep -x nginx >/dev/null ;;
   "reload nginx") nginx -s reload ;;
-  "enable --now nginx") nginx ;;
+  "enable --now nginx") nginx >/dev/null 2>&1 </dev/null ;;
   *) exit 0 ;;
 esac
 SH
@@ -99,6 +99,35 @@ OUT="$(run --domain panel.baft.test --staging --email ops@example.com)" || { ech
 grep -q 'Let.s Encrypt STAGING' <<<"$OUT" || fail "staging label missing"
 grep -q 'acme-challenge' /etc/nginx/conf.d/baft-tunnel-panel.conf || fail "acme location missing"
 [[ "$(curl -sS --noproxy "*" --max-time 10 -o /dev/null -w '%{http_code}' --connect-to panel.baft.test:80:127.0.0.1:80 http://panel.baft.test/x)" == 301 ]] || fail "http does not redirect"
+# 4b. real certbot + real ACME protocol against a local Pebble test CA (CI only; set PEBBLE_CA=<minica pem>).
+# Proves the webroot challenge through nginx, issuance, install and the renewal dry run; it is not Let's Encrypt itself.
+if [[ -n "${PEBBLE_CA:-}" ]]; then
+  run --remove >/dev/null || fail "remove before pebble"
+  rm -rf /etc/letsencrypt/live/baft-tunnel-panel /etc/letsencrypt/archive/baft-tunnel-panel /etc/letsencrypt/renewal/baft-tunnel-panel.conf
+  RC="$(command -v certbot)" || fail "real certbot missing"
+  cat >"$BIN/certbot" <<SH
+#!/bin/sh
+export REQUESTS_CA_BUNDLE="$PEBBLE_CA"
+exec "$RC" "\$@" --server https://localhost:14000/dir
+SH
+  chmod +x "$BIN/certbot"
+  curl -sS --max-time 15 --cacert "$PEBBLE_CA" https://localhost:15000/roots/0 -o "$T/pebble-root.pem" || fail "cannot fetch the Pebble root"
+  export CURL_CA_BUNDLE="$T/pebble-root.pem"   # the installer's smoke test verifies the chain like a browser would
+  OUT="$(run --domain panel.baft.test --email ops@example.com)" || {
+    echo "$OUT"; tail -n 40 /var/log/letsencrypt/letsencrypt.log 2>/dev/null | cut -c1-300
+    echo "--- hosts"; grep baft.test /etc/hosts; echo "--- listeners"; ss -ltn | grep -E ':(80|8443) ' || true
+    echo "--- nginx conf"; cat /etc/nginx/conf.d/baft-tunnel-panel.conf 2>/dev/null | head -30
+    fail "pebble domain install"; }
+  [[ -s /etc/letsencrypt/live/baft-tunnel-panel/fullchain.pem ]] || fail "no certificate issued by pebble"
+  ISS="$(openssl x509 -in /etc/letsencrypt/live/baft-tunnel-panel/fullchain.pem -noout -issuer)"
+  grep -qi pebble <<<"$ISS" || fail "unexpected issuer: $ISS"
+  SERVED="$(echo | openssl s_client -connect "127.0.0.1:$HP" -servername panel.baft.test 2>/dev/null | openssl x509 -noout -issuer)"
+  grep -qi pebble <<<"$SERVED" || fail "nginx does not serve the issued certificate: $SERVED"
+  CODE="$(command curl -sS --noproxy "*" --cacert "$T/pebble-root.pem" --max-time 10 -o /dev/null -w '%{http_code}' --connect-to "panel.baft.test:$HP:127.0.0.1:$HP" "https://panel.baft.test:$HP/" 2>&1)" || true
+  [[ "$CODE" == 200 ]] || fail "panel not served over the issued certificate (got: $CODE)"
+  unset CURL_CA_BUNDLE
+  echo "PEBBLE_ACME=PASS ($ISS)"
+fi
 # 5. removal
 run --remove >/dev/null || fail "remove"
 [[ ! -e /etc/nginx/conf.d/baft-tunnel-panel.conf ]] || fail "remove left config"
