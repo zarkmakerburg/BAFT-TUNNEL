@@ -62,3 +62,10 @@ Cause: the local agent samples the tunnel port every 5 s with a bare TCP connect
 - Single LAB pair; no real packet-loss run in this gate (covered in R3).
 - Unrelated firewall drift on the abroad host during the run (3 lines of an nft set, not BAFT-TUNNEL rules; `baft_fw_rules=0`).
 - Wizard role labels: fixed. In Reverse the Wizard now says "Public node (receives users)" for `serve` and "Service node (dials out)" for `forward`, labels the public node's port as the user-facing port, and shows Reverse as Preview (never Stable or Ready).
+
+## ADR-0037 re-acceptance with integrity probes (2026-11-16)
+
+Trusted run 43937260711 (`phase1-trusted-reverse-lab.yml`, candidate `3757bdcb9d52`, binary sha256 `9d1a43cd7ca09e1196d2a864448cd0fc7d78ed24621ad5cc878a38228e9c8916`): PASS, including
+`integrity_probe_public=pass integrity_probe_service=pass`, soak 1800 s (138 rounds, 0 failed, max 4 s), fd/RSS flat, 0 restarts,
+backup/restore, update and automatic rollback, revocation refused, uninstall clean. Verdict unchanged: **Preview**, not Stable.
+Open: multi-hour soak, cross-version update, `receipt_ready=unknown` by design.
