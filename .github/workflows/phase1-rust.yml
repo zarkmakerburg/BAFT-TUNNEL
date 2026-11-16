@@ -121,8 +121,9 @@ jobs:
           sudo docker cp pebble:/test/certs/pebble.minica.pem "$D/minica.pem"
           for i in $(seq 1 30); do curl -sk https://localhost:14000/dir >/dev/null && break; sleep 1; done
           sudo systemctl stop nginx 2>/dev/null || true
-          sudo PEBBLE_CA="$D/minica.pem" timeout 240 bash -x scripts/test-panel-https.sh 2>"$D/trace.txt" </dev/null | tee "$D/out.txt" || { echo "--- trace tail"; tail -n 40 "$D/trace.txt" | cut -c1-250; ps -eo pid,etime,args | grep -E 'certbot|nginx|curl|openssl' | grep -v grep | cut -c1-200; exit 1; }
-          grep -q PEBBLE_ACME=PASS "$D/out.txt"
+          sudo PEBBLE_CA="$D/minica.pem" timeout 240 bash -x scripts/test-panel-https.sh >"$D/out.txt" 2>"$D/trace.txt" </dev/null || true
+          cat "$D/out.txt"
+          grep -q PEBBLE_ACME=PASS "$D/out.txt" || { echo "--- trace tail"; tail -n 50 "$D/trace.txt" | cut -c1-250; ps -eo pid,etime,args | grep -E "certbot|nginx|curl|openssl|python" | grep -v grep | cut -c1-200; exit 1; }
       - name: Pebble logs on failure
         if: failure()
         run: sudo docker logs pebble 2>&1 | tail -40 || true
