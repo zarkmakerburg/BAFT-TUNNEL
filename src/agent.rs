@@ -626,6 +626,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/engines"
             | "/v1/traffic"
             | "/v1/diagnostics"
+            | "/v1/support"
             | "/v1/verify"
             | "/v1/tunnel/lifecycle"
             | "/v1/setup/bundle"
@@ -648,6 +649,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
     match (method, path) {
         ("GET", "/v1/status") => (200, status(ctx, config).await),
         ("GET", "/v1/traffic") => (200, traffic(ctx)),
+        ("GET", "/v1/support") => (200, support_bundle(ctx, config).await),
         ("GET", "/v1/diagnostics") => get_diagnostics(ctx),
         ("POST", "/v1/diagnostics") => (200, run_diagnostics(ctx, config).await),
         ("POST", "/v1/verify") => verify_integrity(ctx, config, body).await,
@@ -3239,6 +3241,31 @@ fn traffic(ctx: &Ctx) -> Value {
     })
 }
 
+/// Secret-free support bundle: only the outputs of the read-only endpoints above, which never
+/// carry key material, bundle contents or the agent token, plus the newest audit entries.
+async fn support_bundle(ctx: &Ctx, config: &RuntimeConfig) -> Value {
+    let generated = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (_, audit) = get_audit(ctx);
+    let mut entries = audit["entries"].as_array().cloned().unwrap_or_default();
+    let keep = entries.len().saturating_sub(50);
+    let entries = entries.split_off(keep);
+    json!({
+        "bundle_version": 1,
+        "generated_unix": generated,
+        "excluded": ["private keys", "certificates and pairing bundle contents", "the agent token", "network endpoints beyond what status reports"],
+        "status": status(ctx, config).await,
+        "security": security(config),
+        "traffic": traffic(ctx),
+        "history": history(ctx),
+        "diagnostics": stored_diagnostics(ctx),
+        "audit": entries,
+        "engines": engines(),
+    })
+}
+
 fn get_diagnostics(ctx: &Ctx) -> (u16, Value) {
     match stored_diagnostics(ctx) {
         Some(v) => (200, v),
@@ -4419,6 +4446,25 @@ mod tests {
         );
         assert_eq!(body["long"]["totals"]["probes"], 1);
         assert!(body["alerts"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn support_bundle_is_authenticated_and_holds_no_secret() {
+        let dir = state_dir("support");
+        let ctx = Ctx::new(sample(), TOKEN.into(), Some(dir));
+        let (code, _) = route("GET /v1/support HTTP/1.1\r\n\r\n", b"", &ctx).await;
+        assert_eq!(code, 401);
+        let (code, body) = get_json(&ctx, "/v1/support").await;
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(body["bundle_version"], 1);
+        for key in [
+            "status", "security", "traffic", "history", "audit", "engines",
+        ] {
+            assert!(body.get(key).is_some(), "missing {key}");
+        }
+        let text = body.to_string();
+        assert!(!text.contains(TOKEN), "agent token leaked");
+        assert!(!text.contains("PRIVATE KEY"), "key material leaked");
     }
 
     #[tokio::test]
