@@ -111,6 +111,8 @@ export REQUESTS_CA_BUNDLE="$PEBBLE_CA"
 exec "$RC" "\$@" --server https://localhost:14000/dir
 SH
   chmod +x "$BIN/certbot"
+  curl -sS --max-time 15 --cacert "$PEBBLE_CA" https://localhost:15000/roots/0 -o "$T/pebble-root.pem" || fail "cannot fetch the Pebble root"
+  export CURL_CA_BUNDLE="$T/pebble-root.pem"   # the installer's smoke test verifies the chain like a browser would
   OUT="$(run --domain panel.baft.test --email ops@example.com)" || {
     echo "$OUT"; tail -n 40 /var/log/letsencrypt/letsencrypt.log 2>/dev/null | cut -c1-300
     echo "--- hosts"; grep baft.test /etc/hosts; echo "--- listeners"; ss -ltn | grep -E ':(80|8443) ' || true
@@ -121,7 +123,8 @@ SH
   grep -qi pebble <<<"$ISS" || fail "unexpected issuer: $ISS"
   SERVED="$(echo | openssl s_client -connect "127.0.0.1:$HP" -servername panel.baft.test 2>/dev/null | openssl x509 -noout -issuer)"
   grep -qi pebble <<<"$SERVED" || fail "nginx does not serve the issued certificate: $SERVED"
-  [[ "$(curl -sk --noproxy "*" --max-time 10 -o /dev/null -w '%{http_code}' --resolve "panel.baft.test:$HP:127.0.0.1" "https://panel.baft.test:$HP/")" == 200 ]] || fail "panel not served over the issued certificate"
+  [[ "$(curl -s --noproxy "*" --max-time 10 -o /dev/null -w '%{http_code}' --resolve "panel.baft.test:$HP:127.0.0.1" "https://panel.baft.test:$HP/")" == 200 ]] || fail "panel not served over the issued certificate"
+  unset CURL_CA_BUNDLE
   echo "PEBBLE_ACME=PASS ($ISS)"
 fi
 # 5. removal
