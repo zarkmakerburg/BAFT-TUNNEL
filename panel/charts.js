@@ -56,7 +56,9 @@
     var W = 600, H = 36, n = Math.max(1, samples.length), gap = n > 200 ? 0 : 1, bw = W / n;
     var svg = root(W, H, (opts && opts.label) || 'timeline');
     samples.forEach(function (s, i) {
-      svg.appendChild(el('rect', { x: (i * bw).toFixed(2), y: 0, width: Math.max(0.5, bw - gap).toFixed(2), height: H, rx: 1, class: s.up ? 'bar-ok' : 'bar-bad' }));
+      /* shape as well as colour: up = full height, down = short bar at the bottom */
+      var bh = s.up ? H : Math.round(H * 0.45);
+      svg.appendChild(el('rect', { x: (i * bw).toFixed(2), y: H - bh, width: Math.max(0.5, bw - gap).toFixed(2), height: bh, rx: 1, class: s.up ? 'bar-ok' : 'bar-bad' }));
     });
     if (!samples.length) { svg.appendChild(el('rect', { x: 0, y: 0, width: W, height: H, rx: 4, class: 'bar-none' })); }
     return svg;

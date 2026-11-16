@@ -74,7 +74,7 @@
     var kpis = h('div', { class: 'grid kpis' },
       kpi(t('kpi.tunnels'), c.tunnel_id ? BAFT.ltr(c.tunnel_id) : '—', s.tunnel ? t('ts.why') : '', ts),
       kpi(t('ov.avail'), st.avail == null ? t('unknown') : BAFT.fmtNum(st.avail, 1) + '%', st.avail == null ? t('empty.history') : t('ov.window', { n: BAFT.fmtNum(hist.length, 0) }), st.avail == null ? { k: 'unknown', l: t('unknown') } : null),
-      tr ? kpi(t('kpi.traffic'), BAFT.ltr(fmtBytes((tr.bytes_from_peer || 0) + (tr.bytes_to_peer || 0))), t('kpi.traffic.live', { ago: BAFT.ago(tr.sampled_unix) }), tr.fresh ? { k: 'ok', l: t('fresh') } : { k: 'warn', l: t('stale') })
+      tr ? kpi(t('kpi.traffic'), (tr.bytes_from_peer == null || tr.bytes_to_peer == null) ? t('unknown') : BAFT.ltr(fmtBytes(tr.bytes_from_peer + tr.bytes_to_peer)), t('kpi.traffic.live', { ago: BAFT.ago(tr.sampled_unix) }), tr.fresh ? { k: 'ok', l: t('fresh') } : { k: 'warn', l: t('stale') })
          : kpi(t('kpi.traffic'), t('kpi.traffic.value'), t('kpi.traffic.hint'), { k: 'unknown', l: t('unknown') }),
       kpi(t('kpi.attention'), BAFT.fmtNum(n, 0), t('kpi.attention.hint'), n ? { k: ws.some(function (w) { return w.sev === 'bad'; }) ? 'bad' : 'warn', l: t('ui.needs.action') } : null));
     var timeline = hist.length ? h('div', null, chart(C.strip(hist, { label: t('ov.health') })),
@@ -275,8 +275,8 @@
         if (r.status === 200) { verifyKey = null; }
         var v = r.body || {}, when = v.timestamp ? BAFT.ago(v.timestamp) : t('unknown');
         if (r.status === 200 && v.result === 'pass' && v.sha256_match === true) {
-          verifyOut.replaceChildren(pill('ok', t('verify.result.pass')), h('span', { text: ' ' + t('verify.pass.prefix') }), BAFT.ltr(BAFT.fmtNum(v.bytes || 0, 0)), h('span', { text: t('verify.pass.bytes') }),
-            BAFT.ltr(BAFT.fmtNum(v.duration_ms || 0, 0)), h('span', { text: t('verify.pass.duration') }), h('span', { text: when }));
+          verifyOut.replaceChildren(pill('ok', t('verify.result.pass')), h('span', { text: ' ' + t('verify.pass.prefix') }), BAFT.ltr(v.bytes == null ? '—' : BAFT.fmtNum(v.bytes, 0)), h('span', { text: t('verify.pass.bytes') }),
+            BAFT.ltr(v.duration_ms == null ? '—' : BAFT.fmtNum(v.duration_ms, 0)), h('span', { text: t('verify.pass.duration') }), h('span', { text: when }));
         } else if (r.status === 200 && v.result === 'fail') {
           verifyOut.replaceChildren(pill('bad', t('verify.result.fail')), h('span', { text: ' ' + t('verify.fail', { reason: t('verify.reason.' + (v.reason || 'invalid_probe_response')), when: when }) }));
         } else if (r.status === 200) {
@@ -632,7 +632,7 @@
         out.push(h('div', { class: 'banner info', role: 'status' }, h('strong', { text: t('pki.installed') }),
           h('p', { text: t('pki.fingerprint') + ': ' + (w.pkiReceipt.certificate_sha256 || '') }),
           h('p', { text: t('pki.validUntil') + ': ' + (w.pkiReceipt.certificate_not_after ? new Date(w.pkiReceipt.certificate_not_after * 1000).toISOString() : '—') }),
-          h('p', { text: t('pki.crlRemaining') + ': ' + (w.pkiReceipt.crl_seconds_remaining || 0) + 's' }),
+          h('p', { text: t('pki.crlRemaining') + ': ' + (w.pkiReceipt.crl_seconds_remaining == null ? '—' : w.pkiReceipt.crl_seconds_remaining + 's') }),
           h('p', { text: t('pki.noRestart') })));
       }
       return h('div', null, out);
