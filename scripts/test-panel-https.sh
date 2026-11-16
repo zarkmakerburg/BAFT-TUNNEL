@@ -123,7 +123,7 @@ SH
   grep -qi pebble <<<"$ISS" || fail "unexpected issuer: $ISS"
   SERVED="$(echo | openssl s_client -connect "127.0.0.1:$HP" -servername panel.baft.test 2>/dev/null | openssl x509 -noout -issuer)"
   grep -qi pebble <<<"$SERVED" || fail "nginx does not serve the issued certificate: $SERVED"
-  CODE="$(curl -sS --noproxy "*" --max-time 10 -o /dev/null -w '%{http_code}' --connect-to "panel.baft.test:$HP:127.0.0.1:$HP" "https://panel.baft.test:$HP/" 2>&1)" || true
+  CODE="$(command curl -sS --noproxy "*" --cacert "$T/pebble-root.pem" --max-time 10 -o /dev/null -w '%{http_code}' --connect-to "panel.baft.test:$HP:127.0.0.1:$HP" "https://panel.baft.test:$HP/" 2>&1)" || true
   [[ "$CODE" == 200 ]] || fail "panel not served over the issued certificate (got: $CODE)"
   unset CURL_CA_BUNDLE
   echo "PEBBLE_ACME=PASS ($ISS)"
