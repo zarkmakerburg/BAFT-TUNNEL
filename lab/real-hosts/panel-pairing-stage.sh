@@ -320,7 +320,7 @@ if (( PP_BROWSER == 1 )); then
     node scripts/panel-qa/lab-panel-pairing.js || pb_rc=$?
   pb_stop
   if (( pb_rc != 0 )); then
-    for side in iran abroad; do ssh_host "$side" "journalctl -u 'baft-tunnel*' -n 40 --no-pager" 2>&1 | sed -E 's/[0-9]{1,3}(\.[0-9]{1,3}){3}/<ip>/g' >&2 || true; done
+    for side in iran abroad; do ssh_host "$side" "journalctl -u 'baft-tunnel*' --since '-15min' -n 80 --no-pager" 2>&1 | sed -E 's/[0-9]{1,3}(\.[0-9]{1,3}){3}/<ip>/g' >&2 || true; done
     echo "first-run flows through the panel on the real LAB failed" >&2; exit 1
   fi
   test ! -e "$LOCAL_TMP/d2-certs/ca.key" || { echo "offline CA private key escaped its tmpfs" >&2; exit 1; }
@@ -353,7 +353,10 @@ if (( PP_BROWSER == 1 )); then
   for side in abroad iran; do
     ok=0
     for _ in $(seq 1 30); do ssh_host "$side" "systemctl is-active --quiet baft-tunnel@$(pp_inst "$side").service" && { ok=1; break; }; sleep 2; done
-    (( ok == 1 )) || pp_fail "baft-tunnel@$(pp_inst "$side") is not active after Start from the panel on $side" "$side"
+    if (( ok == 0 )); then
+      ssh_host "$side" "systemctl status --no-pager baft-tunnel@$(pp_inst "$side").service 2>&1 | tail -15; journalctl -u baft-tunnel@$(pp_inst "$side").service -u baft-tunnel-agent@$(pp_inst "$side").service --since '-15min' --no-pager 2>&1 | tail -60" 2>&1 | sed -E 's/[0-9]{1,3}(\.[0-9]{1,3}){3}/<ip>/g' >&2 || true
+      pp_fail "baft-tunnel@$(pp_inst "$side") is not active after Start from the panel on $side" "$side"
+    fi
   done
 else
 if (( PP_X509 == 1 )); then

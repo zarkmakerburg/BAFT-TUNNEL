@@ -166,11 +166,21 @@ const CK_RE = /[0-9a-f]{8}-[0-9a-f]{8}-[0-9a-f]{8}-[0-9a-f]{8}/;
       }, 90000);
       ok(side + ': agent reloaded by itself and the wizard offers Start', !!start, await main());
       if (!start) continue;
+      const life = p.waitForResponse(r => new URL(r.url()).pathname === '/v1/tunnel/lifecycle', { timeout: 120000 }).catch(() => null);
       await start.click();
       const dlg = p.locator('dialog[open]');
       if (await dlg.waitFor({ timeout: 5000 }).then(() => true, () => false)) await dlg.locator('button.danger, button.primary').click();
-      const done = await until(async () => /Applied|اعمال شد|Refused|رد شد|Rolled back|بازگردانی شد/.test(await main()), 120000);
-      ok(side + ': Start from the wizard shows Applied', done && /Applied|اعمال شد/.test(await main()), await main());
+      const resp = await life;
+      let body = null; try { body = resp && await resp.json(); } catch (e) { body = null; }
+      ok(side + ': Start from the wizard was applied by the agent', resp && resp.status() === 200 && body && body.result === 'applied', JSON.stringify({ status: resp && resp.status(), body }));
+      // The unit must really run: ask the agent (same token, same forward) until it reports active.
+      const unitUp = await until(async () => {
+        try {
+          const r = await fetch(SIDES[side].url + '/v1/status', { headers: { authorization: 'Bearer ' + SIDES[side].token } });
+          const j = await r.json(); return j.tunnel && j.tunnel.tiers && j.tunnel.tiers.unit && j.tunnel.tiers.unit.result === 'active';
+        } catch (e) { return false; }
+      }, 60000);
+      ok(side + ': agent reports the tunnel unit active after Start', unitUp);
     }
 
     for (const side of ['abroad', 'iran']) {
