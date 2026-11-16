@@ -254,13 +254,13 @@ This section is the current working order. It replaces the §5 MVP queue, which 
 | ID | Work | Why | Effort | Evidence needed |
 |---|---|---|---|---|
 | R1 | Correct HTTP reason phrases on agent error statuses | Release-note item 6 | S | Unit test over every status the agent emits |
-| R2 | Release bundle completeness: ship `panel-https.sh`; `package-and-verify` fails when a script that `install.sh` calls is missing from the bundle | The HTTPS installer merged without its helper being in a release; this stops the whole class | S | CI on the packaged bundle |
-| R3 | HTTPS install acceptance without an owner domain: self-signed/IP path on the Ubuntu 22.04 baseline job, and the ACME path against a local ACME test server (Pebble) in CI | Gives real evidence for both paths today; a public Let's Encrypt run still needs an owner domain and stays labelled untested until then | M | CI; later one real-host run |
+| R2 | Release bundle completeness: `panel-https.sh` is in the package list and the release smoke test fails without it (already on `main` through PR #258) | The `v0.2.0` bundle predates it | done on `main` | Confirmed when the 0.2.1 rc bundle is built and verified |
+| R3 | HTTPS install acceptance. Today CI (`test-panel-https.sh`) proves nginx config, own-CA issuance, auth pass-through, idempotence and rollback with `certbot` shimmed. Add an unshimmed ACME run against a local ACME test server (Pebble) in CI | Real evidence for the ACME flow without an owner domain; a public Let's Encrypt run still needs an owner domain and stays labelled untested until then | M | CI; later one real-host run |
 | R4 | LAB browser pass of pairing, PKI enrollment and BAFT guided setup on the new dashboard | Release-note item 3 | M | REAL-LAB run, one LAB user at a time |
 | R5 | Panel Low/Medium review items (hardcoded capability pills, `\|\| 0` KPI defaults, colour-only legend, small chart text, drawer/RTL, toast live region, language switch rebuild) | Release-note item 4; several touch the no-fake-data rule | M | panel-ui job, axe audit |
 | R6 | `v0.2.1-rc.1`, then 0.2.0 to 0.2.1 upgrade and rollback on LAB with soak, then Stable | S2 on every release | S | Release run, LAB run, checksums |
 
-R1, R2, R3 and R5 need no LAB and can run in parallel. R4 and R6 share the LAB and run one after the other.
+R1, R3 and R5 need no LAB and can run in parallel. R4 and R6 share the LAB and run one after the other.
 
 ### 9.4 0.3.0 candidates (ordered by operator value)
 
