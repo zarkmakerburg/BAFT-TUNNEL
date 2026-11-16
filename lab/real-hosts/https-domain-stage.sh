@@ -106,14 +106,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-URL="https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/$TAG/scripts/quick-install.sh"
+# INSTALLER=main tests the installer on main (for example a fix not yet released) against the signed TAG.
+INSTALLER="${INSTALLER:-tag}"
+case "$INSTALLER" in tag) IREF="$TAG" ;; main) IREF="${GITHUB_SHA:?}" ;; *) echo 'INSTALLER must be tag or main' >&2; exit 2 ;; esac
+URL="https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/$IREF/scripts/quick-install.sh"
 if [[ "$ACME" == production ]]; then
   echo "--- install: public one-line installer for $TAG with --domain $DOMAIN (Let's Encrypt production) ---"
   ssh_h "set -o pipefail; curl -fsSL '$URL' | bash -s -- --register $INST --tag $TAG --domain $DOMAIN --no-menu" 2>&1 | mask | tee "$W/install.log" ||
     fail 'the one-line installer failed'
 else
   echo "--- install: signed package via the one-line installer (--no-https), then panel-https.sh --domain $DOMAIN --staging ---"
-  ssh_h "set -o pipefail; curl -fsSL '$URL' | bash -s -- --register $INST --tag $TAG --no-https --no-menu" 2>&1 | mask ||
+  ssh_h "set -o pipefail; curl -fsSL '$URL' | bash -s -- --register $INST --tag $TAG --no-https --no-menu" 2>&1 | mask | tee "$W/pkg.log" ||
     fail 'the one-line installer failed'
   ssh_h "bash /usr/local/lib/baft-tunnel/scripts/panel-https.sh --domain $DOMAIN --staging" 2>&1 | mask | tee "$W/install.log" ||
     fail 'panel-https.sh --domain --staging failed'
@@ -153,4 +156,5 @@ ssh_h "! ss -Hltn | awk '{print \$4}' | grep -Eq '^(0\.0\.0\.0|\[::\]|\*):18080\
 (( TIMER == 1 && HOOK == 1 )) || fail "renewal not wired (certbot.timer=$TIMER deploy_hook=$HOOK)"
 (( DRY == 1 )) || fail 'certbot renew --dry-run failed'
 
-echo "HTTPS_DOMAIN_RESULT tag=$TAG domain=$DOMAIN side=$SIDE acme=$ACME installer=$([[ $ACME == production ]] && echo quick-install-domain || echo quick-install+panel-https-staging) dns=$DNS aaaa=$AAAA port80=$R80 port443=$R443 days_left=$DAYS health=$H unauth=$U auth=$A page=$P http_redirect=1 login_link=$LINK token_not_printed_non_tty=$TOKBOX certbot_timer=$TIMER renew_dry_run=$DRY deploy_hook=$HOOK agent_loopback=1"
+SIGPATH=online; grep -qF "Signature verified offline" "$W/install.log" "$W/pkg.log" 2>/dev/null && SIGPATH=offline
+echo "HTTPS_DOMAIN_RESULT tag=$TAG installer_ref=$INSTALLER signature=$SIGPATH domain=$DOMAIN side=$SIDE acme=$ACME installer=$([[ $ACME == production ]] && echo quick-install-domain || echo quick-install+panel-https-staging) dns=$DNS aaaa=$AAAA port80=$R80 port443=$R443 days_left=$DAYS health=$H unauth=$U auth=$A page=$P http_redirect=1 login_link=$LINK token_not_printed_non_tty=$TOKBOX certbot_timer=$TIMER renew_dry_run=$DRY deploy_hook=$HOOK agent_loopback=1"
