@@ -110,7 +110,25 @@ trap cleanup EXIT
 INSTALLER="${INSTALLER:-tag}"
 case "$INSTALLER" in tag) IREF="$TAG" ;; main) IREF="${GITHUB_SHA:?}" ;; *) echo 'INSTALLER must be tag or main' >&2; exit 2 ;; esac
 URL="https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/$IREF/scripts/quick-install.sh"
-if [[ "$ACME" == production ]]; then
+TTYCHK=na
+if [[ "$ACME" == production && "${INTERACTIVE:-0}" == 1 ]]; then
+  # The owner's path: a real terminal, the domain typed at the installer's prompt, Enter-to-menu answered q.
+  # The terminal transcript holds the password and web path, so it stays on the host: only match results
+  # and a copy with both replaced by placeholders come back.
+  echo "--- install: public one-line installer for $TAG in a terminal, domain typed at the prompt (Let's Encrypt production) ---"
+  ssh_h "umask 077; t=/root/.baft-qa-tty.log; printf '%s\\n' '$DOMAIN' q | script -qfec \"curl -fsSL '$URL' | bash -s -- --register $INST --tag $TAG\" \$t >/dev/null 2>&1; rc=\$?
+    g=\$(cat /var/lib/baft-tunnel-https/gate 2>/dev/null); k=\$(cat /var/lib/baft-tunnel-agent/token 2>/dev/null)
+    l=0; p=0; s=0; f=0
+    [ -n \"\$g\" ] && grep -qF \"Link     : https://$DOMAIN/\$g/\" \$t && l=1
+    [ -n \"\$k\" ] && grep -qF \"Password : \$k\" \$t && p=1
+    [ -n \"\$g\" ] && grep -qF \"Panel (HTTPS): https://$DOMAIN/\$g/\" \$t && s=1
+    grep -q 'HTTPS setup FAILED' \$t && f=1
+    tr -d '\\r' < \$t | sed -e \"s#\$g#<web-path>#g\" -e \"s#\$k#<password>#g\" > \$t.clean
+    echo \"TTYCHECK rc=\$rc link=\$l password=\$p summary=\$s failed_line=\$f\"; cat \$t.clean; shred -u \$t 2>/dev/null || rm -f \$t; rm -f \$t.clean" 2>&1 | mask | tee "$W/install.log" || true
+  TTYCHK="$(grep -o 'TTYCHECK rc=[0-9]* link=[01] password=[01] summary=[01] failed_line=[01]' "$W/install.log" | head -n1)"
+  [[ "$TTYCHK" == 'TTYCHECK rc=0 link=1 password=1 summary=1 failed_line=0' ]] || fail "terminal install did not end with the link, web path and password ($TTYCHK)"
+  TTYCHK=1
+elif [[ "$ACME" == production ]]; then
   echo "--- install: public one-line installer for $TAG with --domain $DOMAIN (Let's Encrypt production) ---"
   ssh_h "set -o pipefail; curl -fsSL '$URL' | bash -s -- --register $INST --tag $TAG --domain $DOMAIN --no-menu" 2>&1 | mask | tee "$W/install.log" ||
     fail 'the one-line installer failed'
@@ -169,4 +187,4 @@ ssh_h "! ss -Hltn | awk '{print \$4}' | grep -Eq '^(0\.0\.0\.0|\[::\]|\*):18080\
 (( DRY == 1 )) || fail 'certbot renew --dry-run failed'
 
 SIGPATH=online; grep -qF "Signature verified offline" "$W/install.log" "$W/pkg.log" 2>/dev/null && SIGPATH=offline
-echo "HTTPS_DOMAIN_RESULT tag=$TAG installer_ref=$INSTALLER signature=$SIGPATH web_path=$GATEP no_cookie=$NOGATE domain=$DOMAIN side=$SIDE acme=$ACME installer=$([[ $ACME == production ]] && echo quick-install-domain || echo quick-install+panel-https-staging) dns=$DNS aaaa=$AAAA port80=$R80 port443=$R443 days_left=$DAYS health=$H unauth=$U auth=$A page=$P http_redirect=1 login_link=$LINK token_not_printed_non_tty=$TOKBOX certbot_timer=$TIMER renew_dry_run=$DRY deploy_hook=$HOOK agent_loopback=1"
+echo "HTTPS_DOMAIN_RESULT tag=$TAG installer_ref=$INSTALLER signature=$SIGPATH web_path=$GATEP no_cookie=$NOGATE domain=$DOMAIN side=$SIDE acme=$ACME installer=$([[ $ACME == production ]] && echo quick-install-domain || echo quick-install+panel-https-staging) dns=$DNS aaaa=$AAAA port80=$R80 port443=$R443 days_left=$DAYS health=$H unauth=$U auth=$A page=$P http_redirect=1 login_link=$LINK token_not_printed_non_tty=$TOKBOX terminal_link_password=$TTYCHK certbot_timer=$TIMER renew_dry_run=$DRY deploy_hook=$HOOK agent_loopback=1"

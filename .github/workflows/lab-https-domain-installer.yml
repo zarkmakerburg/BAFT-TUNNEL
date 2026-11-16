@@ -34,6 +34,11 @@ on:
         options:
           - tag
           - main
+      interactive:
+        description: production only - run the installer in a terminal and type the domain at its prompt (checks the final link, web path and password box)
+        required: false
+        type: boolean
+        default: false
       confirm:
         description: Type RUN_TRUSTED_PHASE1_LAB to authorize the install and cleanup on the LAB host
         required: true
@@ -72,6 +77,7 @@ jobs:
           DOMAIN: ${{ inputs.domain }}
           ACME: ${{ inputs.acme }}
           INSTALLER: ${{ inputs.installer }}
+          INTERACTIVE: ${{ inputs.interactive && '1' || '0' }}
           LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
           LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
           LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
