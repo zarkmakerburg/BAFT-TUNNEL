@@ -99,6 +99,27 @@ OUT="$(run --domain panel.baft.test --staging --email ops@example.com)" || { ech
 grep -q 'Let.s Encrypt STAGING' <<<"$OUT" || fail "staging label missing"
 grep -q 'acme-challenge' /etc/nginx/conf.d/baft-tunnel-panel.conf || fail "acme location missing"
 [[ "$(curl -sS --noproxy "*" --max-time 10 -o /dev/null -w '%{http_code}' --connect-to panel.baft.test:80:127.0.0.1:80 http://panel.baft.test/x)" == 301 ]] || fail "http does not redirect"
+# 4b. real certbot + real ACME protocol against a local Pebble test CA (CI only; set PEBBLE_CA=<minica pem>).
+# Proves the webroot challenge through nginx, issuance, install and the renewal dry run; it is not Let's Encrypt itself.
+if [[ -n "${PEBBLE_CA:-}" ]]; then
+  run --remove >/dev/null || fail "remove before pebble"
+  rm -rf /etc/letsencrypt/live/baft-tunnel-panel /etc/letsencrypt/archive/baft-tunnel-panel /etc/letsencrypt/renewal/baft-tunnel-panel.conf
+  RC="$(command -v certbot)" || fail "real certbot missing"
+  cat >"$BIN/certbot" <<SH
+#!/bin/sh
+export REQUESTS_CA_BUNDLE="$PEBBLE_CA"
+exec "$RC" "\$@" --server https://localhost:14000/dir
+SH
+  chmod +x "$BIN/certbot"
+  OUT="$(run --domain panel.baft.test --email ops@example.com)" || { echo "$OUT"; fail "pebble domain install"; }
+  [[ -s /etc/letsencrypt/live/baft-tunnel-panel/fullchain.pem ]] || fail "no certificate issued by pebble"
+  ISS="$(openssl x509 -in /etc/letsencrypt/live/baft-tunnel-panel/fullchain.pem -noout -issuer)"
+  grep -qi pebble <<<"$ISS" || fail "unexpected issuer: $ISS"
+  SERVED="$(echo | openssl s_client -connect "127.0.0.1:$HP" -servername panel.baft.test 2>/dev/null | openssl x509 -noout -issuer)"
+  grep -qi pebble <<<"$SERVED" || fail "nginx does not serve the issued certificate: $SERVED"
+  [[ "$(curl -sk --noproxy "*" --max-time 10 -o /dev/null -w '%{http_code}' --resolve "panel.baft.test:$HP:127.0.0.1" "https://panel.baft.test:$HP/")" == 200 ]] || fail "panel not served over the issued certificate"
+  echo "PEBBLE_ACME=PASS ($ISS)"
+fi
 # 5. removal
 run --remove >/dev/null || fail "remove"
 [[ ! -e /etc/nginx/conf.d/baft-tunnel-panel.conf ]] || fail "remove left config"
