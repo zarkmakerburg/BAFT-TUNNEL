@@ -77,6 +77,10 @@
       if (ls != null && ls < 7 * 86400) { out.push({ sev: ls < 3 * 86400 ? 'bad' : 'warn', res: 'CRL', text: t(ls <= 0 ? 'warn.crl.expired' : 'warn.crl'), next: t('warn.crl.next'), href: '#/servers' }); }
       if (c.peer_certificate_pin_configured === false) { out.push({ sev: 'warn', res: c.tunnel_id, text: t('warn.pin'), next: t('warn.pin.next'), href: '#/servers' }); }
     }
+    var up = d.update;
+    if (up && (up.state === 'update_available' || up.state === 'unknown_installed') && up.latest_tag) {
+      out.push({ sev: 'warn', res: t('warn.update.res'), text: t(up.state === 'update_available' ? 'warn.update' : 'warn.update.unknown', { v: up.latest_tag, c: up.installed }), next: t('warn.update.next', { cmd: up.command || '' }), href: '#/settings' });
+    }
     ((d.history || {}).alerts || []).forEach(function (a) {
       var ev = a.evidence || {};
       out.push({ sev: 'warn', res: c.tunnel_id, text: t('alert.' + a.id, { p: BAFT.fmtNum(ev.availability_percent, 1), n: BAFT.fmtNum(ev.probes, 0) }), next: t('warn.avail.next'), href: '#/monitoring' });

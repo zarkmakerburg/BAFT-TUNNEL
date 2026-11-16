@@ -22,7 +22,7 @@ jobs:
       - name: Validate Bash scripts
         run: |
           set -eu
-          for script in lab/scripts/integration-netem.sh lab/scripts/test-clear-netem.sh lab/real-hosts/*.sh lab/trusted/*.sh scripts/pki/*.sh scripts/install.sh scripts/rollback.sh scripts/uninstall.sh scripts/test-install.sh scripts/backup.sh scripts/restore.sh scripts/update.sh scripts/test-backup-update.sh scripts/menu.sh scripts/test-menu.sh scripts/panel-https.sh scripts/test-panel-https.sh; do
+          for script in lab/scripts/integration-netem.sh lab/scripts/test-clear-netem.sh lab/real-hosts/*.sh lab/trusted/*.sh scripts/pki/*.sh scripts/install.sh scripts/rollback.sh scripts/uninstall.sh scripts/test-install.sh scripts/backup.sh scripts/restore.sh scripts/update.sh scripts/test-backup-update.sh scripts/menu.sh scripts/test-menu.sh scripts/panel-https.sh scripts/test-panel-https.sh scripts/update-check.sh scripts/test-update-check.sh; do
             bash -n "$script"
           done
       - name: ShellCheck the interactive menu and the scripts it changes
@@ -33,6 +33,8 @@ jobs:
         run: bash scripts/test-quick-install.sh
       - name: Test staged backup, restore, guarded update and automatic rollback
         run: bash scripts/test-backup-update.sh
+      - name: Test the update notice writer (offline)
+        run: bash scripts/test-update-check.sh
       - name: Enforce immutable workflow action pins
         run: sh lab/scripts/check-workflow-pins.sh
       - name: Test workflow action pin policy (mock fixtures)
