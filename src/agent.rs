@@ -340,6 +340,9 @@ pub async fn run(
     if config.is_none() && instance.is_none() {
         bail!("setup mode (no configuration yet) needs --instance");
     }
+    if let (Some(name), Some(dir)) = (&instance, &state_dir) {
+        publish_agent_address(dir, name, listen);
+    }
     let ctx = Arc::new(Ctx::with_config(config, token, state_dir).with_unit(instance, runtime_dir));
     tokio::spawn(sampler(ctx.clone()));
     serve(listener, ctx).await
@@ -628,6 +631,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/diagnostics"
             | "/v1/support"
             | "/v1/update"
+            | "/v1/host/tunnels"
             | "/v1/verify"
             | "/v1/tunnel/lifecycle"
             | "/v1/setup/bundle"
@@ -651,6 +655,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         ("GET", "/v1/status") => (200, status(ctx, config).await),
         ("GET", "/v1/traffic") => (200, traffic(ctx)),
         ("GET", "/v1/update") => (200, update_notice(ctx)),
+        ("GET", "/v1/host/tunnels") => (200, host_tunnels(ctx)),
         ("GET", "/v1/support") => (200, support_bundle(ctx, config).await),
         ("GET", "/v1/diagnostics") => get_diagnostics(ctx),
         ("POST", "/v1/diagnostics") => (200, run_diagnostics(ctx, config).await),
@@ -687,6 +692,7 @@ async fn setup_mode_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (
     match (method, path) {
         ("GET", "/v1/status") => (200, setup_status(ctx)),
         ("GET", "/v1/engines") => (200, engines()),
+        ("GET", "/v1/host/tunnels") => (200, host_tunnels(ctx)),
         ("GET", "/v1/audit") => get_audit(ctx),
         ("POST", "/v1/setup/plan") => setup_plan(body),
         ("POST", "/v1/setup/preflight") => preflight(ctx, body).await,
@@ -3299,6 +3305,79 @@ fn update_notice(ctx: &Ctx) -> Value {
     })
 }
 
+const AGENT_FILE: &str = "agent.json";
+const MAX_HOST_TUNNELS: usize = 32;
+
+/// Records this agent's loopback address in its state directory so sibling agents of the same
+/// host can list it (ADR-0036). Best effort; the file holds no secret.
+fn publish_agent_address(state_dir: &Path, instance: &str, listen: SocketAddr) {
+    let body = json!({"instance": instance, "listen": listen.to_string()}).to_string();
+    let _ = std::fs::create_dir_all(state_dir)
+        .and_then(|_| std::fs::write(state_dir.join(AGENT_FILE), body));
+}
+
+/// Read-only list of the tunnel instances on this host: every `NAME.json` in the config
+/// directory plus agents that published an address (setup mode). Sibling state directories are
+/// only read when this agent's own state dir is `PARENT/<instance>` (the installed layout).
+/// Never returns keys, tokens or configuration contents.
+fn host_tunnels(ctx: &Ctx) -> Value {
+    let mut names = std::collections::BTreeSet::new();
+    if let Ok(rd) = std::fs::read_dir(&ctx.config_dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(n) = p.file_stem().and_then(|x| x.to_str()) {
+                if crate::apply::valid_instance(n) {
+                    names.insert(n.to_owned());
+                }
+            }
+        }
+    }
+    let parent = match (&ctx.state_dir, &ctx.instance) {
+        (Some(d), Some(i)) if d.file_name().and_then(|x| x.to_str()) == Some(i.as_str()) => {
+            d.parent().map(Path::to_path_buf)
+        }
+        _ => None,
+    };
+    if let Some(rd) = parent.as_ref().and_then(|p| std::fs::read_dir(p).ok()) {
+        for e in rd.flatten() {
+            if let Some(n) = e.file_name().to_str() {
+                if crate::apply::valid_instance(n) && e.path().join(AGENT_FILE).is_file() {
+                    names.insert(n.to_owned());
+                }
+            }
+        }
+    }
+    let total = names.len();
+    let list: Vec<Value> = names
+        .iter()
+        .take(MAX_HOST_TUNNELS)
+        .map(|n| {
+            let listen = parent
+                .as_ref()
+                .and_then(|p| std::fs::read(p.join(n).join(AGENT_FILE)).ok())
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                .and_then(|v| v["listen"].as_str().map(str::to_owned))
+                .and_then(|l| l.parse::<SocketAddr>().ok())
+                .filter(|a| a.ip().is_loopback())
+                .map(|a| a.to_string());
+            let unit = ctx.units.state(n);
+            json!({
+                "instance": n,
+                "current": ctx.instance.as_deref() == Some(n.as_str()),
+                "configured": ctx.config_dir.join(format!("{n}.json")).is_file(),
+                "agent_listen": listen,
+                "active": unit.active,
+                "sub": unit.sub,
+                "enabled": unit.enabled,
+            })
+        })
+        .collect();
+    json!({"tunnels": list, "total": total, "truncated": total > MAX_HOST_TUNNELS})
+}
+
 /// Secret-free support bundle: only the outputs of the read-only endpoints above, which never
 /// carry key material, bundle contents or the agent token, plus the newest audit entries.
 async fn support_bundle(ctx: &Ctx, config: &RuntimeConfig) -> Value {
@@ -4552,6 +4631,50 @@ mod tests {
         let (_, body) = get_json(&ctx, "/v1/update").await;
         assert_eq!(body["state"], "unchecked");
         assert!(body["latest_tag"].is_null());
+    }
+
+    #[tokio::test]
+    async fn host_tunnels_lists_siblings_without_secrets() {
+        let root = state_dir("host");
+        let cfg = root.join("etc");
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::write(cfg.join("alpha.json"), r#"{"secret":"PRIVATE KEY"}"#).unwrap();
+        std::fs::write(cfg.join("beta.json"), "{}").unwrap();
+        std::fs::write(cfg.join("not valid.json"), "{}").unwrap();
+        std::fs::write(cfg.join("notes.txt"), "x").unwrap();
+        let st = root.join("var");
+        for (n, l) in [
+            ("alpha", "127.0.0.1:18080"),
+            ("beta", "127.0.0.1:18081"),
+            ("gamma", "8.8.8.8:1"),
+        ] {
+            publish_agent_address(&st.join(n), n, l.parse().unwrap());
+        }
+        let ctx = Ctx::new(sample(), TOKEN.into(), Some(st.join("alpha")))
+            .with_unit(Some("alpha".into()), None)
+            .with_units(
+                Arc::new(AgentFake {
+                    st: std::sync::Mutex::new(crate::apply::UnitState::default()),
+                    log: std::sync::Mutex::new(vec![]),
+                }),
+                cfg,
+            );
+        let (code, body) = get_json(&ctx, "/v1/host/tunnels").await;
+        assert_eq!(code, 200, "{body}");
+        let t = body["tunnels"].as_array().unwrap();
+        let names: Vec<_> = t.iter().map(|x| x["instance"].as_str().unwrap()).collect();
+        assert_eq!(names, ["alpha", "beta", "gamma"]);
+        assert_eq!(t[0]["current"], true);
+        assert_eq!(t[1]["agent_listen"], "127.0.0.1:18081");
+        assert!(
+            t[2]["agent_listen"].is_null(),
+            "non-loopback address must not be listed"
+        );
+        assert_eq!(t[2]["configured"], false);
+        let text = body.to_string();
+        assert!(!text.contains("PRIVATE KEY") && !text.contains(TOKEN));
+        let (code, _) = route("GET /v1/host/tunnels HTTP/1.1\r\n\r\n", b"", &ctx).await;
+        assert_eq!(code, 401);
     }
 
     #[tokio::test]
