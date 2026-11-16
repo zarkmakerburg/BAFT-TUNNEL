@@ -12,6 +12,17 @@ on:
         required: true
         type: string
         default: v0.1.0-rc.7
+      panel_browser:
+        description: R4 - drive enrollment, Prepare, export, Join and Start through the panel in a real browser (true) instead of the agent API
+        required: false
+        type: boolean
+        default: false
+      panel_lang:
+        description: Panel language for the browser run (en or fa)
+        required: false
+        type: choice
+        options: [en, fa]
+        default: en
       confirm:
         description: Type RUN_TRUSTED_PHASE1_LAB to authorize the isolated B4 baft Wizard two-host test
         required: true
@@ -124,8 +135,15 @@ jobs:
           [[ "$have" == "$want" ]] || { echo "signed engine $have is not the candidate pin $want" >&2; exit 1; }
           install -m 0755 "baft-engine-$TAG-linux-amd64" "$RUNNER_TEMP/baft-engine"
           echo "B4_ENGINE=$TAG sha256=$have (cosign + SHA256SUMS verified, equals candidate pin)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Install the pinned Playwright browser for the panel pass
+        if: ${{ inputs.panel_browser }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/baft-panel-qa" --no-save --no-audit --no-fund playwright@1.56.1
+          "$RUNNER_TEMP/baft-panel-qa/node_modules/.bin/playwright" install chromium
       - name: Run B4 Wizard path (agent API, root helpers, offline CA baft profile, engine store) on both hosts
         env:
+          PANEL_BROWSER: ${{ inputs.panel_browser && '1' || '0' }}
+          PANEL_LANG: ${{ inputs.panel_lang }}
           LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
           LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
           LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
@@ -151,6 +169,7 @@ jobs:
           export LAB_SOAK_SECONDS=0 LAB_IMPAIR=0 LAB_SETUP=0 LAB_ROLLOVER=0
           export LAB_REVERSE=0 LAB_MVP=0 LAB_OPS=0 LAB_AGENT_SVC=0
           export LAB_PANEL_PAIRING=1 LAB_PANEL_ENGINE=baft
+          export LAB_PANEL_BROWSER="$PANEL_BROWSER" LAB_PANEL_LANG="$PANEL_LANG" NODE_PATH="$RUNNER_TEMP/baft-panel-qa/node_modules"
           export BAFT_ENGINE_BINARY="$RUNNER_TEMP/baft-engine"
           trap 'rm -f "$RUNNER_TEMP/b4-lab-id_ed25519" "$RUNNER_TEMP/b4-lab-known_hosts"' EXIT
           bash lab/real-hosts/phase1-two-host-e2e.sh

@@ -50,7 +50,7 @@ CRL_LIVE="${LAB_CRL_LIVE:-0}"; VERIFY="${LAB_VERIFY:-0}"
 AGENT_SVC="${LAB_AGENT_SVC:-0}"; AGENT_REBOOT="${LAB_REBOOT:-0}"
 PANEL_BROWSER="${LAB_PANEL_BROWSER:-0}"
 [[ "$PANEL_BROWSER" == 0 || "$PANEL_BROWSER" == 1 ]] || { echo "LAB_PANEL_BROWSER must be 0 or 1" >&2; exit 2; }
-(( PANEL_BROWSER == 0 || AGENT_SVC == 1 )) || { echo "LAB_PANEL_BROWSER runs inside the agent service stage (LAB_AGENT_SVC=1)" >&2; exit 2; }
+(( PANEL_BROWSER == 0 || AGENT_SVC == 1 || ${LAB_PANEL_PAIRING:-0} == 1 )) || { echo "LAB_PANEL_BROWSER runs inside the agent service stage (LAB_AGENT_SVC=1) or the panel pairing stage (LAB_PANEL_PAIRING=1)" >&2; exit 2; }
 [[ "$AGENT_SVC" == 0 || "$AGENT_SVC" == 1 ]] && [[ "$AGENT_REBOOT" == 0 || "$AGENT_REBOOT" == 1 ]] || { echo "LAB_AGENT_SVC and LAB_REBOOT must be 0 or 1" >&2; exit 2; }
 (( AGENT_REBOOT == 0 || AGENT_SVC == 1 )) || { echo "LAB_REBOOT runs inside the agent service stage (LAB_AGENT_SVC=1)" >&2; exit 2; }
 if (( AGENT_SVC == 1 )); then
