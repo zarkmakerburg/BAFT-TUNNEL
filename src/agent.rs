@@ -492,6 +492,27 @@ pub fn fuzz_authed(selector: u8, body: &[u8], state_dir: &Path) -> (u16, Value) 
     runtime.block_on(route(&head, body, &ctx))
 }
 
+/// Fuzz entry: the state-directory files the agent reads back (`update-check.json`, sibling
+/// `agent.json`) through their endpoints, with a throw-away state directory.
+#[allow(dead_code)] // used by the fuzz harness only
+pub fn fuzz_state_files(data: &[u8], root: &Path) {
+    let state = root.join("a");
+    let sibling = root.join("b");
+    let _ = std::fs::create_dir_all(&state);
+    let _ = std::fs::create_dir_all(&sibling);
+    let _ = std::fs::write(state.join(UPDATE_FILE), data);
+    let _ = std::fs::write(sibling.join(AGENT_FILE), data);
+    let config = serde_json::from_value(json!({
+        "mode": "forward", "listen": "127.0.0.1:1", "remote": "192.0.2.1:8443",
+        "server_name": "x", "local_id": "a", "peer_id": "b", "tunnel_id": "t",
+        "direction": "direct", "peer_fingerprint": "00", "key": "/nonexistent/key.pem"
+    }))
+    .expect("fixed config");
+    let ctx = Ctx::new(config, "t".repeat(40), Some(state)).with_unit(Some("a".into()), None);
+    let _ = update_notice(&ctx);
+    let _ = host_tunnels(&ctx);
+}
+
 /// Fuzz entry: the Apply request body (strict struct) and the plan it carries.
 #[allow(dead_code)] // used by the fuzz harness only
 pub fn fuzz_apply_body(data: &[u8]) {
