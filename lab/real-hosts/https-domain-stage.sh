@@ -147,7 +147,7 @@ echo "from the runner (public, $([[ $ACME == production ]] && echo 'system trust
 
 echo '--- renewal ---'
 ssh_h "systemctl is-active --quiet certbot.timer" && TIMER=1 || TIMER=0
-ssh_h "timeout 180 certbot renew --dry-run --cert-name baft-tunnel-panel >/dev/null 2>&1 < /dev/null" && DRY=1 || DRY=0
+ssh_h "timeout 180 certbot renew --dry-run --no-random-sleep-on-renew --cert-name baft-tunnel-panel >/dev/null 2>&1 < /dev/null" && DRY=1 || DRY=0
 ssh_h "test -x /etc/letsencrypt/renewal-hooks/deploy/baft-tunnel-panel-reload.sh" && HOOK=1 || HOOK=0
 ssh_h "! ss -Hltn | awk '{print \$4}' | grep -Eq '^(0\.0\.0\.0|\[::\]|\*):18080\$'" || fail 'the agent listens publicly on 18080'
 (( TIMER == 1 && HOOK == 1 )) || fail "renewal not wired (certbot.timer=$TIMER deploy_hook=$HOOK)"
