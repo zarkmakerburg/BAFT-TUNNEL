@@ -428,7 +428,7 @@ HOOK
   systemctl enable --now certbot.timer >/dev/null 2>&1 || true
   systemctl is-active --quiet certbot.timer || die "certbot.timer is not active; automatic renewal would not run"
   if (( STAGING == 0 )); then
-    timeout 120 certbot renew --dry-run --cert-name "$CERT_NAME" >/dev/null 2>&1 </dev/null || say "WARNING: 'certbot renew --dry-run' failed; check $HOST DNS/port 80 before the certificate expires (90 days)"
+    timeout 120 certbot renew --dry-run --no-random-sleep-on-renew --cert-name "$CERT_NAME" >/dev/null 2>&1 </dev/null || say "WARNING: 'certbot renew --dry-run' failed; check $HOST DNS/port 80 before the certificate expires (90 days)"
   fi
 fi
 
