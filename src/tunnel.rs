@@ -1377,6 +1377,105 @@ mod tests {
             .unwrap();
     }
 
+    /// Reverse (ADR-0021, ADR-0037) with the real role assignment: the public node accepted the
+    /// TCP connection (yamux server) and runs the user-ingress loop; the service node dialed out
+    /// (yamux client) and serves streams to its fixed target. A probe must work from either node,
+    /// and `responder_direction` lets a test bind the responder to a different label.
+    async fn reverse_session_probe(
+        responder_direction: ConnectionDirection,
+    ) -> (
+        Result<crate::integrity_probe::ProbeResult>,
+        Result<crate::integrity_probe::ProbeResult>,
+    ) {
+        let (service_io, public_io) = duplex(256 * 1024);
+        let public_session =
+            Session::new_server(Box::new(public_io) as BoxedSecureStream, yamux_config(8));
+        let service_session = Session::new_client(service_io, yamux_config(8));
+        // Port 9 (discard) is never connected: probes must not reach the service target.
+        let target: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let public_control = Arc::new(crate::integrity_probe::ProbeControl::default());
+        let service_control = Arc::new(crate::integrity_probe::ProbeControl::default());
+        let (ingress_tx, ingress_rx) = mpsc::channel(1);
+        let (public_stop_tx, public_stop_rx) = watch::channel(false);
+        let (service_stop_tx, service_stop_rx) = watch::channel(false);
+
+        let public_control_for_task = public_control.clone();
+        let public_task = tokio::spawn(async move {
+            let mut ingress_rx = ingress_rx;
+            run_forward_session_versioned(
+                public_session,
+                &mut ingress_rx,
+                &Arc::new(Semaphore::new(8)),
+                ConnectionDirection::Reverse,
+                "tunnel-rev-probe",
+                "service-node",
+                crate::authorization::PROTOCOL_V2,
+                public_control_for_task,
+                Arc::new(crate::integrity_probe::ProbeLimiter::default()),
+                public_stop_rx,
+            )
+            .await
+        });
+        let service_task = tokio::spawn(serve_streams_versioned(
+            service_session,
+            target,
+            Arc::new(Semaphore::new(8)),
+            "tunnel-rev-probe".into(),
+            responder_direction,
+            crate::authorization::PROTOCOL_V2,
+            service_control.clone(),
+            Arc::new(crate::integrity_probe::ProbeLimiter::default()),
+            service_stop_rx,
+        ));
+
+        timeout(Duration::from_secs(2), async {
+            while !public_control.is_active() || !service_control.is_active() {
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let from_public = public_control.request().await;
+        let from_service = service_control.request().await;
+
+        let _ = public_stop_tx.send(true);
+        let _ = service_stop_tx.send(true);
+        drop(ingress_tx);
+        timeout(SHUTDOWN_TIMEOUT, public_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        timeout(SHUTDOWN_TIMEOUT, service_task)
+            .await
+            .unwrap()
+            .unwrap();
+        (from_public, from_service)
+    }
+
+    #[tokio::test]
+    async fn reverse_session_probes_work_from_the_public_and_the_service_node() {
+        let (from_public, from_service) = reverse_session_probe(ConnectionDirection::Reverse).await;
+        let from_public = from_public.expect("probe initiated by the public node");
+        assert_eq!(from_public.bytes, crate::integrity_probe::PROBE_BYTES);
+        let from_service = from_service.expect("probe initiated by the service node");
+        assert_eq!(from_service.bytes, crate::integrity_probe::PROBE_BYTES);
+    }
+
+    #[tokio::test]
+    async fn reverse_probe_is_refused_by_a_peer_bound_to_the_direct_label() {
+        let (from_public, from_service) = reverse_session_probe(ConnectionDirection::Direct).await;
+        assert!(
+            from_public.is_err(),
+            "Reverse probe accepted by a Direct-bound responder"
+        );
+        assert!(
+            from_service.is_err(),
+            "Direct probe accepted by a Reverse-bound responder"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn agent_uds_request_runs_probe_over_the_active_authenticated_v2_session() {
