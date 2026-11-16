@@ -874,6 +874,16 @@
         h('p', { class: 'sub', text: t('settings.later') }))),
       card(t('settings.about'), h('div', null, kv([[t('settings.version'), s.version ? BAFT.ltr('v' + s.version) : null]]),
         h('h3', { text: t('settings.session') }), h('p', { class: 'sub', text: t('settings.sessionhint') }),
-        h('button', { type: 'button', onclick: BAFT.logout }, BAFT.icon('logout'), t('logout')))));
+        h('button', { type: 'button', onclick: BAFT.logout }, BAFT.icon('logout'), t('logout')))),
+      card(t('support.title'), h('div', null, h('p', { class: 'sub', text: t('support.note') }),
+        h('button', { type: 'button', onclick: function () {
+          BAFT.api('GET', '/v1/support').then(function (r) {
+            if (r.status !== 200) { BAFT.toast(t('support.failed'), 'bad'); return; }
+            var url = URL.createObjectURL(new Blob([JSON.stringify(r.body, null, 2)], { type: 'application/json' }));
+            var a = h('a', { href: url, download: 'baft-tunnel-support.json' });
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+          }, function () { BAFT.toast(t('support.failed'), 'bad'); });
+        } }, t('support.download')))));
   } });
 })();
