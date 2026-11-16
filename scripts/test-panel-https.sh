@@ -111,7 +111,11 @@ export REQUESTS_CA_BUNDLE="$PEBBLE_CA"
 exec "$RC" "\$@" --server https://localhost:14000/dir
 SH
   chmod +x "$BIN/certbot"
-  OUT="$(run --domain panel.baft.test --email ops@example.com)" || { echo "$OUT"; fail "pebble domain install"; }
+  OUT="$(run --domain panel.baft.test --email ops@example.com)" || {
+    echo "$OUT"; tail -n 40 /var/log/letsencrypt/letsencrypt.log 2>/dev/null | cut -c1-300
+    echo "--- hosts"; grep baft.test /etc/hosts; echo "--- listeners"; ss -ltn | grep -E ':(80|8443) ' || true
+    echo "--- nginx conf"; cat /etc/nginx/conf.d/baft-tunnel-panel.conf 2>/dev/null | head -30
+    fail "pebble domain install"; }
   [[ -s /etc/letsencrypt/live/baft-tunnel-panel/fullchain.pem ]] || fail "no certificate issued by pebble"
   ISS="$(openssl x509 -in /etc/letsencrypt/live/baft-tunnel-panel/fullchain.pem -noout -issuer)"
   grep -qi pebble <<<"$ISS" || fail "unexpected issuer: $ISS"
