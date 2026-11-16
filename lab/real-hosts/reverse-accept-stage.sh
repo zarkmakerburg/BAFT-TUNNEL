@@ -196,6 +196,9 @@ echo "--- diagnostics, status, traffic counters and audit on both nodes (Reverse
 ra_evidence apply $((65536 + 2097289))
 echo "--- ADR-0037: in-product integrity probe started from each node (Reverse) ---"
 for side in iran abroad; do
+  # ADR-0028: each node's ProbeLimiter covers both the probes it starts and the ones it answers (one per 60 s),
+  # so the second direction must wait out the window opened on the responder by the first probe.
+  [[ "$side" == abroad ]] && sleep 65
   ssh_host "$side" "python3 - <<'PY'
 import urllib.request, json
 tok = open('$AGD/token').read().strip()
