@@ -16,6 +16,10 @@
 PANEL_ENGINE="${LAB_PANEL_ENGINE:-noise-tcp}"
 [[ "$PANEL_ENGINE" == noise-tcp || "$PANEL_ENGINE" == tcp-tls || "$PANEL_ENGINE" == baft ]] || { echo "invalid LAB_PANEL_ENGINE" >&2; exit 2; }
 PP_X509=0; [[ "$PANEL_ENGINE" == noise-tcp ]] || PP_X509=1
+PP_PROFILE=node; [[ "$PANEL_ENGINE" == baft ]] && PP_PROFILE=baft-node
+# R4: drive enrollment, Prepare, export, import/Join and Start through the panel in a real browser.
+PP_BROWSER="${LAB_PANEL_BROWSER:-0}"
+[[ "$PP_BROWSER" == 0 || "$PP_BROWSER" == 1 ]] || { echo "LAB_PANEL_BROWSER must be 0 or 1" >&2; exit 2; }
 ESTORE=/usr/local/lib/baft-tunnel-engines
 PP_ENGINE_ARG=""; PP_ENGINE_SHA=""
 if [[ "$PANEL_ENGINE" == baft ]]; then
@@ -192,40 +196,7 @@ PY
   done
 
   echo "--- D2: isolated offline CA signs both CSRs; CA key stays in container tmpfs ---"
-  local image="baft-pki-offline:${GITHUB_RUN_ID:-local}"
-  docker build --quiet -f "$PWD/lab/real-hosts/Dockerfile.offline-ca" -t "$image" "$PWD/lab/real-hosts" >/dev/null
-  local ca_pass
-  ca_pass="$(openssl rand -hex 32)"
-  printf '%s\n' "$ca_pass" | docker run --rm -i --network none --read-only \
-    --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-    -v "$LOCAL_TMP/d2-certs:/workspace:rw" \
-    -v "$PWD/scripts/pki:/pki:ro" \
-    -e D2_IRAN_SAN="$LAB_IRAN_HOST" -e D2_ABROAD_SAN="$LAB_ABROAD_HOST" \
-    -e D2_PROFILE="$([[ "$PANEL_ENGINE" == baft ]] && echo baft-node || echo node)" \
-    "$image" /bin/bash -euo pipefail -c '
-      umask 077
-      cat > /tmp/passphrase
-      chmod 600 /tmp/passphrase
-      export BAFT_PKI_PASSFILE=/tmp/passphrase
-      mkdir -p /tmp/ca /workspace/signed
-      bash /pki/baft-pki.sh init-ca /tmp/ca "BAFT-TUNNEL D2 LAB CA" >/dev/null
-      bash /pki/baft-pki.sh "issue-$D2_PROFILE" /tmp/ca abroad /workspace/csr/abroad.csr /workspace/signed/abroad "$D2_ABROAD_SAN" 90 >/dev/null
-      bash /pki/baft-pki.sh "issue-$D2_PROFILE" /tmp/ca iran /workspace/csr/iran.csr /workspace/signed/iran "$D2_IRAN_SAN" 90 >/dev/null
-      cp /tmp/ca/ca.crl /workspace/signed/abroad/ca.crl
-      cp /tmp/ca/ca.crl /workspace/signed/iran/ca.crl
-      bash /pki/baft-pki.sh "verify-$D2_PROFILE" /tmp/ca /tmp/ca/ca.crl /workspace/signed/abroad/node.crt abroad "$D2_ABROAD_SAN" >/dev/null
-      bash /pki/baft-pki.sh "verify-$D2_PROFILE" /tmp/ca /tmp/ca/ca.crl /workspace/signed/iran/node.crt iran "$D2_IRAN_SAN" >/dev/null
-      # These are public enrollment artifacts only. The container may create them
-      # with a different uid; grant the ephemeral runner cleanup access as well.
-      find /workspace/signed -type d -exec chmod 777 {} +
-      find /workspace/signed -type f -exec chmod 666 {} +
-      test -f /tmp/ca/ca.key
-      test ! -e /workspace/ca.key
-      rm -f /tmp/passphrase
-    '
-  unset ca_pass
-  docker image rm "$image" >/dev/null 2>&1 || true
-  test ! -e "$LOCAL_TMP/d2-certs/ca.key" || { echo "offline CA private key escaped its tmpfs" >&2; exit 1; }
+  bash lab/real-hosts/offline-ca-sign.sh "$LOCAL_TMP/d2-certs" "$PP_PROFILE" "$LAB_IRAN_HOST" "$LAB_ABROAD_HOST"
 
   echo "--- D2: import only leaf certificate, CA certificate and CRL through each Agent API ---"
   for side in abroad iran; do
@@ -282,6 +253,27 @@ json.dump(d, open(out, "w"))
 PY
 }
 
+pp_verify_join() { # side : written config uses the active credential set / pinned engine, right owner and mode
+  local side="$1"
+  if (( PP_X509 == 1 )); then
+    ssh_host "$side" "grep -q 'pki/current/node.crt' $EB/$(pp_inst "$side").json && grep -q 'pki/current/ca.crt' $EB/$(pp_inst "$side").json" ||
+      pp_fail "$PANEL_ENGINE config on $side does not use the active versioned credential set after join" "$side"
+    ssh_host "$side" "openssl verify -purpose any -CAfile $EB/pki/current/ca.crt -CRLfile $EB/pki/current/ca.crl -crl_check $EB/pki/current/node.crt >/dev/null" ||
+      pp_fail "the active local certificate on $side does not verify against its active CA/CRL" "$side"
+  fi
+  if [[ "$PANEL_ENGINE" == baft ]]; then
+    # Pinned store engine; the listener takes no pin, the dialer pins the listener certificate.
+    ssh_host "$side" "python3 - $EB/$(pp_inst "$side").json '$side' '$PP_ENGINE_SHA' '$ESTORE' <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+assert c['engine'] == 'baft' and c['direction'] == 'direct', c
+assert c['baft'] == {'sha256': sys.argv[3], 'store': sys.argv[4]}, c['baft']
+assert ('peer_fingerprint' in c) == (sys.argv[2] == 'iran'), sorted(c)
+PY" || pp_fail "baft config on $side does not pin the store engine or has the wrong pin layout" "$side"
+  fi
+  ssh_host "$side" "[ \"\$(stat -c '%U:%G %a' $EB/$(pp_inst "$side").json)\" = 'root:baft-tunnel 640' ]" || pp_fail "instance config on $side has the wrong owner/mode" "$side"
+}
+
 echo "--- preflight through the agent uses the root setup helper ---"
 for side in iran abroad; do
   pp_plan "$side" > "$LOCAL_TMP/pp-plan-$side.json"
@@ -301,12 +293,74 @@ PY
   fi
 done
 
+declare -A PP_CK
+if (( PP_BROWSER == 1 )); then
+  echo "--- R4: enrollment, Prepare, export, import/Join and Start through the panel in a real browser (SSH forwards to both loopback agents) ---"
+  ssh_host abroad "nohup python3 '$REMOTE_DIR/echo.py' '$MSVC' > '$REMOTE_DIR/echo2.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/echo2.pid'"
+  mkdir -p "$LOCAL_TMP/d2-certs"
+  declare -A PB_PORT=([iran]=18196 [abroad]=18197) PB_PID=()
+  pb_stop() { local s; for s in iran abroad; do [[ -z "${PB_PID[$s]:-}" ]] || { kill "${PB_PID[$s]}" 2>/dev/null; wait "${PB_PID[$s]}" 2>/dev/null; }; rm -f "$LOCAL_TMP/pb-token-$s"; done; true; }
+  for side in iran abroad; do
+    ( umask 077; ssh_host "$side" "cat $AGS/token" > "$LOCAL_TMP/pb-token-$side" ) || { pb_stop; pp_fail "could not read the agent token on $side" "$side"; }
+    if [[ "$side" == iran ]]; then h="$LAB_IRAN_HOST"; u="$IRAN_USER"; pt="$IRAN_SSH_PORT"; else h="$LAB_ABROAD_HOST"; u="$ABROAD_USER"; pt="$ABROAD_SSH_PORT"; fi
+    ssh -i "$SSH_KEY_FILE" -p "$pt" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+      -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ExitOnForwardFailure=yes \
+      -o LogLevel=ERROR -N -L "127.0.0.1:${PB_PORT[$side]}:127.0.0.1:$MAG" "$u@$h" &
+    PB_PID[$side]=$!
+    for _ in $(seq 1 20); do curl -fsS -o /dev/null "http://127.0.0.1:${PB_PORT[$side]}/v1/health" 2>/dev/null && break; sleep 1; done
+  done
+  pb_rc=0
+  PB_WORK="$LOCAL_TMP/d2-certs" PB_PROFILE="$PP_PROFILE" \
+  IRAN_URL="http://127.0.0.1:${PB_PORT[iran]}" ABROAD_URL="http://127.0.0.1:${PB_PORT[abroad]}" \
+  IRAN_TOKEN_FILE="$LOCAL_TMP/pb-token-iran" ABROAD_TOKEN_FILE="$LOCAL_TMP/pb-token-abroad" \
+  ENGINE="$PANEL_ENGINE" IRAN_INST="$CLI" ABROAD_INST="$SRV" CONF_DIR="$EB" \
+  PEER_HOST="$LAB_ABROAD_HOST" IRAN_SAN="$LAB_IRAN_HOST" ABROAD_SAN="$LAB_ABROAD_HOST" \
+  MSVC="$MSVC" MTP="$MTP" OUT_DIR="$LOCAL_TMP/d2-certs" LANG_UI="${LAB_PANEL_LANG:-en}" \
+  SIGN_CMD='bash lab/real-hosts/offline-ca-sign.sh "$PB_WORK" "$PB_PROFILE" "$IRAN_SAN" "$ABROAD_SAN"' \
+    node scripts/panel-qa/lab-panel-pairing.js || pb_rc=$?
+  pb_stop
+  if (( pb_rc != 0 )); then
+    for side in iran abroad; do ssh_host "$side" "journalctl -u 'baft-tunnel*' -n 40 --no-pager" 2>&1 | sed -E 's/[0-9]{1,3}(\.[0-9]{1,3}){3}/<ip>/g' >&2 || true; done
+    echo "first-run flows through the panel on the real LAB failed" >&2; exit 1
+  fi
+  test ! -e "$LOCAL_TMP/d2-certs/ca.key" || { echo "offline CA private key escaped its tmpfs" >&2; exit 1; }
+  echo "--- host-side proof after the browser: key custody, receipts, bundle checksums, written configs ---"
+  for side in abroad iran; do
+    inst="$(pp_inst "$side")"
+    kf=node.noise; (( PP_X509 == 1 )) && kf=node.key
+    ssh_host "$side" "[ \"\$(stat -c '%U:%G %a' $EB/$kf)\" = 'baft-tunnel:baft-tunnel 600' ] && ! runuser -u baft-tunnel-agent -- cat $EB/$kf >/dev/null 2>&1" ||
+      pp_fail "node key on $side has the wrong owner/mode or is readable by the agent user" "$side"
+    PP_CK[$side]="$(tr -d '[:space:]' < "$LOCAL_TMP/d2-certs/ck-$side.txt")"
+    [[ "${PP_CK[$side]}" =~ ^[0-9a-f]{8}(-[0-9a-f]{8}){3}$ ]] || pp_fail "no checksum was shown on $side" "$side"
+    cp "$LOCAL_TMP/d2-certs/bundle-$side.json" "$LOCAL_TMP/pp-bundle-$side.json"
+    copy_to_host "$side" "$LOCAL_TMP/pp-bundle-$side.json" || pp_fail "could not stage the downloaded bundle on $side" "$side"
+    if (( PP_X509 == 1 )); then
+      ssh_host "$side" "! grep -q 'PRIVATE KEY' '$REMOTE_DIR/pp-bundle-$side.json'; rc=\$?; rm -f '$REMOTE_DIR/pp-bundle-$side.json'; exit \$rc" ||
+        pp_fail "the downloaded bundle on $side contains private-key PEM" "$side"
+    else
+      ssh_host "$side" "k=\$(tr -d '[:space:]' < $EB/node.noise); n=\$(printf '%s' \"\$k\" | wc -c); r=1; [ \"\$n\" -ge 16 ] && ! grep -qF -- \"\$k\" '$REMOTE_DIR/pp-bundle-$side.json' && r=0; rm -f '$REMOTE_DIR/pp-bundle-$side.json'; exit \$r" ||
+        pp_fail "the downloaded bundle on $side contains key material" "$side"
+    fi
+    if (( PP_X509 == 1 )); then
+      ssh_host "$side" "ls /var/lib/baft-tunnel-control/pki-receipts/$inst/ui-csr-*.json /var/lib/baft-tunnel-control/pki-receipts/$inst/ui-cert-*.json >/dev/null && grep -qs '\"result\":\"installed\"' /var/lib/baft-tunnel-control/pki-receipts/$inst/ui-cert-*.json" ||
+        pp_fail "no PKI helper receipts from the panel's CSR and install on $side" "$side"
+    fi
+    ssh_host "$side" "grep -qs '\"result\":\"applied\"' /var/lib/baft-tunnel-control/setup-receipts/$inst/ui-*.json && ls /var/lib/baft-tunnel-control/setup-receipts/$inst/ui-join-*.json >/dev/null" ||
+      pp_fail "no setup helper receipts from the panel's Prepare and Join on $side" "$side"
+    pp_verify_join "$side"
+  done
+  echo "--- the panel's Start ran the tunnel units ---"
+  for side in abroad iran; do
+    ok=0
+    for _ in $(seq 1 30); do ssh_host "$side" "systemctl is-active --quiet baft-tunnel@$(pp_inst "$side").service" && { ok=1; break; }; sleep 2; done
+    (( ok == 1 )) || pp_fail "baft-tunnel@$(pp_inst "$side") is not active after Start from the panel on $side" "$side"
+  done
+else
 if (( PP_X509 == 1 )); then
   pp_tls_enroll
 fi
 
 echo "--- init on both hosts through the agent API (root setup helper), export own bundles ---"
-declare -A PP_CK
 for side in abroad iran; do
   pp_body "$LOCAL_TMP/pp-init-$side.json" init "pp-init-$side-0001" "$(pp_plan "$side")"
   pp_api "$side" POST /v1/setup/apply "$LOCAL_TMP/pp-init-$side.json" > "$LOCAL_TMP/pp-init-out-$side.json"
@@ -351,24 +405,10 @@ for side in abroad iran; do
   pp_body "$LOCAL_TMP/pp-join-$side.json" join "pp-join-$side-0001" "$(pp_plan "$side")" "$LOCAL_TMP/pp-bundle-$peer.json" "${PP_CK[$peer]}"
   pp_api "$side" POST /v1/setup/apply "$LOCAL_TMP/pp-join-$side.json" > "$LOCAL_TMP/pp-join-out-$side.json"
   [[ "$(jf result < "$LOCAL_TMP/pp-join-out-$side.json")" == applied ]] || { cat "$LOCAL_TMP/pp-join-out-$side.json" >&2; pp_fail "join through the agent on $side was not applied" "$side"; }
-  if (( PP_X509 == 1 )); then
-    ssh_host "$side" "grep -q 'pki/current/node.crt' $EB/$(pp_inst "$side").json && grep -q 'pki/current/ca.crt' $EB/$(pp_inst "$side").json" ||
-      pp_fail "$PANEL_ENGINE config on $side does not use the active versioned credential set after join" "$side"
-    ssh_host "$side" "openssl verify -purpose any -CAfile $EB/pki/current/ca.crt -CRLfile $EB/pki/current/ca.crl -crl_check $EB/pki/current/node.crt >/dev/null" ||
-      pp_fail "the active local certificate on $side does not verify against its active CA/CRL" "$side"
-  fi
-  if [[ "$PANEL_ENGINE" == baft ]]; then
-    # Pinned store engine; the listener takes no pin, the dialer pins the listener certificate.
-    ssh_host "$side" "python3 - $EB/$(pp_inst "$side").json '$side' '$PP_ENGINE_SHA' '$ESTORE' <<'PY'
-import json, sys
-c = json.load(open(sys.argv[1]))
-assert c['engine'] == 'baft' and c['direction'] == 'direct', c
-assert c['baft'] == {'sha256': sys.argv[3], 'store': sys.argv[4]}, c['baft']
-assert ('peer_fingerprint' in c) == (sys.argv[2] == 'iran'), sorted(c)
-PY" || pp_fail "baft config on $side does not pin the store engine or has the wrong pin layout" "$side"
-  fi
-  ssh_host "$side" "[ \"\$(stat -c '%U:%G %a' $EB/$(pp_inst "$side").json)\" = 'root:baft-tunnel 640' ]" || pp_fail "instance config on $side has the wrong owner/mode" "$side"
+  pp_verify_join "$side"
 done
+
+fi
 
 echo "--- both agents leave setup mode by themselves ---"
 for side in iran abroad; do
@@ -382,9 +422,9 @@ for side in iran abroad; do
 done
 
 echo "--- Start through the agent: serve, then forward; data both sizes ---"
-ssh_host abroad "nohup python3 '$REMOTE_DIR/echo.py' '$MSVC' > '$REMOTE_DIR/echo2.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/echo2.pid'"
+(( PP_BROWSER == 1 )) || ssh_host abroad "nohup python3 '$REMOTE_DIR/echo.py' '$MSVC' > '$REMOTE_DIR/echo2.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/echo2.pid'"
 OLD_LOCAL_PORT="$LOCAL_PORT"; LOCAL_PORT="$MSVC"
-for side in abroad iran; do
+(( PP_BROWSER == 1 )) || for side in abroad iran; do
   printf '{"action":"start","confirm":true,"idempotency_key":"pp-start-%s-0001"}' "$side" > "$LOCAL_TMP/pp-start-$side.json"
   pp_api "$side" POST /v1/tunnel/lifecycle "$LOCAL_TMP/pp-start-$side.json" > "$LOCAL_TMP/pp-start-out-$side.json"
   [[ "$(jf result < "$LOCAL_TMP/pp-start-out-$side.json")" == applied ]] || { cat "$LOCAL_TMP/pp-start-out-$side.json" >&2; pp_fail "Start on $side after panel pairing was not applied" "$side"; }
@@ -423,7 +463,7 @@ import json, sys
 res = [json.loads(l)['resource'] for l in open(sys.argv[1])]
 assert 'setup/init' in res and 'setup/join' in res, res
 PY
-    test -f /var/lib/baft-tunnel-control/setup-receipts/$inst/pp-join-$side-0001.json &&
+    ls /var/lib/baft-tunnel-control/setup-receipts/$inst/$( (( PP_BROWSER == 1 )) && echo 'ui-join-*' || echo "pp-join-$side-0001").json >/dev/null 2>&1 &&
     ! grep -rqs -- \"\$(cat $AGS/token)\" $AGS/$inst /var/lib/baft-tunnel-control/setup-receipts && ! grep -rqs 'PRIVATE KEY' $AGS/$inst" ||
     pp_fail "audit, helper receipt or secret check failed on $side" "$side"
 done
@@ -454,4 +494,4 @@ for side in iran abroad; do
     PP_DRIFT+=("$side")
   fi
 done
-echo "PANEL_PAIRING_RESULT engine=$PANEL_ENGINE source=$MVP_SOURCE binary_sha256=$PP_SHA clean_hosts=1 setup_mode_after_install=1 agent_user=baft-tunnel-agent preflight_setup_helper=1 pki_enrollment=$PP_X509 engine_sha256=${PP_ENGINE_SHA:-none} stop_via_agent=$PP_STOP init_via_agent=2 key_not_agent_readable=1 export_checksum=1 bundle_key_free=1 wrong_checksum_flagged=1 wrong_checksum_join_refused=1 join_via_agent=2 agents_reloaded=2 root_setup_commands_by_us=0 start_via_agent=2 data_s=$PP_DATA_S integrity_64k_2m=1 audit_setup=1 helper_receipts=1 state_secret_free=1 uninstalled=1 users_removed=1 baft_fw_rules=0 host_drift=${PP_DRIFT[*]:-none}"
+echo "PANEL_PAIRING_RESULT engine=$PANEL_ENGINE panel_browser=$PP_BROWSER source=$MVP_SOURCE binary_sha256=$PP_SHA clean_hosts=1 setup_mode_after_install=1 agent_user=baft-tunnel-agent preflight_setup_helper=1 pki_enrollment=$PP_X509 engine_sha256=${PP_ENGINE_SHA:-none} stop_via_agent=$PP_STOP init_via_agent=2 key_not_agent_readable=1 export_checksum=1 bundle_key_free=1 wrong_checksum_flagged=1 wrong_checksum_join_refused=1 join_via_agent=2 agents_reloaded=2 root_setup_commands_by_us=0 start_via_agent=2 data_s=$PP_DATA_S integrity_64k_2m=1 audit_setup=1 helper_receipts=1 state_secret_free=1 uninstalled=1 users_removed=1 baft_fw_rules=0 host_drift=${PP_DRIFT[*]:-none}"

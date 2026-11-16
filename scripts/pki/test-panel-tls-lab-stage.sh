@@ -7,7 +7,10 @@ MAIN=lab/real-hosts/phase1-two-host-e2e.sh
 for route in '/v1/pki/csr/create' '/v1/pki/csr/read' '/v1/pki/certificate/install'; do
   grep -Fq "$route" "$STAGE" || { echo "missing D2 Agent API route in two-host stage: $route" >&2; exit 1; }
 done
-grep -Fq -- '--network none' "$STAGE" || { echo "offline CA container must have no network" >&2; exit 1; }
+grep -Fq 'lab/real-hosts/offline-ca-sign.sh' "$STAGE" || { echo "LAB stage must sign through the offline CA script" >&2; exit 1; }
+grep -Fq -- '--network none' lab/real-hosts/offline-ca-sign.sh || { echo "offline CA container must have no network" >&2; exit 1; }
+grep -Fq -- '--read-only' lab/real-hosts/offline-ca-sign.sh || { echo "offline CA container must be read-only" >&2; exit 1; }
+bash -n lab/real-hosts/offline-ca-sign.sh
 grep -Fq 'service_restarted' "$STAGE" || { echo "LAB must assert certificate import does not restart the service" >&2; exit 1; }
 grep -Fq 'private_key_exported' "$STAGE" || { echo "LAB must assert the private key never leaves the node" >&2; exit 1; }
 grep -Fq 'pki_files' "$STAGE"

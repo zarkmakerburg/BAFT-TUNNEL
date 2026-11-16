@@ -7,6 +7,17 @@ on:
         description: Exact reviewed-main commit to build and test
         required: true
         type: string
+      panel_browser:
+        description: R4 - drive enrollment, Prepare, export, Join and Start through the panel in a real browser (true) instead of the agent API
+        required: false
+        type: boolean
+        default: false
+      panel_lang:
+        description: Panel language for the browser run (en or fa)
+        required: false
+        type: choice
+        options: [en, fa]
+        default: en
       confirm:
         description: Type RUN_TRUSTED_PHASE1_LAB to authorize the isolated D2 two-host test
         required: true
@@ -93,8 +104,15 @@ jobs:
         with:
           name: baft-tunnel-d2-candidate-${{ needs.validate-candidate.outputs.candidate_sha }}
           path: ${{ runner.temp }}/baft-tunnel-d2-candidate
+      - name: Install the pinned Playwright browser for the panel pass
+        if: ${{ inputs.panel_browser }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/baft-panel-qa" --no-save --no-audit --no-fund playwright@1.56.1
+          "$RUNNER_TEMP/baft-panel-qa/node_modules/.bin/playwright" install chromium
       - name: Run D2 panel-to-Agent-to-root-helper-to-offline-CA lifecycle on both hosts
         env:
+          PANEL_BROWSER: ${{ inputs.panel_browser && '1' || '0' }}
+          PANEL_LANG: ${{ inputs.panel_lang }}
           LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
           LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
           LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
@@ -120,5 +138,6 @@ jobs:
           export LAB_SOAK_SECONDS=0 LAB_IMPAIR=0 LAB_SETUP=0 LAB_ROLLOVER=0
           export LAB_REVERSE=0 LAB_MVP=0 LAB_OPS=0 LAB_AGENT_SVC=0
           export LAB_PANEL_PAIRING=1 LAB_PANEL_ENGINE=tcp-tls
+          export LAB_PANEL_BROWSER="$PANEL_BROWSER" LAB_PANEL_LANG="$PANEL_LANG" NODE_PATH="$RUNNER_TEMP/baft-panel-qa/node_modules"
           trap 'rm -f "$RUNNER_TEMP/d2-lab-id_ed25519" "$RUNNER_TEMP/d2-lab-known_hosts"' EXIT
           bash lab/real-hosts/phase1-two-host-e2e.sh
