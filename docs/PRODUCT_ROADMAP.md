@@ -1,9 +1,9 @@
 # BAFT-TUNNEL — Product Roadmap and Verified Delivery Queue
 
-**Status snapshot:** 2026-11-15 (U1–U8, B1, B2 Direct and **B4 accepted**; signed prerelease `v0.1.0-rc.8`; B3, B5, B6 remain open)
-**Source baseline:** `main` at `b61765f71efcf2ac16f4080843a940a404d3e4d1` (all 8 checks green at that SHA; evidence level for that statement: CI only). Earlier baselines (`82d77b3`, U7 pinned to `1219f547`) are historical; trusted [U7 run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) remains valid.
+**Status snapshot:** 2026-11-16 — **Stable `v0.2.0` released** (2026-11-15; see the 2026-11-16 addendum at the end of this file). Older rc.8-era text below is historical.
+**Source baseline:** `main` at `9b151ceb0feca824a40a41a78d6c76c0d727b19a` (PR #258). Evidence level for the release itself: signed Stable tag `v0.2.0` on `76c12cb` (= rc.12 binary, sha256 `4c922d02…9136`); post-release PRs #255/#257/#258 are merged to `main` and are **not** in any release yet. Earlier baselines (`b61765f`, `82d77b3`, U7 pinned to `1219f547`) are historical.
 **Gate status:** P0-1..P0-5 remain closed. D2 panel-managed `tcp-tls` CSR/certificate lifecycle is implemented and merged in [PR #150](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/150) (merge `e5a7451f259be7df14187a58db5fe1c29c51a81b`); exact-head CI/two-host evidence is recorded in that PR, and a trusted repeat on the immutable RC.7 candidate passed in [LAB run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181). U1 CRL renewal and real two-host push are proven by [LAB run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) on ancestor code SHA `8be74376176442106669f4a81293f0865629ecaf`: CRL number `0x1002→0x1003`, 30-day validity, both nodes report `crl_state=ok`, 2 MiB tunnel recovery, short/replayed CRLs refused. The repeat D2 LAB reported `host_drift=none`; the earlier unrelated nftables delta was not reproduced, but its source remains unattributed (S10).
-**Release:** signed prerelease `v0.1.0-rc.8` (tag on `ad7aa99`, release run [43648306433](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43648306433)) is the latest; `rc.7` is the previous one. `rc.6` is historical and must not be used (invalid Cosign identity). **REAL two-host LAB PASS** for signed rc.7→rc.8 upgrade: [run 43670274992](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43670274992) (3600 s soak, 268 rounds, 0 failed probes, 0 restarts, rollback and revocation checks pass). Evidence level: real two-host LAB; **not Production**. Diagnostics `integrity` still shows `unknown` outside the B2 probe (data-path hashes were verified by the LAB harness only). No stable release or production deploy.
+**Release:** `v0.2.0` is the latest Stable release (not a prerelease); evidence in [STABLE_0.2.0_EVIDENCE.md](STABLE_0.2.0_EVIDENCE.md). Reverse and BAFT ship as **Preview**; `ready` stays Unknown by design. The earlier `v0.1.0-rc.8` text and LAB run references elsewhere in this file are historical and kept for traceability. Production deploy is not claimed.
 **Product status:** Active development / pre-release; not production-ready. `ready` remains Unknown unless independently verified under the readiness contract. Main is protected; all code changes continue through PRs and exact-SHA CI.
 
 This file is the single source of truth for phases, engines and delivery order. Item-by-item status, findings, risks, effort and owner-hands items behind the current queue: [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md). Detailed cross-project extraction, verified code state and implementation instructions: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). Exact historical test evidence and run IDs: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). Persian task pointer: [PROJECT_BOARD.md](PROJECT_BOARD.md). HQ decisions and append-only evidence log: [Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
@@ -102,7 +102,9 @@ The current MVP panel source is plain static HTML/CSS/JavaScript in `panel/`, se
 
 ## 5. Prioritized delivery queue
 
-### Current queue: usable MVP first (verified refresh 2026-11-12, `main` `32bf85f`)
+> **Superseded 2026-11-16:** the working order is now in [§9 Replan after Stable 0.2.0](#9-replan-after-stable-020-2026-11-16). The table below is the MVP queue as it stood before the release and is kept for evidence.
+
+### Historical queue: usable MVP first (verified refresh 2026-11-12, `main` `32bf85f`)
 
 The P0 gates proved the runtime; they did not make the product usable by a non-expert operator. The queue below replaces "P1/P2 held" as the working order. IDs, evidence, effort, dependencies, decisions and owner-hands items are in [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md) §4–§6. Scope rule: P1 acceptance and panel integration only; no new engines or protocols.
 
@@ -226,3 +228,59 @@ The real two-host Direct run passed ordinary 65,536-byte and 2,097,289-byte data
 Negative-path evidence is separate and deliberately scoped: PR #193's controlled in-memory relay flips one probe-payload byte while preserving framing/nonce; the production initiator rejects it with `SHA-256 mismatch`. The production probe implementation at the fixed candidate SHA is unchanged by that test-only PR. This satisfies ADR-0028's controlled test-harness corruption requirement; it is **not** a claim of live two-host tamper injection. The local authenticated v2 session integration test and the two-host positive path are separately covered. Apply `ready` remains Unknown by design.
 
 B2 is accepted for **Direct only**. Reverse remains unavailable until its independent ADR-0021 implementation and acceptance gate passes. No release, tag, deployment, production-host mutation, or Phase 2 transition is implied. Failed run #13 remains preserved as a harness accounting failure and was corrected by PR #194 before run #14.
+
+## 9. Replan after Stable 0.2.0 (2026-11-16)
+
+This section is the current working order. It replaces the §5 MVP queue, which is complete except where noted. Nothing below is a claim of delivered capability; each item names the evidence it needs. Fixed constraints in §6 are unchanged.
+
+### 9.1 Where the product stands
+
+- **Released:** Stable `v0.2.0` (tag `76c12cb`, 2026-11-15). LAB evidence on the identical rc.12 binary: upgrade soak (1 of 272 probes lost, accepted as a journal-proven external path outage), S3 reboot plus real-browser pass 19/19, reload plus Integrity on protocol v2. Local browser only, not LAB: pairing 11/11, PKI 15/15, BAFT guided 12/12. Pre-Stable audit: no Critical/High/Medium.
+- **Merged after the tag, in no release yet:** PR #255 (panel polish), PR #257 (README one-line pinned signed install), PR #258 (HTTPS panel for a domain or IP, `--domain` / `--ip`, menu after install). The `v0.2.0` bundle does not contain `panel-https.sh`, and real Let's Encrypt issuance is untested.
+- **MVP queue leftovers:** B3 is closed as Unknown by decision (ADR-0030, no `CAP_NET_ADMIN`). B5 (history/alerts) and B6 (automated accessibility audit) are implemented with CI evidence only. The physical phone check is not a blocker.
+- **Known items from the release notes:** no LAB browser run of pairing/PKI/BAFT on the new dashboard; open Low/Medium panel items in [PANEL_REDESIGN_PARITY.md](PANEL_REDESIGN_PARITY.md); wrong HTTP reason phrase on some agent error statuses; in-flight requests fail during a short path outage (detection about 20 s, PR #251); Integrity stays Unknown on protocol v1, which is still the `setup init` default; abroad-host drift (S10).
+
+### 9.2 Release train
+
+| Release | Theme | Exit gate |
+|---|---|---|
+| **0.2.1** | Ship what is merged, close the release-note known items, make the install path trustworthy | Signed rc, N-1 to N upgrade on LAB with a soak of at most 60 minutes, then Stable |
+| **0.3.0** | Operability: what an operator with more than one tunnel and no shell habit needs | Each item has its own acceptance; LAB where a host is involved |
+| **0.4.0** | Adaptive Traffic Policy Pack, phases 0 to 2 (measurement and engine-agnostic policy interface) | Measured against Baseline and Balanced; simulation labelled apart from LAB |
+| **Later** | UDP/datagram carrier, Fleet/control plane, external security review before any v1.0 claim | Own ADR, audit and LAB each |
+
+### 9.3 0.2.1 queue (in this order)
+
+| ID | Work | Why | Effort | Evidence needed |
+|---|---|---|---|---|
+| R1 | Correct HTTP reason phrases on agent error statuses | Release-note item 6 | S | Unit test over every status the agent emits |
+| R2 | Release bundle completeness: `panel-https.sh` is in the package list and the release smoke test fails without it (already on `main` through PR #258) | The `v0.2.0` bundle predates it | done on `main` | Confirmed when the 0.2.1 rc bundle is built and verified |
+| R3 | HTTPS install acceptance. Today CI (`test-panel-https.sh`) proves nginx config, own-CA issuance, auth pass-through, idempotence and rollback with `certbot` shimmed. Add an unshimmed ACME run against a local ACME test server (Pebble) in CI | Real evidence for the ACME flow without an owner domain; a public Let's Encrypt run still needs an owner domain and stays labelled untested until then | M | CI; later one real-host run |
+| R4 | LAB browser pass of pairing, PKI enrollment and BAFT guided setup on the new dashboard | Release-note item 3 | M | REAL-LAB run, one LAB user at a time |
+| R5 | Panel Low/Medium review items (hardcoded capability pills, `\|\| 0` KPI defaults, colour-only legend, small chart text, drawer/RTL, toast live region, language switch rebuild) | Release-note item 4; several touch the no-fake-data rule | M | panel-ui job, axe audit |
+| R6 | `v0.2.1-rc.1`, then 0.2.0 to 0.2.1 upgrade and rollback on LAB with soak, then Stable | S2 on every release | S | Release run, LAB run, checksums |
+
+R1, R3 and R5 need no LAB and can run in parallel. R4 and R6 share the LAB and run one after the other.
+
+### 9.4 0.3.0 candidates (ordered by operator value)
+
+| ID | Work | Notes |
+|---|---|---|
+| O1 | Protocol v2 as the default for new pairs, with an explicit, visible downgrade to v1 for an old peer | Makes "Test tunnel" work out of the box. Needs an ADR-0028 amendment: no silent downgrade stays binding |
+| O2 | More than one tunnel per host in the agent and panel (Tier L3) | Largest functional gap for real use; needs an ADR for instance ownership and the helper scope |
+| O3 | Update check and guided update from the panel: shows the newer signed release, verifies checksum and signature, then runs the existing guarded update with automatic rollback | Reuses ADR-0025; no auto-update without the operator's confirmation |
+| O4 | Certificate and CRL expiry alerts plus LAB evidence for B5 history/alerts | B5 has CI evidence only |
+| O5 | Secret-free support bundle download from the panel | Shortens every troubleshooting round; must pass a no-key-material test |
+| O6 | Reverse out of Preview: integrity probe for Reverse (ADR-0021) and an acceptance run | Reverse stays Preview until that run passes |
+| O7 | Hardening carried from Phase 6: S4 fuzz depth for Apply body, bundle import and evidence readers; S7 IPv6 evidence; S9 fresh-VM acceptance; S10 drift attribution | S9 and S10 need the owner's hosts |
+
+### 9.5 0.4.0 and later
+
+- **Adaptive Traffic Policy Pack** (epic [#226](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/226), [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md), Proposed, nothing implemented): TP-0.1 (#227) research first, then measurement, then the engine-agnostic policy interface (#245) before any profile. Userspace only. No latency claim about the internet path.
+- **UDP/datagram carrier** ([#244](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/244)): separate transport feature with its own ADR, security audit and LAB. It is a prerequisite only for Gaming/Trading benefit claims; Balanced, Streaming and Bulk proceed on TCP/Yamux.
+- **Fleet / control plane** (draft [PR #171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171); its ADR number collides with ADR-0029 on `main` and must be renumbered if revived) and the HQ foundation (draft [PR #169](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/169)) stay untouched.
+- **External security review** stays paused by the owner; it is required before any v1.0 claim.
+
+### 9.6 Housekeeping
+
+Draft PRs #197 (B4, superseded by merged #201) and #173 (B1 docs, superseded) are still open and can be closed once their branches are confirmed to hold no unmerged work. [PROJECT_BOARD.md](PROJECT_BOARD.md) and the body of HQ Issue #2 still describe the rc.7/rc.8 state; the Issue #2 log is append-only, so the correction goes in as a new entry.

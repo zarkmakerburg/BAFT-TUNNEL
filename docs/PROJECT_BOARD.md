@@ -2,6 +2,13 @@
 
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
+## به‌روزرسانی 2026-11-16
+
+- **Stable `v0.2.0` منتشر شد** (تگ `76c12cb`، 2026-11-15). Reverse و BAFT همچنان Preview هستند؛ ادعای Production نمی‌شود.
+- `main` در `9b151ce`؛ PRهای #255، #257 و #258 ادغام شده‌اند ولی در هیچ نسخه‌ای نیستند (نامزد 0.2.1).
+- ترتیب کاری جدید در [بخش ۹ Roadmap](PRODUCT_ROADMAP.md#9-replan-after-stable-020-2026-11-16): اول 0.2.1 (R1 تا R6)، بعد 0.3.0 (عملیات‌پذیری)، بعد Policy Pack.
+- B3 با تصمیم ADR-0030 روی `Unknown` بسته است؛ B5 و B6 فقط شاهد CI دارند. #197 و #173 هنوز بازند.
+
 ## به‌روزرسانی 2026-11-15
 
 - `main` در `b61765f` (۸ Check موفق، فقط سطح CI)؛ آخرین نسخه: `v0.1.0-rc.8` (Pre-release، نه پایدار).
