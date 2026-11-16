@@ -176,4 +176,17 @@ hs="$root/lab/real-hosts/https-ip-stage.sh"
 grep -F 'raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/$TAG/scripts/quick-install.sh' "$hs" >/dev/null
 grep -F 'unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS' "$hs" >/dev/null
 grep -F 'trap cleanup EXIT' "$hs" >/dev/null
+# HTTPS --domain (Let's Encrypt) LAB: main-only, confirmation, fixed LAB domains, tag-pinned installer.
+hd="$root/.github/workflows/lab-https-domain-installer.yml"
+grep -F "if: \${{ github.ref == 'refs/heads/main' }}" "$hd" >/dev/null
+grep -F 'ref: ${{ github.sha }}' "$hd" >/dev/null
+grep -F '[[ "$CONFIRM" == RUN_TRUSTED_PHASE1_LAB ]]' "$hd" >/dev/null
+grep -F 'environment: baft-tunnel-lab' "$hd" >/dev/null
+grep -F 'group: baft-tunnel-trusted-lab-hosts' "$hd" >/dev/null
+grep -F 'type: choice' "$hd" >/dev/null
+test "$(grep -c 'secrets\.' "$hd")" = 4
+hds="$root/lab/real-hosts/https-domain-stage.sh"
+grep -F 'raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/$TAG/scripts/quick-install.sh' "$hds" >/dev/null
+grep -F 'unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS' "$hds" >/dev/null
+grep -F 'trap cleanup EXIT' "$hds" >/dev/null
 echo 'Trusted workflow secret-boundary tests: PASS'

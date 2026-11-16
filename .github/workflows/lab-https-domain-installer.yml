@@ -1,0 +1,74 @@
+name: LAB HTTPS installer by domain (Let's Encrypt)
+
+# Real ACME http-01 on a LAB host for a signed release tag. The domain picks the host:
+# lab-ex -> abroad, lab-ir -> iran. acme=staging uses the Let's Encrypt staging CA via panel-https.sh;
+# acme=production runs the public one-line installer with --domain. Verifies DNS (match/mismatch only),
+# Internet reachability of 80/443, the served certificate, login box, renewal, then removes everything.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Signed release tag to install (for example v0.2.1-rc.1)
+        required: true
+        type: string
+      domain:
+        description: LAB domain (its A record must point at the matching LAB host)
+        required: true
+        type: choice
+        options:
+          - lab-ex.goldapp.tr
+          - lab-ir.goldapp.tr
+      acme:
+        description: Let's Encrypt environment
+        required: true
+        type: choice
+        default: staging
+        options:
+          - staging
+          - production
+      confirm:
+        description: Type RUN_TRUSTED_PHASE1_LAB to authorize the install and cleanup on the LAB host
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-trusted-lab-hosts
+  cancel-in-progress: false
+
+jobs:
+  https-domain:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate inputs
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == RUN_TRUSTED_PHASE1_LAB ]] || { echo 'Explicit confirmation is required' >&2; exit 2; }
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo 'tag must be a release tag' >&2; exit 2; }
+      - name: DNS and reachability, ACME install, checks, clean up
+        env:
+          TAG: ${{ inputs.tag }}
+          DOMAIN: ${{ inputs.domain }}
+          ACME: ${{ inputs.acme }}
+          LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
+          LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+          LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          LAB_SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+          LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+          LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+          LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+          LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+        run: bash lab/real-hosts/https-domain-stage.sh
