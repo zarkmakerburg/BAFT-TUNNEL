@@ -96,5 +96,12 @@ fi
 if "$SCRIPT" --register t1 --agent-listen 0.0.0.0:18080 >/dev/null 2>&1; then
   echo 'non-loopback agent listen address was accepted' >&2; exit 1
 fi
+# The menu clears the screen: the HTTPS result must stay readable (pause) and the link must be reprinted after.
+pause_line="$(grep -n 'Press Enter to open the menu' "$SCRIPT" | head -1 | cut -d: -f1)"
+menu_line="$(grep -n '^  baft-tunnel menu </dev/tty' "$SCRIPT" | head -1 | cut -d: -f1)"
+test -n "$pause_line" && test -n "$menu_line" && test "$pause_line" -lt "$menu_line"
+grep -Fq 'HARGS+=(--show-token)' "$SCRIPT"
+grep -Fq '/var/lib/baft-tunnel-https/link' "$SCRIPT"
+grep -Fq 'printf '"'"'\033[H\033[2J'"'"'' "$ROOT/scripts/menu.sh"
 python3 "$ROOT/scripts/test-quick-install-failures.py"
 echo QUICK_INSTALL_TEST=PASS

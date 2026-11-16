@@ -74,6 +74,8 @@ OUT="$(run --ip "$IP")" || { echo "$OUT"; fail "IP install"; }
 grep -q "https://$IP:$HP/" <<<"$OUT" || fail "link not printed"
 grep -q 'NOT a public CA' <<<"$OUT" || fail "own-CA warning missing"
 grep -q "$(cat "$T/token")" <<<"$OUT" && fail "token printed to a non-terminal"
+[[ "$(cat /var/lib/baft-tunnel-https/link)" == "https://$IP:$HP/" ]] || fail "link state file wrong"
+grep -q "$(cat "$T/token")" /var/lib/baft-tunnel-https/link && fail "token leaked into link file"
 CA=/etc/baft-tunnel-https/ca.crt
 curl() { command curl -sS --noproxy "*" --max-time 10 --cacert "$CA" --connect-to "$IP:$HP:127.0.0.1:$HP" "$@"; }
 [[ "$(curl -o /dev/null -w '%{http_code}' https://$IP:$HP/v1/health)" == 200 ]] || fail "health via https"
