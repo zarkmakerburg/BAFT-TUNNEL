@@ -327,7 +327,7 @@ install_packages() {
 install_packages
 command -v nginx >/dev/null 2>&1 || die "nginx is not available"
 
-install -d -m 0700 "$STATE"
+install -d -m 0711 "$STATE"   # traverse-only: nginx must reach $WEBROOT; files inside stay 0600 (umask 077)
 install -d -m 0755 "$WEBROOT"
 if [[ -f "$CONF" ]]; then BACKUP="$STATE/backup.conf"; cp -p "$CONF" "$BACKUP"; fi
 CHANGED=1
