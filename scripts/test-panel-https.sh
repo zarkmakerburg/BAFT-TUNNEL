@@ -27,7 +27,7 @@ cat >"$BIN/systemctl" <<'SH'
 case "$*" in
   "is-active --quiet nginx") pgrep -x nginx >/dev/null ;;
   "reload nginx") nginx -s reload ;;
-  "enable --now nginx") nginx ;;
+  "enable --now nginx") nginx >/dev/null 2>&1 </dev/null ;;
   *) exit 0 ;;
 esac
 SH
