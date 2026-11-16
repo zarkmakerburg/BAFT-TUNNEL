@@ -59,16 +59,16 @@ Project record: [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/
 
 ## Quick install (Ubuntu 22.04, x86_64)
 
-One line installs the latest **signed stable** release (currently `v0.2.0`). The script is pinned to the release tag, not `main`. Before it extracts or runs anything it verifies the release's keyless Sigstore signature and SHA-256 checksums, and it stops if either check fails. It installs the panel agent only; no tunnel is started.
+One line installs the latest **signed stable** release (currently `v0.2.1`). The script is pinned to the release tag, not `main`. Before it extracts or runs anything it verifies the release's keyless Sigstore signature and SHA-256 checksums, and it stops if either check fails. It installs the panel agent only; no tunnel is started.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.2.0/scripts/quick-install.sh | sudo bash -s -- --register t1
+curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.2.1/scripts/quick-install.sh | sudo bash -s -- --register t1
 ```
 
 `t1` is your instance name (letters, digits, `_`, `-`). To inspect the script first, download it, read it, then run it:
 
 ```bash
-curl -fsSL -o quick-install.sh https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.2.0/scripts/quick-install.sh
+curl -fsSL -o quick-install.sh https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.2.1/scripts/quick-install.sh
 less quick-install.sh
 sudo bash quick-install.sh --register t1
 ```
