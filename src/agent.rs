@@ -2942,16 +2942,64 @@ async fn status(ctx: &Ctx, config: &RuntimeConfig) -> Value {
     })
 }
 
-/// Operator warnings drawn only from local observation. Today: CRL lifetime, because an expired
-/// CRL makes both TLS roles refuse every connection (fail closed).
+/// Local leaf certificate lifetime: `expired` (peers refuse it), `renew_now` (under 7 days),
+/// `renew_soon` (under 30 days), `ok`, or `unknown` when it cannot be read.
+fn certificate_state(remaining: Option<i64>) -> &'static str {
+    match remaining {
+        None => "unknown",
+        Some(r) if r <= 0 => "expired",
+        Some(r) if r < 7 * 86400 => "renew_now",
+        Some(r) if r < 30 * 86400 => "renew_soon",
+        Some(_) => "ok",
+    }
+}
+
+fn certificate_warning(cert: &std::path::Path) -> Option<Value> {
+    let remaining = crate::tls::certificate_seconds_remaining(cert).ok();
+    let state = certificate_state(remaining);
+    let (severity, text) = match state {
+        "ok" => return None,
+        "expired" => (
+            "error",
+            "this node's certificate has expired; peers refuse every connection until a renewed certificate is installed",
+        ),
+        "renew_now" => ("error", "this node's certificate expires in under 7 days"),
+        "renew_soon" => (
+            "warning",
+            "this node's certificate expires in under 30 days",
+        ),
+        _ => (
+            "warning",
+            "this node's certificate lifetime could not be read",
+        ),
+    };
+    Some(json!({
+        "id": "certificate",
+        "state": state,
+        "severity": severity,
+        "seconds_remaining": remaining,
+        "text": text,
+        "next": "enroll a new certificate for this node from the panel (Servers, certificate) or with the offline CA, then restart the tunnel service",
+    }))
+}
+
+/// Operator warnings drawn only from local observation: certificate and CRL lifetime, because
+/// an expired certificate or CRL makes the TLS roles refuse every connection (fail closed).
 fn status_warnings(config: &RuntimeConfig) -> Value {
-    let Some((crl, _)) = config.tls_files() else {
+    let Some((crl, cert)) = config.tls_files() else {
         return json!([]);
     };
+    // CRL first: existing consumers read warnings[0] as the CRL entry.
+    let mut out: Vec<Value> = crl_warning(crl).into_iter().collect();
+    out.extend(certificate_warning(cert));
+    Value::Array(out)
+}
+
+fn crl_warning(crl: &std::path::Path) -> Option<Value> {
     let remaining = crate::tls::crl_seconds_remaining(crl).ok();
     let state = crl_state(remaining);
     let (severity, text) = match state {
-        "ok" => return json!([]),
+        "ok" => return None,
         "expired" => (
             "error",
             "the CRL has expired; peers refuse every connection until a renewed CRL is installed",
@@ -2963,14 +3011,14 @@ fn status_warnings(config: &RuntimeConfig) -> Value {
         "renew_soon" => ("warning", "the CRL expires in under 7 days"),
         _ => ("warning", "the CRL lifetime could not be read"),
     };
-    json!([{
+    Some(json!({
         "id": "crl",
         "state": state,
         "severity": severity,
         "seconds_remaining": remaining,
         "text": text,
         "next": "run baft-pki.sh renew-crl on the offline CA, check it with crl-status.sh, then distribute it with push-crl.sh",
-    }])
+    }))
 }
 
 fn unix_now() -> u64 {
@@ -3909,6 +3957,16 @@ mod tests {
         }
         assert_eq!(result("directory_writable").as_deref(), Some("pass"));
         assert!(!missing.exists());
+    }
+
+    #[test]
+    fn certificate_state_warns_a_month_ahead_and_never_invents_ok() {
+        assert_eq!(certificate_state(None), "unknown");
+        assert_eq!(certificate_state(Some(0)), "expired");
+        assert_eq!(certificate_state(Some(86400)), "renew_now");
+        assert_eq!(certificate_state(Some(7 * 86400)), "renew_soon");
+        assert_eq!(certificate_state(Some(30 * 86400 - 1)), "renew_soon");
+        assert_eq!(certificate_state(Some(30 * 86400)), "ok");
     }
 
     #[test]
