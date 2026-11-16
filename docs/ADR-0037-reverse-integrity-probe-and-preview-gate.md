@@ -41,7 +41,11 @@ side and the service node runs the stream server on the yamux **client** side. T
 
 - Unit (this ADR's first change): `reverse_session_probes_work_from_the_public_and_the_service_node` and
   `reverse_probe_is_refused_by_a_peer_bound_to_the_direct_label` in `src/tunnel.rs`, with the real Reverse yamux roles.
-- LAB: pending (point 4). CI evidence is not LAB evidence.
+- LAB (2026-11-16): first run 43934235840 stopped at the second probe (`rate_limited`: the abroad node's limiter had just
+  answered the iran probe; harness fixed in #287, product limit unchanged). Re-run **43937260711 PASS** on candidate `3757bdc`
+  (binary sha256 `9d1a43cd…8916`): both probes pass, 1800 s soak (138 rounds, 0 failed, fd/RSS flat, 0 restarts), SIGKILL and
+  Apply restarts, backup/restore, update and automatic rollback, revoked certificate refused, uninstall clean,
+  secure-channel failures 0/0. Not covered: multi-hour soak, cross-version update. tcp-tls Reverse stays **Preview**.
 
 ## Consequences
 
