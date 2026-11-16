@@ -14,6 +14,7 @@ AGENT_LISTEN=""
 TAG=""
 CHANNEL="stable"
 VERIFY_ONLY=0
+HTTPS_HOST=""; HTTPS_KIND=""; HTTPS_EMAIL=""; HTTPS_SELF=0; NO_HTTPS=0; NO_MENU=0
 CHANNEL_SET=0
 
 usage() {
@@ -23,6 +24,7 @@ BAFT-TUNNEL quick installer (Ubuntu Linux x86_64)
 Usage:
   quick-install.sh --register NAME [--channel stable|prerelease | --tag vX.Y.Z[-rc.N]]
                    [--agent-listen 127.0.0.1:PORT]
+                   [--domain NAME | --ip ADDRESS] [--email ADDR] [--self-signed] [--no-https] [--no-menu]
 
 Options:
   --register NAME       Required instance name; installs the local panel agent.
@@ -31,6 +33,13 @@ Options:
   --tag TAG             Install this exact published release (instead of latest).
   --stable              Same as --channel stable (kept for compatibility).
   --agent-listen ADDR   Agent listen address (loopback only; default 127.0.0.1:18080).
+  --domain NAME         Serve the panel over HTTPS at NAME (Let's Encrypt certificate, auto-renewed).
+  --ip ADDRESS          Serve the panel over HTTPS at this IP (own-CA certificate; browser warns
+                        until you trust/pin the CA that is printed).
+  --email ADDR          Let's Encrypt expiry contact (optional).
+  --self-signed         With --domain: use the own-CA certificate instead of Let's Encrypt.
+  --no-https            Do not ask for a domain/IP; keep the panel on loopback (SSH tunnel).
+  --no-menu             Do not open the interactive menu after installation.
   --verify-only         Verify and extract-check the signed package; do not install.
   -h, --help            Show this help.
 
@@ -62,6 +71,12 @@ while (($#)); do
     --stable) CHANNEL="stable"; CHANNEL_SET=1; shift ;;
     --agent-listen) (($# >= 2)) || die "--agent-listen needs an address"; AGENT_LISTEN="$2"; shift 2 ;;
     --verify-only) VERIFY_ONLY=1; shift ;;
+    --domain) (($# >= 2)) || die "--domain needs a name"; HTTPS_HOST="$2"; HTTPS_KIND=domain; shift 2 ;;
+    --ip) (($# >= 2)) || die "--ip needs an address"; HTTPS_HOST="$2"; HTTPS_KIND=ip; shift 2 ;;
+    --email) (($# >= 2)) || die "--email needs an address"; HTTPS_EMAIL="$2"; shift 2 ;;
+    --self-signed) HTTPS_SELF=1; shift ;;
+    --no-https) NO_HTTPS=1; shift ;;
+    --no-menu) NO_MENU=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
   esac
@@ -81,6 +96,18 @@ if [[ -n "$AGENT_LISTEN" ]]; then
   [[ "$AGENT_LISTEN" =~ ^(127\.0\.0\.1|\[::1\]):([0-9]{1,5})$ ]] &&
     (( BASH_REMATCH[2] >= 1 && BASH_REMATCH[2] <= 65535 )) ||
     die "--agent-listen must be 127.0.0.1:PORT or [::1]:PORT"
+fi
+
+if [[ -n "$HTTPS_HOST" ]]; then
+  (( NO_HTTPS == 0 )) || die "--no-https cannot be combined with --domain/--ip"
+  if [[ "$HTTPS_KIND" == ip ]]; then
+    python3 -I -c 'import ipaddress,sys; a=ipaddress.ip_address(sys.argv[1]); sys.exit(1 if (a.is_loopback or a.is_unspecified or a.is_multicast or a.is_link_local or a.is_reserved) else 0)' "$HTTPS_HOST" 2>/dev/null ||
+      die "--ip must be a usable public/LAN IP address"
+  else
+    [[ "${HTTPS_HOST,,}" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]] || die "--domain is not a valid domain name"
+  fi
+elif (( HTTPS_SELF == 1 )) || [[ -n "$HTTPS_EMAIL" ]]; then
+  die "--self-signed/--email need --domain"
 fi
 
 [[ "$(uname -s)" == "Linux" ]] || die "only Linux hosts are supported"
@@ -197,6 +224,9 @@ tar -xzf "$TMP/$ARCHIVE" -C "$TMP" --no-same-owner --no-same-permissions
 PKG="$TMP/$NAME"
 [[ -x "$PKG/baft-tunnel" && -x "$PKG/scripts/install.sh" ]] || die "verified package is missing required installer files"
 "$PKG/baft-tunnel" --version >/dev/null 2>&1 || die "release binary failed its version check"
+if (( VERIFY_ONLY == 0 && NO_HTTPS == 0 )) && [[ ! -f "$PKG/scripts/panel-https.sh" ]]; then
+  [[ -z "$HTTPS_HOST" ]] || die "release $TAG predates HTTPS support (no scripts/panel-https.sh); use a newer --tag/--channel prerelease, or --no-https"
+fi
 if (( VERIFY_ONLY == 1 )); then
   echo "Verified signed BAFT-TUNNEL release $TAG and package layout; no installation performed."
   exit 0
@@ -210,5 +240,29 @@ fi
 
 echo
 echo "BAFT-TUNNEL $TAG installed and verified for instance $INSTANCE."
-echo "Panel: use an SSH tunnel to 127.0.0.1:18080; read its token with: sudo cat /var/lib/baft-tunnel-agent/token"
-echo "The tunnel itself was not started. Set it up in the panel Wizard (supported tcp-tls path): ssh -L 18080:127.0.0.1:18080 HOST, then open http://127.0.0.1:18080/"
+HTTPS_OK=0
+if (( NO_HTTPS == 0 )) && [[ -f "$PKG/scripts/panel-https.sh" ]]; then
+  HARGS=(--agent-listen "${AGENT_LISTEN:-127.0.0.1:18080}")
+  if [[ -n "$HTTPS_HOST" ]]; then
+    HARGS+=("--$HTTPS_KIND" "$HTTPS_HOST")
+    [[ -z "$HTTPS_EMAIL" ]] || HARGS+=(--email "$HTTPS_EMAIL")
+    (( HTTPS_SELF == 0 )) || HARGS+=(--self-signed)
+  else
+    HARGS+=(--interactive)
+  fi
+  if bash "$PKG/scripts/panel-https.sh" "${HARGS[@]}"; then
+    HTTPS_OK=1
+  else
+    echo "HTTPS setup failed and was rolled back; BAFT-TUNNEL itself is installed (panel stays loopback-only)." >&2
+    echo "Retry later: sudo bash $PKG/scripts/panel-https.sh ... or re-run this installer with --domain/--ip." >&2
+  fi
+fi
+echo "The tunnel itself was not started. Set it up in the panel Wizard (supported tcp-tls path)."
+if (( HTTPS_OK == 0 )); then
+  echo "Panel (loopback only): ssh -L 18080:127.0.0.1:18080 HOST, open http://127.0.0.1:18080/ ; token: sudo cat /var/lib/baft-tunnel-agent/token"
+fi
+# Interactive menu (installed with the package) when a real terminal is attached.
+if (( NO_MENU == 0 )) && [[ -t 1 && -r /dev/tty ]] && command -v baft-tunnel >/dev/null 2>&1; then
+  echo
+  baft-tunnel menu </dev/tty || true
+fi

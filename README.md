@@ -75,6 +75,19 @@ sudo bash quick-install.sh --register t1
 
 Add `--verify-only` to check the signed release without installing, `--tag vX.Y.Z` to pin another release, or `--channel prerelease` for Preview builds (Reverse and the BAFT engine are Preview). This is a CI/sandbox-verified install path; it is not a production-readiness claim.
 
+### HTTPS panel (domain or IP)
+
+Add `--domain` or `--ip` and the installer sets up an HTTPS front end (nginx) on the host and prints the link and the login token in a framed block at the end. Without either flag it asks on the terminal (empty answer = SSH tunnel only; `--no-https` skips the question). The panel itself stays non-root and loopback-only (ADR-0033).
+
+```bash
+# domain: Let's Encrypt certificate, auto-renewed (ports 80 and 443 must be reachable)
+curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --register t1 --domain panel.example.com --email you@example.com
+# IP: certificate from a CA generated on the host; the browser warns until you trust/pin the CA fingerprint that is printed
+curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --register t1 --ip 203.0.113.10
+```
+
+If HTTPS setup fails it is rolled back and the panel stays loopback-only; it never falls back to plain HTTP. After installation the interactive menu opens on a terminal (`--no-menu` to skip, or run `sudo baft-tunnel menu` later). HTTPS is available from the first release that ships `scripts/panel-https.sh`.
+
 **نصب یک‌خطی (فارسی):** دستور بالا آخرین نسخه پایدار امضاشده را نصب می‌کند. اسکریپت به تگ نسخه قفل شده (نه `main`) و پیش از هر اجرا امضای Sigstore و SHA-256 را بررسی می‌کند. برای بررسی قبل از اجرا، اسکریپت را دانلود کنید و بخوانید (دستورهای بالا)، یا با `--verify-only` فقط راستی‌آزمایی کنید. `t1` نام دلخواه نمونه است.
 
 ## Security model
