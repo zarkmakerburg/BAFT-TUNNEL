@@ -57,6 +57,26 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 
 Project record: [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
+## Quick install (Ubuntu 22.04, x86_64)
+
+One line installs the latest **signed stable** release (currently `v0.2.0`). The script is pinned to the release tag, not `main`. Before it extracts or runs anything it verifies the release's keyless Sigstore signature and SHA-256 checksums, and it stops if either check fails. It installs the panel agent only; no tunnel is started.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.2.0/scripts/quick-install.sh | sudo bash -s -- --register t1
+```
+
+`t1` is your instance name (letters, digits, `_`, `-`). To inspect the script first, download it, read it, then run it:
+
+```bash
+curl -fsSL -o quick-install.sh https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.2.0/scripts/quick-install.sh
+less quick-install.sh
+sudo bash quick-install.sh --register t1
+```
+
+Add `--verify-only` to check the signed release without installing, `--tag vX.Y.Z` to pin another release, or `--channel prerelease` for Preview builds (Reverse and the BAFT engine are Preview). This is a CI/sandbox-verified install path; it is not a production-readiness claim.
+
+**نصب یک‌خطی (فارسی):** دستور بالا آخرین نسخه پایدار امضاشده را نصب می‌کند. اسکریپت به تگ نسخه قفل شده (نه `main`) و پیش از هر اجرا امضای Sigstore و SHA-256 را بررسی می‌کند. برای بررسی قبل از اجرا، اسکریپت را دانلود کنید و بخوانید (دستورهای بالا)، یا با `--verify-only` فقط راستی‌آزمایی کنید. `t1` نام دلخواه نمونه است.
+
 ## Security model
 
 Security is part of the transport design, not an optional add-on.
