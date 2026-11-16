@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Interactive BAFT-TUNNEL menu (Persian / English). It only wraps the existing commands:
-# install.sh, install-agent-control.sh, `baft-tunnel setup|config`, systemctl/journalctl for
+# install.sh, install-agent-control.sh, panel-https.sh, `baft-tunnel setup|config`, systemctl/journalctl for
 # baft-tunnel@NAME, backup.sh, restore.sh, update.sh, rollback.sh, uninstall.sh and the PKI
 # helpers. Every command is shown before it runs. No engine, protocol or host setting is added.
 #
@@ -83,6 +83,8 @@ EN=(
   [main]="Main menu"
   [m_install]="Install or upgrade"
   [m_register]="Register an instance with the local agent (panel)"
+  [m_panel]="Panel: show the web link and login password"
+  [m_https]="Panel HTTPS: set up or retry (domain or IP)"
   [m_pair]="Pair the two nodes: legacy noise-tcp (advanced)"
   [pair_legacy]="Legacy/advanced: this creates a noise-tcp tunnel (Experimental; Reverse is Preview). The supported setup is the panel Wizard (tcp-tls): ssh -L 18080:127.0.0.1:18080 HOST, then open http://127.0.0.1:18080/."
   [m_config]="Configuration (plan / validate / apply)"
@@ -122,8 +124,30 @@ EN=(
   [other_instance]="Other name..."
   [no_instances]="No instance configuration found in %s yet; type a name."
   [next]="Next step:"
-  [next_install]="Set up the tunnel in the panel Wizard (supported tcp-tls path): register the agent (menu > Register), open the panel through SSH and follow Create tunnel on both nodes. Menu pairing is legacy noise-tcp (advanced)."
-  [next_register]="The agent runs now: pair from the panel (Create tunnel) or with setup init/join; it loads %s/%s.json by itself. Panel: ssh -L 18080:127.0.0.1:18080 HOST, then open http://127.0.0.1:18080/ (token: sudo cat /var/lib/baft-tunnel-agent/token)."
+  [next_install]="Set up the tunnel in the panel Wizard (supported tcp-tls path): register the agent (menu > Register), open the panel (menu > Panel: show the web link; no HTTPS yet: menu > Panel HTTPS) and follow Create tunnel on both nodes. Menu pairing is legacy noise-tcp (advanced)."
+  [next_register]="The agent runs now: pair from the panel (Create tunnel) or with setup init/join; it loads %s/%s.json by itself. Panel address and password: menu > Panel: show the web link and login password."
+  [panel_title]="Panel web access"
+  [panel_nohttps]="HTTPS is not set up on this host, so the panel is only on loopback. Set it up with: menu > Panel HTTPS (domain or IP). Without HTTPS: ssh -L 18080:127.0.0.1:18080 HOST, then open http://127.0.0.1:18080/ ."
+  [panel_bad_state]="The HTTPS state under %s is unreadable or invalid. Re-run: menu > Panel HTTPS."
+  [panel_link]="Link"
+  [panel_gate_missing]="web path file not found (%s); re-run menu > Panel HTTPS."
+  [panel_cert_ip]="Certificate: own CA generated on this host. The browser warns until you trust or pin this CA: %s"
+  [panel_cert_le]="Certificate: Let's Encrypt, renewed automatically."
+  [panel_keep_private]="Keep the link private; it is part of the login."
+  [q_show_pw]="Show the login password on this screen?"
+  [panel_pw]="Password"
+  [panel_pw_cannot]="Cannot read the password file %s (run as root: sudo baft-tunnel menu)."
+  [panel_pw_hint]="Paste it on the login page. It never leaves this host."
+  [h_domain]="Domain: Let's Encrypt certificate (ports 80 and 443 must be open)"
+  [h_ip]="IP address: own-CA certificate (browser warns until the CA is trusted)"
+  [h_remove]="Remove the HTTPS front end (panel returns to loopback only)"
+  [q_domain]="Domain name that points at this host"
+  [q_hip]="Public IP address of this host"
+  [q_email]="Email for Let's Encrypt expiry notices (empty = none)"
+  [q_remove_https]="Remove the HTTPS front end? The panel is then reachable only through an SSH tunnel."
+  [no_panel_script]="panel-https.sh is not installed next to the menu; upgrade to a release that includes it (menu > Install or upgrade)."
+  [https_staging]="Staging mode: panel HTTPS changes nginx and certificates on the real host, so it is skipped here (use --dry-run to see the command)."
+  [next_https]="Show the link again any time: menu > Panel: show the web link and login password. Allow 443/tcp (and 80/tcp for a domain) in your firewall; the menu never changes firewall rules."
   [p_init]="This node first: create key and pairing bundle (init)"
   [p_join]="I have the other node's bundle: check and write config (join)"
   [q_role]="Role of THIS node"
@@ -186,6 +210,8 @@ FA=(
   [main]="منوی اصلی"
   [m_install]="نصب یا ارتقا"
   [m_register]="ثبت اینستنس در agent محلی (پنل)"
+  [m_panel]="پنل: نمایش لینک وب و رمز ورود"
+  [m_https]="HTTPS پنل: راه‌اندازی یا تلاش دوباره (دامنه یا IP)"
   [m_pair]="جفت‌کردن دو نود: noise-tcp قدیمی (پیشرفته)"
   [pair_legacy]="قدیمی/پیشرفته: این گزینه تونل noise-tcp می‌سازد (آزمایشی؛ Reverse پیش‌نمایش است). مسیر پشتیبانی‌شده Wizard پنل (tcp-tls) است: ssh -L 18080:127.0.0.1:18080 HOST و بعد http://127.0.0.1:18080/ را باز کنید."
   [m_config]="پیکربندی (بازبینی / اعتبارسنجی / اعمال)"
@@ -224,8 +250,30 @@ FA=(
   [other_instance]="نام دیگر..."
   [no_instances]="هنوز پیکربندی اینستنسی در %s نیست؛ نام را بنویسید."
   [next]="قدم بعدی:"
-  [next_install]="تونل را در Wizard پنل بسازید (مسیر پشتیبانی‌شدهٔ tcp-tls): agent را ثبت کنید (منو > ثبت)، پنل را از طریق SSH باز کنید و روی هر دو نود «ساخت تونل» را دنبال کنید. جفت‌کردن از منو روش قدیمی noise-tcp (پیشرفته) است."
-  [next_register]="agent همین حالا روشن است: از پنل (ساخت تونل) یا با setup init/join جفت کنید؛ %s/%s.json را خودش بارگذاری می‌کند. پنل: ssh -L 18080:127.0.0.1:18080 HOST و بعد http://127.0.0.1:18080/ (توکن: sudo cat /var/lib/baft-tunnel-agent/token)."
+  [next_install]="تونل را در Wizard پنل بسازید (مسیر پشتیبانی‌شدهٔ tcp-tls): agent را ثبت کنید (منو > ثبت)، پنل را باز کنید (منو > پنل: نمایش لینک وب؛ اگر هنوز HTTPS ندارید: منو > HTTPS پنل) و روی هر دو نود «ساخت تونل» را دنبال کنید. جفت‌کردن از منو روش قدیمی noise-tcp (پیشرفته) است."
+  [next_register]="agent همین حالا روشن است: از پنل (ساخت تونل) یا با setup init/join جفت کنید؛ %s/%s.json را خودش بارگذاری می‌کند. آدرس و رمز پنل: منو > پنل: نمایش لینک وب و رمز ورود."
+  [panel_title]="دسترسی وب به پنل"
+  [panel_nohttps]="HTTPS روی این سرور راه‌اندازی نشده و پنل فقط روی loopback است. راه‌اندازی: منو > HTTPS پنل (دامنه یا IP). بدون HTTPS: ssh -L 18080:127.0.0.1:18080 HOST و بعد http://127.0.0.1:18080/ را باز کنید."
+  [panel_bad_state]="وضعیت HTTPS در %s خوانا یا معتبر نیست. دوباره اجرا کنید: منو > HTTPS پنل."
+  [panel_link]="لینک"
+  [panel_gate_missing]="فایل مسیر وب پیدا نشد (%s)؛ دوباره اجرا کنید: منو > HTTPS پنل."
+  [panel_cert_ip]="گواهی: CA اختصاصی ساخته‌شده روی همین سرور. تا وقتی این CA را معتبر یا pin نکنید مرورگر هشدار می‌دهد: %s"
+  [panel_cert_le]="گواهی: Let's Encrypt، با تمدید خودکار."
+  [panel_keep_private]="لینک را خصوصی نگه دارید؛ بخشی از ورود است."
+  [q_show_pw]="رمز ورود روی این صفحه نمایش داده شود؟"
+  [panel_pw]="رمز"
+  [panel_pw_cannot]="فایل رمز %s خوانده نمی‌شود (با root اجرا کنید: sudo baft-tunnel menu)."
+  [panel_pw_hint]="آن را در صفحهٔ ورود بچسبانید. از این سرور بیرون نمی‌رود."
+  [h_domain]="دامنه: گواهی Let's Encrypt (پورت‌های 80 و 443 باید باز باشند)"
+  [h_ip]="آدرس IP: گواهی CA اختصاصی (تا معتبر کردن CA مرورگر هشدار می‌دهد)"
+  [h_remove]="حذف HTTPS (پنل دوباره فقط روی loopback)"
+  [q_domain]="نام دامنه‌ای که به این سرور اشاره می‌کند"
+  [q_hip]="آدرس IP عمومی این سرور"
+  [q_email]="ایمیل برای اعلان انقضای Let's Encrypt (خالی = بدون ایمیل)"
+  [q_remove_https]="HTTPS حذف شود؟ پنل بعد از آن فقط با تونل SSH در دسترس است."
+  [no_panel_script]="panel-https.sh کنار منو نصب نیست؛ به نسخه‌ای که آن را دارد ارتقا دهید (منو > نصب یا ارتقا)."
+  [https_staging]="حالت staging: HTTPS پنل nginx و گواهی‌های سرور واقعی را تغییر می‌دهد، پس اینجا رد می‌شود (برای دیدن دستور از --dry-run استفاده کنید)."
+  [next_https]="هر وقت خواستید لینک را دوباره ببینید: منو > پنل: نمایش لینک وب و رمز ورود. پورت 443/tcp (و برای دامنه 80/tcp) را در فایروال باز کنید؛ منو هیچ‌وقت قوانین فایروال را تغییر نمی‌دهد."
   [p_init]="اول این نود: ساخت کلید و bundle جفت‌سازی (init)"
   [p_join]="bundle نود دیگر را دارم: بررسی و نوشتن پیکربندی (join)"
   [q_role]="نقش همین نود"
@@ -581,6 +629,62 @@ do_register() {
   next_step "$(tf next_register "/etc/baft-tunnel" "$INSTANCE")"
 }
 
+DOMAIN_RE='^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$'
+IP_RE='^([0-9]{1,3}\.){3}[0-9]{1,3}$|^[0-9A-Fa-f]*:[0-9A-Fa-f:]{2,38}$'
+HTTPS_STATE_DIR="$ROOT_PREFIX/var/lib/baft-tunnel-https"
+TOKEN_FILE="$ROOT_PREFIX/var/lib/baft-tunnel-agent/token"
+
+# Shows the panel HTTPS link built from the state panel-https.sh wrote, and (only after a
+# confirmation) the login password. Nothing is changed; the password goes to the terminal only.
+do_panel() {
+  local st="$HTTPS_STATE_DIR/state" gf="$HTTPS_STATE_DIR/gate" host="" kind="" port="" self="" gate="" suffix="" link=""
+  say "$(t panel_title)"
+  if [[ ! -r "$st" ]]; then
+    [[ -e "$st" ]] && { tf panel_bad_state "$HTTPS_STATE_DIR"; echo; } || say "$(t panel_nohttps)"
+    return 0
+  fi
+  host="$(sed -n 's/^HOST=//p' "$st" | head -n 1)"; kind="$(sed -n 's/^KIND=//p' "$st" | head -n 1)"
+  port="$(sed -n 's/^HTTPS_PORT=//p' "$st" | head -n 1)"; self="$(sed -n 's/^SELF_SIGNED=//p' "$st" | head -n 1)"
+  if [[ ! "$host" =~ ^[A-Za-z0-9.:_-]+$ || ! "$port" =~ ^[0-9]{1,5}$ ]]; then tf panel_bad_state "$HTTPS_STATE_DIR"; echo; return 0; fi
+  if [[ ! -r "$gf" ]]; then tf panel_gate_missing "$gf"; echo; return 0; fi
+  gate="$(tr -d '[:space:]' < "$gf")"
+  if [[ ! "$gate" =~ ^[A-Za-z0-9_-]{16}$ ]]; then tf panel_bad_state "$HTTPS_STATE_DIR"; echo; return 0; fi
+  [[ "$host" != *:* ]] || host="[$host]"
+  [[ "$port" == 443 ]] || suffix=":$port"
+  link="https://$host$suffix/$gate/"
+  echo
+  say "$(t panel_link): $link"
+  if [[ "$kind" == ip || "$self" == 1 ]]; then tf panel_cert_ip "/etc/baft-tunnel-https/ca.crt"; echo; else say "$(t panel_cert_le)"; fi
+  say "$(t panel_keep_private)"
+  confirm "$(t q_show_pw)" || return 0
+  if [[ -r "$TOKEN_FILE" ]]; then
+    say "$(t panel_pw): $(cat "$TOKEN_FILE")"; say "$(t panel_pw_hint)"
+  else
+    tf panel_pw_cannot "$TOKEN_FILE"; echo
+  fi
+}
+
+# Set up or retry HTTPS (domain: Let's Encrypt; IP: own CA) by calling panel-https.sh, which
+# rolls back on any failure and never downgrades to plain HTTP.
+do_https() {
+  local script="$SCRIPTS/panel-https.sh" val="" email="" args=()
+  [[ -f "$script" ]] || { say "$(t no_panel_script)"; return 0; }
+  if [[ "$STAGING" == "1" && "$DRY" == "0" ]]; then say "$(t https_staging)"; return 0; fi
+  choose "$(t m_https)" "$(t h_domain)" "$(t h_ip)" "$(t h_remove)"
+  case "$CHOICE" in
+    0) ask val "$(t q_domain)" "" "$DOMAIN_RE" || return 0
+       printf '%s: ' "$(t q_email)"; IFS= read -r email <&3 || quit; email="$(normalize "$email")"
+       args=(--domain "$val"); [[ -z "$email" ]] || args+=(--email "$email") ;;
+    1) ask val "$(t q_hip)" "" "$IP_RE" || return 0
+       args=(--ip "$val") ;;
+    2) confirm "$(t q_remove_https)" || { say "$(t cancel)"; return 0; }
+       run bash "$script" --remove && next_step "$(t next_update)"
+       return 0 ;;
+    *) return 0 ;;
+  esac
+  run bash "$script" "${args[@]}" && next_step "$(t next_https)"
+}
+
 do_pair_init() {
   local role direction node peer tunnel service tport peerip="" engine=noise-tcp
   choose "$(t q_role)" "$(t r_forward)" "$(t r_serve)"
@@ -737,13 +841,13 @@ fi
 [[ "$PLAIN" == "0" ]] || header
 
 while :; do
-  choose "$(t main)" "$(t m_install)" "$(t m_register)" "$(t m_pair)" "$(t m_config)" \
+  choose "$(t main)" "$(t m_install)" "$(t m_register)" "$(t m_panel)" "$(t m_https)" "$(t m_pair)" "$(t m_config)" \
     "$(t m_service)" "$(t m_status)" "$(t m_crl)" "$(t m_backup)" "$(t m_update)" \
     "$(t m_uninstall)" "$(t m_lang)" "$(t m_exit)"
   case "$CHOICE" in
-    0) do_install ;; 1) do_register ;; 2) do_pair ;; 3) do_config ;; 4) do_service ;;
-    5) do_status ;; 6) do_crl ;; 7) do_backup ;; 8) do_update ;; 9) do_uninstall ;;
-    10) if [[ "$LANG_SEL" == fa ]]; then LANG_SEL=en; else LANG_SEL=fa; fi; continue ;;
+    0) do_install ;; 1) do_register ;; 2) do_panel ;; 3) do_https ;; 4) do_pair ;; 5) do_config ;;
+    6) do_service ;; 7) do_status ;; 8) do_crl ;; 9) do_backup ;; 10) do_update ;; 11) do_uninstall ;;
+    12) if [[ "$LANG_SEL" == fa ]]; then LANG_SEL=en; else LANG_SEL=fa; fi; continue ;;
     *) quit ;;
   esac
   # Esc in a submenu returns straight to the main menu; anything else waits so the output stays readable.
