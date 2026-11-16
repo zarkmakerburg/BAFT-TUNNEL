@@ -226,8 +226,27 @@
       h('p', { class: 'sub', text: t('life.note') }), out);
   }
 
+
+  /* Sibling instances on this host (ADR-0036): one agent per instance; links only where the address is reachable from here. */
+  function hostTunnels(host, meta) {
+    var list = host && host.tunnels;
+    if (!list || meta !== 'ok') { return card(t('tunnels.host'), h('p', { class: 'sub', text: t('tunnels.host.none') })); }
+    var local = /^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname);
+    var rows = list.map(function (x) {
+      var right;
+      if (x.current) { right = pill('ok', t('tunnels.host.this')); }
+      else if (!x.agent_listen) { right = h('span', { class: 'sub', text: t('tunnels.host.noagent') }); }
+      else if (local) { right = h('a', { class: 'btn', href: 'http://' + x.agent_listen + '/', target: '_blank', rel: 'noopener' }, t('tunnels.host.open')); }
+      else { right = h('span', { class: 'sub' }, t('tunnels.host.addr', { a: x.agent_listen })); }
+      return h('li', null, BAFT.ltr(x.instance), ' · ', BAFT.ltr(x.active + '/' + x.sub), ' ', right);
+    });
+    return card(t('tunnels.host'), h('div', null, h('ul', { class: 'warns' }, rows),
+      host.truncated ? h('p', { class: 'sub', text: t('tunnels.host.more', { n: host.total }) }) : null,
+      h('p', { class: 'sub', text: t('tunnels.host.add') })));
+  }
+
   /* ---- Tunnels: the one tunnel this agent is configured for (the backend has no multi-tunnel inventory) ---- */
-  BAFT.register({ id: 'tunnels', icon: 'tunnels', group: 'operate', order: 2, tab: true, needs: [], render: function (ctx) {
+  BAFT.register({ id: 'tunnels', icon: 'tunnels', group: 'operate', order: 2, tab: true, needs: ['host'], render: function (ctx) {
     var d = ctx.data, s = d.status, c = conf(d), st = stats(d), ls = listenState(s), tn = s.tunnel || null, ts = tunnelState(tn);
     var tiers = tn && tn.tiers || {};
     var res = h('section', { class: 'card res' },
@@ -250,8 +269,9 @@
       card(t('tunnels.config'), h('div', null, kv([[t('f.streams'), nv(c.max_streams)], [t('f.pin'), c.peer_certificate_pin_configured == null ? '—' : c.peer_certificate_pin_configured ? t('yes') : t('no')], [t('f.protocol'), BAFT.ltr('v' + (c.protocol_version || 1))]]),
         h('p', { class: 'sub', text: t('tunnels.edit.na') }))),
       card(t('tunnels.actions'), lifecycle(tn)));
+    var hostCard = hostTunnels(d.host, d.meta.host);
     return h('div', { class: 'stack' }, h('p', { class: 'muted', text: t('tunnels.note') }),
-      h('div', { class: 'split' }, res, side),
+      h('div', { class: 'split' }, res, side), hostCard,
       h('div', null, h('a', { class: 'btn primary', href: '#/setup' }, BAFT.icon('plus'), t('tunnels.create'))));
   } });
 

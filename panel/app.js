@@ -125,7 +125,7 @@
       });
     });
   };
-  var ENDPOINTS = { status: '/v1/status', history: '/v1/history', security: '/v1/security', engines: '/v1/engines', desired: '/v1/desired', audit: '/v1/audit', traffic: '/v1/traffic', diagnostics: '/v1/diagnostics', update: '/v1/update' };
+  var ENDPOINTS = { status: '/v1/status', history: '/v1/history', security: '/v1/security', engines: '/v1/engines', desired: '/v1/desired', audit: '/v1/audit', traffic: '/v1/traffic', diagnostics: '/v1/diagnostics', update: '/v1/update', host: '/v1/host/tunnels' };
   /* Loaded on every page so the status badge and the notification count mean the same everywhere. */
   var BASE = ['security', 'history', 'traffic', 'audit', 'update'];
   /* Each endpoint ends as data (200), null + 'unavailable' (404: the agent does not offer it in this
