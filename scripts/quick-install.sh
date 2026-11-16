@@ -339,7 +339,11 @@ if (( NO_HTTPS == 0 )) && [[ -f "$PKG/scripts/panel-https.sh" ]]; then
     PANEL_PORT="$(sed -n 's/^HTTPS_PORT=//p' /var/lib/baft-tunnel-https/state | head -n1)"
     if [[ -n "$PANEL_HOST" ]]; then
       [[ "$PANEL_HOST" == *:* ]] && PANEL_HOST="[$PANEL_HOST]"
-      PANEL_LINK="https://$PANEL_HOST$([[ -n "$PANEL_PORT" && "$PANEL_PORT" != 443 ]] && echo ":$PANEL_PORT")/"
+      # Plain if, not "$(test && echo)": under set -e that assignment returns 1 on port 443 and
+      # silently ended the installer before the summary (LAB run 43879430384).
+      PANEL_LINK="https://$PANEL_HOST"
+      if [[ -n "$PANEL_PORT" && "$PANEL_PORT" != 443 ]]; then PANEL_LINK+=":$PANEL_PORT"; fi
+      PANEL_LINK+="/"
       if [[ -s /var/lib/baft-tunnel-https/gate ]]; then
         # The secret web path goes to a terminal only, like the password.
         if [[ -t 1 ]]; then PANEL_LINK+="$(tr -d '[:space:]' </var/lib/baft-tunnel-https/gate)/"

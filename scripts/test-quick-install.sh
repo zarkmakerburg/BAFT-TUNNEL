@@ -110,5 +110,22 @@ fi
 if "$SCRIPT" --register t1 --agent-listen 0.0.0.0:18080 >/dev/null 2>&1; then
   echo 'non-loopback agent listen address was accepted' >&2; exit 1
 fi
+# Regression (LAB run 43879430384): the HTTPS outcome block must survive set -e on the default
+# port 443. Run the real block from the script against a temporary state directory.
+HB="$(mktemp -d)"
+awk '/# Success is what panel-https.sh recorded/{p=1} p{print} p&&/^  fi$/{exit}' "$SCRIPT" \
+  | sed "s#/var/lib/baft-tunnel-https#$HB#g" >"$HB/block.sh"
+grep -q 'HTTPS_OK=1' "$HB/block.sh"
+printf 'abcdEFGH12345678\n' >"$HB/gate"
+for case in 'h.example|443|https://h.example/' 'h.example||https://h.example/' \
+            'h.example|8443|https://h.example:8443/' '2001:db8::1|443|https://[2001:db8::1]/'; do
+  IFS='|' read -r h port want <<<"$case"
+  printf 'HOST=%s\nHTTPS_PORT=%s\n' "$h" "$port" >"$HB/state"
+  got="$(bash -c 'set -Eeuo pipefail; HTTPS_OK=0; PANEL_LINK=""; HTTPS_RC=0; source "$1"; echo "$HTTPS_OK|$PANEL_LINK"' _ "$HB/block.sh")" \
+    || { echo "HTTPS outcome block exited non-zero for host=$h port=${port:-none}" >&2; exit 1; }
+  [[ "$got" == "1|${want}<web path>/ (web path: sudo cat $HB/gate)" ]] \
+    || { echo "HTTPS outcome block gave '$got' for host=$h port=${port:-none}" >&2; exit 1; }
+done
+rm -rf "$HB"
 python3 "$ROOT/scripts/test-quick-install-failures.py"
 echo QUICK_INSTALL_TEST=PASS
