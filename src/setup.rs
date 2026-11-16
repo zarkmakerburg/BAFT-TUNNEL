@@ -29,6 +29,17 @@ fn default_protocol_version() -> u16 {
     PROTOCOL_V1
 }
 
+/// Protocol generation used when a setup request does not name one: v2 (enables the
+/// authenticated integrity probe) for the Rust engines, v1 for the external BAFT engine
+/// which cannot speak v2. Existing configs and bundles without the field stay v1.
+pub fn default_protocol_for(engine: EngineKind) -> u16 {
+    if engine == EngineKind::Baft {
+        PROTOCOL_V1
+    } else {
+        PROTOCOL_V2
+    }
+}
+
 fn is_default_protocol_version(version: &u16) -> bool {
     *version == PROTOCOL_V1
 }
@@ -832,6 +843,13 @@ pub fn join(dir: &Path, bundle_path: &Path, checksum: &str) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn default_protocol_is_v2_except_for_the_external_baft_engine() {
+        assert_eq!(default_protocol_for(EngineKind::TcpTls), PROTOCOL_V2);
+        assert_eq!(default_protocol_for(EngineKind::NoiseTcp), PROTOCOL_V2);
+        assert_eq!(default_protocol_for(EngineKind::Baft), PROTOCOL_V1);
+    }
+
     use super::*;
     use crate::config::RuntimeConfig;
 

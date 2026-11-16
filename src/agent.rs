@@ -881,18 +881,14 @@ fn inspect_bundle(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
     )
 }
 
-fn default_setup_protocol_version() -> u16 {
-    crate::authorization::PROTOCOL_V1
-}
-
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PlanBody {
     engine: crate::config::EngineKind,
     role: crate::setup::Role,
     direction: crate::authorization::ConnectionDirection,
-    #[serde(default = "default_setup_protocol_version")]
-    protocol_version: u16,
+    #[serde(default)]
+    protocol_version: Option<u16>,
     node_id: String,
     peer_id: String,
     tunnel_id: String,
@@ -910,7 +906,9 @@ impl PlanBody {
             engine: self.engine,
             role: self.role,
             direction: self.direction,
-            protocol_version: self.protocol_version,
+            protocol_version: self
+                .protocol_version
+                .unwrap_or_else(|| crate::setup::default_protocol_for(self.engine)),
             node_id: self.node_id.clone(),
             peer_id: self.peer_id.clone(),
             tunnel_id: self.tunnel_id.clone(),
@@ -4243,10 +4241,10 @@ mod tests {
         let (code, out) = call(None, "POST", "/v1/setup/plan", Some(TOKEN), &body).await;
         assert_eq!(code, 200, "{out}");
         assert!(out.contains("setup init --engine noise-tcp --role serve --direction direct"));
-        assert!(out.contains("--protocol-version 1"));
+        assert!(out.contains("--protocol-version 2"));
         let response_body = out.split("\r\n\r\n").nth(1).unwrap();
         let plan: Value = serde_json::from_str(response_body).unwrap();
-        assert_eq!(plan["config"]["protocol_version"], 1);
+        assert_eq!(plan["config"]["protocol_version"], 2);
         assert!(out.contains("\"applied\":false"));
         assert!(!std::path::Path::new("/etc/baft-tunnel/config.json").exists());
     }
@@ -5625,7 +5623,7 @@ mod tests {
                 engine: crate::config::EngineKind::NoiseTcp,
                 role: crate::setup::Role::Forward,
                 direction: crate::authorization::ConnectionDirection::Direct,
-                protocol_version: crate::authorization::PROTOCOL_V1,
+                protocol_version: crate::authorization::PROTOCOL_V2,
                 node_id: "iran".into(),
                 peer_id: "abroad".into(),
                 tunnel_id: "pairdemo".into(),

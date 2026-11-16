@@ -316,7 +316,7 @@
     return s;
   }
   function freshWizard(c) {
-    return { step: 0, direction: null, role: 'forward', engine: 'tcp-tls', protocolVersion: 1, node: c.local_identity || '', peerId: '', tunnel: '', port: '', peerHost: '', serverName: '', localServerName: '',
+    return { step: 0, direction: null, role: 'forward', engine: 'tcp-tls', protocolVersion: 2, node: c.local_identity || '', peerId: '', tunnel: '', port: '', peerHost: '', serverName: '', localServerName: '',
       tport: '8443', dir: '/etc/baft-tunnel', inst: '', pf: null, plan: null, busy: false, errors: {} };
   }
   // Engines whose nodes enroll an X.509 certificate from the offline CA (tcp-tls and baft).
@@ -431,7 +431,7 @@
         var lab = (((e.evidence || {}).lab_two_host) || {})[w.direction];
         var labPill = lab === 'pass' ? pill('ok', t('meth.lab.pass')) : pill('unknown', t('meth.lab.unknown'));
         return choice('engine', e.id, w.engine === e.id, [BAFT.ltr(e.id), pill(rec ? 'ok' : 'warn', rec ? t('meth.rec') + ' · ' + t('meth.stable') : pre ? t('dir.preview') : t('meth.experimental')), labPill], t('meth.' + e.id) + (e.id === 'baft' ? ' ' + t('meth.baft.limits') : '') + ((e.guided_setup || {}).available === false ? ' ' + t('meth.noguided') : '') + (w.direction === 'reverse' ? ' ' + t('meth.rev.note') : ''),
-          function (v) { w.engine = v; if (v === 'baft') { w.protocolVersion = 1; } invalidate(); draw(); }, null, (e.guided_setup || {}).available === false);
+          function (v) { w.engine = v; w.protocolVersion = v === 'baft' ? 1 : 2; invalidate(); draw(); }, null, (e.guided_setup || {}).available === false);
       })));
     }
     function stepPreflight() {
