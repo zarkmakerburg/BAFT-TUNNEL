@@ -1346,7 +1346,7 @@ fn remediation(id: &str) -> &'static str {
     match id {
         "planner" => "Fix the highlighted setting; the same rule applies on the command line.",
         "direction_support" => {
-            "Choose the Direct direction. Reverse is unavailable until its implementation passes independent acceptance."
+            "Choose the Direct direction. Reverse is offered only for tcp-tls, as a Preview."
         }
         "directory" => "Create the setup directory or choose another one.",
         "setup_helper" => {
@@ -4416,7 +4416,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preflight_blocks_tcp_tls_reverse_until_independent_acceptance() {
+    async fn preflight_passes_tcp_tls_reverse_as_a_preview_only() {
         let body = plan_body("/nonexistent-baft-dir")
             .replace("\"direct\"", "\"reverse\"")
             .replace("noise-tcp", "tcp-tls");
@@ -4428,21 +4428,7 @@ mod tests {
             .iter()
             .find(|c| c["id"] == "direction_support")
             .unwrap();
-        assert_eq!(c["result"], "blocked", "{out}");
-        assert!(
-            !c["remediation"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("Reverse preview"),
-            "tcp-tls Reverse preflight must not advertise a preview: {c}"
-        );
-        assert!(
-            c["remediation"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("Direct"),
-            "tcp-tls Reverse preflight should direct the operator to Direct: {c}"
-        );
+        assert_eq!(c["result"], "pass", "{out}");
     }
 
     fn plan_body(dir: &str) -> String {
@@ -4782,7 +4768,7 @@ mod tests {
         let pages = include_str!("../panel/pages.js");
         assert!(!pages.contains("meth.ready"));
         assert!(en.contains(
-            "'meth.rev.note': 'Reverse is unavailable pending independent implementation and acceptance.'"
+            "'meth.rev.note': 'Reverse is a Preview for tcp-tls only (ADR-0037); it is not Stable.'"
         ));
     }
 
