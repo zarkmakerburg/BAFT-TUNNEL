@@ -57,7 +57,7 @@ http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PY
 start_agent() { python3 "$T/agent.py" "$AGENT_PORT" & AGENT_PID=$!; sleep 0.5; }
 stop_agent() { kill "$AGENT_PID"; wait "$AGENT_PID" 2>/dev/null || true; AGENT_PID=""; }
-run() { PATH="$BIN:$PATH" bash "$SCRIPT" --skip-apt --token-file "$T/token" --agent-listen "127.0.0.1:$AGENT_PORT" --https-port "$HP" "$@"; }
+run() { PATH="$BIN:$PATH" bash ${PANEL_TRACE:+-x} "$SCRIPT" --skip-apt --token-file "$T/token" --agent-listen "127.0.0.1:$AGENT_PORT" --https-port "$HP" "$@"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # validation (no changes made)
