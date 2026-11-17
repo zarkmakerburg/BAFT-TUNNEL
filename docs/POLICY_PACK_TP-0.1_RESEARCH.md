@@ -86,3 +86,15 @@ Reading: with a bulk stream on the same tunnel, interactive round trips grew by 
 A second run of the same scenarios gave idle p50 2.3 ms and bulk-competing p50 1,949 ms (first run 1,970 ms), so the order of magnitude is repeatable on this machine; still not a statistical result.
 
 New scenario `aged_session_throttled`: the bottleneck drops to a low rate once a connection is older than a threshold (scaled down to 3 s here; the LAB finding, run 44056840174, was flows older than about 60 s at about 21 KB/s on the real Iran-to-abroad path). A 1 MiB transfer on a fresh connection took 535 ms; on a connection older than the threshold (bottleneck 200 KB/s) it took 5,334 ms. This reproduces the shape of the LAB symptom (same bytes, an order of magnitude slower on an aged connection) and gives the stall thread's session-rotation mitigation a cheap CI-level before/after test. It models the throttle, it does not prove the LAB mechanism, and it says nothing about the real path.
+
+### 9.2 Experiment: Yamux window cap (ADR-0048, 2026-11-17, evidence level: simulated)
+
+`window_cap_experiment` (ignored by default) reruns the bulk-competing scenario with the per-stream maximum window overridden (2.5 MB/s bottleneck, 8 s, one run per value):
+
+| Max stream window | Loaded ping p50 | p95 | Window / rate |
+|---|---|---|---|
+| 256 KiB | 98 ms | 131 ms | 105 ms |
+| 1 MiB | 476 ms | 508 ms | 419 ms |
+| 4 MiB (product) | 1,972 ms | 1,996 ms | 1,678 ms |
+
+Loaded delay is close to window divided by bottleneck rate, so the queue behind the bottleneck is set by the Yamux window (plus small pipe buffers). Capping the window is a large lever (about 20x here) but `tokio-yamux` requires `max_stream_window_size >= 256 KiB` (initial window), so a window cap alone bottoms out near 100 ms at this rate: still about 40x the idle 2.3 ms and short of the ADR-0048 hypothesis (p95 within 10x of idle). Getting lower needs a per-class budget below the stream window (M1) or a smaller socket buffer (M3). Caveats: single run per value; simulated bottleneck without propagation delay; a smaller window also lowers the bandwidth-delay product a stream can fill on a long path, so a window cap can reduce throughput on real high-RTT links and must be tested with a delay model before it is considered.
