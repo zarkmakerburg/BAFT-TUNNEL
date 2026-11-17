@@ -35,7 +35,7 @@
 
 | PR | Head SHA | State | Verified note |
 |---|---|---|---|
-| [#323](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/323) | `d1897c5cb3a6af89868ce57255136a6087d908d3` | Draft / Open | 11/11 exact-head checks SUCCESS; no review. Noise-TCP Direct only. Pre-review gap: candidate gate does not assert candidate contains PR #315 merge SHA `a0e759d208c93e7ccda9f36ad3b9fc2fa9cd3de3`; comment #6952163991 requests guard + static test. No LAB dispatch. |
+| [#323](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/323) | `7177bb4566d5dd5b4fddc45d69a325a82729d68e` | Draft / Open | Candidate gate now queries merged PR #315 and requires its merge commit to be an ancestor of candidate SHA; static contract test added. New exact-head checks started (2 IN_PROGRESS at recheck); no independent review. Noise-TCP Direct only. No LAB dispatch. |
 | [#324](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/324) | `2ca82c8b86d75ffe4db9aae9fc8e1025635e1f7d` | Draft / Open | 11 Check Runs green on this head; no review recorded. Skills/governance + roadmap documentation; parallel, non-blocking track. |
 | [#326](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/326) | `ab8095d59cf77bf16bd13e34a81acf77adc463c5` | Draft / Open | F1 pure rules + ADR-0045 accepted with conditions; mergeability/check state not yet verified. |
 | [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `225e606135e3225faeaa14d8f03d8a504e7433d9` | Draft / Open | Automatic checkpoint policy + combined activate-and-continue `HQ RESUME`; documentation-only. Live metadata: mergeable=true, `mergeable_state=blocked`; exact-head checks 2/10 SUCCESS, 8 IN_PROGRESS. No submitted reviews. |
@@ -126,3 +126,15 @@ Proceed to P0-B on PR #323: refresh exact head, required checks and review state
 ## Next action
 
 P0-B: close the PR #323 candidate ancestry guard gap (must prove PR #315 is merged and its merge commit is an ancestor of the candidate SHA), add static contract coverage, then recheck all required exact-head CI and independent review. Only after those gates should the owner-authorized LAB dispatch be considered.
+
+## Latest HQ continuation reconciliation — 2026-11-17 15:22 UTC
+
+- P0-B PR #323 candidate-selection gap was fixed on the PR branch. Workflow now queries PR #315, requires `.merged == true`, extracts its exact `merge_commit_sha`, and requires that commit to be an ancestor of `candidate_sha`; static contract test asserts these guards. Read-back verified both files.
+- New PR #323 head: `7177bb4566d5dd5b4fddc45d69a325a82729d68e`; OPEN / Draft, mergeable=true, mergeable_state=blocked. At first exact-head check: 2 Check Runs IN_PROGRESS (`package-and-verify`, `lab-config`); remaining checks may still be queued/not created. No submitted reviews. Await all exact-head checks and independent review.
+- P0-B harness still Noise-TCP Direct only. No real LAB dispatch. Do not infer TCP-TLS mitigation from this harness.
+- PR #327 remains OPEN / Draft, head `225e606135e3225faeaa14d8f03d8a504e7433d9`, exact-head checks 2/10 SUCCESS + 8 IN_PROGRESS at last verification, mergeable_state=blocked.
+- P0-A paired non-tunnel raw-TCP/TLS control comparison is complete; root cause/product impact remain unverified. P0-C remains parked. No host mutation, firewall/route/sysctl change, merge, release or deploy.
+
+## Next action
+
+Recheck PR #323 exact-head required workflows until terminal. If green, obtain an independent review (none is currently recorded) before considering any owner-authorized real two-host Noise-TCP Direct LAB. In parallel, prepare a read-only, no-CAP_NET_ADMIN root-cause isolation plan for the aged-flow correlation.
