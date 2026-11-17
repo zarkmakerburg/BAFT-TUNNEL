@@ -913,4 +913,75 @@ mod tests {
         );
         assert!(server_task.await.unwrap().is_err());
     }
+
+    /// v1, v2 and v3 peers reject each other in both directions: no silent downgrade.
+    #[tokio::test]
+    async fn protocol_v3_handshake_is_strict_against_v1_and_v2_in_both_directions() {
+        use crate::authorization::{PROTOCOL_V2, PROTOCOL_V3};
+        let run = |client_v: u16, server_v: u16| async move {
+            let (mut c, mut s) = duplex(4096);
+            let server = tokio::spawn(async move {
+                server_handshake_versioned(
+                    &mut s,
+                    "abroad",
+                    "iran",
+                    "t",
+                    ConnectionDirection::Direct,
+                    server_v,
+                )
+                .await
+            });
+            let client = client_handshake_versioned(
+                &mut c,
+                "iran",
+                "abroad",
+                "t",
+                ConnectionDirection::Direct,
+                client_v,
+            )
+            .await;
+            (client, server.await.unwrap())
+        };
+        let (c, s) = run(PROTOCOL_V3, PROTOCOL_V3).await;
+        assert!(c.is_ok() && s.is_ok(), "v3 with v3 must work");
+        for (cv, sv) in [
+            (PROTOCOL_V3, PROTOCOL_V2),
+            (PROTOCOL_V2, PROTOCOL_V3),
+            (PROTOCOL_V3, 1),
+            (1, PROTOCOL_V3),
+        ] {
+            let (c, s) = run(cv, sv).await;
+            assert!(
+                c.is_err() || s.is_err(),
+                "v{cv} client vs v{sv} server must be rejected"
+            );
+            assert!(
+                s.is_err(),
+                "the server must refuse v{cv} when configured v{sv}"
+            );
+        }
+        // Reverse is refused for v3 on the server side.
+        let (mut c, mut s) = duplex(4096);
+        let server = tokio::spawn(async move {
+            server_handshake_versioned(
+                &mut s,
+                "abroad",
+                "iran",
+                "t",
+                ConnectionDirection::Reverse,
+                PROTOCOL_V3,
+            )
+            .await
+        });
+        let client = client_handshake_versioned(
+            &mut c,
+            "iran",
+            "abroad",
+            "t",
+            ConnectionDirection::Reverse,
+            PROTOCOL_V3,
+        )
+        .await;
+        assert!(server.await.unwrap().is_err() && client.is_err());
+    }
 }

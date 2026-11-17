@@ -698,8 +698,8 @@ async fn serve_streams_versioned<S>(
                     let version = protocol_version;
                     stream_tasks.spawn(async move {
                         let result = async {
-                            if version != crate::authorization::PROTOCOL_V2 {
-                                bail!("integrity probe requires protocol v2 on both peers");
+                            if !crate::authorization::supports_integrity_probe(version) {
+                                bail!("integrity probe requires protocol v2 or later on both peers");
                             }
                             crate::integrity_probe::run_on_session(|| async {
                                 let mut stream = timeout(CONNECT_TIMEOUT, stream_control.open_stream())
@@ -781,11 +781,15 @@ async fn serve_streams_versioned<S>(
                                 .context("forward TCP stream")?;
                             }
                             StreamCapability::IntegrityProbe => {
-                                if protocol_version != crate::authorization::PROTOCOL_V2 {
-                                    bail!("IntegrityProbe is unavailable outside protocol v2");
+                                if !crate::authorization::supports_integrity_probe(protocol_version)
+                                {
+                                    bail!("IntegrityProbe is unavailable before protocol v2");
                                 }
                                 let _probe_permit = stream_probe_limiter.acquire().await?;
                                 crate::integrity_probe::respond(&mut logical).await?;
+                            }
+                            StreamCapability::ResumeStreams => {
+                                bail!("ResumeStreams is not a stream type");
                             }
                         }
                         Ok(())
@@ -1022,8 +1026,8 @@ async fn run_forward_session_core(
                             eprintln!("forward-side stream capability: {capability:?}");
                             match capability {
                                 StreamCapability::IntegrityProbe => {
-                                    if version != crate::authorization::PROTOCOL_V2 {
-                                        bail!("IntegrityProbe is unavailable outside protocol v2");
+                                    if !crate::authorization::supports_integrity_probe(version) {
+                                        bail!("IntegrityProbe is unavailable before protocol v2");
                                     }
                                     let _probe_permit = limiter.acquire().await?;
                                     eprintln!("forward-side responding to integrity probe");
@@ -1031,6 +1035,9 @@ async fn run_forward_session_core(
                                 }
                                 StreamCapability::TcpForward => {
                                     bail!("unexpected peer-initiated TCP forwarding stream")
+                                }
+                                StreamCapability::ResumeStreams => {
+                                    bail!("ResumeStreams is not a stream type")
                                 }
                             }
                         }
@@ -1056,8 +1063,8 @@ async fn run_forward_session_core(
                 if let Some(request) = probe {
                     let mut stream_control = control.clone();
                     let result = async {
-                        if protocol_version != crate::authorization::PROTOCOL_V2 {
-                            bail!("integrity probe requires protocol v2 on both peers");
+                        if !crate::authorization::supports_integrity_probe(protocol_version) {
+                            bail!("integrity probe requires protocol v2 or later on both peers");
                         }
                         crate::integrity_probe::run_on_session(|| async {
                             let mut stream = timeout(CONNECT_TIMEOUT, stream_control.open_stream())
