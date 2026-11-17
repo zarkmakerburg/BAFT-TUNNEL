@@ -99,7 +99,7 @@
   } });
 
   /* ---- Servers: this node, plus the configured peer (never observed remotely) ---- */
-  BAFT.register({ id: 'servers', icon: 'servers', group: 'operate', order: 3, needs: ['engines'], render: function (ctx) {
+  BAFT.register({ id: 'servers', icon: 'servers', group: 'operate', order: 3, needs: ['engines', 'host'], render: function (ctx) {
     var d = ctx.data, s = d.status, c = conf(d), sec = d.security || {}, st = stats(d);
     var engines = ((d.engines || {}).engines || []).map(function (e) { return e.id; }).join(', ');
     var caps = h('ul', { class: 'warns' },
@@ -125,7 +125,11 @@
       h('div', { class: 'head' }, h('div', null, h('div', { class: 'title' }, BAFT.ltr(c.peer_identity)), h('div', { class: 'sub', text: t('servers.peer') })), pill('unknown', t('state.unknown'))),
       h('p', { class: 'sub', text: t('servers.peer.note') }),
       kv([[t('f.lastseen'), t('notobserved')], [t('f.version'), t('unknown')], [t('f.caps'), t('unknown')]]));
-    return h('div', { class: 'stack' }, h('p', { class: 'muted', text: t('servers.note') }), h('div', { class: 'grid cols-2' }, thisNode, peer));
+    var fleet = card(t('fleet.title'), h('div', null,
+      h('p', { class: 'sub', text: t('fleet.note') }),
+      kv([[t('fleet.hub'), pill('unknown', t('fleet.hub.none'))], [t('fleet.nodes'), t('fleet.nodes.none')]]),
+      h('p', { class: 'sub', text: t('fleet.add') })));
+    return h('div', { class: 'stack' }, h('p', { class: 'muted', text: t('servers.note') }), h('div', { class: 'grid cols-2' }, thisNode, peer), hostTunnels(d.host, d.meta.host), fleet);
   } });
 
   /* ---- Monitoring: only ranges the backend really keeps (last hour at 5 s, 24 h at 1 min) ---- */
