@@ -177,6 +177,12 @@ impl Ctx {
     }
 
     #[cfg(test)]
+    fn with_pair_dir(mut self, dir: PathBuf) -> Self {
+        self.pair_dir = dir;
+        self
+    }
+
+    #[cfg(test)]
     fn with_pki_helper(
         mut self,
         helper: Arc<dyn crate::pki_helper::PkiHelperClient + Send + Sync>,
@@ -6024,6 +6030,94 @@ mod tests {
 
     fn get(path: &str) -> String {
         format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}")
+    }
+
+    #[tokio::test]
+    async fn automatic_pairing_routes_validate_confirm_and_use_the_control_directory() {
+        let base = state_dir("auto-pair");
+        let (ctx, _conf) = setup_mode_ctx(&base);
+        let ctl = base.join("control");
+        let ctx = ctx.with_pair_dir(ctl.clone());
+        let ctx_ref = &ctx;
+        let offer = |v: Value| async move {
+            route(&post("/v1/pair/offer"), v.to_string().as_bytes(), ctx_ref).await
+        };
+        let no_auth = "POST /v1/pair/offer HTTP/1.1\r\nHost: 127.0.0.1";
+        assert_eq!(route(no_auth, b"{}", &ctx).await.0, 401);
+        // confirmation, ports and names are checked before anything reaches root
+        assert_eq!(
+            offer(json!({"name": "demo", "service_port": 9000, "confirm": false}))
+                .await
+                .0,
+            422
+        );
+        assert_eq!(
+            offer(json!({"name": "demo", "service_port": 80, "confirm": true}))
+                .await
+                .0,
+            422
+        );
+        assert_eq!(
+            offer(json!({"name": "../x", "service_port": 9000, "confirm": true}))
+                .await
+                .0,
+            422
+        );
+        assert_eq!(
+            offer(json!({"name": "demo", "service_port": 9000, "confirm": true, "extra": 1}))
+                .await
+                .0,
+            422
+        );
+        assert!(!ctl.join("pair1.pair").exists());
+        let (code, body) =
+            offer(json!({"name": "demo", "service_port": 9000, "confirm": true})).await;
+        assert_eq!(code, 202, "{body}");
+        let req: Value =
+            serde_json::from_slice(&std::fs::read(ctl.join("pair1.pair")).unwrap()).unwrap();
+        assert_eq!(req["op"], "offer");
+        assert_eq!(req["tunnel_port"], 8443);
+        // a second request while one is pending is refused
+        assert_eq!(
+            offer(json!({"name": "demo", "service_port": 9000, "confirm": true}))
+                .await
+                .0,
+            409
+        );
+        // accept needs a well-formed, unexpired code
+        let bad = route(
+            &post("/v1/pair/accept"),
+            json!({"code": "nonsense", "confirm": true})
+                .to_string()
+                .as_bytes(),
+            &ctx,
+        )
+        .await;
+        assert_eq!(bad.0, 422);
+        // status and approval go through files
+        assert_eq!(
+            route(&get("/v1/pair/status"), b"", &ctx).await.1["state"],
+            "idle"
+        );
+        std::fs::write(
+            ctl.join("pair1.pair-status"),
+            br#"{"state":"approval","peer":{"node_id":"n","address":"1.2.3.4:5"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            route(&get("/v1/pair/status"), b"", &ctx).await.1["state"],
+            "approval"
+        );
+        assert_eq!(
+            route(&post("/v1/pair/approve"), br#"{"approve":true}"#, &ctx)
+                .await
+                .0,
+            200
+        );
+        let a: Value =
+            serde_json::from_slice(&std::fs::read(ctl.join("pair1.pair-approve")).unwrap())
+                .unwrap();
+        assert_eq!(a["decision"], "approve");
     }
 
     #[tokio::test]

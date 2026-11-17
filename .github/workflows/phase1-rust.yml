@@ -162,6 +162,7 @@ jobs:
           node --check panel/pages.js
           node --check panel/i18n.js
           node --check scripts/panel-qa/lab-panel-live.js
+          node --check scripts/panel-qa/auto-pairing.js
           node --check scripts/panel-qa/pki-real-agent.js
           node --check scripts/panel-qa/lab-panel-pairing.js
           node scripts/panel-qa/evidence-localization.js
@@ -171,6 +172,10 @@ jobs:
         env:
           NODE_PATH: ${{ runner.temp }}/baft-panel-qa/node_modules
         run: node scripts/panel-qa/pki-enrollment.js
+      - name: Exercise automatic pairing flow in English and Persian
+        env:
+          NODE_PATH: ${{ runner.temp }}/baft-panel-qa/node_modules
+        run: node scripts/panel-qa/auto-pairing.js
       - name: Automated accessibility audit (axe-core; critical/serious violations fail)
         env:
           NODE_PATH: ${{ runner.temp }}/baft-panel-qa/node_modules

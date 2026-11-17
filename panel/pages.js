@@ -761,6 +761,113 @@
       if (w.joinReceipt) { out.push(folded(w.joinReceipt)); }
       return h('div', null, out);
     }
+
+    /* ---- Automatic pairing (ADR-0050): three choices, no file moved, no certificate step ---- */
+    function plainFail(reason) {
+      var r = String(reason || '');
+      if (/cannot reach the other server/.test(r)) { return t('auto.fail.reach'); }
+      if (/expected pairing certificate/.test(r)) { return t('auto.fail.pin'); }
+      if (/refused|expired|not approved/.test(r)) { return t('auto.fail.refused'); }
+      if (/cannot listen/.test(r)) { return t('auto.fail.port'); }
+      return t('auto.fail.other') + ' ' + r;
+    }
+    function autoFlow() {
+      var a = w.auto = w.auto || { role: null, name: '', port: '', host: '', code: '', ps: null, err: null, busy: false, phase: 'form', t0: 0 };
+      var key = function () { return newKey('ui-auto-'); };
+      function setErr(r) { a.err = (r && r.body && (r.body.detail || r.body.error)) || t('fail'); }
+      function afterDone() {
+        a.phase = 'starting'; draw();
+        BAFT.api('POST', '/v1/tunnel/lifecycle', { action: 'start', confirm: true, idempotency_key: key() }).then(function (r) {
+          a.phase = r.status === 200 ? 'started' : 'startfail'; draw();
+        }, function () { a.phase = 'startfail'; draw(); });
+      }
+      function poll() {
+        if (a.polling) { return; }
+        a.polling = true;
+        (function tick() {
+          BAFT.api('GET', '/v1/pair/status').then(function (r) {
+            if (r.status === 200 && r.body) {
+              a.ps = r.body;
+              var st = r.body.state;
+              if (st === 'idle' && Date.now() - a.t0 > 20000) { a.polling = false; a.phase = 'form'; a.err = t('auto.fail.nohelper'); draw(); return; }
+              if (st === 'failed') { a.polling = false; a.phase = 'form'; a.err = plainFail(r.body.reason); draw(); return; }
+              if (st === 'done') { a.polling = false; afterDone(); return; }
+              draw();
+            } else {
+              // The agent restarts with the new configuration once pairing wrote it.
+              BAFT.api('GET', '/v1/status').then(function (q) {
+                if (q.status === 200 && q.body && !q.body.setup_pending) { a.polling = false; w.status = q.body; afterDone(); }
+              }, function () {});
+            }
+          }, function () {}).then(function () { if (a.polling) { setTimeout(tick, 2000); } });
+        })();
+      }
+      function submit(path, body) {
+        a.busy = true; a.err = null; a.t0 = Date.now(); draw();
+        BAFT.api('POST', path, body).then(function (r) {
+          if (r.status === 202) { a.phase = 'running'; a.ps = { state: 'starting' }; poll(); } else { setErr(r); }
+        }, function (e) { a.err = e.message; }).then(function () { a.busy = false; draw(); });
+      }
+      function fieldA(k, label, ltr, kind) {
+        var input = h('input', { value: a[k], autocomplete: 'off', inputmode: kind || null, oninput: function () { a[k] = input.value; } });
+        if (ltr) { input.setAttribute('dir', 'ltr'); }
+        return h('label', { class: 'field' }, h('span', { text: label }), input);
+      }
+      var kids = [h('h2', { text: t('auto.title') }), h('p', { class: 'sub', text: t('auto.intro') })];
+      var cmd = function (code) { return 'sudo baft-tunnel pair accept ' + code; };
+      if (a.phase === 'form') {
+        kids.push(h('h3', { text: t('auto.role.q') }), h('div', { class: 'choices', role: 'radiogroup', 'aria-label': t('auto.role.q') },
+          choice('autorole', 'first', a.role === 'first', t('auto.role.first'), t('auto.role.first.d'), function (v) { a.role = v; a.err = null; draw(); }),
+          choice('autorole', 'second', a.role === 'second', t('auto.role.second'), t('auto.role.second.d'), function (v) { a.role = v; a.err = null; draw(); })));
+        if (a.role === 'first') {
+          kids.push(h('div', { class: 'form-grid' }, fieldA('name', t('auto.f.name'), true), fieldA('port', t('auto.f.port'), true, 'numeric')),
+            h('details', null, h('summary', { text: t('adv') }), h('div', { class: 'form-grid' }, fieldA('host', t('auto.f.host'), true))),
+            h('button', { type: 'button', class: 'primary', disabled: a.busy ? true : null, text: t('auto.create'), onclick: function () {
+              var port = Number(a.port);
+              if (!/^[A-Za-z0-9 -]{1,32}$/.test(a.name.trim()) || !(port >= 1024 && port <= 65535)) { a.err = t('auto.err.input'); draw(); return; }
+              var b = { name: a.name.trim(), service_port: port, confirm: true };
+              if (a.host.trim()) { b.host = a.host.trim(); }
+              submit('/v1/pair/offer', b);
+            } }));
+        } else if (a.role === 'second') {
+          var ta = h('textarea', { rows: 4, dir: 'ltr', 'aria-label': t('auto.f.code'), placeholder: 'BAFT1-...', oninput: function () { a.code = ta.value; } });
+          ta.value = a.code;
+          kids.push(h('label', { class: 'field' }, h('span', { text: t('auto.f.code') }), ta),
+            h('button', { type: 'button', class: 'primary', disabled: a.busy ? true : null, text: t('auto.connect'), onclick: function () {
+              var c = (a.code || '').trim().replace(/^sudo baft-tunnel pair accept\s+/, '');
+              if (c.indexOf('BAFT1-') !== 0) { a.err = t('auto.err.code'); draw(); return; }
+              submit('/v1/pair/accept', { code: c, confirm: true });
+            } }));
+        }
+        if (a.err) { kids.push(h('p', { class: 'error', role: 'alert', text: a.err })); }
+      } else if (a.phase === 'running') {
+        var ps = a.ps || {};
+        if (ps.state === 'waiting' && ps.code) {
+          kids.push(h('div', { class: 'banner info' }, h('strong', { text: t('auto.wait.t') }), h('p', { text: t('auto.wait.b') })),
+            h('p', { class: 'sub', text: t('auto.cmd') }), h('pre', { dir: 'ltr', text: cmd(ps.code) }),
+            h('div', { class: 'nav-row' }, h('button', { type: 'button', text: t('auto.copy.cmd'), onclick: function () { copyText(cmd(ps.code)); } }),
+              h('button', { type: 'button', text: t('auto.copy.code'), onclick: function () { copyText(ps.code); } })),
+            h('p', { class: 'sub', text: t('auto.fw', { port: '8443' }) }));
+        } else if (ps.state === 'approval' && ps.peer) {
+          kids.push(h('div', { class: 'banner' }, h('strong', { text: t('auto.appr.t') }), h('p', { text: t('auto.appr.b', { node: ps.peer.node_id, addr: ps.peer.address }) })),
+            h('div', { class: 'nav-row' },
+              h('button', { type: 'button', class: 'primary', text: t('auto.appr.yes'), onclick: function () { BAFT.api('POST', '/v1/pair/approve', { approve: true }); } }),
+              h('button', { type: 'button', text: t('auto.appr.no'), onclick: function () { BAFT.api('POST', '/v1/pair/approve', { approve: false }); } })));
+        } else {
+          kids.push(h('p', { role: 'status', text: t('auto.working') }));
+        }
+      } else if (a.phase === 'starting') {
+        kids.push(h('p', { role: 'status', text: t('auto.starting') }));
+      } else if (a.phase === 'started') {
+        kids.push(h('div', { class: 'banner info', role: 'status' }, h('strong', { text: t('auto.done') }), h('p', { text: t('auto.started') })),
+          h('a', { class: 'more-link', href: '#/tunnels', text: t('auto.goto') }));
+      } else if (a.phase === 'startfail') {
+        kids.push(h('div', { class: 'banner', role: 'alert' }, h('strong', { text: t('auto.done') }), h('p', { text: t('auto.startfail') })),
+          h('a', { class: 'more-link', href: '#/tunnels', text: t('auto.goto') }));
+      }
+      kids.push(h('p', null, h('button', { type: 'button', class: 'linklike', text: t('auto.manual'), onclick: function () { w.manual = true; draw(); } })));
+      return h('section', { class: 'card' }, kids);
+    }
     function stepApply() {
       var cmds = w.plan ? w.plan.commands.join('\n') : '';
       var copy = h('button', { type: 'button', text: t('ap.copy'), onclick: function () {
@@ -811,11 +918,13 @@
     }
     function draw() {
       root.textContent = '';
+      if (((w.status || st0).setup_pending || (w.auto && w.auto.phase !== 'form')) && !w.manual) { root.appendChild(autoFlow()); return; }
       var pfBlocked = w.step === 3 && w.pf && w.pf.overall === 'blocked';
       var step = [stepDirection, stepServers, stepMethod, stepPreflight, stepPreview, stepApply][w.step]();
       var needPf = w.step === 3 && !w.pf;
       var nextDisabled = pfBlocked || needPf || (w.step === 4 && !w.plan) || w.busy;
-      root.appendChild(h('div', null, h('p', { class: 'muted', text: t('setup.intro') }), stepper(),
+      var back = (st0.setup_pending && w.manual) ? h('p', null, h('button', { type: 'button', class: 'linklike', text: t('auto.simple'), onclick: function () { w.manual = false; draw(); } })) : null;
+      root.appendChild(h('div', null, back, h('p', { class: 'muted', text: t('setup.intro') }), stepper(),
         h('div', { class: 'split' },
           h('section', { class: 'card' }, h('p', { class: 'sub', text: t('step.n', { n: BAFT.fmtNum(w.step + 1, 0), m: BAFT.fmtNum(STEPS.length, 0) }) }), step,
             pfBlocked ? h('p', { class: 'fielderr', role: 'alert', text: t('next.blocked') }) : null,

@@ -81,6 +81,8 @@ function serve() {
 
       await page.goto(base + '/#/setup');
       await page.waitForSelector('.shell');
+      // Setup mode now opens the automatic pairing flow (ADR-0050); this script covers the manual path.
+      await page.getByRole('button', { name: /Manual\/advanced|دستی/ }).click();
       const reverseDirection = page.locator('input[type="radio"][name="direction"][value="reverse"]');
       ok(lang + ' keeps Reverse direction behaviorally disabled when the engine catalog offers Direct only',
         await reverseDirection.count() === 1 && await reverseDirection.isDisabled());
