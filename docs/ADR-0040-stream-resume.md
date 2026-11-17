@@ -66,3 +66,14 @@ Step 1 (2026-11-17): `PROTOCOL_V3` and the `ResumeStreams` session capability ex
 Step 2 (2026-11-17, #340): `src/resumable.rs` is the pure frame codec and per-direction endpoint engine (Data/Ack/Fin/Reset, 64 KiB payload, replay from the peer's received offset, bounded by window and tunnel budget) with a random-cut property test. Not wired.
 
 Step 3 (2026-11-17): the v3 `ServerHello` carries a 16-byte `resume_token` (required and well-formed for v3, rejected for v1/v2). Both sides derive `resume_binding` (length-prefixed SHA-256 over ids, tunnel, direction and both nonces) and agree on it; `src/resume_wire.rs` defines `ResumeHello`/`ResumeReply` (strict, 16 KiB, at most 256 distinct streams) and redeems the old token against the *current* identities, so a different identity, tunnel, direction or nonce fails with `BindingMismatch`, and the token is burned on every outcome but `Unknown` (replay, expiry tests). Authorization of the new session stays a precondition and is enforced by step 4. Not wired into the tunnel: no resume claim exists yet.
+
+### Security review of step 3 (2026-11-17, #342): required in step 4 before any flag
+No Critical. Step 3 may merge as unwired code; resume stays off until these are fixed and tested.
+- **H1** Token expiry starts when the carrying connection *drops*, not at handshake. A long-lived session must not have an expired token the moment it breaks.
+- **H2** A token cannot be redeemed while the issuing session is alive (the acceptor must see it closed first), and resumable streams are bound to the issuing session so a rotation can never place the same stream on two sessions.
+- **M1** The token store is bounded (count and memory); oldest or expired entries are swept.
+- **M2** Tokens never appear in `Debug` or logs (redacting type, no derive).
+- **M3** The identity used for the binding is the verified certificate identity of the new session, not text from the peer.
+- **M4** The opener checks that the reply matches its request (same stream ids, no extra answers).
+- **M5** A resume message reader with its own size bound, independent of the 2 KiB handshake reader.
+The step 5 chaos test must pass before any default-off Preview flag.
