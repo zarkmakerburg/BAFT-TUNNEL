@@ -174,6 +174,27 @@ Recheck PR #323 exact-head required workflows until terminal. If green, obtain a
 - PR #323 remains OPEN / Draft at `7177bb4566d5dd5b4fddc45d69a325a82729d68e`, 11/11 exact-head checks SUCCESS, no submitted reviews, no requested reviewers. The candidate-selection guard is present. No LAB dispatch.
 - The checkpoint snapshot and Issue #2 board must record this review blocker. No merge, LAB, tag, release, deploy or host operation was performed.
 
+## Live release and repository reconciliation — 2026-11-17 15:50 UTC
+
+- **main:** `c3e2bda8cc4b598c410a665f3c18fb6cc2d944c2`; 15/15 exact-SHA Check Runs SUCCESS; required `rust`, `ubuntu-2204-baseline`, `lab-config` contexts SUCCESS. Branch protection remains enabled.
+- **Stable v0.2.2 was published after the previous checkpoint:** tag `v0.2.2` points to `5dd0890cac9deddcac66c3105d3fbaf9164e391e`; annotated tag message `BAFT-TUNNEL v0.2.2`; tagger Amirm... at 15:36:21 UTC. GitHub Release is public, non-draft, `prerelease=false`, published 15:39:08 UTC. Release workflow, phase0 and same-SHA package/signature verification workflows all SUCCESS. Eight assets uploaded: engine licenses, engine binary, tunnel binary, tunnel tar.gz, SBOM, engine manifest, SHA256SUMS and cosign bundle. This is a real Stable publication, not merely a tag candidate.
+- **Important release-policy conflict / acceptance risk:** `docs/RELEASE.md` says releases stay pre-release until Phase 1 gates close. On the same target SHA `5dd0890...`, two historical trusted two-host U7 upgrade acceptance runs failed:
+  - [Run 43897433228](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43897433228): soak payload mismatches (expected 2,097,289 bytes; observed 851,860 / 982,932 / 868,244) and subsequent mTLS `CertificateRevoked` failures.
+  - [Run 43910396414](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43910396414): probes failed during soak, Yamux session timeout, shutdown deadline exceeded and subsequent mTLS `CertificateRevoked` failures.
+  - In both, release asset verification/tag validation jobs succeeded; the two-host U7 LAB job failed. The current tag-push release pipeline itself succeeded but does not erase these failed acceptance records. Stable release was not reverted or modified; flag for owner review and release-policy reconciliation.
+- **Open Draft PRs (live list):**
+  - #323 head `7177bb4566d5dd5b4fddc45d69a325a82729d68e`, 11/11 SUCCESS, no review, no LAB. Noise-TCP Direct rotation harness.
+  - #324 head `2ca82c8b86d75ffe4db9aae9fc8e1025635e1f7d`, 11/11 SUCCESS.
+  - #326 head `ab8095d59cf77bf16bd13e34a81acf77adc463c5`, 12/12 SUCCESS.
+  - #327 head `e86a1ebe2f1fb0c58fd166ed45bcb55f203dc041`, 11/11 SUCCESS.
+  - #328 head `c2a92a2270c93d3b495ecd38da4fcbe24d7aaeb5`, 11/11 SUCCESS.
+  - #329 head `dfecce03ec37e1e603b2d5314170b7a54ca349f3`, README install pin v0.2.2, 11 checks with `rust` IN_PROGRESS; CodSpeed gate passed with warning that 3 benchmarks are dominated by system calls.
+  - #330 head `c83b3ac3a2a9a74fbfe461367744fbb6043c0bea`, repeat E2 blackhole scenario per tool, 12 checks with `ubuntu-2204-baseline`, `rust`, and `e2` IN_PROGRESS; CodSpeed gate passed with same system-call warning.
+  - #171 remains Draft/deferred; not rechecked in this live pass.
+- **PR #323 review gate:** still Draft, exact-head CI green, no submitted reviews. CodeAgent has no linked agent; no independent collaborator exists in repo collaborator list. No LAB dispatch.
+- **v0.3.0-rc.1** remains prerelease; no rc.2 created.
+- No merges, new LAB dispatch, host mutation, firewall/route/sysctl changes, CAP_NET_ADMIN, new tags, or deployment were performed in this report.
+
 ## Next action
 
 Independent review of PR #323 is BLOCKED because there is no linked CodeAgent provider or independent GitHub collaborator available. To proceed, the owner must either link an agent provider in CodeAgent Mobile or add/name an independent GitHub collaborator reviewer. After that, request the review against exact HEAD `7177bb4566d5dd5b4fddc45d69a325a82729d68e`, read and resolve findings, revalidate exact-head CI, and only then consider the separate owner-authorized two-host Noise-TCP Direct LAB. Do not merge or dispatch LAB while this gate is open.
