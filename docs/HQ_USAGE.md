@@ -40,6 +40,11 @@ The compact live handoff is [HQ_CURRENT_STATE.md](HQ_CURRENT_STATE.md); the proc
 
 For a new thread: activate `HQ ON`, read `AGENTS.md` → profile → this guide → checkpoint protocol → current state → newest Issue #2 comments, then verify live refs/checks/runs before acting. A checkpoint is an index, not evidence or permission. Do not carry chat-scoped authorizations into a new thread without reconfirmation.
 
+
+### Automatic checkpoints
+
+HQ records a lightweight working checkpoint after every user message and every tool operation. It durably updates `HQ_CURRENT_STATE.md` and appends to Issue #2 when a decision, instruction result, repository/CI/LAB state, blocker, priority or handoff changes; it also checkpoints every 3 substantive user turns or 10 meaningful tool operations, whichever comes first. No-op conversational turns do not create empty board comments. Long-running work is checkpointed before dispatch and after its result. If a write/read-back fails, the checkpoint is reported as incomplete. This is best-effort while the chat and tools remain available; it cannot execute after an abrupt client termination or in the background. A checkpoint never grants permission.
+
 ## 4. Evidence rules
 
 Every important report states, as far as possible: date and scope; branch and exact SHA; PR/Issue number; workflow run and job ID; result **PASS / FAIL / UNKNOWN (NOT VERIFIED)**; evidence level; limits, risks, next action.
