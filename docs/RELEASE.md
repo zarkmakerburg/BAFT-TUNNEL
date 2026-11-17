@@ -11,8 +11,11 @@ git push origin vX.Y.Z
 
 The tag push starts the release workflow. To rerun it manually, select that existing
 version tag as the workflow ref (or run `gh workflow run release.yml --ref vX.Y.Z`).
-A tag containing `-`, e.g. `v0.1.0-rc.1`, is a pre-release. Releases stay
-**pre-release** until the Phase 1 gates close.
+A tag containing `-`, e.g. `v0.1.0-rc.1`, is a pre-release. A tag without `-` is a Stable
+release: it is cut only on a commit that already has a signed release candidate with
+two-host LAB evidence, and only with the owner's explicit approval of the tag push. Stable
+releases (v0.2.0 onward) ship with their known issues listed below; evidence levels (CI, VM,
+LAB, Production) are never merged into one claim.
 
 The workflow builds the Linux binary (Rust 1.88.0, `--locked`), writes
 `SHA256SUMS` and a CycloneDX SBOM, signs `SHA256SUMS` keylessly with cosign
@@ -43,6 +46,23 @@ created by workflow runs on `main` or any branch do not verify. The release work
 requires the selected tag to point to a commit already contained in `main` (SA-03).
 Legacy releases signed from `refs/heads/main` are intentionally rejected by the hardened
 installer and verifier; publish a new tag after this change is merged.
+
+## Known issues (Stable)
+
+### v0.2.2
+
+- **Long 2 MiB flows on the Iran LAB path (LAB evidence, cause not fully proven).** In the
+  rc.2 to rc.3 upgrade soaks (workflow runs 43897433228 and 43910396414, 16 November 2026),
+  probes were intact until about 15:37 UTC and then repeatedly returned truncated payloads
+  (for example 704377 of 2097289 bytes) from about 16:00 UTC. The working explanation is that the
+  Iran network path throttles flows older than roughly 15 to 20 seconds; paired raw TCP/TLS
+  controls outside the tunnel are tracked in the roadmap. It is not yet proven that the product
+  is unaffected. Optional Direct session rotation (ADR-0049, off by default) is the planned
+  mitigation and has CI evidence only; it has no LAB result yet.
+- The `CertificateRevoked` lines in those logs follow the failure and belong to the end-of-run
+  revocation checks; they were not shown to be the cause of the truncated payloads.
+- Reverse `tcp-tls` and the BAFT engine remain Preview; `ready` and ordinary `integrity`
+  remain Unknown by design.
 
 ## Notes
 
