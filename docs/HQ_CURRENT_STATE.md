@@ -45,13 +45,15 @@ PR base refs and statuses can change; re-fetch them before action. PR #327 was o
 
 ## Active task — P0-A raw TCP vs TLS aged-flow diagnosis
 
-**Status: PARTIAL CONTROL EVIDENCE RECEIVED / P0-A NOT VERIFIED.**
+**Status: PAIRED RAW-TCP/TLS CONTROL COMPARISON COMPLETE; ROOT CAUSE AND PRODUCT IMPACT NOT ESTABLISHED.**
 
 - Completed [run 44101542573](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44101542573), head SHA `65b50dea5562a15f8299a13afcec64d34a93bf58`, job `134102574533`: conclusion `success`. Job logs are now retrievable. Inputs in the log: `AGE_MODE=tcp`, `AGES=0,15,20,25,30,60`, `SIZE_KB=2048`, `ITER=3`, port 8443. This is raw TCP, not TLS and not BAFT-TUNNEL product traffic.
 - Client logs show all 18/18 transfers completed with `ok=true`, `bytes=2097152`, no reported error. Per-attempt client durations: age 0 = 1.40/0.87/0.86s; age 15 = 0.88/0.83/0.88s; age 20 = 94.14/24.40/98.41s; age 25 = 96.11/97.40/109.52s; age 30 = 100.86/85.30/93.72s; age 60 = 93.59/84.49/108.51s. Server logs also report 2,097,152 bytes for each transfer and no reported error; server durations include 5.54/1.88/1.96s (age 0), 20.24/17.22/17.28s (age 15), 119.42/45.92/119.92s (age 20), 126.31/123.99/136.14s (age 25), 136.40/116.97/125.44s (age 30), and 159.38/147.04/171.44s (age 60). The pronounced slowdown appears from age 20 onward in this raw-TCP control. This is diagnostic evidence only; it does not identify root cause or prove tunnel behavior.
-- [Run 44101769313](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44101769313), same workflow head, is still `in_progress`; job `134120451601` remains in the transfer step. Its logs are not yet retrievable (404 `BlobNotFound`) and no artifacts are listed. Its actual dispatch inputs/mode remain UNKNOWN.
-- The workflow is explicitly **non-tunnel network control**; it runs a temporary Python transfer endpoint and does not execute BAFT-TUNNEL. Preserve this distinction in all conclusions.
-- Do not dispatch another LAB workflow while run `44101769313` is active. Recheck status/jobs/logs/artifacts after completion; validate its mode, parameters and both client/server records. P0-A remains open until the paired TLS-vs-raw-TCP evidence is available and interpreted.
+- Completed [run 44101769313](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44101769313), same workflow head, job `134120451601`: conclusion SUCCESS. Recovered log inputs: `AGE_MODE=tls`, `AGES=0,15,20,25,30,60`, `SIZE_KB=2048`, `ITER=3`, port 8443, empty SNI. Client: 18/18 transfers `ok=true`, exactly 2,097,152 bytes each, no errors. Client durations: age 0 = 1.03/0.86/0.92s; 15 = 0.84/0.92/0.89s; 20 = 96.70/95.16/89.42s; 25 = 23.75/0.83/79.40s (high variance); 30 = 99.05/98.59/82.20s; 60 = 90.76/100.32/100.66s. Server also logged 18 matching 2,097,152-byte records with no errors.
+- Script inspection confirms 5-second application ping/pong while aging the same TCP/TLS flow, then a 2 MiB echo transfer; client transfer timing is reset after aging. Server `secs` starts before accept and therefore includes connection/age waiting; do not treat server seconds as pure transfer duration.
+- Paired comparison: both raw TCP and TLS are fast at ages 0/15, then both show severe client-side slowdown from age 20 onward. TLS does not remove the observed aged-flow degradation. Age 25 TLS is noisy (0.83–79.40s), so avoid overclaiming an exact threshold or a smooth monotonic curve. Raw TCP and TLS runs were sequential, not simultaneous randomized trials.
+- The workflow is explicitly **non-tunnel network control**; it runs a temporary Python endpoint and does not execute BAFT-TUNNEL. The evidence supports a shared path/aged-flow correlation, not a proven network root cause, and does not prove BAFT-TUNNEL product behavior.
+- P0-A's requested raw-vs-TLS control matrix is complete. Root-cause isolation and product impact remain unverified. Because TLS showed no mitigation, current evidence does not justify starting TCP-TLS rotation as a mitigation; P0-C remains conditional/parked pending a separate technical rationale.
 
 ### P0 order
 
@@ -98,3 +100,16 @@ Continue P0-A from the partial raw-TCP result: wait for run **44101769313** to f
 ## Next action
 
 Continue P0-A: wait/recheck run **44101769313**. Determine its actual mode, ages and parameters from workflow logs/dispatch evidence, then validate client and server bytes/timings/errors. Do not launch another LAB run while it is active. Keep the evidence explicitly labeled non-tunnel control traffic.
+
+
+## Latest HQ continuation reconciliation — 2026-11-17 15:12 UTC
+
+- Run **44101769313** completed SUCCESS at 15:11:10 UTC. Recovered inputs establish TLS aged-flow control: ages 0/15/20/25/30/60, 2 MiB x3, port 8443, 5-second app ping/pong; 18/18 client transfers and 18 server records completed with exact byte counts and no reported errors.
+- Paired with raw-TCP run **44101542573**, both modes are fast at age 0/15 and both degrade sharply from age 20 onward. TLS does not remove the effect. TLS age 25 is highly variable (client 0.83/23.75/79.40s); no smooth threshold claim. The server `secs` metric includes accept/aged waiting time, so client timings are the meaningful transfer comparison.
+- Classification: P0-A requested non-tunnel raw-TCP/TLS control comparison COMPLETE; root cause and BAFT-TUNNEL product impact NOT ESTABLISHED. This is evidence of a shared aged-flow/path correlation, not proof of a particular network mechanism. Do not claim tunnel behavior. Current evidence does not justify TCP-TLS rotation as mitigation; P0-C stays conditional/parked absent a separate rationale.
+- PR #327 remains OPEN / Draft; current head must be re-fetched after this snapshot write. No merge/release/deploy. The prior exact head `f86b671ed1b021990c4962a200e5a89c60804208` had 11/11 Check Runs SUCCESS; this snapshot update will create a new head.
+- No third LAB dispatch or host configuration change was performed.
+
+## Next action
+
+Proceed to P0-B on PR #323: refresh exact head, required checks and review state; if still eligible, request/obtain independent review before any owner-authorized real two-host Noise-TCP Direct LAB. Keep this separate from the TCP/TLS control finding. In parallel, design a safe root-cause isolation plan that does not change firewall, routes, sysctls, or CAP_NET_ADMIN settings.
