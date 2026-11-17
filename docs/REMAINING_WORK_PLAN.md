@@ -346,6 +346,7 @@ The authoritative revised order is PRODUCT_ROADMAP.md §9.9 (Whole-project prior
 | P0-B | PR #323 rotation harness | Partial; commit d1897c5cb3a6af89868ce57255136a6087d908d3; exact-head CI pending | CI → independent review → owner-authorized LAB; current workflow is Noise-TCP Direct only |
 | P0-C | TCP-TLS rotation proof | Not Verified | After diagnosis, add TLS/PKI-specific proof if rotation is selected as mitigation |
 | GOV-1 (parallel, non-blocking) | PR #324 skills and roadmap governance | Partial; Draft | Exact-head CI and independent third-party content review; do not block product P0 work |
+| REL-1 (owner dependency) | v0.2.2 Stable tag | Blocked; rc.3 LAB evidence exists, owner/admin-machine access pending | Owner-only tag action when authorized; HQ does not tag or release |
 | P1-A | Transport Health | Partial | Real samples, provenance, freshness/stale guards and truthful state transitions |
 | P1-B | Multi-Link failover/failback | Partial | Anti-flap and recovery logic, then two-host integrity/recovery proof |
 | P1-C | Doctor | Partial | Ubuntu 22.04 read-only LAB validation and secret-free actionable output |
