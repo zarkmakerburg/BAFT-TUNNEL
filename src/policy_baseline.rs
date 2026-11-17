@@ -144,8 +144,29 @@ pub(crate) async fn run_scenario(
     duration: Duration,
     interval: Duration,
 ) -> Summary {
+    run_scenario_window(scenario, with_bulk, rate, duration, interval, None).await
+}
+
+/// Experiment hook (ADR-0048, mechanism "window cap"): same scenario with the Yamux per-stream
+/// maximum window overridden. `None` keeps the product value.
+fn config_with_window(window: Option<u32>) -> tokio_yamux::Config {
+    let mut config = yamux_config(8);
+    if let Some(window) = window {
+        config.max_stream_window_size = window;
+    }
+    config
+}
+
+pub(crate) async fn run_scenario_window(
+    scenario: &'static str,
+    with_bulk: bool,
+    rate: u64,
+    duration: Duration,
+    interval: Duration,
+    window: Option<u32>,
+) -> Summary {
     let (client_io, server_io) = shaped_endpoints(Profile::fixed(rate)).await;
-    let mut server_session = Session::new_server(server_io, yamux_config(8));
+    let mut server_session = Session::new_server(server_io, config_with_window(window));
     let server_task = tokio::spawn(async move {
         let mut index = 0_u32;
         while let Some(item) = server_session.next().await {
@@ -176,7 +197,7 @@ pub(crate) async fn run_scenario(
             });
         }
     });
-    let mut client_session = Session::new_client(client_io, yamux_config(8));
+    let mut client_session = Session::new_client(client_io, config_with_window(window));
     let control = client_session.control();
     let client_task = tokio::spawn(async move {
         while let Some(item) = client_session.next().await {
@@ -357,6 +378,29 @@ mod tests {
         println!(
             "POLICY_BASELINE {{\"scenario\":\"aged_session_throttled\",\"evidence\":\"simulated\",\"bytes\":{bytes},\"fresh_ms\":{fresh},\"aged_ms\":{aged},\"rate_bytes_per_s\":2500000,\"aged_rate_bytes_per_s\":200000,\"aged_after_s\":3}}"
         );
+    }
+
+    /// Experiment (ADR-0048, window cap): loaded ping RTT versus the Yamux per-stream window.
+    /// The minimum is the initial window (256 KiB); the product value is 4 MiB.
+    #[tokio::test]
+    #[ignore = "measurement run; use --release --ignored --nocapture"]
+    async fn window_cap_experiment() {
+        for window in [256 * 1024_u32, 1024 * 1024, 4 * 1024 * 1024] {
+            let mut summary = run_scenario_window(
+                "bulk_competing_window",
+                true,
+                RATE,
+                Duration::from_secs(8),
+                Duration::from_millis(20),
+                Some(window),
+            )
+            .await;
+            summary.scenario = "bulk_competing_window";
+            println!(
+                "POLICY_EXPERIMENT window_bytes={window} {}",
+                summary.json(RATE)
+            );
+        }
     }
 
     /// Full Baseline scenarios; prints one JSON line per scenario. Not part of the normal run.
