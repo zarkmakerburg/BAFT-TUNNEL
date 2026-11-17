@@ -118,7 +118,7 @@ pub struct ForwardOptions {
     /// Alternate addresses of the SAME peer (same identity, same pinned fingerprint), in priority
     /// order after `remote` (ADR-0039). Empty keeps the single-link behaviour.
     pub backup_remotes: Vec<String>,
-    /// ADR-0048: replace the session with a fresh one (make before break) after this age. `None`
+    /// ADR-0049: replace the session with a fresh one (make before break) after this age. `None`
     /// keeps one long-lived session. Direct forward dialer only.
     pub session_rotate: Option<Duration>,
 }
@@ -952,7 +952,7 @@ type DialFuture<'a> = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<Session<BoxedSecureStream>>> + Send + 'a>,
 >;
 
-/// Keeps a rotated-out session alive for its in-flight streams, then closes it (ADR-0048).
+/// Keeps a rotated-out session alive for its in-flight streams, then closes it (ADR-0049).
 async fn drain_rotated_session(
     mut control: tokio_yamux::Control,
     mut driver: tokio::task::JoinHandle<Result<()>>,
@@ -1185,7 +1185,7 @@ async fn supervise_forward(
 ) {
     let mut backoff = INITIAL_BACKOFF;
     let mut links = LinkSet::new(&options);
-    // ADR-0048: a replacement session dialed before the current one is retired.
+    // ADR-0049: a replacement session dialed before the current one is retired.
     let mut carried: Option<Session<BoxedSecureStream>> = None;
     loop {
         if receiver.is_closed() || *shutdown.borrow() {

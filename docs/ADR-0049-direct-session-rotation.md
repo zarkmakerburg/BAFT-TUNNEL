@@ -1,4 +1,4 @@
-# ADR-0048: Direct session rotation (make before break)
+# ADR-0049: Direct session rotation (make before break)
 
 Status: accepted (2026-11-17). Relates to: ADR-0039 (link policy), ADR-0041 (transport health). Gate for v0.3.0 Stable.
 

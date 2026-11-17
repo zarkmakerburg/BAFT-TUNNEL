@@ -150,7 +150,7 @@ pub enum RuntimeConfig {
         /// identity and pinned fingerprint; at most 3, no duplicates, not for the baft engine.
         #[serde(default)]
         backup_remotes: Vec<String>,
-        /// ADR-0048: seconds after which a Direct forward session is replaced by a fresh one
+        /// ADR-0049: seconds after which a Direct forward session is replaced by a fresh one
         /// (make before break). 0 (default) keeps one long-lived session; otherwise 30..=3600.
         #[serde(default)]
         session_rotate_secs: u64,
@@ -761,7 +761,7 @@ impl RuntimeConfig {
     }
 }
 
-/// ADR-0048: session rotation applies to the Direct forward dialer only and stays inside a sane range.
+/// ADR-0049: session rotation applies to the Direct forward dialer only and stays inside a sane range.
 fn validate_session_rotate(
     secs: u64,
     direction: ConnectionDirection,
