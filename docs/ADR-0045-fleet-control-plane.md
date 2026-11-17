@@ -1,6 +1,6 @@
 # ADR-0045: Fleet — multi-node inventory and control (F0 design)
 
-Status: **Proposed** (2026-11-17). Roadmap: Fleet (after 0.4.0 Policy Pack; this ADR is design only). Supersedes the direction text of draft PR #171 (its ADR-0029 number collides with the merged BAFT guided-setup ADR; #171 is left untouched). Builds on ADR-0014 (offline CA), ADR-0023 (agent control helper), ADR-0026/0027 (pairing, enrollment), ADR-0030 (no `CAP_NET_ADMIN`), ADR-0033 (panel HTTPS), ADR-0036 (tunnels per host).
+Status: **Proposed, amended after independent design review** (2026-11-17; findings in [ADR-0045-security-review.md](ADR-0045-security-review.md)). Roadmap: Fleet (after 0.4.0 Policy Pack; this ADR is design only). Supersedes the direction text of draft PR #171 (its ADR-0029 number collides with the merged BAFT guided-setup ADR; #171 is left untouched). Builds on ADR-0014 (offline CA), ADR-0023 (agent control helper), ADR-0026/0027 (pairing, enrollment), ADR-0030 (no `CAP_NET_ADMIN`), ADR-0033 (panel HTTPS), ADR-0036 (tunnels per host).
 
 ## Context
 
@@ -64,3 +64,21 @@ Independent of the hub, the panel's Fleet page can show **this host's instances*
 ## Consequences
 
 Fleet adds a role and a channel, not a service and not a CA. The local panel stays the emergency path. Nothing here is implemented or LAB-verified; no slice is claimed shipped by this ADR.
+
+## Amendments from the design review (binding for F1)
+
+1. **Hub signer (F-1).** The job-signing key is certified under its own `fleet-hub-signer` profile by the offline CA and is revocable by CRL; members reject jobs from an uncertified or revoked signer. Per-member job rate limits apply. The hub never signs `apply` jobs until a separate review.
+2. **Hub identity (F-2).** The hub serves under a `fleet-hub` server profile; the pairing bundle binds the hub name and members check it. A tunnel or `fleet-node` certificate is never accepted as hub.
+3. **Job binding (F-3).** Each job signs the target node id and instance, a short validity window with bounded clock skew, and the replay cache is persisted on disk.
+4. **One EKU per profile (F-4).** Every profile has one dedicated EKU OID; a certificate carrying more than one BAFT EKU is rejected.
+5. **Node identity (F-5, F-6).** The hub takes node id and role from the client certificate, never from the report body; `seq` restarts are accepted only with a new certificate or an explicit operator reset, shown in the audit.
+6. **Enrollment (F-7).** The CSR is bound to the bundle nonce, and its fingerprint is confirmed out of band before the operator signs.
+7. **CRL (F-8).** A past-due CRL fails closed for jobs and is shown as a warning for reports.
+8. **Bounds (F-9).** F1 states numeric limits (report size, rate, connections) and treats the hub listener as a new inbound port that needs HTTPS front-end hardening per ADR-0033.
+9. **Exposure (F-10).** Fleet inventory is shown only to the authenticated operator and is never published; it lists no data it does not need.
+10. **Self-lockout (F-11).** A `stop` or `restart` job that could cut the member's path to the hub carries an automatic revert if the member cannot reach the hub within a timeout.
+11. **Audit (F-12).** Members sign job receipts and keep a hash-chained local audit; the hub audit is not the only record.
+12. **Display (F-13).** Names and event text from members are escaped and stripped of bidi control characters before display.
+13. **Accepted as written:** reusing the tunnel CA with the profiles above (F-14), member-initiated-only connections with the one-direction case documented (F-15), the hub as a single point of failure because tunnels never depend on it, tested in F5 (F-16).
+
+The review is an independent design review, not a pre-stable external review. F1 stays blocked until the owner accepts this amended ADR.
