@@ -23,3 +23,6 @@ Config with a single link behaves as today. Feature is additive; removing `link`
 
 ## Implementation status (2026-11-17)
 Wired: `backup_remotes` (JSON config, max 3, same peer identity, not for the baft engine) feeds `LinkSet` in `src/tunnel.rs`; failover and per-link backoff apply to the dialing forward loop and the reverse service loop. Single-link configs keep the original loop unchanged. Not done: failback (policy supports it, kept off), link status in the agent API, panel view, setup/desired-state support for backups, LAB evidence. Failure kinds are all `Network` for now (identity failures fail TLS/Noise and are penalized like network failures).
+
+### Setup support (2026-11-17)
+`setup plan`/`init` accept `--backup-peer-host IP` (repeatable, max 3, forward role only, not the baft engine). Each becomes a `backup_remotes` entry on the tunnel port; hosts must be distinct IPs and differ from the primary. The list is persisted in the setup state so `join` keeps it, travels through the agent plan body and the helper request, and is part of the request digest. All carriers share the same tunnel identity and credentials (no per-link trust). Not LAB-tested.

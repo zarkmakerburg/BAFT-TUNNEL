@@ -34,11 +34,32 @@ const TCP_KEEPCNT: u32 = 3;
 /// Bound how long a silently dead tunnel connection can stay open (both dial and accept side).
 /// Unprivileged per-socket options only; a failure is reported and the connection still works
 /// with the default kernel timeouts.
-pub(crate) fn tune_tunnel_socket(socket: &TcpStream) {
+/// Fd and peer of a tuned tunnel socket, kept to read its kernel TCP state once the secure
+/// handshake has succeeded (never before: an unauthenticated connection must not become the
+/// sampled carrier).
+#[derive(Clone, Copy)]
+pub(crate) struct Carrier(Option<(i32, SocketAddr)>);
+
+impl Carrier {
+    pub(crate) fn publish(self) {
+        if let Some((fd, peer)) = self.0 {
+            crate::session_status::register_carrier(fd, peer);
+        }
+    }
+}
+
+pub(crate) fn tune_tunnel_socket(socket: &TcpStream) -> Carrier {
     if let Err(error) = set_dead_peer_bounds(socket) {
         eprintln!("tunnel socket: could not set dead-peer timeouts: {error}");
     }
     let _ = socket.set_nodelay(true);
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        Carrier(socket.peer_addr().ok().map(|p| (socket.as_raw_fd(), p)))
+    }
+    #[cfg(not(unix))]
+    Carrier(None)
 }
 
 #[cfg(target_os = "linux")]
@@ -148,7 +169,7 @@ impl StreamEngine for TlsEngine {
 
     fn accept(&self, socket: TcpStream) -> BoxFuture<'_, Result<BoxedSecureStream>> {
         Box::pin(async move {
-            tune_tunnel_socket(&socket);
+            let carrier = tune_tunnel_socket(&socket);
             let acceptor = self
                 .acceptor
                 .as_ref()
@@ -163,6 +184,7 @@ impl StreamEngine for TlsEngine {
             let certs = secure.get_ref().1.peer_certificates();
             handshake::verify_peer_fingerprint(certs, &self.peer_pins).context(Stage::Identity)?;
             handshake::verify_peer_identity(certs, &self.peer_id).context(Stage::Identity)?;
+            carrier.publish();
             Ok(Box::new(secure) as BoxedSecureStream)
         })
     }
@@ -178,7 +200,7 @@ impl StreamEngine for TlsEngine {
                 .context("remote connect timeout")
                 .context(Stage::Tcp)?
                 .context(Stage::Tcp)?;
-            tune_tunnel_socket(&socket);
+            let carrier = tune_tunnel_socket(&socket);
             let secure = timeout(
                 HANDSHAKE_TIMEOUT,
                 connector.connect(server_name.clone(), socket),
@@ -190,6 +212,7 @@ impl StreamEngine for TlsEngine {
             let certs = secure.get_ref().1.peer_certificates();
             handshake::verify_peer_fingerprint(certs, &self.peer_pins).context(Stage::Identity)?;
             handshake::verify_peer_identity(certs, &self.peer_id).context(Stage::Identity)?;
+            carrier.publish();
             Ok(Box::new(secure) as BoxedSecureStream)
         })
     }
@@ -302,7 +325,7 @@ impl StreamEngine for NoiseEngine {
 
     fn accept(&self, socket: TcpStream) -> BoxFuture<'_, Result<BoxedSecureStream>> {
         Box::pin(async move {
-            tune_tunnel_socket(&socket);
+            let carrier = tune_tunnel_socket(&socket);
             let secure = timeout(
                 HANDSHAKE_TIMEOUT,
                 noise::accept(
@@ -316,6 +339,7 @@ impl StreamEngine for NoiseEngine {
             .context("Noise handshake timeout")
             .context(Stage::SecureChannel)?
             .context(Stage::SecureChannel)?;
+            carrier.publish();
             Ok(Box::new(secure) as BoxedSecureStream)
         })
     }
@@ -327,7 +351,7 @@ impl StreamEngine for NoiseEngine {
                 .context("remote connect timeout")
                 .context(Stage::Tcp)?
                 .context(Stage::Tcp)?;
-            tune_tunnel_socket(&socket);
+            let carrier = tune_tunnel_socket(&socket);
             let secure = timeout(
                 HANDSHAKE_TIMEOUT,
                 noise::initiate(
@@ -341,6 +365,7 @@ impl StreamEngine for NoiseEngine {
             .context("Noise handshake timeout")
             .context(Stage::SecureChannel)?
             .context(Stage::SecureChannel)?;
+            carrier.publish();
             Ok(Box::new(secure) as BoxedSecureStream)
         })
     }

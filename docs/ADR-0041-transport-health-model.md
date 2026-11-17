@@ -13,3 +13,6 @@ Status: accepted (2026-11-17). Relates to: ADR-0028 (Integrity), ADR-0039, `READ
 
 ## Acceptance
 Unit tests for state transitions, staleness to unknown, hysteresis, threshold overrides, and that no metric defaults to zero. API field naming keeps `health` and `integrity` as sibling objects.
+
+## Implementation status: kernel TCP feed (2026-11-17)
+The unit samples the carrier socket every 5 s with Linux `TCP_INFO` (read-only, no privilege): smoothed RTT, the share of intervals with retransmissions (named `loss_basis` in the evidence, a proxy, not probe loss), and a throughput watch (delivery rate below 64 KiB/s while the sender was busy at least half the interval and at least 16 KiB were acknowledged, for two consecutive intervals) that adds a **Degraded** reason "possible throttling (heuristic)". It cannot distinguish a throttle from a genuinely slow link and never produces Unavailable. The socket is registered only after the secure handshake and identity checks succeed, sampled only while its `getpeername` still matches, and cleared when the last session ends. No sample (non-Linux, old kernel, no session) leaves quality Unknown. Not Integrity; LAB evidence still pending.

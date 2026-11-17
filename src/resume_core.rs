@@ -67,6 +67,11 @@ impl SendWindow {
         }
     }
 
+    /// Copy `len` buffered bytes starting `start` bytes after the acknowledged offset.
+    pub fn peek(&self, start: usize, len: usize) -> Vec<u8> {
+        self.buf.iter().skip(start).take(len).copied().collect()
+    }
+
     /// Offset the next new byte will get.
     pub fn next_offset(&self) -> u64 {
         self.base + self.buf.len() as u64
