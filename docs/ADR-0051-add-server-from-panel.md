@@ -39,11 +39,12 @@ The panel runs the same installation over SSH so the user only types address and
 - **Revocation.** Remove server revokes the node's certificate in the CRL, deletes its record, and asks the node (if reachable) to unenroll; a node that stays offline is rejected by CRL when it returns. Local panel and tunnels on that host keep working.
 - **Create tunnel between two managed servers.** The panel asks Iran or abroad, a name and ports, then drives ADR-0050 on both nodes. The user never copies files or codes.
 
-## Decisions requested (D1 to D3)
+## Decisions (owner-delegated, 2026-11-17, coordinator)
 
-- **D1. Fleet node identity for panel-enrolled servers.** ADR-0045 assumes certificates from the offline CA. For the "type address and password" experience that is not possible. Proposal: a **hub-local Fleet CA** (root-only on the hub, name-constrained, `fleet-node` EKU only, short validity, CRL) for panel-enrolled nodes; the offline CA remains available as the advanced route. This changes the ADR-0014 trade-off and needs the review.
-- **D2. SSH client.** OpenSSH client with askpass and `memfd` (proposed) versus a Rust SSH library.
-- **D3. Scope of sudo.** Root login or sudo-capable user only; passwordless-sudo-only is the safer subset (proposed default for the first release, with password sudo behind a second switch).
+- **D1. CA.** Reuse the ADR-0050 per-tunnel CA mechanism. A Fleet-local CA is added only if this ADR shows a concrete need that the per-tunnel CA cannot meet (open: Fleet reporting identity for panel-enrolled nodes, ADR-0045 `fleet-node` profile; to be argued in the Fleet transport PR). CA keys never leave the host that owns them.
+- **D2. SSH client.** A pure Rust SSH library, no shelling out to `ssh` and no Go, with strict host-key verification. This replaces the OpenSSH-client plan above: the askpass/`memfd` mechanics are dropped, the secret stays in zeroized memory inside the enrollment unit, and the new dependency goes through `cargo deny`/audit review in the Path B PR. The unit sandbox, host-key confirmation and fixed step list stay as written.
+- **D3. sudo.** No blanket sudo. Only the signed installer is run, through a narrow fixed command; the sudo password lives in memory only and is sent only to that command.
+- **Review.** An independent security review of this ADR (Opus reviewer thread, PR #341) is required before Path B is enabled. Path A proceeds meanwhile.
 
 ## Staged plan (each a small PR, CI on the exact SHA, local/CI evidence until a LAB slot is granted)
 
