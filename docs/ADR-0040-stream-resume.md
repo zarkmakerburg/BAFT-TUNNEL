@@ -58,4 +58,4 @@ Per-stream window default 1 MiB (max 16 MiB), per-tunnel budget 64 MiB (`TunnelB
 4. Tunnel integration (detach/re-attach, grace timer) behind a config flag.
 5. Chaos test (session cut twice during a large transfer, sha256 equal) in CI, then a real two-host LAB request.
 
-Open decision for the owner/security review: whether resume is allowed for Reverse tunnels in the first release (recommendation: Direct only, like rotation).
+Decision (coordinator, owner-delegated, 2026-11-17): resume in the first release is **Direct only**. Reverse stays Preview and gets no resume; a v3 Reverse tunnel must not advertise `ResumeStreams`. Security review of the token binding and `ResumeHello` rules is still required before step 3.
