@@ -345,7 +345,7 @@ The authoritative revised order is PRODUCT_ROADMAP.md §9.9 (Whole-project prior
 | P0-A | Raw TCP vs TLS aged-flow diagnostic | Not Verified; PR #313 merged only the workflow mode support; known age evidence is TLS-only | Prepare matched 2 MiB matrix at ages 0/15/20/25/30/60 seconds, 3 attempts, 5 s keepalive; request task-specific LAB authorization before dispatch |
 | P0-B | PR #323 rotation harness | Partial; commit d1897c5cb3a6af89868ce57255136a6087d908d3; exact-head CI pending | CI → independent review → owner-authorized LAB; current workflow is Noise-TCP Direct only |
 | P0-C | TCP-TLS rotation proof | Not Verified | After diagnosis, add TLS/PKI-specific proof if rotation is selected as mitigation |
-| P0-D | PR #324 skills and roadmap governance | Partial; Draft | Exact-head CI and independent third-party content review |
+| GOV-1 (parallel, non-blocking) | PR #324 skills and roadmap governance | Partial; Draft | Exact-head CI and independent third-party content review; do not block product P0 work |
 | P1-A | Transport Health | Partial | Real samples, provenance, freshness/stale guards and truthful state transitions |
 | P1-B | Multi-Link failover/failback | Partial | Anti-flap and recovery logic, then two-host integrity/recovery proof |
 | P1-C | Doctor | Partial | Ubuntu 22.04 read-only LAB validation and secret-free actionable output |
