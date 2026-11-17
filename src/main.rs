@@ -22,6 +22,7 @@ mod session_status;
 mod setup;
 mod setup_helper;
 mod tls;
+mod transport_health;
 mod tunnel;
 
 use anyhow::{Result, bail};
