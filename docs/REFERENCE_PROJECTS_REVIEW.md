@@ -1,6 +1,6 @@
 # Reference projects review (consolidated)
 
-Status: consolidated review, 2026-11-17, `main` `b7172bc`. **Documentation only. Not a decision record, not permission to change code, tag, release or deploy.**
+Status: consolidated review, 2026-11-17, first written at `main` `b7172bc`; Rakhsh and BackPack sections refreshed against `main` `cc61dea` (PR #340) the same evening. **Documentation only. Not a decision record, not permission to change code, tag, release or deploy.**
 This file consolidates, and does not replace: [RAKHSH_INTEGRATION_ANALYSIS.md](RAKHSH_INTEGRATION_ANALYSIS.md), [ADVISOR_ASSESSMENT.md](ADVISOR_ASSESSMENT.md), [research/ENGINE_ECOSYSTEM_COMPARISON.md](research/ENGINE_ECOSYSTEM_COMPARISON.md) (and its siblings), [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md), ADR-0019, ADR-0038 to ADR-0049. Where a source document has the detail, this file links to it instead of repeating it.
 
 ## 0. How to read this file
@@ -25,7 +25,7 @@ Rules used throughout:
 
 1. **Reference set (Verified, with caveats).** Eleven-plus projects were reviewed across five documents: Rakhsh, BackPack, C-Tunnel (and the owner's fork C-BAFT), rathole, FRP, Chisel, spoof-tunnel, TAQ-BOSTAN, Phormal, Pahlavi-tunnel, rathole-tunnel (ecosystem study, 2026-11-08); Rakhsh in depth (2026-11-17); and Hashem Panel, Pangolin, Tailscale as README-level advisory comparisons (2026-11-17). Identities and URLs are in §2. The mission's "Backpack" is **BackPack by AminMGMT** (`AminMGMT/BackPack`), recorded in the ecosystem study; it is a different project from Backhaul, which is **not** among the recorded reviews.
 2. **Licence position (Historical, binding).** Rakhsh, BackPack, C-Tunnel/C-BAFT and Hashem Panel are AGPL-3.0; the BAFT-TUNNEL Rust core is proprietary (ADR-0019 clause 5). No reference code is in the core. Rakhsh ideas are independently rewritten (ADR-0038); copying is allowed only into an isolated AGPL unit (ADR-0043) and **nothing has been copied**. Licences were re-read from the cited documents, not re-fetched from the upstream repositories in this pass (see §3 and open question OQ-1).
-3. **What was adopted is mostly design plus pure unwired modules, not product behaviour.** Verified on `main`: `backup_remotes` failover is wired into the dial path (#296); `doctor` offline CLI (#298); health publishing (#306, quality stays Unknown without samples); optional Direct session rotation (#315, ADR-0049, default off). Pure and **not wired**: link policy (#292), transport health model (#293), resume core (#309). Design only: stream resume protocol v3 (ADR-0040), UDP carrier (ADR-0046), Fleet (ADR-0045). The README-level reference matrix in §12 gives status per item.
+3. **What was adopted (Verified from merged PR titles and ADR text on `main` `cc61dea`; `src/` not re-read).** Rakhsh-derived work is independently written (ADR-0038/0043). Merged: link policy and `backup_remotes` failover in the dial path (#292, #296; ADR-0039 says the dial path uses a `LinkSet` fed by `backup_remotes`); backup peer hosts in setup plan/init, agent plan body and helper request (#336); offline `doctor` CLI (#298); transport health model (#293), health status (#306), kernel `TCP_INFO` sampling (RTT, retransmits, throttle heuristic that can mark a link Degraded, #334) and session-rotation/link-switch counters in health evidence (#335); optional Direct session rotation (#315, ADR-0049, default off); resume: pure core (#309), ADR-0040 wire/integration design (#337), protocol v3 constant and `ResumeStreams` capability (#339, Direct only, **not selectable**), replaceable-substream framing and endpoint engine with property test (#340). **Resume is only partially built: no merged record shows it on a live tunnel data path, v3 is staged, and nothing may be advertised as resume** (ADR-0040). Design only: UDP carrier (ADR-0046), Fleet (ADR-0045, F1 pure rules #326). No failover, health-Healthy or resume claim has LAB evidence yet.
 4. **The strongest installation reference is C-Tunnel-style one-line setup**; BAFT-TUNNEL already ships a signed one-liner, HTTPS panel and guided Wizard. The remaining UX gap versus the references is a **single join link for the second host** and a **path test before building** (R-7, R-8 in the advisor file).
 5. **Largest open reliability item is not a reference lesson but a measured path problem:** aged TCP flows on the Iran path are throttled (§11). A partial mitigation (ADR-0049 session rotation) is merged, default off. The owner reports a real two-host LAB run on **Noise-TCP Direct** (off 0/3, rotation 10 s 3/3, run 44121043530, see §9); that is **not TCP-TLS evidence**, and the aged-flow cause is not established.
 6. **Roadmap documents were out of date** on release state (they said Stable 0.2.1 was latest; Stable `v0.2.2` was published 2026-11-17 15:39Z on `5dd0890`). Corrected in this PR (§14).
@@ -101,8 +101,8 @@ Source for all rows: the cited review documents (Historical, from each project's
 
 | Reference | Licence | Consequence for a proprietary Rust core (ADR-0019 cl. 5) |
 |---|---|---|
-| Rakhsh | AGPL-3.0-only | Ideas only. ADR-0038 clean-room; ADR-0043 copy only into an isolated AGPL unit; nothing copied |
-| BackPack | AGPL-3.0 + NOTICE s.7 (attribution/trademark) | Separate-process only; ideas only for core; engine is reviewed as a candidate **Go** engine, never copied into Rust |
+| Rakhsh | AGPL-3.0-only (**re-read upstream 2026-11-17:** `LICENSE` is the AGPL-3.0 text; `Cargo.toml` states `license = "AGPL-3.0-only"`) | Ideas only. ADR-0038 clean-room; ADR-0043 copy only into an isolated AGPL unit; nothing copied |
+| BackPack | AGPL-3.0 + NOTICE s.7 (**re-read upstream 2026-11-17:** `LICENSE` is the AGPL-3.0 text; `NOTICE` states AGPL-3.0 plus additional Section 7 terms, copyright Amin Mohammadi (AminMGMT)) | Separate-process only; ideas only for core; engine is reviewed as a candidate **Go** engine, never copied into Rust |
 | C-Tunnel / C-BAFT | AGPL-3.0 + NOTICE; fork of CIAUB code with BackPack-ported files | Owner controls the repo but not the copyright; separate process or ideas only |
 | Hashem Panel | AGPL-3.0 (advisor file) | Ideas only |
 | Pangolin | Mixed AGPL / commercial (advisor file) | Ideas only; legal review before any reuse |
@@ -122,7 +122,18 @@ Source for all rows: the cited review documents (Historical, from each project's
 - **Strengths (per user docs, not executed):** multi-carrier failover/failback, resume, per-lane health, doctor, `--join` link UX.
 - **Weaknesses / risks:** privileged raw/L3 modes, plaintext mode, SSH/bot custody, wire protocol in an unreviewed separate repo of unknown licence, proxy/router scope.
 - **Security implications for BAFT-TUNNEL:** any adopted idea adds attack surface (more dials, a second accept path, resume buffers); mitigations are named in RAKHSH §9 and ADR-0039/0040.
-- **Detail:** [RAKHSH_INTEGRATION_ANALYSIS.md](RAKHSH_INTEGRATION_ANALYSIS.md).
+- **Detail:** [RAKHSH_INTEGRATION_ANALYSIS.md](RAKHSH_INTEGRATION_ANALYSIS.md) (written 2026-11-17 against Rakhsh `89fa8e1`; its §10 integration table predates most PRs below).
+- **Upstream re-check (2026-11-17):** `CluvexStudio/rakhsh` last push 2026-11-12T16:13:59Z (GitHub search); licence AGPL-3.0 (GitHub tag, `LICENSE`, `Cargo.toml`). Upstream content was not re-read beyond licence files, and the `shabdiz` protocol repository remains **Unverified**.
+- **Integration state on `main` `cc61dea` (Verified from merged PR titles; code not re-read):**
+
+| Rakhsh lesson | Merged work | Status |
+|---|---|---|
+| Multi-link / backup peers | #292 link policy, #296 `backup_remotes` in the dial path, #336 backup peer hosts in setup/agent/helper | Wired for TCP links of the same carrier; **no LAB failover evidence** |
+| Transport health | #293 model, #306 `health.json` + agent status, #334 `TCP_INFO` feed (RTT, retransmits, throttle heuristic), #335 rotation and link-switch counters | Wired to status; whether it can report Healthy and its accuracy are **Unverified**; no LAB evidence |
+| Stream resume | #309 pure core, #337 design, #339 protocol v3 + `ResumeStreams` (Direct only, not selectable), #340 framing and endpoint engine | **Partially built, staged.** Not on a live data path per the records read; security review and two-host acceptance pending (ADR-0040) |
+| Doctor | #298 offline read-only CLI | Partial; no carrier path test |
+| Session rotation (not a Rakhsh feature; aged-flow mitigation) | #315, #323/#333 LAB workflows | Noise-TCP Direct LAB passed (owner-reported); TCP-TLS run via #333 not read here |
+| Licence | ADR-0038, ADR-0043 | Nothing copied |
 
 ### 4.2 BackPack (Go, AGPL-3.0 + NOTICE s.7)
 
@@ -130,7 +141,10 @@ Source for all rows: the cited review documents (Historical, from each project's
 - **Strengths:** reconnect lifecycle with tests, fallback chain, process-per-tunnel with a local status socket, large test base (481 `_test.go` files at the pinned commit).
 - **Weaknesses:** shared-token authentication only (no per-peer identity, no CRL); TLS 1.3 floor enforced only in the l3 QUIC path; dialing role exposes no local listener, so TCP-accept readiness does not apply.
 - **Selected / rejected / deferred:** see §11 and the matrix. Candidate **Go engine** only after three gates (identity model, readiness-contract extension, AGPL obligations accepted); BAFT (owner's engine, ADR-0019) is the engine that actually shipped as Preview.
-- **Detail:** ENGINE_ECOSYSTEM_COMPARISON §2, ENGINE_INTEGRATION_FEASIBILITY, ENGINE_LICENSE_AND_DEPENDENCY_MATRIX.
+- **Detail:** ENGINE_ECOSYSTEM_COMPARISON §2, ENGINE_INTEGRATION_FEASIBILITY, ENGINE_LICENSE_AND_DEPENDENCY_MATRIX (research of 2026-11-08, pinned `9d58f8449ac0`).
+- **Identity and licence re-check (2026-11-17):** repository `AminMGMT/BackPack` confirmed (GitHub search: AGPL-3.0, last push 2026-11-17T17:24:37Z, so **upstream has moved since the pinned `9d58f8449ac0`; the findings above describe that commit, not today's HEAD**). `LICENSE` is the AGPL-3.0 text; `NOTICE` carries additional Section 7 terms. The Section 7 terms were not interpreted legally here.
+- **Historical decisions (still binding):** BackPack is a candidate separate-process Go engine only after three gates (identity model beyond a shared token, readiness contract for a dialing role, AGPL obligations accepted); it was **not** integrated. The engine that shipped is the owner's BAFT (ADR-0019), Preview, Direct only. No BackPack code is in this repository.
+- **Not verified:** whether newer BackPack releases changed authentication, fallback or licence terms.
 
 ### 4.3 C-Tunnel / C-BAFT (Go, stdlib only, AGPL-3.0)
 
@@ -203,10 +217,10 @@ Legend (from the ecosystem study): V = source read and tests exist upstream (not
 | Capability | BAFT-TUNNEL | Evidence level |
 |---|---|---|
 | Reconnect with backoff (1 s to 60 s doubling), session-level only | Implemented | Two-host LAB (restart/kill recovery 2–4 s; 30 s blackhole 8 s for Reverse R3) |
-| Backup endpoints (`backup_remotes`) in the dial path | Merged (#296, ADR-0039) | CI only; **no LAB run of an actual failover recorded** |
-| Link policy module (backoff, failback) | Merged, pure, **unwired** (#292) | Unit tests only |
-| Transport health model | Merged, pure, **unwired** (#293); status publishing (#306) shows quality Unknown without samples | Unit tests only; no RTT/probe source |
-| Stream resume | Pure core merged, **unwired** (#309); protocol v3 design (ADR-0040) | Unit tests only |
+| Backup endpoints (`backup_remotes`) in the dial path, backup peer hosts in setup (#336) | Merged (#296, #336, ADR-0039) | CI only; **no LAB run of an actual failover recorded** |
+| Link policy module (backoff, failback) | Merged (#292); used by the dial-path `LinkSet` per ADR-0039 (code not re-read) | Unit tests only |
+| Transport health model | Merged (#293); status publishing (#306); kernel `TCP_INFO` RTT/retransmit feed and throttle heuristic (#334); rotation and link-switch counters (#335) | Unit/CI only; Healthy-state accuracy unverified; no LAB evidence |
+| Stream resume | Pure core (#309), design (#337), protocol v3 constant + `ResumeStreams` not selectable (#339), framing and endpoint engine with property test (#340) | Unit/property tests only; **partially built, not on a live data path per the records read**; no two-host evidence |
 | Session rotation (make before break) for aged-flow throttling | Merged (#315, ADR-0049), config `session_rotate_secs`, **default off**; a single long user connection is still throttled after about 20 s | CI test; **Noise-TCP Direct two-host LAB** (owner-reported, run [44121043530](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44121043530)): rotation off 0/3 complete, `session_rotate_secs=10` 3/3, 12 rotation events, `ROT_ACCEPTANCE=PASS`. Not TCP-TLS; not Production; the cause is not established |
 | Competitive fault test (blackhole 5 s x5, 2 s x3 per tool) | Harness on a hosted-runner netns job (#330 merged; #308 per the roadmap, state not re-checked) | **Hosted-runner simulation, not LAB**. Result text is in CI logs, not summarized in a repository document; the single earlier run reported BAFT truncated while FRP and rathole were correct (#330 body). Treat as an unconfirmed observation |
 
@@ -231,9 +245,9 @@ Status vocabulary: **Implemented** (code on `main`, evidence stated), **Partial*
 
 | Reference | Area | Selected lesson | Rejected approach | BAFT-TUNNEL implementation | Existing evidence | Status |
 |---|---|---|---|---|---|---|
-| Rakhsh | Carrier abstraction / multi-link failover | Link list with per-link penalty, failback with backoff | Copying code; raw carriers | `src/link_policy.rs` (#292, ADR-0039); `backup_remotes` dial-path failover (#296) | Unit tests; no LAB failover run | **Partial** (policy unwired; one carrier) |
-| Rakhsh | Transport health | RTT/jitter/loss/state per link | Plaintext/status reuse of Rakhsh code | `src/transport_health.rs` (#293, ADR-0041); `health.json` + agent `health` (#306) | Unit tests; quality Unknown, no RTT source | **Merged unwired** |
-| Rakhsh | Stream resume | Offset/ACK per stream, SYNC on lane change | Restart-resume; unbounded buffers | `src/resume_core.rs` (#309); ADR-0040 (protocol v3, strict Option A) | Unit tests only | **Merged unwired**; protocol design only |
+| Rakhsh | Carrier abstraction / multi-link failover | Link list with per-link penalty, failback with backoff | Copying code; raw carriers | `src/link_policy.rs` (#292, ADR-0039); `backup_remotes` dial-path failover (#296); backup peers in setup (#336) | Unit/CI; no LAB failover run | **Partial** (wired for same-carrier TCP links; one carrier; no LAB) |
+| Rakhsh | Transport health | RTT/jitter/loss/state per link | Plaintext/status reuse of Rakhsh code | `src/transport_health.rs` (#293, ADR-0041); `health.json` + agent `health` (#306); `TCP_INFO` feed (#334); rotation/link-switch counters (#335) | Unit/CI; Healthy-state accuracy unverified; no LAB | **Partial** (status-wired; no LAB) |
+| Rakhsh | Stream resume | Offset/ACK per stream, SYNC on lane change | Restart-resume; unbounded buffers | `src/resume_core.rs` (#309); ADR-0040 design (#337); v3 constant + capability (#339); framing and endpoint engine (#340) | Unit/property tests only | **Partial, staged**: v3 not selectable, not on a live data path per records read |
 | Rakhsh | Doctor | Probe, rank, machine-readable result | Probe via privileged carriers | `doctor` offline read-only CLI (#298, ADR-0042) | CI; LAB use not recorded | **Partial** (no carrier path test) |
 | Rakhsh | Node identity / config schema | Per-node keys; schema as single reference | `encryption = "none"` | mTLS/Noise identity (existing); config validation (existing) | Two-host LAB (existing runs) | **Implemented** |
 | Rakhsh | Multi-server management | Join link; inventory | SSH fleet, Telegram bot | Host tunnel list (#279, ADR-0036); Fleet ADR-0045; F1 rules draft #326; Servers page Fleet section (#307) | CI/design only | **Designed only** (no control plane) |
@@ -259,7 +273,7 @@ Status vocabulary: **Implemented** (code on `main`, evidence stated), **Partial*
 
 **Implemented and evidenced (two-host LAB unless noted):** Direct `tcp-tls` mTLS (Stable, v0.2.0 onward); Reverse Preview; BAFT Preview Direct; installer and HTTPS panel; integrity probe (ADR-0028, Direct accepted); backup/restore/update/rollback; reboot persistence; revocation refusal.
 
-**Merged but not on the data path (do not count as capability):** link policy, transport health model, resume core, policy interface/queues, UDP carrier (none: design only).
+**Merged but not on a live data path (do not count as capability):** resume (core, v3 framing, endpoint engine; v3 not selectable), policy interface/queues, F1 Fleet rules (#326, pure). UDP carrier: design only. Wired but without LAB evidence: backup-peer failover, health status feed.
 
 **Missing (nothing in the repository implements it):** a second real carrier; failover LAB proof; RTT/jitter/loss source; resume wiring and protocol v3; carrier path test; single join link; control plane/Fleet; UDP/QUIC/WS; quota/limits; notifications; any benchmark result against references (the harness exists; no LAB result recorded).
 
@@ -303,7 +317,7 @@ These verify handover statements against repository records. Nothing was modifie
 
 | ID | Question | Recommendation (Proposed) | Blocks |
 |---|---|---|---|
-| OQ-1 | Re-verify each reference licence against the upstream repositories now. **Partially verified** (owner note, 2026-11-17): Rakhsh (`CluvexStudio/rakhsh`) and BackPack (`AminMGMT/BackPack`) were re-read upstream and identify AGPL-3.0; all other licences and any legal interpretation remain unverified | Yes for the rest, before any copy decision; counsel review for any relicense | Any copy/relicense |
+| OQ-1 | Re-verify each reference licence against the upstream repositories now. **Verified for Rakhsh and BackPack** (re-read from upstream `LICENSE`/`Cargo.toml`/`NOTICE` on 2026-11-17, and independently by the owner): both AGPL-3.0 (BackPack plus Section 7 terms). All other licences remain GitHub tags or earlier reads; no legal interpretation was made | Yes for the rest, before any copy decision; counsel review for any relicense | Any copy/relicense |
 | OQ-2 | Answered 2026-11-17: Tailscale dropped; other tunnel projects studied. Backhaul, wstunnel, bore READMEs done (§2b). Study the remaining §2a candidates (EasyTier, Ehco, nps) or stop? | Stop unless a specific need appears | Study scope |
 | OQ-3 | Confirm advisor priority R-1, R-2, R-4 before further 0.3.0 operator items (ADVISOR §9) | Confirm | Roadmap order |
 | OQ-4 | Machine-checkable outage rule and re-evaluation of the 0.2.2 acceptance basis (§15.1) | Adopt R-6; no change to the published release unless the owner decides | Acceptance policy |

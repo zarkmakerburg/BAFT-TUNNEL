@@ -334,9 +334,9 @@ Source: [REFERENCE_PROJECTS_REVIEW.md](REFERENCE_PROJECTS_REVIEW.md) at `main` `
 
 | Item | Status | Evidence | Next |
 |---|---|---|---|
-| Multi-link failover (ADR-0039) | Partial: `backup_remotes` in the dial path (#296); link policy pure, unwired (#292) | CI/unit; no LAB failover run | Advisor R-2 |
-| Transport health (ADR-0041) | Merged unwired (#293); status publishing (#306), quality Unknown | Unit | R-1: RTT/probe source |
-| Stream resume (ADR-0040) | Merged unwired core (#309); protocol v3 design only | Unit | R-3, after R-1/R-2 and a fault harness |
+| Multi-link failover (ADR-0039) | Partial: link policy (#292) and `backup_remotes` in the dial path (#296), backup peer hosts in setup (#336); same-carrier TCP only | CI/unit; no LAB failover run | Advisor R-2 |
+| Transport health (ADR-0041) | Partial: model (#293), status (#306), `TCP_INFO` feed (#334), rotation/link-switch counters (#335); Healthy-state accuracy unverified | Unit | R-1: RTT/probe source |
+| Stream resume (ADR-0040) | Partially built, staged: core (#309), design (#337), v3 + `ResumeStreams` not selectable (#339), framing/endpoint engine (#340); not on a live data path per records read | Unit | R-3, after R-1/R-2 and a fault harness |
 | Doctor (ADR-0042) | Partial: offline CLI (#298) | CI | R-8: carrier path test |
 | Session rotation vs aged flows (ADR-0049) | Merged, default off | CI test; Noise-TCP Direct two-host LAB run 44121043530 (owner-reported): off 0/3, 10 s rotation 3/3, `ROT_ACCEPTANCE=PASS`; **not TCP-TLS** | TCP-TLS LAB before/after |
 | Policy Pack (ADR-0031/0044/0047/0048) | Merged unwired; baseline simulated | Simulation | Wire only after measurement |
