@@ -13,7 +13,7 @@ on:
         type: string
         default: '10'
       probes:
-        description: 2 MiB probes per phase (1-6)
+        description: 2 MiB probes per phase (1-4)
         required: false
         type: string
         default: '3'
@@ -126,7 +126,7 @@ jobs:
     needs: [validate-candidate, build-candidate]
     runs-on: ubuntu-22.04
     environment: baft-tunnel-lab
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       # Trusted orchestration is always loaded from the protected main commit that dispatched this run.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
