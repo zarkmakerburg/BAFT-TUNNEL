@@ -38,7 +38,7 @@
 | [#323](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/323) | `d1897c5cb3a6af89868ce57255136a6087d908d3` | Draft / Open | 11 Check Runs green on this head; no review recorded. Noise-TCP Direct rotation harness only; not TCP-TLS evidence. |
 | [#324](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/324) | `2ca82c8b86d75ffe4db9aae9fc8e1025635e1f7d` | Draft / Open | 11 Check Runs green on this head; no review recorded. Skills/governance + roadmap documentation; parallel, non-blocking track. |
 | [#326](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/326) | `ab8095d59cf77bf16bd13e34a81acf77adc463c5` | Draft / Open | F1 pure rules + ADR-0045 accepted with conditions; mergeability/check state not yet verified. |
-| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `81d27e00a2047d41f347aa599ca1274fbcd76d2e` | Draft / Open | Automatic checkpoint policy + combined activate-and-continue `HQ RESUME` behavior; documentation-only. Exact-head CI: 2 IN_PROGRESS, 8 QUEUED at last check; no completed checks yet. |
+| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `db16bfd889637ac23826b66426163cfa2ae88b96` (head immediately before this snapshot refresh) | Draft / Open | Automatic checkpoint policy + combined activate-and-continue `HQ RESUME`; documentation-only. Live PR metadata: mergeable=true, mergeable_state=blocked, no submitted reviews. Exact-head checks at recheck: 10 total, 7 IN_PROGRESS and 3 QUEUED; no CI PASS claimed. This snapshot refresh advances the branch; refetch exact head/checks after write. |
 | [#171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171) | `e64ea2fca5b3dd17b709ecf9c92a2cf933da32cb` | Draft / Open | Central Fleet architecture only; deferred after 0.4.0. |
 
 PR base refs and statuses can change; re-fetch them before action. PR #327 was opened from the recorded main SHA and was mergeable=true at the last check, but merge remained blocked by required checks. This checkpoint itself advances its head, so fetch the live PR head/checks before any review or merge decision. PR #169 is the separate HQ playbook and is not BAFT-TUNNEL product scope.
@@ -66,6 +66,15 @@ PR base refs and statuses can change; re-fetch them before action. PR #327 was o
 - `v0.2.2-rc.3` has recorded LAB evidence, but Stable tagging is an owner/admin-machine dependency; do not create a Stable tag without satisfying release/signing policy.
 - `v0.3.0-rc.1` is not accepted because aged-flow upgrade soak remains unresolved.
 - A CI-green result does not change release maturity or imply production readiness.
+
+## Latest HQ RESUME reconciliation — 2026-11-17 14:42 UTC
+
+- Live `main` remains `c3e2bda8cc4b598c410a665f3c18fb6cc2d944c2` (PR #325); roadmap snapshot still identifies `v0.2.1` as latest Stable.
+- PR #327 before this snapshot refresh: OPEN / Draft, head `db16bfd889637ac23826b66426163cfa2ae88b96`, base unchanged at the current `main`, `mergeable=true`, `mergeable_state=blocked`; no submitted reviews. Exact-head Check Runs: 10 total (7 IN_PROGRESS, 3 QUEUED), no completed result observed at this recheck.
+- P0-A run `44101542573` remains IN_PROGRESS on `65b50dea5562a15f8299a13afcec64d34a93bf58`; job `134102574533` is still in the transfer step. Direct job listing confirms this, but log retrieval again returns HTTP 404 `BlobNotFound`; no artifacts are listed.
+- P0-A run `44101769313` remains PENDING with no jobs and is queued behind the shared concurrency group. No inputs or transfer outcome were exposed by the inspected API. Both runs remain UNKNOWN / NOT VERIFIED; no PASS/FAIL classification is justified.
+- Read-only inspection of the workflow confirms a 45-minute job timeout and that the run measures a non-tunnel control endpoint. It is not product evidence. No new LAB run was dispatched, no LAB host was contacted by this resume, and no host/network mutation occurred.
+- This entry is written on the PR #327 branch; its commit advances the PR head. The resulting exact head and check runs must be fetched after the write. No merge, release, tag, deploy or production operation was performed.
 
 ## Next action
 
