@@ -25,6 +25,10 @@ struct HealthState {
 static HEALTH: Mutex<Option<HealthState>> = Mutex::new(None);
 /// The most recent carrier socket (fd and the peer it was connected to), for kernel TCP samples.
 static CARRIER: Mutex<Option<(i32, std::net::SocketAddr)>> = Mutex::new(None);
+static ROTATIONS: AtomicU64 = AtomicU64::new(0);
+static LINK_SWITCHES: AtomicU64 = AtomicU64::new(0);
+static LAST_ROTATION: AtomicU64 = AtomicU64::new(0);
+static LAST_SWITCH: AtomicU64 = AtomicU64::new(0);
 static PUBLISHER: std::sync::Once = std::sync::Once::new();
 
 pub const FILE: &str = "session.json";
@@ -136,6 +140,29 @@ fn counters_body(started: u64) -> serde_json::Value {
         "bytes_to_peer": BYTES_TO_PEER.load(Ordering::Relaxed),
         "streams_total": STREAMS_TOTAL.load(Ordering::Relaxed),
         "sessions_total": SESSIONS_TOTAL.load(Ordering::Relaxed),
+    })
+}
+
+/// A make-before-break session rotation completed (ADR-0049). Counted as an event; it does not
+/// by itself say anything about link quality.
+pub fn rotation_completed() {
+    ROTATIONS.fetch_add(1, Ordering::Relaxed);
+    LAST_ROTATION.store(now(), Ordering::Relaxed);
+}
+
+/// The dialing loop moved to a different configured link (failover or failback, ADR-0039).
+pub fn link_switched() {
+    LINK_SWITCHES.fetch_add(1, Ordering::Relaxed);
+    LAST_SWITCH.store(now(), Ordering::Relaxed);
+}
+
+fn events_body() -> serde_json::Value {
+    let opt = |v: u64| (v > 0).then_some(v);
+    serde_json::json!({
+        "rotations_total": ROTATIONS.load(Ordering::Relaxed),
+        "link_switches_total": LINK_SWITCHES.load(Ordering::Relaxed),
+        "last_rotation_unix": opt(LAST_ROTATION.load(Ordering::Relaxed)),
+        "last_link_switch_unix": opt(LAST_SWITCH.load(Ordering::Relaxed)),
     })
 }
 
@@ -286,6 +313,7 @@ fn health_body(started: u64) -> serde_json::Value {
         "loss_basis": "share of sampling intervals with TCP retransmissions",
         "rtt_basis": "kernel smoothed RTT of the carrier socket",
         "throttled_rate_bps": throttled,
+        "events": events_body(),
     })
 }
 
@@ -415,6 +443,13 @@ mod tests {
         assert_eq!(up["state"], "authenticated");
         assert!(up["rtt_ms"].is_null() && up["jitter_ms"].is_null() && up["probe_loss"].is_null());
         drop(live);
+        // Events are counted and timestamped; they are not a quality signal.
+        rotation_completed();
+        link_switched();
+        let ev = health_body(1)["events"].clone();
+        assert!(ev["rotations_total"].as_u64().unwrap() >= 1);
+        assert!(ev["link_switches_total"].as_u64().unwrap() >= 1);
+        assert!(ev["last_rotation_unix"].is_u64() && ev["last_link_switch_unix"].is_u64());
         unsafe { std::env::remove_var("RUNTIME_DIRECTORY") };
     }
 

@@ -3249,6 +3249,10 @@ fn health_view(h: Option<&Value>, now: u64) -> Value {
         "rtt_ms": h["rtt_ms"],
         "jitter_ms": h["jitter_ms"],
         "probe_loss": h["probe_loss"],
+        "loss_basis": h["loss_basis"],
+        "rtt_basis": h["rtt_basis"],
+        "throttled_rate_bps": h["throttled_rate_bps"],
+        "events": h["events"],
         "age_s": age,
     })
 }

@@ -314,6 +314,9 @@ impl LinkSet {
         match self.policy.next(now) {
             Decision::Dial { link, probe, .. } => {
                 self.policy.dial_started(link, probe, now);
+                if link != self.current {
+                    crate::session_status::link_switched();
+                }
                 self.current = link;
                 Ok(link)
             }
@@ -1298,6 +1301,7 @@ async fn supervise_forward(
                 } else if replacement.is_some() {
                     #[cfg(test)]
                     ROTATIONS_COMPLETED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    crate::session_status::rotation_completed();
                     carried = replacement;
                     continue;
                 }
