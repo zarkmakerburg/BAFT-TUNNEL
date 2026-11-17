@@ -40,6 +40,7 @@ EOC
 cat > forward.cmd <<EOC
 $PF "$BIN" forward --listen "$EL" --remote "$SD" --server-name exit.bench --local-id entry --peer-id exit --tunnel-id bench --direction direct --peer-fingerprint "$(pin exit.crt)" --ca ca.crt --crl ca.crl --cert entry.crt --key entry.key --max-streams 8
 EOC
+[ "${GEN_ONLY:-}" = 1 ] && exit 0   # LAB use: only generate PKI and *.cmd, start nothing here
 $PS "$BIN" serve --listen "$SL" --target "$TG" --local-id exit --peer-id entry --tunnel-id bench --direction direct \
   --peer-fingerprint "$(pin entry.crt)" --ca ca.crt --crl ca.crl --cert exit.crt --key exit.key --max-streams 8 > serve.log 2>&1 &
 echo $! > pids; sleep 1
