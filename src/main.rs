@@ -12,6 +12,7 @@ mod handshake;
 mod history_store;
 mod integrity_probe;
 pub mod key_custody;
+mod link_policy;
 mod noise;
 mod observe;
 mod pki_helper;
