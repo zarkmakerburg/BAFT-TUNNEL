@@ -62,7 +62,7 @@ pub struct PairCode {
     pub exp: u64,
 }
 
-fn now() -> u64 {
+pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
@@ -110,7 +110,7 @@ impl PairCode {
     }
 
     pub fn expired(&self) -> bool {
-        now() > self.exp
+        now_secs() > self.exp
     }
 
     pub fn encode(&self) -> Result<String> {
@@ -261,7 +261,7 @@ pub struct JoinRequest {
     pub csr_pem: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct JoinResponse {
     pub ok: bool,
@@ -271,6 +271,9 @@ pub struct JoinResponse {
     pub ca_pem: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crl_pem: Option<String>,
+    /// The listener's public pairing bundle (JSON); trusted because the channel is authenticated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_bundle: Option<String>,
     /// Generic, non-enumerating reason when `ok` is false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -320,7 +323,7 @@ where
 {
     let mut failures = 0u32;
     loop {
-        let remaining = code.exp.saturating_sub(now());
+        let remaining = code.exp.saturating_sub(now_secs());
         ensure!(remaining > 0, "pairing code expired");
         let (tcp, peer) = match timeout(Duration::from_secs(remaining), listener.accept()).await {
             Ok(r) => r?,
@@ -339,10 +342,8 @@ where
                 &mut tls,
                 &JoinResponse {
                     ok: false,
-                    certificate_pem: None,
-                    ca_pem: None,
-                    crl_pem: None,
                     reason: Some("pairing refused".into()),
+                    ..Default::default()
                 },
             )
             .await;
@@ -354,10 +355,8 @@ where
         }
         let resp = decide(&req, peer).unwrap_or(JoinResponse {
             ok: false,
-            certificate_pem: None,
-            ca_pem: None,
-            crl_pem: None,
             reason: Some("pairing refused".into()),
+            ..Default::default()
         });
         write_msg(&mut tls, &resp).await?;
         let _ = tls.shutdown().await;
@@ -450,7 +449,7 @@ mod tests {
 
     #[test]
     fn code_round_trips_and_rejects_garbage() {
-        let c = code(9443, &"a".repeat(64), now() + 60);
+        let c = code(9443, &"a".repeat(64), now_secs() + 60);
         let text = c.encode().unwrap();
         assert!(text.starts_with("BAFT1-") && text.len() < MAX_CODE_CHARS);
         assert_eq!(PairCode::decode(&text).unwrap(), c);
@@ -479,7 +478,7 @@ mod tests {
         let (acceptor, pin) = pairing_identity(&work.join("id")).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let c = code(port, &pin, now() + 60);
+        let c = code(port, &pin, now_secs() + 60);
         let c2 = c.clone();
         let ca_dir2 = ca_dir.clone();
         let server = tokio::spawn(async move {
@@ -490,7 +489,7 @@ mod tests {
                     certificate_pem: Some(leaf),
                     ca_pem: Some(std::fs::read_to_string(ca_dir2.join("ca.crt"))?),
                     crl_pem: Some(std::fs::read_to_string(ca_dir2.join("ca.crl"))?),
-                    reason: None,
+                    ..Default::default()
                 })
             })
             .await
@@ -530,7 +529,7 @@ mod tests {
         let (acceptor, pin) = pairing_identity(&work.join("id")).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let c = code(port, &pin, now() + 60);
+        let c = code(port, &pin, now_secs() + 60);
         let c2 = c.clone();
         let server = tokio::spawn(async move {
             serve(listener, acceptor, &c2, |_, _| bail!("must not be called")).await
