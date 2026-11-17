@@ -19,3 +19,6 @@ Property/chaos test of the offset logic with random cuts (no loss, no duplicate,
 
 ## Not decided here
 Wire frame layout and exact limits beyond the defaults above, to be fixed in the implementation PR. Implementation starts only after ADR-0039 lands, because resume makes failback cheap.
+
+## Implementation status (2026-11-17)
+`src/resume_core.rs` holds the pure core: per-stream send window with hard caps and a per-tunnel budget (backpressure, never silent drop), receiver offset logic (duplicate, overlap, gap), `resume_from` (unrecoverable / peer-ahead rejection) and single-use, identity-bound, expiring resume tokens. It includes a seeded random-cut property test (loss, duplication, cuts; output equals input). It is **not wired**: protocol v3 framing, handshake binding, `ResumeHello`/`Gone` and the v2<->v3 rejection tests do not exist yet, so no resume feature is claimed.
