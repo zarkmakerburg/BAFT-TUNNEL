@@ -151,7 +151,7 @@ pub enum RuntimeConfig {
         #[serde(default)]
         backup_remotes: Vec<String>,
         /// ADR-0049: seconds after which a Direct forward session is replaced by a fresh one
-        /// (make before break). 0 (default) keeps one long-lived session; otherwise 30..=3600.
+        /// (make before break). 0 (default) keeps one long-lived session; otherwise 5..=3600.
         #[serde(default)]
         session_rotate_secs: u64,
     },
@@ -770,8 +770,8 @@ fn validate_session_rotate(
     if secs == 0 {
         return Ok(());
     }
-    if !(30..=3600).contains(&secs) {
-        bail!("session_rotate_secs must be 0 (off) or between 30 and 3600");
+    if !(5..=3600).contains(&secs) {
+        bail!("session_rotate_secs must be 0 (off) or between 5 and 3600");
     }
     if direction != ConnectionDirection::Direct {
         bail!("session_rotate_secs applies to Direct tunnels only");
@@ -1306,8 +1306,8 @@ mod tests {
         use crate::authorization::ConnectionDirection::{Direct, Reverse};
         assert!(validate_session_rotate(0, Reverse, EngineKind::Baft).is_ok());
         assert!(validate_session_rotate(60, Direct, EngineKind::TcpTls).is_ok());
-        assert!(validate_session_rotate(30, Direct, EngineKind::NoiseTcp).is_ok());
-        assert!(validate_session_rotate(29, Direct, EngineKind::TcpTls).is_err());
+        assert!(validate_session_rotate(5, Direct, EngineKind::NoiseTcp).is_ok());
+        assert!(validate_session_rotate(4, Direct, EngineKind::TcpTls).is_err());
         assert!(validate_session_rotate(3601, Direct, EngineKind::TcpTls).is_err());
         assert!(validate_session_rotate(60, Reverse, EngineKind::TcpTls).is_err());
         assert!(validate_session_rotate(60, Direct, EngineKind::Baft).is_err());
