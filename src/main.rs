@@ -213,6 +213,9 @@ enum SetupCommand {
         tunnel_port: u16,
         #[arg(long)]
         peer_host: Option<String>,
+        /// Backup peer IP, repeatable (max 3): dialed on the tunnel port when the primary fails.
+        #[arg(long = "backup-peer-host")]
+        backup_peer_hosts: Vec<String>,
         #[arg(long)]
         server_name: Option<String>,
         #[arg(long, default_value = "/etc/baft-tunnel")]
@@ -248,6 +251,9 @@ enum SetupCommand {
         tunnel_port: u16,
         #[arg(long)]
         peer_host: Option<String>,
+        /// Backup peer IP, repeatable (max 3): dialed on the tunnel port when the primary fails.
+        #[arg(long = "backup-peer-host")]
+        backup_peer_hosts: Vec<String>,
         #[arg(long, default_value = "/etc/baft-tunnel")]
         dir: PathBuf,
         /// systemd instance name: write NAME.json (read by baft-tunnel@NAME) instead of config.json.
@@ -515,6 +521,7 @@ async fn run() -> Result<()> {
                     service_port,
                     tunnel_port,
                     peer_host,
+                    backup_peer_hosts,
                     server_name,
                     dir,
                     instance,
@@ -533,6 +540,7 @@ async fn run() -> Result<()> {
                 service_port,
                 tunnel_port,
                 peer_host,
+                backup_peer_hosts,
                 server_name,
                 dir,
                 instance,
@@ -566,6 +574,7 @@ async fn run() -> Result<()> {
                     service_port,
                     tunnel_port,
                     peer_host,
+                    backup_peer_hosts,
                     dir,
                     instance,
                     bundle_out,
@@ -584,6 +593,7 @@ async fn run() -> Result<()> {
                     service_port,
                     tunnel_port,
                     peer_host,
+                    backup_peer_hosts,
                     server_name: None,
                     dir: dir.clone(),
                     instance: instance.clone(),

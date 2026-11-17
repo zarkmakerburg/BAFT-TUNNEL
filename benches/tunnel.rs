@@ -103,6 +103,7 @@ mod setup_bench {
             service_port: 18080,
             tunnel_port: 8443,
             peer_host: Some("203.0.113.10".into()),
+            backup_peer_hosts: vec![],
             server_name: Some("tunnel.example.test".into()),
             dir: PathBuf::from("/etc/baft-tunnel"),
             instance: None,
