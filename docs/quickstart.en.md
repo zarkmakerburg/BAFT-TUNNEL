@@ -2,6 +2,23 @@
 
 > **Latest signed pre-release v0.1.0-rc.8; not a stable release.** Start in a test environment. Trusted two-host acceptance passed on 2026-11-11 for the earlier signed rc.7 in [U7 run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428). This proves the bounded Direct workflow below, not production readiness.
 
+## Fastest way: automatic tunnel (no certificates, no files to move)
+
+Available from the first release that contains `baft-tunnel pair` (ADR-0050; Direct, `tcp-tls`; CI/local evidence, not yet LAB-verified). You choose only a name and the service port; keys, certificates and both configurations are created automatically, and private keys never leave their host.
+
+1. **First server** (accepts the connection, usually abroad). Install and create the code, either in the panel (**Create a tunnel** → *First server*) or with one command:
+   ```bash
+   curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --offer mytunnel --service-port 8080
+   ```
+   It prints a one-time code (valid 15 minutes). Open the tunnel TCP port (default 8443) in your firewall yourself; BAFT-TUNNEL never changes firewall rules.
+2. **Second server** (usually Iran). Paste the code in its panel (*Second server*), or run:
+   ```bash
+   curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --pair BAFT1-...
+   ```
+3. On the first server approve the joining server (one click or `y`). Both servers are configured and started; check **Tunnels → Run diagnostics** for real evidence.
+
+The sections below describe the manual / own-CA path, still available as **Manual/advanced** in the panel.
+
 ## Supported path and requirements
 
 - Two x86_64 Ubuntu 22.04 LTS hosts with systemd 249; one is **serve** (normally abroad), the other **forward** (normally Iran).
