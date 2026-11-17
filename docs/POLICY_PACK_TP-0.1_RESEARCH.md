@@ -80,3 +80,9 @@ The first harness wrote to the Yamux stream directly and stalled at the 256 KiB 
 | bulk competing | 6 | 1,970 ms | 2,004 ms | 2,004 ms | 2,004 ms |
 
 Reading: with a bulk stream on the same tunnel, interactive round trips grew by about three orders of magnitude, consistent with the hypothesis that a deep BAFT-TUNNEL-side queue (the 4 MiB Yamux stream window plus buffers) sits in front of the bottleneck. This supports building H1/H4 (bounded queues, smaller effective window for Bulk) and is the number TP-2.1 must beat. Limits: a single run, a simulated bottleneck, no propagation delay; absolute values are not path latency and make no claim about real networks. TP-1.2 still needs repeated runs, other rates, the `noise-tcp` engine, and CI/VM and LAB stages.
+
+### 9.1 Repeat run and aged-session scenario (2026-11-17, evidence level: simulated)
+
+A second run of the same scenarios gave idle p50 2.3 ms and bulk-competing p50 1,949 ms (first run 1,970 ms), so the order of magnitude is repeatable on this machine; still not a statistical result.
+
+New scenario `aged_session_throttled`: the bottleneck drops to a low rate once a connection is older than a threshold (scaled down to 3 s here; the LAB finding, run 44056840174, was flows older than about 60 s at about 21 KB/s on the real Iran-to-abroad path). A 1 MiB transfer on a fresh connection took 535 ms; on a connection older than the threshold (bottleneck 200 KB/s) it took 5,334 ms. This reproduces the shape of the LAB symptom (same bytes, an order of magnitude slower on an aged connection) and gives the stall thread's session-rotation mitigation a cheap CI-level before/after test. It models the throttle, it does not prove the LAB mechanism, and it says nothing about the real path.
