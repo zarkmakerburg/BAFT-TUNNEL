@@ -3226,8 +3226,30 @@ async fn tunnel_status(ctx: &Ctx, config: &RuntimeConfig, listening: bool) -> Va
             "integrity": integrity_tier(last_probe, now),
         },
         "last_failure": ev.failure,
+        "health": health_view(ev.health.as_ref(), now),
         "last_verified_unix": stored.as_ref().and_then(|d| d["verified_unix"].as_u64()),
         "last_diagnostics_unix": stored.as_ref().and_then(|d| d["at_unix"].as_u64()),
+    })
+}
+
+/// Transport health (ADR-0041) as published by the unit. Separate from the integrity tier: it
+/// describes link quality, not data correctness. Missing or stale evidence is `unknown`, never a
+/// healthy-looking default.
+fn health_view(h: Option<&Value>, now: u64) -> Value {
+    let Some(h) = h else {
+        return json!({"state": "unknown", "reason": "the unit publishes no health evidence"});
+    };
+    let age = now.saturating_sub(h["sampled_unix"].as_u64().unwrap_or(0));
+    if age > 3 * crate::session_status::COUNTER_SECONDS {
+        return json!({"state": "unknown", "reason": "health evidence is stale", "age_s": age});
+    }
+    json!({
+        "state": h["state"],
+        "reasons": h["reasons"],
+        "rtt_ms": h["rtt_ms"],
+        "jitter_ms": h["jitter_ms"],
+        "probe_loss": h["probe_loss"],
+        "age_s": age,
     })
 }
 

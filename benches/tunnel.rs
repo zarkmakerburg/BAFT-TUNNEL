@@ -48,6 +48,8 @@ mod setup;
 mod setup_helper;
 #[path = "../src/tls.rs"]
 mod tls;
+#[path = "../src/transport_health.rs"]
+mod transport_health;
 #[path = "../src/tunnel.rs"]
 mod tunnel;
 

@@ -38,6 +38,8 @@ pub mod observe;
 pub mod pki_helper;
 #[path = "../../src/runtime_host.rs"]
 pub mod runtime_host;
+#[path = "../../src/transport_health.rs"]
+pub mod transport_health;
 #[path = "../../src/session_status.rs"]
 pub mod session_status;
 #[path = "../../src/setup.rs"]
@@ -130,6 +132,7 @@ pub fn evidence_files(data: &[u8]) {
         session_status::FILE,
         session_status::COUNTERS_FILE,
         session_status::FAILURE_FILE,
+        session_status::HEALTH_FILE,
     ] {
         let _ = std::fs::write(dir.join(name), data);
     }

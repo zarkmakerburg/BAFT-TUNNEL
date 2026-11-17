@@ -6,7 +6,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::session_status::{COUNTERS_FILE, FAILURE_FILE, FILE as SESSION_FILE};
+use crate::session_status::{COUNTERS_FILE, FAILURE_FILE, FILE as SESSION_FILE, HEALTH_FILE};
 
 const MAX_FILE: u64 = 4096;
 
@@ -16,6 +16,7 @@ pub struct Evidence {
     pub session: Option<Value>,
     pub counters: Option<Value>,
     pub failure: Option<Value>,
+    pub health: Option<Value>,
 }
 
 fn alive(pid: u64) -> bool {
@@ -57,6 +58,8 @@ pub fn read(dir: &Path, expected_pid: Option<u32>) -> Evidence {
             .filter(|v| v["counters_version"] == 1 && owned(v, expected_pid)),
         // A failure from an earlier process is still history; it is reported with its time.
         failure: read_json(dir, FAILURE_FILE).filter(|v| v["stage"].is_string()),
+        health: read_json(dir, HEALTH_FILE)
+            .filter(|v| v["health_version"] == 1 && owned(v, expected_pid)),
     }
 }
 

@@ -18,11 +18,14 @@ static BYTES_FROM_PEER: AtomicU64 = AtomicU64::new(0);
 static BYTES_TO_PEER: AtomicU64 = AtomicU64::new(0);
 static STREAMS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SESSIONS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static HEALTH: Mutex<Option<crate::transport_health::HealthTracker>> = Mutex::new(None);
 static PUBLISHER: std::sync::Once = std::sync::Once::new();
 
 pub const FILE: &str = "session.json";
 pub const COUNTERS_FILE: &str = "counters.json";
 pub const FAILURE_FILE: &str = "last_failure.json";
+/// Transport health (ADR-0041), separate from Integrity (ADR-0028).
+pub const HEALTH_FILE: &str = "health.json";
 /// How often the unit rewrites `counters.json`.
 pub const COUNTER_SECONDS: u64 = 5;
 
@@ -130,6 +133,53 @@ fn counters_body(started: u64) -> serde_json::Value {
     })
 }
 
+/// Health of the link as the unit can honestly state it today. There is no RTT or probe source
+/// yet, so quality is never claimed: an authorized session reports `authenticated` with
+/// `rtt_ms`/`jitter_ms`/`probe_loss` null (unknown), and `healthy` is unreachable until samples
+/// exist. Not Integrity.
+fn health_body(started: u64) -> serde_json::Value {
+    use crate::transport_health::{
+        HealthState, HealthTracker, Phase, ProbeWindow, RttEstimator, Thresholds,
+    };
+    let active = *ACTIVE.lock().unwrap_or_else(|e| e.into_inner()) > 0;
+    let phase = if active {
+        Phase::Authenticated
+    } else if SESSIONS_TOTAL.load(Ordering::Relaxed) > 0 {
+        Phase::Down
+    } else {
+        Phase::Connecting
+    };
+    let mut guard = HEALTH.lock().unwrap_or_else(|e| e.into_inner());
+    let tracker = guard.get_or_insert_with(|| HealthTracker::new(Thresholds::default()));
+    let elapsed = std::time::Duration::from_secs(now().saturating_sub(started));
+    let r = tracker.evaluate(
+        elapsed,
+        phase,
+        &RttEstimator::default(),
+        &ProbeWindow::new(32),
+        None,
+    );
+    let state = match r.state {
+        HealthState::Connecting => "connecting",
+        HealthState::Connected => "connected",
+        HealthState::Authenticated => "authenticated",
+        HealthState::Healthy => "healthy",
+        HealthState::Degraded => "degraded",
+        HealthState::Recovering => "recovering",
+        HealthState::Unavailable => "unavailable",
+    };
+    serde_json::json!({
+        "health_version": 1,
+        "pid": std::process::id(),
+        "sampled_unix": now(),
+        "state": state,
+        "reasons": r.reasons,
+        "rtt_ms": r.rtt_ms,
+        "jitter_ms": r.jitter_ms,
+        "probe_loss": r.probe_loss,
+    })
+}
+
 /// Start (once per process) the task that rewrites `counters.json`. A no-op outside a systemd
 /// unit (no `RUNTIME_DIRECTORY`). Must be called inside a Tokio runtime.
 pub fn start_publisher() {
@@ -137,11 +187,13 @@ pub fn start_publisher() {
     PUBLISHER.call_once(|| {
         let started = now();
         write_json(&d, COUNTERS_FILE, &counters_body(started));
+        write_json(&d, HEALTH_FILE, &health_body(started));
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(COUNTER_SECONDS));
             loop {
                 tick.tick().await;
                 write_json(&d, COUNTERS_FILE, &counters_body(started));
+                write_json(&d, HEALTH_FILE, &health_body(started));
             }
         });
     });
@@ -241,6 +293,15 @@ mod tests {
         assert!(c["bytes_from_peer"].as_u64().unwrap() >= 10);
         assert!(c["bytes_to_peer"].as_u64().unwrap() >= 3);
         assert_eq!(c["units"], "bytes");
+        // Health: no session left -> unavailable; with a session -> authenticated and quality
+        // stays unknown (null), never healthy without samples.
+        let down = health_body(1);
+        assert_eq!(down["state"], "unavailable");
+        let live = SessionMark::open("t1", "abroad", "Direct");
+        let up = health_body(1);
+        assert_eq!(up["state"], "authenticated");
+        assert!(up["rtt_ms"].is_null() && up["jitter_ms"].is_null() && up["probe_loss"].is_null());
+        drop(live);
         unsafe { std::env::remove_var("RUNTIME_DIRECTORY") };
     }
 }
