@@ -123,6 +123,8 @@ pub struct Ctx {
     setup: Arc<dyn crate::setup_helper::SetupHelper + Send + Sync>,
     /// Root PKI helper (ADR-0027) for host-local CSR create/read before tcp-tls Init.
     pki: Arc<dyn crate::pki_helper::PkiHelperClient + Send + Sync>,
+    /// Request/status directory of the root pairing helper (ADR-0050).
+    pair_dir: PathBuf,
 }
 
 const SAMPLE_SECONDS: u64 = 5;
@@ -161,6 +163,7 @@ impl Ctx {
             config_dir: PathBuf::from("/etc/baft-tunnel"),
             setup: Arc::new(crate::setup_helper::SystemSetupHelper::default()),
             pki: Arc::new(crate::pki_helper::SystemPkiClient::default()),
+            pair_dir: PathBuf::from(crate::apply::CONTROL_DIR),
         }
     }
 
@@ -660,6 +663,10 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/pki/csr/create"
             | "/v1/pki/csr/read"
             | "/v1/pki/certificate/install"
+            | "/v1/pair/offer"
+            | "/v1/pair/accept"
+            | "/v1/pair/status"
+            | "/v1/pair/approve"
     ) {
         return (404, json!({"error": "not found"}));
     }
@@ -708,9 +715,110 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PairOfferBody {
+    name: String,
+    service_port: u16,
+    #[serde(default)]
+    tunnel_port: Option<u16>,
+    #[serde(default)]
+    host: Option<String>,
+    confirm: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PairAcceptBody {
+    code: String,
+    confirm: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PairApproveBody {
+    approve: bool,
+}
+
+/// Automatic pairing (ADR-0050), setup mode only: offer/accept/status/approve through the root helper.
+fn pair_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
+    let Some(name) = ctx.instance.as_deref() else {
+        return (409, json!({"error": "pairing needs an installed instance"}));
+    };
+    let bad = |e: serde_json::Error| {
+        (
+            422,
+            json!({"error": "invalid request", "detail": e.to_string()}),
+        )
+    };
+    let submit = |req: Value| match crate::pair_helper::submit(&ctx.pair_dir, name, &req) {
+        Ok(()) => (202, json!({"state": "starting"})),
+        Err(e) => (409, json!({"error": e})),
+    };
+    match (method, path) {
+        ("GET", "/v1/pair/status") => (200, crate::pair_helper::status(&ctx.pair_dir, name)),
+        ("POST", "/v1/pair/offer") => match serde_json::from_slice::<PairOfferBody>(body) {
+            Err(e) => bad(e),
+            Ok(b) if !b.confirm => (422, json!({"error": "pairing requires \"confirm\": true"})),
+            Ok(b) => {
+                let port_ok = |p: u16| p >= 1024;
+                let name_ok = !b.name.is_empty()
+                    && b.name.len() <= 32
+                    && b.name
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b' ');
+                let host_ok = b.host.as_deref().is_none_or(|h| {
+                    !h.is_empty()
+                        && h.len() <= 253
+                        && h.bytes().all(|c| {
+                            c.is_ascii_alphanumeric() || c == b'.' || c == b'-' || c == b':'
+                        })
+                });
+                if !(port_ok(b.service_port)
+                    && b.tunnel_port.is_none_or(port_ok)
+                    && name_ok
+                    && host_ok)
+                {
+                    return (422, json!({"error": "invalid name, port or host"}));
+                }
+                submit(
+                    json!({"op": "offer", "name": b.name, "service_port": b.service_port,
+                    "tunnel_port": b.tunnel_port.unwrap_or(8443), "host": b.host}),
+                )
+            }
+        },
+        ("POST", "/v1/pair/accept") => match serde_json::from_slice::<PairAcceptBody>(body) {
+            Err(e) => bad(e),
+            Ok(b) if !b.confirm => (422, json!({"error": "pairing requires \"confirm\": true"})),
+            Ok(b) => match crate::pair_proto::PairCode::decode(&b.code) {
+                Err(e) => (
+                    422,
+                    json!({"error": "invalid pairing code", "detail": e.to_string()}),
+                ),
+                Ok(c) if c.expired() => (
+                    422,
+                    json!({"error": "this pairing code has expired; create a new one"}),
+                ),
+                Ok(_) => submit(json!({"op": "accept", "code": b.code.trim()})),
+            },
+        },
+        ("POST", "/v1/pair/approve") => match serde_json::from_slice::<PairApproveBody>(body) {
+            Err(e) => bad(e),
+            Ok(b) => match crate::pair_helper::approve(&ctx.pair_dir, name, b.approve) {
+                Ok(()) => (200, json!({"ok": true})),
+                Err(e) => (409, json!({"error": e})),
+            },
+        },
+        _ => (405, json!({"error": "method not allowed"})),
+    }
+}
+
 /// Setup mode: the instance has no configuration yet. Only what pairing needs answers.
 async fn setup_mode_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
     match (method, path) {
+        (_, "/v1/pair/offer" | "/v1/pair/accept" | "/v1/pair/status" | "/v1/pair/approve") => {
+            pair_route(method, path, body, ctx)
+        }
         ("GET", "/v1/status") => (200, setup_status(ctx)),
         ("GET", "/v1/engines") => (200, engines()),
         ("GET", "/v1/host/tunnels") => (200, host_tunnels(ctx)),

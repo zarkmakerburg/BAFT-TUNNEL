@@ -18,6 +18,7 @@ mod noise;
 mod observe;
 mod pair_ca;
 mod pair_flow;
+mod pair_helper;
 mod pair_proto;
 mod pki_helper;
 #[cfg(feature = "policy-pack")]
@@ -219,6 +220,11 @@ enum PairCommand {
         /// Approve the joining server without asking (the code itself is the secret).
         #[arg(long)]
         yes: bool,
+    },
+    /// Root helper run by `baft-tunnel-control-pair@NAME.service` (panel-driven pairing).
+    Helper {
+        #[arg(long)]
+        instance: String,
     },
     /// Run on the other server with the code printed by `offer`.
     Accept {
@@ -761,6 +767,21 @@ async fn run() -> Result<()> {
                 },
             )
             .await
+        }
+        Command::Pair {
+            command: PairCommand::Helper { instance },
+        } => {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if unsafe { libc::geteuid() } != 0 {
+                bail!("the pairing helper runs as root from its systemd unit only");
+            }
+            let status = pair_helper::run(
+                &instance,
+                std::path::Path::new(apply::CONTROL_DIR),
+                std::path::Path::new("/etc/baft-tunnel"),
+            )?;
+            println!("pairing helper for {instance}: state={}", status["state"].as_str().unwrap_or("-"));
+            Ok(())
         }
         Command::Pair {
             command:
