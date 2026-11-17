@@ -1,8 +1,18 @@
 # Advisor note: panel UX gaps from screenshots
 
-Status: advisory, 2026-11-17. Extends §6 of [ADVISOR_ASSESSMENT.md](ADVISOR_ASSESSMENT.md). Not a decision record.
+Status: advisory, 2026-11-17 (updated with v0.3.0-rc.1 captures). Extends §6 of [ADVISOR_ASSESSMENT.md](ADVISOR_ASSESSMENT.md). Not a decision record.
 
 **Evidence and its limit.** Screenshots in the project file store (`screenshots/panel-polish/desktop-en-light-overview.png`, `tablet-fa-dark-tunnels.png` (a narrow, phone-width layout), `screenshots/p4-002/desktop-en-wiz-preflight.png`). They show a local agent with one demo tunnel in an unpaired state, and the sidebar reads `v0.1.0`. They are **not** captures of current `main` and not of a healthy paired pair, so findings about empty or Unknown states may disappear once a tunnel is running. Re-capture on the current build before acting; this note proposes no UI change by itself.
+
+**Update: re-capture on v0.3.0-rc.1.** Persian (fa), dark, unpaired demo agent only, at desktop and phone width (`screenshots/panel-v0.3.0-rc.1-fa-unpaired/`: overview, tunnels, setup, diagnostics on desktop; overview, tunnels, setup on phone). The sidebar now reads `v0.3.0`. These are still **not** a healthy paired pair and not English or light, so the same limit applies. Against the rows below:
+
+| Row | Still seen on rc.1? |
+|---|---|
+| U-1 | Yes, kept: Unknown stays honest, no fake numbers |
+| U-3 | Yes: the header pill, the top banner and the "Configured tunnels" card repeat the same Unknown sentence |
+| U-4 | Yes: availability shows 20% (large) with "last 10 samples" |
+| U-8 | Partly confirmed on phone: the "last verification" value still runs two words together; the long Unknown list on the tunnels page is unchanged. The percent placement was not re-checked and needs a Persian reader |
+| U-2, U-5, U-6, U-7, U-9 | Not re-checked (not visible in these captures) |
 
 | # | Observation (what the screenshot shows) | Why it matters | Suggested check or change | Priority |
 |---|---|---|---|---|
