@@ -1,4 +1,4 @@
-# ADR-0046: Policy Pack status contract (API, CLI, panel)
+# ADR-0047: Policy Pack status contract (API, CLI, panel)
 
 **Status:** Proposed. Contract only; no endpoint, field or panel card exists yet.
 **Date:** 2026-11-17
