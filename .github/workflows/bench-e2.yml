@@ -49,7 +49,7 @@ jobs:
           TOK=$(head -c16 /dev/urandom | base64 | tr -d '=+/')
           printf '[server]\nbind_addr="10.9.0.1:2333"\n[server.services.s]\ntoken="%s"\nbind_addr="127.0.0.1:5202"\n' $TOK > rs.toml
           printf '[client]\nremote_addr="10.9.0.1:2333"\n[client.services.s]\ntoken="%s"\nlocal_addr="127.0.0.1:39001"\n' $TOK > rc.toml
-          printf 'bindPort=7000\nbindAddr="10.9.0.1"\nauth.token="%s"\n' $TOK > frps.toml
+          printf 'bindPort=7000\nbindAddr="10.9.0.1"\nproxyBindAddr="127.0.0.1"\nauth.token="%s"\n' $TOK > frps.toml
           printf 'serverAddr="10.9.0.1"\nserverPort=7000\nauth.token="%s"\n[[proxies]]\nname="s"\ntype="tcp"\nlocalIP="127.0.0.1"\nlocalPort=39001\nremotePort=5203\n' $TOK > frpc.toml
           SIZE=32
           scenario() { # tool port label netem [blackhole_s]
@@ -57,16 +57,16 @@ jobs:
             impair
             nsx bcli python3 $S --role sink --size-mib $SIZE --idle 20 --json $W/$n.sink.json >/dev/null 2>&1 &
             SK=$!; sleep 1
-            BH=""; if [ "$bh" != 0 ]; then ( sleep 3; IMP="loss 100%" impair; sleep $bh; IMP="$4" impair ) & BH=$!; fi
+            BH=""; if [ "$bh" != 0 ]; then ( sleep 2; IMP="loss 100%" impair; sleep $bh; IMP="$4" impair ) & BH=$!; fi
             sudo timeout 240 ip netns exec bsrv setpriv --reuid=$U --regid=$G --clear-groups python3 $S --role send --size-mib $SIZE --target 127.0.0.1:$port --json $W/$n.send.json >/dev/null 2>$W/$n.send.err
             wait $SK; [ -n "$BH" ] && wait $BH
             echo "$n done"
           }
           run_tool() { tool=$1; port=$2
             scenario $tool $port clean ""
-            scenario $tool $port delay40_jit10 "delay 40ms 10ms"
-            scenario $tool $port loss05 "delay 20ms loss 0.5%"
-            scenario $tool $port blackhole5s "delay 20ms" 5
+            scenario $tool $port delay40_jit10 "delay 40ms 10ms rate 40mbit"
+            scenario $tool $port loss05 "delay 20ms loss 0.5% rate 40mbit"
+            scenario $tool $port blackhole5s "delay 20ms rate 40mbit" 5
           }
           nsx bsrv ./rathole -s rs.toml >rs.log 2>&1 & sleep 1
           nsx bcli ./rathole -c rc.toml >rc.log 2>&1 & sleep 2
