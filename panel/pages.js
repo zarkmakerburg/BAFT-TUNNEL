@@ -46,7 +46,7 @@
     var tot = lh.totals || {}, pct = tot.probes ? tot.up / tot.probes * 100 : null;
     var av = sm.map(function (x) { return { x: x.t, y: x.probes ? x.up / x.probes * 100 : null }; });
     var by = sm.map(function (x) { return { x: x.t, y: (x.from_peer_bytes || 0) + (x.to_peer_bytes || 0) }; });
-    var rows = [[t('ov.avail'), pct == null ? '—' : BAFT.fmtNum(pct, 1) + '%'],
+    var rows = [[t('ov.avail'), pct == null ? '—' : BAFT.pct(pct, 1)],
       [t('tr.from'), BAFT.ltr(fmtBytes(tot.from_peer_bytes))], [t('tr.to'), BAFT.ltr(fmtBytes(tot.to_peer_bytes))]];
     return h('div', null, kv(rows),
       h('h3', { text: t('ov.avail') }), chart(C.line(av, { label: t('ov.avail') + ' (%)', fmtX: BAFT.fmtTime, fmtY: function (v) { return BAFT.fmtNum(v, 0); } })),
@@ -73,7 +73,7 @@
     var n = ws.filter(function (w) { return w.sev !== 'info'; }).length;
     var kpis = h('div', { class: 'grid kpis' },
       kpi(t('kpi.tunnels'), c.tunnel_id ? BAFT.ltr(c.tunnel_id) : '—', s.tunnel ? t('ts.why') : '', ts),
-      kpi(t('ov.avail'), st.avail == null ? t('unknown') : BAFT.fmtNum(st.avail, 1) + '%', st.avail == null ? t('empty.history') : t('ov.window', { n: BAFT.fmtNum(hist.length, 0) }), st.avail == null ? { k: 'unknown', l: t('unknown') } : null),
+      kpi(t('ov.avail'), st.avail == null ? t('unknown') : BAFT.pct(st.avail, 1), st.avail == null ? t('empty.history') : t('ov.window', { n: BAFT.fmtNum(hist.length, 0) }) + (hist.length < 30 ? ' · ' + t('ov.fewsamples') : ''), st.avail == null ? { k: 'unknown', l: t('unknown') } : null),
       tr ? kpi(t('kpi.traffic'), (tr.bytes_from_peer == null || tr.bytes_to_peer == null) ? t('unknown') : BAFT.ltr(fmtBytes(tr.bytes_from_peer + tr.bytes_to_peer)), t('kpi.traffic.live', { ago: BAFT.ago(tr.sampled_unix) }), tr.fresh ? { k: 'ok', l: t('fresh') } : { k: 'warn', l: t('stale') })
          : kpi(t('kpi.traffic'), t('kpi.traffic.value'), t('kpi.traffic.hint'), { k: 'unknown', l: t('unknown') }),
       kpi(t('kpi.attention'), BAFT.fmtNum(n, 0), t('kpi.attention.hint'), n ? { k: ws.some(function (w) { return w.sev === 'bad'; }) ? 'bad' : 'warn', l: t('ui.needs.action') } : null));
@@ -99,7 +99,7 @@
   } });
 
   /* ---- Servers: this node, plus the configured peer (never observed remotely) ---- */
-  BAFT.register({ id: 'servers', icon: 'servers', group: 'operate', order: 3, needs: ['engines'], render: function (ctx) {
+  BAFT.register({ id: 'servers', icon: 'servers', group: 'operate', order: 3, needs: ['engines', 'host'], render: function (ctx) {
     var d = ctx.data, s = d.status, c = conf(d), sec = d.security || {}, st = stats(d);
     var engines = ((d.engines || {}).engines || []).map(function (e) { return e.id; }).join(', ');
     var caps = h('ul', { class: 'warns' },
@@ -118,14 +118,18 @@
       h('div', { class: 'head' }, h('div', null, h('div', { class: 'title' }, BAFT.ltr(c.local_identity)), h('div', { class: 'sub', text: t('servers.this') + ' · ' + roleLabel(c.mode, c.direction) })), pill(ls.k, ls.l)),
       h('p', { class: 'sub', text: t('state.why.local') }),
       kv([[t('f.lastseen'), t('checked', { ago: BAFT.ago(BAFT.fetchedAt) })], [t('f.version'), BAFT.ltr('v' + s.version)], [t('f.engine'), BAFT.ltr(s.engine)],
-        [t('f.diag'), st.med == null ? t('unknown') : t('f.latency') + ': ' + BAFT.fmtNum(st.med, 2) + ' ms · ' + t('f.avail') + ': ' + BAFT.fmtNum(st.avail, 1) + '%']]),
+        [t('f.diag'), st.med == null ? t('unknown') : t('f.latency') + ': ' + BAFT.fmtNum(st.med, 2) + ' ms · ' + t('f.avail') + ': ' + BAFT.pct(st.avail, 1)]]),
       h('hr', { class: 'sep' }), h('h3', { text: t('f.caps') }), caps,
       h('hr', { class: 'sep' }), h('h3', { text: t('f.trust') }), trust);
     var peer = h('section', { class: 'card res' },
       h('div', { class: 'head' }, h('div', null, h('div', { class: 'title' }, BAFT.ltr(c.peer_identity)), h('div', { class: 'sub', text: t('servers.peer') })), pill('unknown', t('state.unknown'))),
       h('p', { class: 'sub', text: t('servers.peer.note') }),
       kv([[t('f.lastseen'), t('notobserved')], [t('f.version'), t('unknown')], [t('f.caps'), t('unknown')]]));
-    return h('div', { class: 'stack' }, h('p', { class: 'muted', text: t('servers.note') }), h('div', { class: 'grid cols-2' }, thisNode, peer));
+    var fleet = card(t('fleet.title'), h('div', null,
+      h('p', { class: 'sub', text: t('fleet.note') }),
+      kv([[t('fleet.hub'), pill('unknown', t('fleet.hub.none'))], [t('fleet.nodes'), t('fleet.nodes.none')]]),
+      h('p', { class: 'sub', text: t('fleet.add') })));
+    return h('div', { class: 'stack' }, h('p', { class: 'muted', text: t('servers.note') }), h('div', { class: 'grid cols-2' }, thisNode, peer), hostTunnels(d.host, d.meta.host), fleet);
   } });
 
   /* ---- Monitoring: only ranges the backend really keeps (last hour at 5 s, 24 h at 1 min) ---- */
@@ -140,7 +144,7 @@
     else {
       var pts = hist.map(function (x) { return { x: x.t, y: x.rtt_ms }; });
       var lat = st.med != null ? chart(C.line(pts, { label: t('ov.latency'), fmtX: BAFT.fmtTime, fmtY: function (v) { return BAFT.fmtNum(v, 1); } })) : empty(hist.length ? t('ov.latency.none') : histEmpty(d));
-      var rows = hist.length ? kv([[t('ov.avail'), st.avail == null ? '—' : BAFT.fmtNum(st.avail, 1) + '%'], [t('f.latency'), st.med == null ? '—' : BAFT.ltr(BAFT.fmtNum(st.med, 2) + ' ms')], [t('ov.window', { n: BAFT.fmtNum(hist.length, 0) }), BAFT.fmtTime(hist[0].t) + ' – ' + BAFT.fmtTime(hist[hist.length - 1].t)]]) : null;
+      var rows = hist.length ? kv([[t('ov.avail'), st.avail == null ? '—' : BAFT.pct(st.avail, 1)], [t('f.latency'), st.med == null ? '—' : BAFT.ltr(BAFT.fmtNum(st.med, 2) + ' ms')], [t('ov.window', { n: BAFT.fmtNum(hist.length, 0) }), BAFT.fmtTime(hist[0].t) + ' – ' + BAFT.fmtTime(hist[hist.length - 1].t)]]) : null;
       body = h('div', { class: 'stack' },
         card(t('ov.health'), hist.length ? h('div', null, chart(C.strip(hist, { label: t('ov.health') })), rows, h('p', { class: 'sub', text: t('ov.health.src', { s: nv((d.history || {}).interval_s), n: nv((d.history || {}).capacity) }) })) : empty(histEmpty(d))),
         card(t('ov.latency'), lat), card(t('ov.traffic.title'), trafficBody(d.traffic && d.traffic.available ? d.traffic : null, d)));
@@ -265,7 +269,7 @@
         [t('ts.lastfail'), tn && tn.last_failure ? t('tier.' + tn.last_failure.stage) + ' · ' + BAFT.ago(tn.last_failure.at_unix) : t('ts.nofail')]]),
       h('a', { class: 'btn', href: '#/diagnostics' }, BAFT.icon('diagnostics'), t('tunnels.troubleshoot')));
     var side = h('div', { class: 'stack' },
-      card(t('tunnels.metrics'), kv([[t('f.latency'), st.med == null ? t('unknown') : BAFT.ltr(BAFT.fmtNum(st.med, 2) + ' ms')], [t('f.avail'), st.avail == null ? t('unknown') : [BAFT.ltr(BAFT.fmtNum(st.avail, 1) + '%'), ' · ' + t('ov.window', { n: BAFT.fmtNum(st.hist.length, 0) })]]])),
+      card(t('tunnels.metrics'), kv([[t('f.latency'), st.med == null ? t('unknown') : BAFT.ltr(BAFT.fmtNum(st.med, 2) + ' ms')], [t('f.avail'), st.avail == null ? t('unknown') : [BAFT.ltr(BAFT.pct(st.avail, 1)), ' · ' + t('ov.window', { n: BAFT.fmtNum(st.hist.length, 0) }) + (st.hist.length < 30 ? ' · ' + t('ov.fewsamples') : '')]]])),
       card(t('tunnels.config'), h('div', null, kv([[t('f.streams'), nv(c.max_streams)], [t('f.pin'), c.peer_certificate_pin_configured == null ? '—' : c.peer_certificate_pin_configured ? t('yes') : t('no')], [t('f.protocol'), BAFT.ltr('v' + (c.protocol_version || 1))]]),
         h('p', { class: 'sub', text: t('tunnels.edit.na') }))),
       card(t('tunnels.actions'), lifecycle(tn)));

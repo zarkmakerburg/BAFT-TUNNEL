@@ -57,6 +57,7 @@
     var rtf = new Intl.RelativeTimeFormat(BAFT.lang === 'fa' ? 'fa' : 'en', { numeric: 'auto' });
     return d < 60 ? rtf.format(-d, 'second') : d < 3600 ? rtf.format(-Math.round(d / 60), 'minute') : d < 172800 ? rtf.format(-Math.round(d / 3600), 'hour') : rtf.format(-Math.round(d / 86400), 'day');
   };
+  BAFT.pct = function (n, digits) { return '\u2066' + BAFT.fmtNum(n, digits) + '%\u2069'; };
   BAFT.fmtNum = function (n, digits) {
     return Number(n).toLocaleString(BAFT.lang === 'fa' ? 'fa-IR' : 'en-US', { maximumFractionDigits: digits === undefined ? 1 : digits });
   };
