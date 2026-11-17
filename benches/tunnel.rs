@@ -36,6 +36,14 @@ mod link_policy;
 mod noise;
 #[path = "../src/observe.rs"]
 mod observe;
+#[path = "../src/pair_ca.rs"]
+mod pair_ca;
+#[path = "../src/pair_flow.rs"]
+mod pair_flow;
+#[path = "../src/pair_helper.rs"]
+mod pair_helper;
+#[path = "../src/pair_proto.rs"]
+mod pair_proto;
 #[path = "../src/pki_helper.rs"]
 mod pki_helper;
 #[path = "../src/runtime_host.rs"]

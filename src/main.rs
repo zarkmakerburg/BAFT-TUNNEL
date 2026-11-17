@@ -17,6 +17,10 @@ pub mod key_custody;
 mod link_policy;
 mod noise;
 mod observe;
+mod pair_ca;
+mod pair_flow;
+mod pair_helper;
+mod pair_proto;
 mod pki_helper;
 #[cfg(feature = "policy-pack")]
 mod policy;
@@ -138,6 +142,12 @@ enum Command {
         #[command(subcommand)]
         command: SetupCommand,
     },
+    /// Automatic pairing (ADR-0050): `offer` on the listening server prints a one-time code,
+    /// `accept CODE` on the other server enrolls it. No file is copied between the servers.
+    Pair {
+        #[command(subcommand)]
+        command: PairCommand,
+    },
     /// Install, verify, upgrade and roll back pinned engine binaries (nothing is downloaded).
     Engine {
         #[command(subcommand)]
@@ -185,6 +195,50 @@ enum Command {
         /// the unprivileged `baft-tunnel` user (see docs/SECURITY_ASSESSMENT.md, SA-01).
         #[arg(long)]
         allow_root: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PairCommand {
+    /// Run on the server that accepts the tunnel connection. Prints a code, waits (15 minutes)
+    /// for the other server, asks you to approve it, then writes this server's configuration.
+    Offer {
+        /// Tunnel name (letters, digits, dashes).
+        #[arg(long)]
+        name: String,
+        /// Port of the service on this server that the tunnel exposes.
+        #[arg(long)]
+        service_port: u16,
+        #[arg(long, default_value_t = 8443)]
+        tunnel_port: u16,
+        /// Address the other server dials; detected when omitted.
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long, default_value = "/etc/baft-tunnel")]
+        dir: PathBuf,
+        /// systemd instance name (`baft-tunnel@NAME`).
+        #[arg(long)]
+        instance: Option<String>,
+        /// Approve the joining server without asking (the code itself is the secret).
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Root helper run by `baft-tunnel-control-pair@NAME.service` (panel-driven pairing).
+    Helper {
+        #[arg(long)]
+        instance: String,
+    },
+    /// Network side of a pairing (internal; started by `offer`/the helper, drops privileges).
+    #[command(hide = true)]
+    Worker,
+    /// Run on the other server with the code printed by `offer`. Use `-` to read the code from
+    /// standard input (keeps it out of the process list).
+    Accept {
+        code: String,
+        #[arg(long, default_value = "/etc/baft-tunnel")]
+        dir: PathBuf,
+        #[arg(long)]
+        instance: Option<String>,
     },
 }
 
@@ -684,6 +738,87 @@ async fn run() -> Result<()> {
             );
             Ok(())
         }
+        Command::Pair {
+            command:
+                PairCommand::Offer {
+                    name,
+                    service_port,
+                    tunnel_port,
+                    host,
+                    dir,
+                    instance,
+                    yes,
+                },
+        } => {
+            pair_flow::offer(
+                pair_flow::OfferOptions {
+                    dir,
+                    instance,
+                    name,
+                    service_port,
+                    tunnel_port,
+                    host,
+                },
+                |p: pair_flow::Pending| async move {
+                    eprintln!("Server {} connects from {}. Its key fingerprint: {}", p.node_id, p.peer, p.verify);
+                    eprintln!("Check that the other server shows the same fingerprint.");
+                    if yes {
+                        return true;
+                    }
+                    tokio::task::spawn_blocking(|| {
+                        eprint!("Approve? [y/N] ");
+                        let mut line = String::new();
+                        std::io::stdin().read_line(&mut line).is_ok()
+                            && matches!(line.trim(), "y" | "Y" | "yes")
+                    })
+                    .await
+                    .unwrap_or(false)
+                },
+                |code| {
+                    println!("On the other server run (valid 15 minutes, single use):\n\n  baft-tunnel pair accept {code}\n\nWaiting for it. Open TCP port tunnel-port on this server's firewall yourself; BAFT-TUNNEL never changes firewall rules.");
+                },
+            )
+            .await
+        }
+        Command::Pair {
+            command: PairCommand::Helper { instance },
+        } => {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if unsafe { libc::geteuid() } != 0 {
+                bail!("the pairing helper runs as root from its systemd unit only");
+            }
+            let status = pair_helper::run(
+                &instance,
+                std::path::Path::new(apply::CONTROL_DIR),
+                std::path::Path::new("/etc/baft-tunnel"),
+            )
+            .await?;
+            println!("pairing helper for {instance}: state={}", status["state"].as_str().unwrap_or("-"));
+            Ok(())
+        }
+        Command::Pair {
+            command:
+                PairCommand::Accept {
+                    code,
+                    dir,
+                    instance,
+                },
+        } => {
+            let code = if code == "-" {
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                line.trim().to_string()
+            } else {
+                code
+            };
+            pair_flow::accept(&code, &dir, instance, |v| {
+                eprintln!("Key fingerprint: {v} (the other server asks you to compare it)");
+            })
+            .await
+        }
+        Command::Pair {
+            command: PairCommand::Worker,
+        } => pair_flow::worker_stdio().await,
         Command::NoiseKeygen { out } => {
             let public = engine::write_noise_keypair(&out)?;
             println!("{public}");
