@@ -20,7 +20,7 @@ The current-state file is a replaceable snapshot, not a historical record. Issue
 These are conversational HQ commands, not shell commands:
 
 - **`HQ CHECKPOINT`** — refresh live GitHub state first; update the current snapshot with exact refs, PRs, checks, runs, blockers and one next action; append a concise dated handoff to Issue #2. Never record an unverified result as PASS.
-- **`HQ RESUME`** — read `AGENTS.md`, `PROJECT_PROFILE.md`, this protocol, `HQ_CURRENT_STATE.md`, the latest Issue #2 comments and the relevant roadmap/work-plan sections; then verify every mutable fact live before continuing the next safe, authorized action.
+- **`HQ RESUME`** — a combined activate-and-continue command. If HQ is OFF in this chat, activate it first and bind only the project explicitly specified by the active project profile; do not stop at an activation announcement. Read `AGENTS.md`, `PROJECT_PROFILE.md`, this protocol, `HQ_CURRENT_STATE.md`, the newest Issue #2 comments and relevant roadmap/work-plan sections; verify every mutable fact live; reconcile the last checkpoint; then execute the first safe, authorized, unfinished next action. If HQ is already ON, do not repeat activation work or give an activation report—resume directly from the verified handoff. The response must be a **continuation progress report**: what was resumed, what action was performed, evidence/result, remaining blocker and next action. Report activation only as a brief note if it was necessary. If the next action is blocked or requires missing approval, perform the safest useful alternative and report the exact blocker; never fabricate progress.
 - **`HQ STATUS`** — read-only live reconciliation; do not edit the snapshot or board.
 - **`.`, `..`, `...`** — retain the project profile's continuation semantics. Each command must verify the current state before action; the snapshot is a starting index, not proof.
 
@@ -75,12 +75,13 @@ Also create a durable checkpoint after every **3 substantive user turns or 10 me
 
 ## Resume procedure for a new chat
 
-1. User activates `HQ ON`; HQ remains chat-scoped.
+1. On `HQ RESUME`, if HQ is OFF, activate HQ in this chat as part of the same command; do not require a separate `HQ ON` message. HQ remains chat-scoped.
 2. Bind only BAFT-TUNNEL and read `AGENTS.md` → profile → `HQ_USAGE.md` → this protocol → current snapshot.
 3. Read the newest Issue #2 comments (paginate to the newest page; do not assume page 1 is newest).
 4. Verify `main`, PR heads, checks, run statuses and relevant evidence live. A snapshot may be stale by the time a new chat starts.
-5. Reconfirm any permission that is chat-scoped, task-specific, expired, or not explicitly recorded in the project's approved process. `HQ ON` and a checkpoint do not grant permissions.
-6. Continue from the recorded next action without repeating completed work. If evidence conflicts, trust the newer authoritative source and record the discrepancy.
+5. Reconfirm any permission that is chat-scoped, task-specific, expired, or not explicitly recorded in the project's approved process. `HQ RESUME` and a checkpoint do not grant permissions.
+6. Reconcile the checkpoint against live state and continue the first safe, authorized, unfinished action. Do not stop after loading documents or announcing activation.
+7. Report resumed work, actual actions and evidence, blockers, and the next action. Do not make the response primarily an HQ activation/status announcement. If no action can safely proceed, state exactly why and identify the closest safe next step.
 
 ## Status vocabulary
 
