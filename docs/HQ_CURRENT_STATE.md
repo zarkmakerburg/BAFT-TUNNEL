@@ -35,10 +35,10 @@
 
 | PR | Head SHA | State | Verified note |
 |---|---|---|---|
-| [#323](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/323) | `d1897c5cb3a6af89868ce57255136a6087d908d3` | Draft / Open | 11 Check Runs green on this head; no review recorded. Noise-TCP Direct rotation harness only; not TCP-TLS evidence. |
+| [#323](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/323) | `d1897c5cb3a6af89868ce57255136a6087d908d3` | Draft / Open | 11/11 exact-head checks SUCCESS; no review. Noise-TCP Direct only. Pre-review gap: candidate gate does not assert candidate contains PR #315 merge SHA `a0e759d208c93e7ccda9f36ad3b9fc2fa9cd3de3`; comment #6952163991 requests guard + static test. No LAB dispatch. |
 | [#324](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/324) | `2ca82c8b86d75ffe4db9aae9fc8e1025635e1f7d` | Draft / Open | 11 Check Runs green on this head; no review recorded. Skills/governance + roadmap documentation; parallel, non-blocking track. |
 | [#326](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/326) | `ab8095d59cf77bf16bd13e34a81acf77adc463c5` | Draft / Open | F1 pure rules + ADR-0045 accepted with conditions; mergeability/check state not yet verified. |
-| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `8526508820f5ee9db4d9f5aac3822ef3d9e6063c` | Draft / Open | Automatic checkpoint policy + combined activate-and-continue `HQ RESUME`; documentation-only. Live metadata: mergeable=true, `mergeable_state=clean`; no submitted reviews. Exact-head checks: 11/11 completed SUCCESS. Still Draft and not approved/merged. |
+| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `225e606135e3225faeaa14d8f03d8a504e7433d9` | Draft / Open | Automatic checkpoint policy + combined activate-and-continue `HQ RESUME`; documentation-only. Live metadata: mergeable=true, `mergeable_state=blocked`; exact-head checks 2/10 SUCCESS, 8 IN_PROGRESS. No submitted reviews. |
 | [#171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171) | `e64ea2fca5b3dd17b709ecf9c92a2cf933da32cb` | Draft / Open | Central Fleet architecture only; deferred after 0.4.0. |
 
 PR base refs and statuses can change; re-fetch them before action. PR #327 was opened from the recorded main SHA and was mergeable=true at the last check, but merge remained blocked by required checks. This checkpoint itself advances its head, so fetch the live PR head/checks before any review or merge decision. PR #169 is the separate HQ playbook and is not BAFT-TUNNEL product scope.
@@ -113,3 +113,16 @@ Continue P0-A: wait/recheck run **44101769313**. Determine its actual mode, ages
 ## Next action
 
 Proceed to P0-B on PR #323: refresh exact head, required checks and review state; if still eligible, request/obtain independent review before any owner-authorized real two-host Noise-TCP Direct LAB. Keep this separate from the TCP/TLS control finding. In parallel, design a safe root-cause isolation plan that does not change firewall, routes, sysctls, or CAP_NET_ADMIN settings.
+
+
+## Latest HQ continuation reconciliation — 2026-11-17 15:18 UTC
+
+- P0-A paired non-tunnel control comparison is complete: raw TCP run 44101542573 and TLS run 44101769313, both SUCCESS, 18/18 2 MiB transfers per run, ages 0/15/20/25/30/60, 5-second application ping/pong. Both modes are fast at 0/15 and severely slower from age 20 onward; TLS does not remove the effect. Age-25 TLS variance is high. Server timing includes pre-accept/aging wait; use client timings. Root cause and product impact remain unproven. P0-C TCP-TLS rotation remains parked absent a separate rationale.
+- P0-B PR #323 live: OPEN / Draft, head `d1897c5cb3a6af89868ce57255136a6087d908d3`, base `a0e759d208c93e7ccda9f36ad3b9fc2fa9cd3de3`, mergeable=true / clean, 11/11 exact-head checks SUCCESS, zero submitted reviews and no requested reviewers. It is a Noise-TCP Direct harness, not TCP-TLS proof.
+- Pre-review audit found a harness candidate-selection gap: workflow checks requested SHA is an ancestor of current main and required contexts pass, but does not assert that it contains PR #315's merged rotation implementation. PR #315 merge commit is `a0e759d208c93e7ccda9f36ad3b9fc2fa9cd3de3`. An older green main SHA could be selected. Posted pre-review note on PR #323 (comment 6952163991), asking for a merged-PR/merge-commit ancestry guard and static contract test. This is a reproducibility/correctness gate, not an unsafe-code finding.
+- Main HEAD remains `c3e2bda8cc4b598c410a665f3c18fb6cc2d944c2`. PR #327 exact head `225e606135e3225faeaa14d8f03d8a504e7433d9`: 2/10 checks SUCCESS, 8 IN_PROGRESS; OPEN / Draft, mergeable_state=blocked.
+- Next: fix/verify PR #323 candidate gate, rerun exact-head CI, obtain independent review, then re-evaluate explicit owner authorization for the real two-host Noise-TCP Direct LAB. No LAB dispatch, merge, release, deployment, firewall/route/sysctl change or CAP_NET_ADMIN use.
+
+## Next action
+
+P0-B: close the PR #323 candidate ancestry guard gap (must prove PR #315 is merged and its merge commit is an ancestor of the candidate SHA), add static contract coverage, then recheck all required exact-head CI and independent review. Only after those gates should the owner-authorized LAB dispatch be considered.
