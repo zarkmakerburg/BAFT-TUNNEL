@@ -61,13 +61,37 @@ The owner said Tailscale is not needed and that other tunnel projects should be 
 
 | Project | Repository | Language | Licence tag | Last push | Candidate idea (Proposed, unread) | Status |
 |---|---|---|---|---|---|---|
-| Backhaul | `Musixal/Backhaul` (885 stars) | Go | AGPL-3.0 | 2025-09-04 | Reverse tunnel with several selectable transports and a multiplexed variant; same author as `Musixal/rathole-tunnel` in §2. Compare with BackPack and our Reverse Preview | **Deferred** study; ideas only (AGPL) |
+| Backhaul | `Musixal/Backhaul` (885 stars) | Go | AGPL-3.0 | 2025-09-04 | Reverse tunnel with several selectable transports and a multiplexed variant; same author as `Musixal/rathole-tunnel` in §2. Compare with BackPack and our Reverse Preview | **Studied (README only), see §2b**; ideas only (AGPL) |
 | EasyTier | `EasyTier/EasyTier` (14.8k) | Rust | LGPL-3.0 | 2026-11-17 | Peer-to-peer mesh VPN in Rust (multi-peer, NAT traversal). Relevant to Fleet/multi-node thinking only | **Deferred**; LGPL does not permit copying into a proprietary core without compliance work |
-| wstunnel | `erebe/wstunnel` (7.2k) | Rust | BSD-3-Clause | 2026-10-19 | TCP/UDP carried over WebSocket/HTTP; a model for a future WS carrier (ADR-0010 plans carriers each with its own ADR) | **Deferred** (WS carrier not built) |
-| bore | `ekzhang/bore` (11.6k) | Rust | MIT | 2026-02-04 | Minimal reverse TCP tunnel with a shared-secret handshake; a small readable reference for the Reverse control/data split | **Deferred**; secondary to rathole |
+| wstunnel | `erebe/wstunnel` (7.2k) | Rust | BSD-3-Clause | 2026-10-19 | TCP/UDP carried over WebSocket/HTTP; a model for a future WS carrier (ADR-0010 plans carriers each with its own ADR) | **Studied (README only), see §2b**; WS carrier not built |
+| bore | `ekzhang/bore` (11.6k) | Rust | MIT | 2026-02-04 | Minimal reverse TCP tunnel with a shared-secret handshake; a small readable reference for the Reverse control/data split | **Studied (README only), see §2b** |
 | Ehco | `Ehco1996/ehco` (1.3k) | Go | GPL-3.0 | 2026-11-08 | TCP/UDP relay with WS/WSS/mux transports and traffic metrics | **Deferred**; ideas only (GPL) |
 | nps | `ehang-io/nps` (34k) | Go | GPL-3.0 | 2024-05-30 | Intranet-penetration proxy with a web console and multi-client management; a product/panel reference | **Deferred**; ideas only (GPL); not pushed since 2024 |
 | sing-box | `SagerNet/sing-box` (40k) | Go | `NOASSERTION` (custom/unclear) | 2026-11-17 | Universal proxy platform | **Not assessed**; licence tag unclear, so no idea is adopted until the licence is read |
+
+### 2b. README study of Backhaul, wstunnel and bore (2026-11-17, coordinator order)
+
+Method: each project's `README.md` on its default branch was read (Backhaul and wstunnel on `master`, bore on `master`); no source and no architecture document beyond the README was read, and nothing was run. Claims below are the **projects' own README statements**, not verified behaviour. All ideas are **Proposed**, independent rewrite only, mapped to existing roadmap/advisor items.
+
+**Backhaul** (AGPL-3.0 per its README License section, matching the GitHub tag). Reverse tunnel in Go. README states: transports tcp, tcpmux, ws, wss, wsmux, wssmux (SMUX multiplexing, tunable frame and buffer sizes); UDP carried over the TCP transport; one shared `token` for authentication (optional); keepalive and `retry_interval`/`dial_timeout` settings; a server-side `channel_size` queue where **excess connections are discarded**; optional traffic "sniffer" log and a `web_port` monitoring page; hot configuration reload. A separate benchmark page exists and was **not** read.
+- Idea B-1 (Proposed): a **bounded accept queue with explicit overflow policy** surfaced as a counter. Maps to the Reverse ingress-queue deadline gap already noted in the ecosystem study; roadmap O6/ADR-0037 follow-up.
+- Idea B-2 (Proposed): a **transport-choice FAQ in the Wizard** (plain TCP vs multiplexed vs HTTP-friendly), shown only for carriers that actually exist. Maps to R-8 (doctor/path test) and to the rule "never advertise unsupported carriers".
+- Rejected: token-only identity (weaker than ADR-0011/0012), plaintext `ws` option, built-in traffic sniffer log (privacy and scope).
+- Gap: the README gives no recovery/resume semantics beyond retry; nothing to adopt for R-3.
+
+**wstunnel** (BSD-3-Clause per GitHub tag; Rust). README states: tunnels TCP/UDP/Unix/stdio and SOCKS5/HTTP/transparent proxy over WebSocket, HTTP/2 or WebTransport; reverse tunnelling; **mTLS with certificate auto-reload**; a restrictable HTTP-upgrade **path prefix as a shared secret** and a restriction config file; websocket ping frequency; reverse client reconnect with a configurable maximum backoff (default retry every 1 s); proxy-protocol header support; TLS certificate verification is **disabled by default on the client**.
+- Idea W-1 (Proposed): **carrier plug-in shape** for a future WS/HTTP carrier (ADR-0010 requires its own ADR, audit and LAB); useful as a design comparison for ADR-0039's carrier interface. Roadmap Phase 4, after R-1/R-2.
+- Idea W-2 (Proposed): **configurable max reconnect backoff exposed in config** with a documented default. Maps to ADR-0039 link policy; our 1 s to 60 s doubling is hard-coded per docs.
+- Idea W-3 (Proposed): **restriction rules per tunnel** (allowed destinations) as a declarative file. Overlaps ADR-0011 authorization; check before proposing anything new.
+- Rejected: verification off by default (violates fail-closed), path-prefix-as-secret as authentication, transparent proxy (needs privileges, ADR-0030).
+- Note: HTTP/2 and WebTransport carry operational caveats in the README (proxy buffering, UDP reachability). No evidence for the Iran path; **no censorship-resistance claim**.
+
+**bore** (MIT per GitHub tag; Rust, README says about 400 lines). README states: control port 7835, a Hello message, a per-connection UUID, a second TCP stream per accepted connection, **incoming connections held at most 10 seconds if the client does not accept them**, optional shared secret verified by challenge on each connection.
+- Idea R-1 (Proposed): the **10 s accept-hold limit** is the same fix as B-1; prefer one ADR-0037 amendment covering both.
+- Idea R-2 (Proposed): **challenge-per-connection** is already stronger than a static token but weaker than our mTLS; no action.
+- Rejected: shared-secret-only deployment model; nothing else to adopt (it is deliberately minimal).
+
+**Summary for the roadmap:** the three READMEs add no new capability that BAFT-TUNNEL lacks; they confirm two small hardening items (bounded Reverse accept queue with a deadline; configurable reconnect backoff) and one future design comparison (WS/HTTP carrier shape). Neither is scheduled by this document.
 
 Searched and **not confirmed**: `go-gost/gost` and `apernet/hysteria` returned no result for the exact search used; neither is listed. Direct repository metadata for these projects could not be read from this session (access is scoped to the product repositories), so no further fact beyond the table is claimed.
 
@@ -275,7 +299,7 @@ These verify handover statements against repository records. Nothing was modifie
 | ID | Question | Recommendation (Proposed) | Blocks |
 |---|---|---|---|
 | OQ-1 | Re-verify each reference licence against the upstream repositories now (this file relies on earlier recorded reads) | Yes, before any copy decision; counsel review for any relicense | Any copy/relicense |
-| OQ-2 | ~~Name missing references~~ Answered 2026-11-17: Tailscale not needed; mine other tunnel projects. §2a lists seven verified candidates. Which of them should get a real README/source study first? | Backhaul (reverse, closest to our Reverse Preview), then wstunnel (WS carrier design) | Study order |
+| OQ-2 | Answered 2026-11-17: Tailscale dropped; other tunnel projects studied. Backhaul, wstunnel, bore READMEs done (§2b). Study the remaining §2a candidates (EasyTier, Ehco, nps) or stop? | Stop unless a specific need appears | Study scope |
 | OQ-3 | Confirm advisor priority R-1, R-2, R-4 before further 0.3.0 operator items (ADVISOR §9) | Confirm | Roadmap order |
 | OQ-4 | Machine-checkable outage rule and re-evaluation of the 0.2.2 acceptance basis (§15.1) | Adopt R-6; no change to the published release unless the owner decides | Acceptance policy |
 | OQ-5 | Multi-hour benchmark window: delegated approval exists as a one-time exception (ADVISOR §9, 2026-11-17); harness for LAB use not yet built | Keep; schedule only after harness and stall controls | R-5 |
