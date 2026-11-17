@@ -23,6 +23,10 @@
 - This is best-effort while the chat and tools are available; it cannot run after abrupt client termination or in the background. Checkpoint during work, not at an assumed context limit.
 - A checkpoint is not an approval and does not transfer task-specific permissions. Full rules: [HQ_CHECKPOINT_PROTOCOL.md](HQ_CHECKPOINT_PROTOCOL.md).
 
+## HQ RESUME behavior
+
+`HQ RESUME` is one combined command, not a two-step instruction. If HQ is OFF in a new chat, it activates HQ within that same command, binds only this project, reads the profile/protocol/snapshot and newest Issue #2 history, verifies mutable facts live, and immediately continues the first safe, authorized, unfinished action from the latest checkpoint. If HQ is already ON, it skips activation and resumes directly. The user-facing response must report continuation progress (action resumed/performed, evidence/result, blockers and next action), not an activation-only announcement. If no action is safe, state the exact gate and the nearest safe action. It must not stop after reading documents or displaying status.
+
 ## Live repository snapshot
 
 - **main HEAD at last verification:** `c3e2bda8cc4b598c410a665f3c18fb6cc2d944c2` — PR #325, documentation update for advisor-panel UX captures.
@@ -34,7 +38,7 @@
 | [#323](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/323) | `d1897c5cb3a6af89868ce57255136a6087d908d3` | Draft / Open | 11 Check Runs green on this head; no review recorded. Noise-TCP Direct rotation harness only; not TCP-TLS evidence. |
 | [#324](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/324) | `2ca82c8b86d75ffe4db9aae9fc8e1025635e1f7d` | Draft / Open | 11 Check Runs green on this head; no review recorded. Skills/governance + roadmap documentation; parallel, non-blocking track. |
 | [#326](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/326) | `ab8095d59cf77bf16bd13e34a81acf77adc463c5` | Draft / Open | F1 pure rules + ADR-0045 accepted with conditions; mergeability/check state not yet verified. |
-| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | See live PR head (this checkpoint updates the branch) | Draft / Open | Automatic checkpoint policy + cross-thread recovery docs; documentation-only. Fresh exact-head CI must be rechecked after this snapshot commit; no pass inferred. |
+| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `81d27e00a2047d41f347aa599ca1274fbcd76d2e` | Draft / Open | Automatic checkpoint policy + combined activate-and-continue `HQ RESUME` behavior; documentation-only. Exact-head CI: 2 IN_PROGRESS, 8 QUEUED at last check; no completed checks yet. |
 | [#171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171) | `e64ea2fca5b3dd17b709ecf9c92a2cf933da32cb` | Draft / Open | Central Fleet architecture only; deferred after 0.4.0. |
 
 PR base refs and statuses can change; re-fetch them before action. PR #327 was opened from the recorded main SHA and was mergeable=true at the last check, but merge remained blocked by required checks. This checkpoint itself advances its head, so fetch the live PR head/checks before any review or merge decision. PR #169 is the separate HQ playbook and is not BAFT-TUNNEL product scope.
@@ -65,7 +69,7 @@ PR base refs and statuses can change; re-fetch them before action. PR #327 was o
 
 ## Next action
 
-Recheck runs **44101542573** and **44101769313** and the shared LAB concurrency state. Do not dispatch another LAB workflow until the first run releases the lock and its result/log availability is understood. Then classify the evidence strictly as PASS, FAIL or UNKNOWN and update this file plus Issue #2.
+Continue the combined `HQ RESUME` flow from the active P0-A handoff: recheck runs **44101542573** and **44101769313** and the shared LAB concurrency state. Do not dispatch another LAB workflow until the first run releases the lock and its result/log availability is understood. Then classify the evidence strictly as PASS, FAIL or UNKNOWN and update this file plus Issue #2.
 
 ## Resume checklist
 
