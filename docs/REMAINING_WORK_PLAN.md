@@ -334,3 +334,30 @@ The detailed, authoritative adoption queue is in [PRODUCT_ROADMAP.md §9.8](PROD
 | X-HARDEN | Backup/restore, signed update/rollback | Existing mechanisms and evidence; retain regression gates | Preserve integrity, signature, rollback, ownership/mode and N-1→N acceptance |
 
 **Constraints:** Rust core only; no direct Rakhsh/BackPack source copying; BackPack's Go/AGPL-3.0 implementation is reference material only; no CAP_NET_ADMIN; no production-host changes; CI/simulation is not REAL-LAB. The current P0 stability work remains ahead of new transport implementation.
+
+
+## 11. Whole-project priority reassessment (2026-11-17)
+
+The authoritative revised order is PRODUCT_ROADMAP.md §9.9 (Whole-project priority reassessment). This section is the execution checklist; statuses below are evidence-based.
+
+| Order | Task | Status | Immediate next step |
+|---|---|---|---|
+| P0-A | Raw TCP vs TLS aged-flow diagnostic | Not Verified; PR #313 merged only the workflow mode support; known age evidence is TLS-only | Prepare matched 2 MiB matrix at ages 0/15/20/25/30/60 seconds, 3 attempts, 5 s keepalive; request task-specific LAB authorization before dispatch |
+| P0-B | PR #323 rotation harness | Partial; commit d1897c5cb3a6af89868ce57255136a6087d908d3; exact-head CI pending | CI → independent review → owner-authorized LAB; current workflow is Noise-TCP Direct only |
+| P0-C | TCP-TLS rotation proof | Not Verified | After diagnosis, add TLS/PKI-specific proof if rotation is selected as mitigation |
+| P0-D | PR #324 skills and roadmap governance | Partial; Draft | Exact-head CI and independent third-party content review |
+| P1-A | Transport Health | Partial | Real samples, provenance, freshness/stale guards and truthful state transitions |
+| P1-B | Multi-Link failover/failback | Partial | Anti-flap and recovery logic, then two-host integrity/recovery proof |
+| P1-C | Doctor | Partial | Ubuntu 22.04 read-only LAB validation and secret-free actionable output |
+| P1-D | Panel/operator experience | Existing foundation; targeted work only | Fix blocking UX/RTL/accessibility and real-data provenance gaps; no fake metrics |
+| P2-A | Stream Resume | Partial pure core | Protocol contract and adversarial/resource tests before data-path integration |
+| P2-B | Adaptive Data Pool / fallback policy | Planned | One design coordinated with Policy Pack and Multi-Link |
+| P2-C | Adaptive Traffic Policy Pack | Proposed | Optional post-stability work; UDP prerequisite for Gaming/Trading claims |
+| P2-D | Reverse/Noise security | TCP-TLS Preview; Noise Reverse unavailable | Threat model, no-downgrade, fuzz/review and two-host acceptance |
+| P3 | UDP/KCP/FEC, QUIC, WebSocket/WSS | Research only | Separate use case/ADR/security review/test/LAB for each |
+| P4 | Fleet/control plane | Design only, deferred after 0.4.0 | No implementation before P0/P1 closure |
+| Continuous | Backup/restore, signed updates/rollback, fuzz/supply chain | Existing capability hardening | Preserve all integrity, signature, permission, secret and rollback regression gates |
+
+**Immediate execution evidence:** PR #323 trusted harness changes are locally validated and pushed at d1897c5cb3a6af89868ce57255136a6087d908d3. No LAB hosts were contacted. CI is pending. Do not count a static/mock test as a two-host result.
+
+**Hard constraints:** Rust core only; no Rakhsh/BackPack source copying; no CAP_NET_ADMIN; no production-host changes; no LAB workflow without task-specific authorization; CI ≠ LAB; no feature advertisement before its acceptance gate.

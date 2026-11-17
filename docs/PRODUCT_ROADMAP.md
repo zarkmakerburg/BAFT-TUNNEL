@@ -397,3 +397,47 @@ This is the approved planning scope for extracting useful engineering capabiliti
 6. No Go in the core; no direct source copying from Rakhsh or BackPack; no CAP_NET_ADMIN; no change to advertised engine/direction capability without its acceptance gate.
 
 **Reporting rule:** every item must be labelled one of Implemented, Partial, Planned, Blocked or Not Verified, and accompanied by exact PR/ADR/SHA plus CI/LAB evidence where applicable. A design, source file, CI simulation or reference-project feature is not proof of a delivered BAFT-TUNNEL capability.
+
+
+### 9.9 Whole-project priority reassessment (2026-11-17; live PR/LAB reconciliation)
+
+This section supersedes the execution ordering in older snapshots where it conflicts with the live evidence below. It is a planning update, not an acceptance or release authorization.
+
+**Evidence corrections**
+- PR #313 is merged, but it added the age_mode=tcp|tls option to the non-tunnel control workflow; merge alone does not prove that the raw-TCP versus TLS aged-flow comparison was executed. The known aged-flow evidence is still TLS-only (runs 44056840174 and 44063608341). The root cause and raw-TCP comparison remain **Not Verified**.
+- PR #315 is merged and implements optional Direct session rotation (ADR-0049), with unit/integration coverage. That is not real-host acceptance.
+- PR #323 is still Draft. Its trusted LAB workflow currently exercises **Noise-TCP Direct**, not TCP-TLS. The current head is d1897c5cb3a6af89868ce57255136a6087d908d3; exact-head CI is pending. The harness was strengthened to verify the binary digest on both remote hosts, emit payload integrity evidence, require observed rotation events and enforce off/on result gates. Static/mock tests are not LAB evidence.
+- PR #324 is still Draft and contains the Rakhsh/BackPack capability roadmap and selected skills. Exact-head checks must finish and independent review is still required.
+- CI, NetNS simulation, hosted systemd tests, two-host LAB and production are separate evidence levels.
+
+**Revised execution order**
+
+| Priority | Workstream | Current state | Next action / exit gate |
+|---|---|---|---|
+| P0-A — first | Diagnose aged-flow path: raw TCP vs TLS | **Not Verified**; TLS aged-flow symptoms measured; PR #313 provides the TCP mode but no comparison result is recorded | Run a matched raw TCP/TLS matrix on the two registered LAB hosts: same direction, port conditions, payload (2 MiB), iterations (3), ages 0/15/20/25/30/60 s, 5 s keepalive pings. Preserve per-attempt bytes, duration, errno and both server/client logs. Run only with task-specific owner authorization; no host setup/firewall/route/sysctl changes. |
+| P0-B — next | PR #323 session-rotation harness acceptance | **Partial**; new code hardens integrity and result gates; exact-head CI pending; no independent review or LAB | Finish exact-head required CI; independent review; then owner-authorized LAB. Label its current result Noise-TCP Direct only. Do not infer TCP-TLS mitigation from it. |
+| P0-C | TCP-TLS session-rotation validation and 0.3.0 gate | **Not Verified**; ADR-0049 generic Direct design, but PR #323 harness is Noise-TCP | After P0-A, decide whether rotation is an appropriate mitigation. If yes, add/validate a TCP-TLS-specific two-host scenario with the correct PKI fixture, and prove aged-session 2 MiB integrity off vs on. No 0.3.0 Stable claim before the blocker is understood and release evidence is complete. |
+| P0-D | PR #324 skills + roadmap governance | **Partial**; Draft, exact-head checks must complete, no independent review | Complete required checks on the final SHA, review the 12 selected third-party skills and roadmap deltas, then owner review. No automatic merge. |
+| P1-A | Transport Health | **Partial**; model/status exist; freshness/real sample sources are missing | Implement real per-link RTT/jitter/loss or active-probe samples, provenance, timestamps and stale guards. Healthy only with fresh authenticated samples; otherwise Unknown. |
+| P1-B | Multi-Link failover/failback | **Partial**; backup_remotes dial wiring exists; no real failover LAB acceptance | Add deterministic failure/recovery/failback and anti-flap tests; then two-host data-integrity and bounded-recovery evidence. Keep userspace-only; no CAP_NET_ADMIN. |
+| P1-C | Doctor | **Partial**; offline read-only checks exist; no LAB validation recorded | Verify on Ubuntu 22.04/systemd 249; prove read-only behavior, evidence provenance/freshness, actionable findings and secret-free output. |
+| P1-D | Panel and operator experience | Existing panel and wizard are in place; do not add demo telemetry or advertise unaccepted features | Fix correctness/accessibility/RTL issues that block daily operation; surface real health and evidence states, not optimistic defaults. Keep this parallel and bounded. |
+| P2-A | Stream Resume | **Partial**; pure core exists, not wired into protocol/data path | Approve protocol contract, stream identity, replay/duplicate protection, bounded buffers, backpressure, expiry and reconnect tests before integration. Restart survival is a separate claim. |
+| P2-B | Adaptive Data Pool + fallback/load balancing | **Planned**; overlaps Policy Pack and Multi-Link | One coordinated design only; define admission/fairness/queue/congestion bounds and benchmark versus fixed baseline. Do not create a second policy engine or duplicate Multi-Link. |
+| P2-C | Adaptive Traffic Policy Pack | **Proposed** (ADR-0031/0044 and issues #226–245); no accepted profile | Keep optional and after core stability. Measurement and engine/carrier scope precede profiles; Gaming/Trading benefit claims remain gated on UDP. |
+| P2-D | Reverse/Noise security | TCP-TLS Reverse remains Preview; Noise Reverse unavailable | Keep Noise Reverse disabled. Require threat model, key lifecycle, downgrade resistance, vectors, fuzzing, independent review and real two-host data-path acceptance. |
+| P3 | UDP/KCP/FEC, QUIC, WebSocket/WSS | Research candidates only | Start each only with a concrete use case, separate ADR, licence/dependency/security review, bounded-resource tests, interoperability and two-host LAB. |
+| P4 | Fleet/control plane | Architecture only; deferred after 0.4.0 | Do not start implementation while P0/P1 stability gates remain open. |
+| Continuous hardening | Backup/Restore, signed update/rollback, supply chain, fuzzing | Existing mechanisms and evidence | Preserve regression gates for integrity, signature/digest/manifest, permissions, secret handling, rollback and N-1→N acceptance. |
+
+**Immediate work started**
+1. PR #323 trusted harness was updated at commit d1897c5cb3a6af89868ce57255136a6087d908d3: remote binary SHA-256 verification on both LAB hosts; explicit per-probe payload integrity output; journal-observed rotation count; strict rotation-off failure and rotation-on success gates; static contract test in phase0.
+2. Local checks passed: bash -n lab/trusted/*.sh, the new rotation contract test, trusted workflow boundary test, trusted B2 static/mock test and git diff --check.
+3. Exact-head GitHub CI for the new PR #323 SHA is pending. No real-host workflow was dispatched.
+
+**Global constraints and sequencing**
+- P0-A diagnosis precedes choosing a mitigation; P0-B harness hardening can proceed in parallel without host access.
+- P0-C must test the affected TCP-TLS engine if the product claim is about TCP-TLS. Noise-TCP-only evidence is not transferable.
+- No Go in the Rust core; no direct source copying from Rakhsh or BackPack; no CAP_NET_ADMIN; no production-host changes; no LAB dispatch without task-specific owner authorization.
+- Keep advertised capabilities conservative: TCP-TLS Reverse Preview only; Noise Reverse unavailable; new carriers remain unavailable until their own gates pass.
+- No merge, Stable tag, release, signing, deploy or phase transition without its separate approval and evidence gates.
