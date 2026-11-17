@@ -344,7 +344,7 @@ Source: [REFERENCE_PROJECTS_REVIEW.md](REFERENCE_PROJECTS_REVIEW.md) at `main` `
 | UDP carrier (ADR-0046) | Design only | None | Own audit and LAB |
 | Competitive benchmark | E2 netns harness (#330); no LAB run, no recorded cross-project result | CI-level only | One-time multi-hour window approved (delegated), unscheduled |
 
-**Aged-flow finding and the failed 0.2.2 soak runs.** Runs 43897433228 and 43910396414 (rc.2 to rc.3 upgrade soaks, 2026-11-16) failed soak probes (`payload mismatch`, 2 MiB cut at about 0.5-1 MB) with 0 restarts. Run 43945271865 was accepted under the human-judged outage rule, and Stable followed. The aged-flow throttle was later reproduced without BAFT-TUNNEL in the path (runs 44056840174, 44063608341). The acceptance basis should be re-evaluated; a machine-checkable control probe (advisor R-6) is proposed. No change to the published release is proposed here.
+**Aged-flow finding and the failed 0.2.2 soak runs.** Runs 43897433228 and 43910396414 (rc.3 candidate upgrade soaks, 2026-11-16) failed soak probes (`payload mismatch`, 2 MiB cut at about 0.5-1 MB) with 0 restarts and remain failed. Run 43945271865 is also recorded `failure` by GitHub; its 2 of 240 dropped probes were accepted by a manual outage-rule exception (post-soak steps did not run), and Stable followed (see REFERENCE_PROJECTS_REVIEW §15.1). The aged-flow throttle was later reproduced without BAFT-TUNNEL in the path (runs 44056840174, 44063608341). The acceptance basis should be re-evaluated; a machine-checkable control probe (advisor R-6) is proposed. No change to the published release is proposed here.
 
 **Open owner decisions:** REFERENCE_PROJECTS_REVIEW §16 (OQ-1 to OQ-10).
 
