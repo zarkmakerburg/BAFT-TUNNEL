@@ -20,7 +20,7 @@ jobs:
           persist-credentials: false
       - name: Run E1
         run: |
-          set -uo pipefail
+          set +e; set -uo pipefail
           W=$RUNNER_TEMP/b; mkdir -p $W; cd $W
           echo "runner: $(nproc) cpu, $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2), $(uname -r)" | tee info.txt
           fetch() { # repo pattern
@@ -48,7 +48,7 @@ jobs:
             # fault: restart client mid-transfer
             ( sleep 1.5; kill $RC; sleep 1; ./rathole -c rc.toml >rc2.log 2>&1 & ) &
             run rathole_clientkill 127.0.0.1:5202
-            kill $RS $RC 2>/dev/null; pkill -f 'rathole -c' ; sleep 1
+            kill $RS $RC 2>/dev/null; pkill -f '[r]athole -c' || true; sleep 1
           fi
           # frp
           if [ -x frps ]; then
@@ -58,7 +58,7 @@ jobs:
             run frp 127.0.0.1:5203
             ( sleep 1.5; kill $FC; sleep 1; ./frpc -c frpc.toml >fc2.log 2>&1 & ) &
             run frp_clientkill 127.0.0.1:5203
-            kill $FS $FC 2>/dev/null; pkill -f 'frpc -c'
+            kill $FS $FC 2>/dev/null; pkill -f '[f]rpc -c' || true
           fi
           {
             echo '## E1 loopback (hosted runner, CI-level evidence only)'; echo '```'; cat info.txt; echo '```'
