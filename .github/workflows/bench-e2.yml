@@ -75,6 +75,16 @@ jobs:
           nsx bsrv ./frps -c frps.toml >fs.log 2>&1 & sleep 1
           nsx bcli ./frpc -c frpc.toml >fc.log 2>&1 & sleep 2
           run_tool frp 5203
+          pkill -f '[f]rp[sc] -c'; sleep 1
+          BT=v0.3.0-rc.1; BU=https://github.com/zarkmakerburg/BAFT-TUNNEL/releases/download/$BT
+          if curl -fsSL -o baft-tunnel $BU/baft-tunnel-$BT-linux-x86_64 && curl -fsSL -o SUMS $BU/SHA256SUMS && grep -q "$(sha256sum baft-tunnel | cut -d' ' -f1)  baft-tunnel-$BT-linux-x86_64" SUMS; then
+            chmod +x baft-tunnel; echo "BAFT-TUNNEL $BT sha256 $(sha256sum baft-tunnel | cut -d' ' -f1) (checked against SHA256SUMS; cosign not verified here)" | tee -a info.txt
+            NSB="sudo ip netns exec bcli setpriv --reuid=$U --regid=$G --clear-groups"; NSA="sudo ip netns exec bsrv setpriv --reuid=$U --regid=$G --clear-groups"
+            # exit/serve in bcli (hosts the sink side), entry/forward in bsrv (user entry 127.0.0.1:5204), they dial over the veth
+            $GITHUB_WORKSPACE/bench/baft_up.sh $W/pki $W/baft-tunnel 10.9.0.2:7443 10.9.0.2:7443 127.0.0.1:39001 127.0.0.1:5204 "$NSB" "$NSA"
+            run_tool baft 5204
+            pkill -f '[b]aft-tunnel (serve|forward)' || true
+          else echo "BAFT-TUNNEL download or checksum failed" | tee -a info.txt; fi
           {
             echo '## E2 netns netem (one hosted runner, CI-level evidence only)'; echo '```'; cat info.txt; echo '```'
             echo "Transfer ${SIZE} MiB per run; impairment applied on both veth ends (egress) inside the namespaces."

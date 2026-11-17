@@ -60,6 +60,16 @@ jobs:
             SZ=3072 run frp_clientkill 127.0.0.1:5203
             kill $FS $FC 2>/dev/null; pkill -f '[f]rpc -c' || true
           fi
+          # BAFT-TUNNEL (signed prerelease, pinned tag), tcp-tls Direct, throwaway PKI
+          BT=v0.3.0-rc.1; BU=https://github.com/zarkmakerburg/BAFT-TUNNEL/releases/download/$BT
+          if curl -fsSL -o baft-tunnel $BU/baft-tunnel-$BT-linux-x86_64 && curl -fsSL -o SUMS $BU/SHA256SUMS && grep -q "$(sha256sum baft-tunnel | cut -d' ' -f1)  baft-tunnel-$BT-linux-x86_64" SUMS; then
+            chmod +x baft-tunnel; echo "BAFT-TUNNEL $BT sha256 $(sha256sum baft-tunnel | cut -d' ' -f1) (checked against SHA256SUMS; cosign not verified here)" | tee -a info.txt
+            $GITHUB_WORKSPACE/bench/baft_up.sh $W/pki $W/baft-tunnel 127.0.0.1:7443 127.0.0.1:7443 127.0.0.1:39001 127.0.0.1:5204 "" ""
+            run baft 127.0.0.1:5204
+            bash -c "cd $W/pki; ( sleep 0.7; pkill -KILL -f '[b]aft-tunnel forward'; sleep 1; bash forward.cmd > forward2.log 2>&1 & ) &  :"
+            SZ=3072 run baft_clientkill 127.0.0.1:5204
+            pkill -f '[b]aft-tunnel (serve|forward)' || true
+          else echo "BAFT-TUNNEL download or checksum failed" | tee -a info.txt; fi
           {
             echo '## E1 loopback (hosted runner, CI-level evidence only)'; echo '```'; cat info.txt; echo '```'
             echo '| run | verdict | MiB/s | retries | cpu_s | rss_MiB | faults |'; echo '|---|---|---|---|---|---|---|'
