@@ -160,6 +160,20 @@ impl HealthTracker {
         probes: &ProbeWindow,
         failure: Option<&str>,
     ) -> HealthReport {
+        self.evaluate_with(now, phase, rtt, probes, failure, None)
+    }
+
+    /// Like [`evaluate`](Self::evaluate), plus the delivery rate (bytes/s) when the throughput
+    /// watch currently judges the link throttled. That is a Degraded reason, never Unavailable.
+    pub fn evaluate_with(
+        &mut self,
+        now: Duration,
+        phase: Phase,
+        rtt: &RttEstimator,
+        probes: &ProbeWindow,
+        failure: Option<&str>,
+        throttled_rate_bps: Option<f64>,
+    ) -> HealthReport {
         let fresh = rtt.fresh(now, self.th.stale_after);
         let loss = probes.loss(self.th.min_probes);
         let (rtt_ms, jitter_ms) = (fresh.map(|f| f.0), fresh.map(|f| f.1));
@@ -235,6 +249,13 @@ impl HealthTracker {
             }
         }
 
+        if let Some(rate) = throttled_rate_bps {
+            bad.push(format!(
+                "possible throttling: {:.0} KiB/s delivered while the sender was busy (heuristic)",
+                rate / 1024.0
+            ));
+        }
+
         if !bad.is_empty() {
             self.good_streak = 0;
             self.state = if severe {
@@ -269,6 +290,142 @@ impl HealthTracker {
                 report(HealthState::Healthy, vec![])
             }
         }
+    }
+}
+
+/// One reading of the carrier socket's kernel TCP state (Linux `TCP_INFO`). All values are
+/// cumulative counters except `rtt`, which is the kernel's smoothed RTT.
+#[derive(Debug, Clone, Copy)]
+pub struct LinkSample {
+    pub at: Duration,
+    pub rtt: Duration,
+    pub retrans_total: u32,
+    pub bytes_acked: u64,
+    /// Time the connection had unacknowledged data in flight (cumulative).
+    pub busy: Duration,
+}
+
+/// Throughput watch: flags a link whose delivery rate stays low while the sender is busy, which
+/// is how an aged-flow throttle looks (LAB 2026-11-17: ~21 KB/s). It cannot tell a throttle from
+/// a genuinely slow link, so it only ever contributes a Degraded reason.
+#[derive(Debug)]
+pub struct ThroughputWatch {
+    prev: Option<LinkSample>,
+    low_streak: u32,
+    /// Below this delivery rate (bytes/s) an interval counts as low.
+    pub min_rate_bps: f64,
+    /// The sender must have been busy at least this fraction of the interval.
+    pub min_busy: f64,
+    /// Ignore intervals that moved fewer acknowledged bytes than this (idle or trickle).
+    pub min_bytes: u64,
+    /// Consecutive low intervals needed to call it throttled.
+    pub need: u32,
+    rate_bps: Option<f64>,
+}
+
+impl Default for ThroughputWatch {
+    fn default() -> Self {
+        Self {
+            prev: None,
+            low_streak: 0,
+            min_rate_bps: 64.0 * 1024.0,
+            min_busy: 0.5,
+            min_bytes: 16 * 1024,
+            need: 2,
+            rate_bps: None,
+        }
+    }
+}
+
+impl ThroughputWatch {
+    pub fn record(&mut self, s: LinkSample) {
+        let Some(p) = self.prev.replace(s) else {
+            return;
+        };
+        let dt = s.at.saturating_sub(p.at).as_secs_f64();
+        // A counter that went backwards means a different socket: start over.
+        if dt <= 0.0 || s.bytes_acked < p.bytes_acked || s.busy < p.busy {
+            self.low_streak = 0;
+            self.rate_bps = None;
+            return;
+        }
+        let bytes = s.bytes_acked - p.bytes_acked;
+        let busy = (s.busy - p.busy).as_secs_f64() / dt;
+        if bytes < self.min_bytes || busy < self.min_busy {
+            // Not enough demand to judge: neither throttled nor proven fine.
+            self.low_streak = 0;
+            self.rate_bps = None;
+            return;
+        }
+        let rate = bytes as f64 / dt;
+        if rate < self.min_rate_bps {
+            self.low_streak += 1;
+            self.rate_bps = Some(rate);
+        } else {
+            self.low_streak = 0;
+            self.rate_bps = None;
+        }
+    }
+
+    /// The delivery rate while currently judged throttled, else None.
+    pub fn throttled_rate(&self) -> Option<f64> {
+        if self.low_streak >= self.need {
+            self.rate_bps
+        } else {
+            None
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.prev = None;
+        self.low_streak = 0;
+        self.rate_bps = None;
+    }
+}
+
+/// Everything fed from kernel TCP samples. "Probe loss" here is the share of sampling intervals
+/// that saw retransmissions, a proxy named as such in the published evidence.
+#[derive(Debug)]
+pub struct LinkFeed {
+    pub rtt: RttEstimator,
+    pub probes: ProbeWindow,
+    pub watch: ThroughputWatch,
+    last_retrans: Option<u32>,
+}
+
+impl LinkFeed {
+    pub fn new() -> Self {
+        Self {
+            rtt: RttEstimator::default(),
+            probes: ProbeWindow::new(32),
+            watch: ThroughputWatch::default(),
+            last_retrans: None,
+        }
+    }
+
+    pub fn observe(&mut self, s: LinkSample) {
+        if s.rtt > Duration::ZERO {
+            self.rtt.record(s.rtt, s.at);
+        }
+        if let Some(prev) = self.last_retrans {
+            // A lower counter is a new socket: skip that interval rather than count it.
+            if s.retrans_total >= prev {
+                self.probes.record(s.retrans_total == prev);
+            }
+        }
+        self.last_retrans = Some(s.retrans_total);
+        self.watch.record(s);
+    }
+
+    /// A new carrier socket: forget everything from the previous one.
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+}
+
+impl Default for LinkFeed {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -464,5 +621,87 @@ mod tests {
             w.record(true);
         }
         assert_eq!(w.loss(10), Some(0.0));
+    }
+
+    fn sample(at: u64, rtt_ms: u64, retrans: u32, acked: u64, busy_ms: u64) -> LinkSample {
+        LinkSample {
+            at: Duration::from_secs(at),
+            rtt: Duration::from_millis(rtt_ms),
+            retrans_total: retrans,
+            bytes_acked: acked,
+            busy: Duration::from_millis(busy_ms),
+        }
+    }
+
+    #[test]
+    fn throttle_needs_demand_and_two_low_intervals_and_never_on_idle() {
+        let mut w = ThroughputWatch::default();
+        w.record(sample(0, 50, 0, 0, 0));
+        // 5 s, 100 KiB acked (20 KiB/s), busy 4 s: low interval 1.
+        w.record(sample(5, 50, 0, 100 * 1024, 4000));
+        assert_eq!(w.throttled_rate(), None);
+        w.record(sample(10, 50, 0, 200 * 1024, 8000));
+        let r = w.throttled_rate().unwrap();
+        assert!((r - 20.0 * 1024.0).abs() < 1.0, "{r}");
+        // Fast interval clears it.
+        w.record(sample(15, 50, 0, 200 * 1024 + 10_000_000, 12_000));
+        assert_eq!(w.throttled_rate(), None);
+        // Idle (tiny bytes) is not judged.
+        w.record(sample(20, 50, 0, 200 * 1024 + 10_000_100, 12_050));
+        w.record(sample(25, 50, 0, 200 * 1024 + 10_000_200, 12_100));
+        assert_eq!(w.throttled_rate(), None);
+        // A counter reset (new socket) starts over.
+        w.record(sample(30, 50, 0, 0, 0));
+        assert_eq!(w.throttled_rate(), None);
+    }
+
+    #[test]
+    fn feed_turns_throttle_into_degraded_and_unknown_without_samples() {
+        let mut feed = LinkFeed::new();
+        let mut t = HealthTracker::new(Thresholds::default());
+        let now = Duration::from_secs(60);
+        let r = t.evaluate_with(
+            now,
+            Phase::Authenticated,
+            &feed.rtt,
+            &feed.probes,
+            None,
+            feed.watch.throttled_rate(),
+        );
+        assert_eq!(
+            r.state,
+            HealthState::Authenticated,
+            "no samples -> quality unknown"
+        );
+        for i in 0..12u64 {
+            feed.observe(sample(i * 5, 60, 0, i * 100 * 1024, i * 4000));
+        }
+        let r = t.evaluate_with(
+            Duration::from_secs(60),
+            Phase::Authenticated,
+            &feed.rtt,
+            &feed.probes,
+            None,
+            feed.watch.throttled_rate(),
+        );
+        assert_eq!(r.state, HealthState::Degraded);
+        assert!(
+            r.reasons.iter().any(|x| x.contains("throttling")),
+            "{:?}",
+            r.reasons
+        );
+    }
+
+    #[test]
+    fn retransmitting_intervals_count_as_loss_and_a_new_socket_is_not_counted() {
+        let mut feed = LinkFeed::new();
+        for i in 0..12u64 {
+            // Every other interval retransmits.
+            feed.observe(sample(i * 5, 40, i.div_ceil(2) as u32, 0, 0));
+        }
+        let loss = feed.probes.loss(10).unwrap();
+        assert!(loss > 0.3 && loss < 0.8, "{loss}");
+        feed.observe(sample(60, 40, 0, 0, 0)); // counter went backwards
+        assert!(feed.probes.loss(10).is_some());
     }
 }

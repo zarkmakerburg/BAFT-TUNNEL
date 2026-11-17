@@ -18,7 +18,13 @@ static BYTES_FROM_PEER: AtomicU64 = AtomicU64::new(0);
 static BYTES_TO_PEER: AtomicU64 = AtomicU64::new(0);
 static STREAMS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SESSIONS_TOTAL: AtomicU64 = AtomicU64::new(0);
-static HEALTH: Mutex<Option<crate::transport_health::HealthTracker>> = Mutex::new(None);
+struct HealthState {
+    tracker: crate::transport_health::HealthTracker,
+    feed: crate::transport_health::LinkFeed,
+}
+static HEALTH: Mutex<Option<HealthState>> = Mutex::new(None);
+/// The most recent carrier socket (fd and the peer it was connected to), for kernel TCP samples.
+static CARRIER: Mutex<Option<(i32, std::net::SocketAddr)>> = Mutex::new(None);
 static PUBLISHER: std::sync::Once = std::sync::Once::new();
 
 pub const FILE: &str = "session.json";
@@ -133,14 +139,117 @@ fn counters_body(started: u64) -> serde_json::Value {
     })
 }
 
-/// Health of the link as the unit can honestly state it today. There is no RTT or probe source
-/// yet, so quality is never claimed: an authorized session reports `authenticated` with
-/// `rtt_ms`/`jitter_ms`/`probe_loss` null (unknown), and `healthy` is unreachable until samples
-/// exist. Not Integrity.
-fn health_body(started: u64) -> serde_json::Value {
-    use crate::transport_health::{
-        HealthState, HealthTracker, Phase, ProbeWindow, RttEstimator, Thresholds,
+/// Remember the newest carrier socket so the sampler can read its kernel TCP state. Called when a
+/// tunnel socket is tuned. The fd is only ever read (`TCP_INFO`), never written or closed, and a
+/// sample is accepted only while `getpeername` still returns the recorded peer, so a closed and
+/// reused descriptor is detected instead of misread.
+pub fn register_carrier(fd: i32, peer: std::net::SocketAddr) {
+    *CARRIER.lock().unwrap_or_else(|e| e.into_inner()) = Some((fd, peer));
+    if let Some(h) = HEALTH.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        h.feed.reset();
+    }
+}
+
+fn clear_carrier() {
+    *CARRIER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+#[cfg(target_os = "linux")]
+fn read_tcp_info(
+    fd: i32,
+    peer: std::net::SocketAddr,
+) -> Option<crate::transport_health::LinkSample> {
+    use std::time::Duration;
+    // SAFETY: zeroed sockaddr_storage/tcp_info are valid plain-data buffers; lengths are passed
+    // by pointer with their exact sizes; the calls only read socket state.
+    unsafe {
+        let mut ss: libc::sockaddr_storage = std::mem::zeroed();
+        let mut sl = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+        if libc::getpeername(fd, (&mut ss as *mut libc::sockaddr_storage).cast(), &mut sl) != 0 {
+            return None;
+        }
+        let actual = match ss.ss_family as libc::c_int {
+            libc::AF_INET => {
+                let a = &*(&ss as *const libc::sockaddr_storage).cast::<libc::sockaddr_in>();
+                std::net::SocketAddr::from((
+                    std::net::Ipv4Addr::from(u32::from_be(a.sin_addr.s_addr)),
+                    u16::from_be(a.sin_port),
+                ))
+            }
+            libc::AF_INET6 => {
+                let a = &*(&ss as *const libc::sockaddr_storage).cast::<libc::sockaddr_in6>();
+                std::net::SocketAddr::from((
+                    std::net::Ipv6Addr::from(a.sin6_addr.s6_addr),
+                    u16::from_be(a.sin6_port),
+                ))
+            }
+            _ => return None,
+        };
+        if actual != peer {
+            return None;
+        }
+        let mut info: libc::tcp_info = std::mem::zeroed();
+        let mut len = std::mem::size_of::<libc::tcp_info>() as libc::socklen_t;
+        if libc::getsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_INFO,
+            (&mut info as *mut libc::tcp_info).cast(),
+            &mut len,
+        ) != 0
+        {
+            return None;
+        }
+        // An older kernel returns a shorter struct; the fields used here need the newer layout.
+        if (len as usize) < std::mem::offset_of!(libc::tcp_info, tcpi_busy_time) + 8 {
+            return None;
+        }
+        Some(crate::transport_health::LinkSample {
+            at: Duration::from_secs(now()),
+            rtt: Duration::from_micros(u64::from(info.tcpi_rtt)),
+            retrans_total: info.tcpi_total_retrans,
+            bytes_acked: info.tcpi_bytes_acked,
+            busy: Duration::from_micros(info.tcpi_busy_time),
+        })
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_tcp_info(_: i32, _: std::net::SocketAddr) -> Option<crate::transport_health::LinkSample> {
+    None
+}
+
+/// Take one kernel sample of the current carrier and feed the health model. No carrier, no
+/// session or an unreadable socket feeds nothing, so quality stays Unknown.
+fn sample_link() {
+    let active = *ACTIVE.lock().unwrap_or_else(|e| e.into_inner()) > 0;
+    let carrier = *CARRIER.lock().unwrap_or_else(|e| e.into_inner());
+    let (true, Some((fd, peer))) = (active, carrier) else {
+        return;
     };
+    let Some(sample) = read_tcp_info(fd, peer) else {
+        return;
+    };
+    let mut g = HEALTH.lock().unwrap_or_else(|e| e.into_inner());
+    let h = g.get_or_insert_with(new_health);
+    h.feed.observe(sample);
+}
+
+fn new_health() -> HealthState {
+    HealthState {
+        tracker: crate::transport_health::HealthTracker::new(
+            crate::transport_health::Thresholds::default(),
+        ),
+        feed: crate::transport_health::LinkFeed::new(),
+    }
+}
+
+/// Health of the link as the unit can honestly state it. Quality comes only from kernel TCP
+/// samples of the carrier socket (smoothed RTT, retransmitting intervals, delivery rate while
+/// busy); with none, an authorized session reports `authenticated` and the numbers are null.
+/// Not Integrity.
+fn health_body(started: u64) -> serde_json::Value {
+    use crate::transport_health::{HealthState as S, Phase};
     let active = *ACTIVE.lock().unwrap_or_else(|e| e.into_inner()) > 0;
     let phase = if active {
         Phase::Authenticated
@@ -150,23 +259,20 @@ fn health_body(started: u64) -> serde_json::Value {
         Phase::Connecting
     };
     let mut guard = HEALTH.lock().unwrap_or_else(|e| e.into_inner());
-    let tracker = guard.get_or_insert_with(|| HealthTracker::new(Thresholds::default()));
+    let h = guard.get_or_insert_with(new_health);
     let elapsed = std::time::Duration::from_secs(now().saturating_sub(started));
-    let r = tracker.evaluate(
-        elapsed,
-        phase,
-        &RttEstimator::default(),
-        &ProbeWindow::new(32),
-        None,
-    );
+    let throttled = h.feed.watch.throttled_rate();
+    let r = h
+        .tracker
+        .evaluate_with(elapsed, phase, &h.feed.rtt, &h.feed.probes, None, throttled);
     let state = match r.state {
-        HealthState::Connecting => "connecting",
-        HealthState::Connected => "connected",
-        HealthState::Authenticated => "authenticated",
-        HealthState::Healthy => "healthy",
-        HealthState::Degraded => "degraded",
-        HealthState::Recovering => "recovering",
-        HealthState::Unavailable => "unavailable",
+        S::Connecting => "connecting",
+        S::Connected => "connected",
+        S::Authenticated => "authenticated",
+        S::Healthy => "healthy",
+        S::Degraded => "degraded",
+        S::Recovering => "recovering",
+        S::Unavailable => "unavailable",
     };
     serde_json::json!({
         "health_version": 1,
@@ -177,6 +283,9 @@ fn health_body(started: u64) -> serde_json::Value {
         "rtt_ms": r.rtt_ms,
         "jitter_ms": r.jitter_ms,
         "probe_loss": r.probe_loss,
+        "loss_basis": "share of sampling intervals with TCP retransmissions",
+        "rtt_basis": "kernel smoothed RTT of the carrier socket",
+        "throttled_rate_bps": throttled,
     })
 }
 
@@ -192,6 +301,7 @@ pub fn start_publisher() {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(COUNTER_SECONDS));
             loop {
                 tick.tick().await;
+                sample_link();
                 write_json(&d, COUNTERS_FILE, &counters_body(started));
                 write_json(&d, HEALTH_FILE, &health_body(started));
             }
@@ -242,6 +352,9 @@ impl Drop for SessionMark {
     fn drop(&mut self) {
         let mut n = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
         *n = n.saturating_sub(1);
+        if *n == 0 {
+            clear_carrier();
+        }
         if let Some(d) = dir() {
             if *n == 0 {
                 let _ = std::fs::remove_file(d.join(FILE));
@@ -303,5 +416,22 @@ mod tests {
         assert!(up["rtt_ms"].is_null() && up["jitter_ms"].is_null() && up["probe_loss"].is_null());
         drop(live);
         unsafe { std::env::remove_var("RUNTIME_DIRECTORY") };
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tcp_info_is_read_only_while_the_peer_matches() {
+        use std::os::fd::AsRawFd;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let c = std::net::TcpStream::connect(addr).unwrap();
+        let (_s, _) = l.accept().unwrap();
+        let sample = read_tcp_info(c.as_raw_fd(), addr).expect("sample");
+        assert!(sample.busy >= std::time::Duration::ZERO);
+        // A different recorded peer (a reused descriptor) must not be sampled.
+        let other: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+        assert!(read_tcp_info(c.as_raw_fd(), other).is_none());
+        // An invalid descriptor yields nothing.
+        assert!(read_tcp_info(-1, addr).is_none());
     }
 }
