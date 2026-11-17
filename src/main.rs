@@ -16,6 +16,7 @@ pub mod key_custody;
 mod link_policy;
 mod noise;
 mod observe;
+mod pair_ca;
 mod pki_helper;
 #[cfg(feature = "policy-pack")]
 mod policy;

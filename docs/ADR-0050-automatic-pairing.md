@@ -22,7 +22,7 @@ Add **auto mode**. The offline-CA mode stays available as "Advanced / my own CA"
    tunnel parameters and the peer node id. Expires in 15 min, single use, max 3 token attempts then the
    listener closes. The code is a bearer secret for that window and is never logged.
 3. **Per-tunnel CA.** At pairing creation the root helper creates a P-384 CA *for this tunnel only* with X.509
-   name constraints limited to the two node URIs and two server names, `pathlen:0`. The CA key stays in a
+   name constraints limited to the two DNS/IP server names (URI constraints are not usable for `urn:` node ids; the node-id allowlist stays enforced by the data plane and by the helper, which signs only the two fixed ids), `pathlen:0`. The CA key stays in a
    root-only directory on the listener host and never leaves it; it never goes to the peer, the agent process,
    the panel, logs or backups. A one-year CRL (empty) is issued; renewal is automatic by the same helper.
 4. **Join.** The second server runs `join CODE` (installer flag, CLI, or paste in the panel). It generates its
