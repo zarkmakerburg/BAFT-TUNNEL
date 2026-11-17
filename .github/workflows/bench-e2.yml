@@ -14,7 +14,7 @@ permissions:
 jobs:
   e2:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
@@ -58,9 +58,9 @@ jobs:
             impair
             nsx bcli python3 $S --role sink --size-mib $SIZE --idle 20 --json $W/$n.sink.json >/dev/null 2>&1 &
             SK=$!; sleep 1
-            if [ "$bh" != 0 ]; then ( sleep 3; IMP="loss 100%" impair; sleep $bh; IMP="$4" impair ) & fi
+            BH=""; if [ "$bh" != 0 ]; then ( sleep 3; IMP="loss 100%" impair; sleep $bh; IMP="$4" impair ) & BH=$!; fi
             timeout 240 nsx bsrv python3 $S --role send --size-mib $SIZE --target 127.0.0.1:$port --json $W/$n.send.json >/dev/null 2>&1
-            wait $SK; wait
+            wait $SK; [ -n "$BH" ] && wait $BH
             echo "$n done"
           }
           run_tool() { tool=$1; port=$2
