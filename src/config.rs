@@ -1040,6 +1040,11 @@ mod tests {
         assert_eq!(v2.protocol_version(), PROTOCOL_V2);
         assert!(validate_protocol_version(3, EngineKind::TcpTls).is_err());
         assert!(validate_protocol_version(PROTOCOL_V2, EngineKind::Baft).is_err());
+        // v3 exists in the protocol layer but is not selectable until resume is implemented.
+        assert!(
+            validate_protocol_version(crate::authorization::PROTOCOL_V3, EngineKind::TcpTls)
+                .is_err()
+        );
     }
 
     #[test]

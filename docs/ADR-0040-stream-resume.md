@@ -59,3 +59,6 @@ Per-stream window default 1 MiB (max 16 MiB), per-tunnel budget 64 MiB (`TunnelB
 5. Chaos test (session cut twice during a large transfer, sha256 equal) in CI, then a real two-host LAB request.
 
 Decision (coordinator, owner-delegated, 2026-11-17): resume in the first release is **Direct only**. Reverse stays Preview and gets no resume; a v3 Reverse tunnel must not advertise `ResumeStreams`. Security review of the token binding and `ResumeHello` rules is still required before step 3.
+
+### Implementation status
+Step 1 (2026-11-17): `PROTOCOL_V3` and the `ResumeStreams` session capability exist in the authorization layer. v3 sessions are Direct only; v1, v2 and v3 peers reject each other in both directions (tests); `ResumeStreams` is refused as a stream type; integrity probes keep working on v2 and later through `supports_integrity_probe`. v3 is **not selectable** in config or setup and nothing implements resume, so no resume claim exists.
