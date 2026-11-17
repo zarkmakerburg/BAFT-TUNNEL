@@ -16,7 +16,7 @@ Two enrollment paths, shipped in this order. Both end the same way: the remote s
 2. It shows one command: the signed quick installer with `--pair CODE` (ADR-0050 as implemented in PR #338: `quick-install.sh --pair CODE`; the first server uses `--offer NAME --service-port PORT`). The user pastes it on the new server (their own SSH session). The command pins a release tag; the panel may show it only for a release that actually contains pairing, so until such a release exists the panel shows the already-installed form `sudo baft-tunnel pair accept CODE` and says the one-line install needs a newer release. The installer verifies the release signature offline with the pinned root (ADR-0034) and registers the agent in setup mode.
 3. The new agent dials back outbound to the panel host (pairing listener, ADR-0050; Fleet reporter after ADR-0045 F1), proves the code and sends its CSR. The operator approves on the panel: the approval step shows node id, source address, version and the short `verify` key fingerprint, which the user compares with the new server's screen; approval requires the one-time `nonce` from `GET /v1/pair/status` (ADR-0050 revision). Pairing refuses a config directory that already holds a configuration. Done.
 
-This needs no new attack surface beyond ADR-0050's listener and works from Iran hosts that cannot reach the internet only if the panel host is reachable by them.
+This needs no new attack surface beyond ADR-0050's listener. The one-line installer downloads from GitHub, so on a host without internet it works only if the panel serves the bundle (see L2 below).
 
 ### Path B: SSH enrollment (second, off by default, behind review)
 
@@ -58,3 +58,25 @@ The panel runs the same installation over SSH so the user only types address and
 ## Out of scope and fixed constraints
 
 No firewall, route, sysctl or `CAP_NET_ADMIN` change on any host; the panel tells the user which port to open. No arbitrary remote commands. No stored credentials. No real hosts beyond the two LAB hosts, and only in an approved window. Nothing here is implemented, tested or LAB-verified.
+
+## Amendments from the independent review (binding before Path B stage 4 starts)
+
+Review: PR #341 comment 6960083527 (no Critical, 4 High, 6 Medium, 4 Low). D2 (pure Rust SSH library, no shelling out) is kept; findings written for the OpenSSH client are applied in their library form.
+
+**High**
+- **H1 secret path.** The agent heap holds the secret for the length of the request and zeroizes it. It reaches the enroll unit only over an fd: a socket-activated `baft-tunnel-enroll.socket` (`Accept=yes`) or `SCM_RIGHTS`; never a request file. A request file, if used, carries only target, user, port and pinned fingerprint.
+- **H2 SSRF and spray.** Resolve the name once, show the IP, connect only to that IP. Deny private, CGNAT, ULA, multicast and reserved ranges (and the hub's own addresses) unless an explicit "LAN target" switch is on. Each run starts with `IPAddressDeny=any` and `IPAddressAllow=<resolved IP>/32` (systemd/BPF, no `CAP_NET_ADMIN`, ADR-0030). Port 22 or one explicit port. Uniform errors. Attempt budget: 3 per target per hour, 10 per day globally, with lockout.
+- **H3 injection.** Host is an IP literal or LDH DNS name, user matches `^[a-z_][a-z0-9_-]{0,31}$`, port is a number. With a library there is no argv, config file, `ProxyCommand` or `%` expansion; no agent or port forwarding is ever requested, one password attempt per run, 10 s connect timeout. Remote commands are fixed strings with no operator input.
+- **H4 host key.** Fetch the keys once, pin the confirmed key type and key in memory for the run, so a downgrade or change between confirmation and auth fails. The UI offers a copy-paste command for the provider's web console (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`). An unconfirmed-by-console confirmation is labelled `hostkey=operator-asserted` in the UI and audit. Prefer Path A whenever the user already has a shell.
+
+**Medium**
+- **M1.** Library keys stay in zeroized memory; `MemorySwapMax=0`, `LimitCORE=0`, `PR_SET_DUMPABLE=0`, `mlock` on our buffers, `DynamicUser=yes`; the unit allows `AF_UNIX` for journald. Library-internal copies are documented as not guaranteed zeroized.
+- **M2.** One exec channel per step; `sudo -S -p ''` receives exactly one line; payload and pairing code never share that stdin. First Preview: root or passwordless sudo only.
+- **M3.** Snapshot target pre-state; refuse existing installs in Preview. Timeout and cancel still roll back (`ExecStopPost`, `TimeoutStopSec`). A lost connection reports Unknown with manual cleanup steps, never "left as found".
+- **M4.** Upload into a root `mktemp -d` (0700), check sha256 after upload and before running; the real signature check is on the hub side plus the authenticated channel (a verifier shipped in the same upload adds nothing).
+- **M5.** D1 conditions: the Fleet CA key lives only in the root helper, separate from any per-pair CA, name-constrained, `fleet-node` EKU only, validity at most 30 days, CRL; nodes pin the hub identity separately. This ADR-0014 trade-off is recorded as accepted for panel-enrolled nodes only.
+- **M6.** Bearer token in a header (no cookie auth on this route), Origin and Host checks, panel token re-entered per run. The root helper and enroll unit re-check target guard, rate limit and single active run themselves.
+
+**Low:** render remote banner/stderr as capped plain text, control and ANSI stripped, not verbatim in the audit (L1); Path A prefers `--pair -` with a hidden prompt over a code in shell history, and the Iran claim is corrected: the one-line installer downloads from GitHub, so it works on a host without internet only when the panel serves the bundle (L2); Remove server also deletes the pinned host key and aborts an open code, and only the hub enforces the CRL (L3); one global active run, showing who holds the slot, plus a per-operator budget (L4).
+
+**Gates.** Path A ships as Preview once the ADR-0050 review fixes (listener holding the CA key, deadline, approval binding) are merged; Path B never opens the pairing listener implicitly. Path B ships only default-off, as Preview, after stage 4 implements H1 to H4 and M1 to M3 with container tests for: secret absent from argv, env, files, journal and audit (canary-password grep); host-key mismatch and downgrade rejected; injection inputs rejected; private-range target refused by `IPAddressAllow`; rollback after injected failure, timeout and cancel; existing install untouched. No LAB run and no UI switch before that.
