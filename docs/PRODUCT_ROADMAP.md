@@ -1,6 +1,6 @@
 # BAFT-TUNNEL — Product Roadmap and Verified Delivery Queue
 
-**Status snapshot:** 2026-11-16 — **Stable `v0.2.0` released** (2026-11-15; see the 2026-11-16 addendum at the end of this file). Older rc.8-era text below is historical.
+**Status snapshot:** 2026-11-17 — **Stable `v0.2.1` is the latest released Stable** (`v0.2.0` before it). Stable `v0.2.2` and `v0.3.0` are not tagged yet; see [§9.7](#97-status-addendum-2026-11-17). Older text below is historical.
 **Source baseline:** `main` at `faba00fb3b12aac6395049c351be93027700890d` (PR #259, roadmap replan; code identical to `9b151ce`, PR #258). This SHA is the value when the file was written; `main` moves, so verify with `git rev-parse origin/main`. Evidence level for the release itself: signed Stable tag `v0.2.0` on `76c12cb` (= rc.12 binary, sha256 `4c922d02…9136`); post-release PRs #255/#257/#258 are merged to `main` and are **not** in any release yet. Earlier baselines (`b61765f`, `82d77b3`, U7 pinned to `1219f547`) are historical.
 **Gate status:** P0-1..P0-5 remain closed. D2 panel-managed `tcp-tls` CSR/certificate lifecycle is implemented and merged in [PR #150](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/150) (merge `e5a7451f259be7df14187a58db5fe1c29c51a81b`); exact-head CI/two-host evidence is recorded in that PR, and a trusted repeat on the immutable RC.7 candidate passed in [LAB run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181). U1 CRL renewal and real two-host push are proven by [LAB run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) on ancestor code SHA `8be74376176442106669f4a81293f0865629ecaf`: CRL number `0x1002→0x1003`, 30-day validity, both nodes report `crl_state=ok`, 2 MiB tunnel recovery, short/replayed CRLs refused. The repeat D2 LAB reported `host_drift=none`; the earlier unrelated nftables delta was not reproduced, but its source remains unattributed (S10).
 **Release:** `v0.2.0` is the latest Stable release (not a prerelease); evidence in [STABLE_0.2.0_EVIDENCE.md](STABLE_0.2.0_EVIDENCE.md). Reverse and BAFT ship as **Preview**; `ready` stays Unknown by design. The earlier `v0.1.0-rc.8` text and LAB run references elsewhere in this file are historical and kept for traceability. Production deploy is not claimed.
@@ -285,3 +285,38 @@ R1, R3 and R5 need no LAB and can run in parallel. R4 and R6 share the LAB and r
 ### 9.6 Housekeeping
 
 Draft PRs #197 (B4, superseded by merged #201), #173 (B1 docs, superseded) and #169 (HQ command-center foundation, removed from the project by the owner's decision on 2026-11-16) are closed; their branches are kept until a merged-PR mapping is verified. #171 (Central Fleet ADR) stays Draft and is scheduled after 0.4.0. [PROJECT_BOARD.md](PROJECT_BOARD.md) is refreshed; the body of HQ Issue #2 still describes rc.7 and the log is append-only, so the correction goes in as a new entry.
+
+### 9.7 Status addendum (2026-11-17)
+
+Evidence levels: CI ≠ VM ≠ LAB ≠ Production. Nothing below is production evidence. Main at the time of writing: `36107fb`.
+
+**Releases**
+
+| Release | State | Evidence |
+|---|---|---|
+| `v0.2.0` | Stable, released 2026-11-15 | [STABLE_0.2.0_EVIDENCE.md](STABLE_0.2.0_EVIDENCE.md) |
+| `v0.2.1` | Stable, released 2026-11-16 | [STABLE_0.2.1_EVIDENCE.md](STABLE_0.2.1_EVIDENCE.md) |
+| `v0.2.2` | **Not tagged.** Signed `v0.2.2-rc.3` on `5dd0890` passed the LAB checks (one soak accepted under the outage rule). The Stable tag push needs the owner's own approval and an admin machine; the owner has no access to that machine for now. | [STABLE_0.2.2_EVIDENCE.md](STABLE_0.2.2_EVIDENCE.md) |
+| `v0.3.0` | **Not accepted.** Signed `v0.3.0-rc.1` on `69f43ed`: Reverse Preview, domain installs and the 0.3.0 operator features pass in LAB; the upgrade soak does not pass because of the aged-flow stall below. | [STABLE_0.3.0_EVIDENCE.md](STABLE_0.3.0_EVIDENCE.md) |
+
+The README one-line install still pins `v0.2.1`. It moves to the next Stable tag only after that tag exists.
+
+**Blocking finding: aged-flow throttling on the Iran path (research, cause not established).** Since about 16:00Z on 2026-11-16, large transfers over a long-lived Direct session (Iran dials abroad) are cut at about 0.6 to 1 MB with yamux timeouts on both nodes, on 0.2.2 and 0.3.0-rc.1 alike; Reverse is clean on the same path. LAB run [44056840174](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44056840174) (no BAFT-TUNNEL in the path, plain TLS between the two hosts, 2 MiB echo after the connection has aged) completed and, per the stall thread's report, shows a fresh connection finishing in under a second while connections aged 60 s or more need about 80 to 100 s for the same 2 MiB, with no transfer error. That points at a flow-age-dependent limit in the network path rather than at the tunnel engine, but the cause is not established: raw TCP versus TLS on aged flows is the open diagnostic (PR #313). No workaround, circumvention or censorship-resistance claim is made. Stable 0.3.0 waits for this to be understood or fixed.
+
+**0.3.0 operator items (all merged):** O1 protocol v2 default (#268), O2 host tunnel list (#279, ADR-0036), O3 offline update notice (#275, ADR-0035), O4 certificate expiry warning (#270), O5 support bundle (#272), O6 Reverse Preview with two-node integrity probe (#282, #283, ADR-0037), O7 fuzz target for state files (#281). Panel display of the new items and the host list with two real instances are not LAB-tested.
+
+**After 0.3.0 (merged on main, no release contains them; none is a delivered product capability yet)**
+
+| Area | State on main | What is missing |
+|---|---|---|
+| Rakhsh integration | Analysis and licence boundary (ADR-0038, ADR-0043 code-copy policy) | No code copied; owner decision B-1 recorded |
+| Multi-link failover | `backup_remotes` wired into the dial path (#296, ADR-0039) | No LAB run of an actual failover |
+| Transport health | Model (#293, ADR-0041) and status publishing from the unit (#306); quality stays Unknown without samples | No real RTT or probe source, so no "healthy" claim |
+| Stream resume | Pure core only (#309, ADR-0040) | Not wired into the protocol or the tunnel path |
+| Doctor | Offline read-only config and host checks (#298, ADR-0042) | LAB use not recorded |
+| Policy Pack (0.4.0) | TP-0.1 research (#301), engine-agnostic interface behind the `policy-pack` feature (#305, ADR-0044), status contract proposed (ADR-0047), baseline harness on the real relay path (#310, simulated) | The relay does not call the policy yet; the baseline is one simulated run, not LAB |
+| Fleet | Design (ADR-0045) and an honest Fleet section on the Servers page (#307) | No control plane |
+| UDP carrier | Design only (ADR-0046, Proposed, #244) | No carrier code |
+| Competitive benchmark | Advisor assessment (#302); E2 netns/netem harness against Rathole and FRP in draft (PR #308, controlled CI runner, not LAB) | E2 result |
+
+**Documentation:** this addendum and the 0.3.0 evidence draft bring the roadmap to 2026-11-17; HQ Issue #2 gets a matching append-only entry. Firewall status stays Unknown (ADR-0030); no component takes `CAP_NET_ADMIN`.
