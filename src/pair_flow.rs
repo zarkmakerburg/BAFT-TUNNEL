@@ -366,7 +366,10 @@ fn drop_privileges() -> Result<()> {
         ensure!(libc::setgid(gid) == 0, "setgid failed");
         ensure!(libc::setuid(uid) == 0, "setuid failed");
         ensure!(libc::setuid(0) != 0, "privileges could be regained");
-        libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+        ensure!(
+            libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0,
+            "no-new-privileges failed"
+        );
     }
     Ok(())
 }
