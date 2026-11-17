@@ -6,6 +6,8 @@ Evidence scope: **read-only source review** of `CluvexStudio/rakhsh` at `89fa8e1
 
 ## 0. Decision that shapes everything
 
+Update 2026-11-17: owner answered B-1 ("copy code if needed"). ADR-0043 allows copying only into an isolated AGPL unit, never into the proprietary core. Evaluation result: nothing is both useful and isolable, so nothing is copied today. The text below is the original analysis and is still the reason the in-process features are rewritten.
+
 Rakhsh is **AGPL-3.0-only** (`LICENSE`, `Cargo.toml`). The BAFT-TUNNEL Rust core is **proprietary, all rights reserved** (`Cargo.toml` `LicenseRef-Proprietary`, README licence section). Copying or adapting Rakhsh source into the core would make the core a derivative work under AGPL-3.0 (copyleft, network-use source offer), which contradicts ADR-0019 clause 5 ("Rust stays proprietary and never links AGPL code").
 
 **Result: no Rakhsh code is transferred.** Every port below is "independent implementation from ideas and behaviour documented by Rakhsh's user docs", under the clean-room rules in ADR-0038. Whether to relicense BAFT-TUNNEL under AGPL is an owner decision (blocker B-1), not an engineering one, and is not assumed here.
@@ -107,4 +109,4 @@ Resume implementation (protocol v3 and persistence decision), wiring link policy
 
 ## Blockers needing the owner
 
-B-1: licence direction (stay proprietary and reimplement, or move to AGPL and allow copying). Default taken: stay proprietary.
+B-1: answered 2026-11-17, see ADR-0043 (copy allowed only into an isolated AGPL unit; core stays proprietary; nothing copied today).
