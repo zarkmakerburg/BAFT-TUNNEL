@@ -24,9 +24,10 @@
 | [#323](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/323) | `d1897c5cb3a6af89868ce57255136a6087d908d3` | Draft / Open | 11 Check Runs green on this head; no review recorded. Noise-TCP Direct rotation harness only; not TCP-TLS evidence. |
 | [#324](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/324) | `2ca82c8b86d75ffe4db9aae9fc8e1025635e1f7d` | Draft / Open | 11 Check Runs green on this head; no review recorded. Skills/governance + roadmap documentation; parallel, non-blocking track. |
 | [#326](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/326) | `ab8095d59cf77bf16bd13e34a81acf77adc463c5` | Draft / Open | F1 pure rules + ADR-0045 accepted with conditions; mergeability/check state not yet verified. |
+| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `dccd060b926648ea29b26a80e1c3b58e255a2f4a` | Draft / Open | This checkpoint implementation; documentation-only. 10 exact-head Check Runs were in progress at PR creation; no pass claimed. |
 | [#171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171) | `e64ea2fca5b3dd17b709ecf9c92a2cf933da32cb` | Draft / Open | Central Fleet architecture only; deferred after 0.4.0. |
 
-PR base refs and statuses can change; re-fetch them before action. PR #169 is the separate HQ playbook and is not BAFT-TUNNEL product scope.
+PR base refs and statuses can change; re-fetch them before action. PR #327 was opened from the recorded main SHA and its initial compare showed 3 commits ahead / 0 behind; its mergeability was subsequently confirmed true, with merge blocked while checks run. PR #169 is the separate HQ playbook and is not BAFT-TUNNEL product scope.
 
 ## Active task — P0-A raw TCP vs TLS aged-flow diagnosis
 
