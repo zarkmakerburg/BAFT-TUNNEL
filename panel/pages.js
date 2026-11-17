@@ -460,7 +460,10 @@
     }
     function stepPreflight() {
       var pf = w.pf;
-      var list = pf ? h('ul', { class: 'pf' }, pf.checks.map(function (c) {
+      var ORD = { blocked: 0, warning: 1, unknown: 2, pass: 3 };
+      var REMEDY = { tunnel_port: 'servers', service_port: 'servers', peer_identity: 'servers', directory: 'agent', directory_writable: 'agent', setup_helper: 'agent', pki_helper: 'agent', service_unit: 'agent', engine_store: 'agent' };
+      var sorted = pf ? pf.checks.slice().sort(function (a, b) { return (ORD[a.result] === undefined ? 2 : ORD[a.result]) - (ORD[b.result] === undefined ? 2 : ORD[b.result]); }) : [];
+      var list = pf ? h('ul', { class: 'pf' }, sorted.map(function (c) {
         var ev = c.code ? t(c.code, c.params || {}) : c.evidence;
         if (!c.code || ev === c.code) {
           ev = c.result === 'unknown' && BAFT_I18N.en['pfu.' + c.id] ? t('pfu.' + c.id)
@@ -471,7 +474,9 @@
         return h('li', null, h('strong', { text: t('pfc.' + c.id) === 'pfc.' + c.id ? c.id : t('pfc.' + c.id) }),
           h('span', { class: 'muted', text: ' · ' + t(c.scope === 'peer' ? 'pf.scope.peer' : 'pf.scope.local') + ' ' }),
           pill({ pass: 'ok', warning: 'warn', blocked: 'bad', unknown: 'unknown' }[c.result], t('res.' + c.result)), h('span', { class: 'ev' }, evNode),
-          fix ? h('span', { class: 'muted', text: ' ' + t('pf.fix') + ': ' + fix }) : null);
+          fix ? h('span', { class: 'muted', text: ' ' + t('pf.fix') + ': ' + fix }) : null,
+          c.result !== 'pass' && REMEDY[c.id] === 'servers' ? h('button', { type: 'button', class: 'linklike', text: ' ' + t('pf.goto.servers'), onclick: function () { w.step = STEPS.indexOf('servers'); draw(); } }) : null,
+          c.result !== 'pass' && REMEDY[c.id] === 'agent' ? h('a', { class: 'more-link', href: '#/agent', text: ' ' + t('pf.goto.agent') }) : null);
       })) : null;
       return h('div', null, h('h2', { text: t('pf.title') }), h('p', { class: 'sub', text: t('pf.note') }),
         h('button', { class: 'primary', type: 'button', disabled: w.busy ? true : null, onclick: runPreflight, text: w.busy ? t('pf.running') : t('pf.run') }),
