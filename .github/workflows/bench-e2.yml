@@ -25,7 +25,7 @@ jobs:
           W=$RUNNER_TEMP/b2; mkdir -p $W; cd $W
           S=$GITHUB_WORKSPACE/bench/harness.py
           U=$(id -u); G=$(id -g)
-          nsx() { n=$1; shift; sudo ip netns exec $n setpriv --reuid=$U --regid=$G --clear-groups "$@"; }
+          nsx() { local ns=$1; shift; sudo ip netns exec $ns setpriv --reuid=$U --regid=$G --clear-groups "$@"; }
           cleanup() { sudo ip netns del bsrv 2>/dev/null; sudo ip netns del bcli 2>/dev/null; pkill -f '[r]athole -' ; pkill -f '[f]rp[sc] -c'; true; }
           trap cleanup EXIT
           echo "runner: $(nproc) cpu, $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2), $(uname -r)" | tee info.txt
@@ -38,9 +38,8 @@ jobs:
           sudo ip -n bsrv link set vs up; sudo ip -n bcli link set vc up
           nsx bcli ping -c1 -W2 10.9.0.1 >/dev/null && echo "veth ok" | tee -a info.txt || { echo "veth FAILED" | tee -a info.txt; exit 0; }
           impair() { # args to netem, "" = clear
-            for d in "bsrv vs" "bcli vc"; do set -- $d $IMP; n=$1; i=$2; shift 2
-              sudo ip netns exec $n tc qdisc del dev $i root 2>/dev/null
-              [ -n "${IMP:-}" ] && sudo ip netns exec $n tc qdisc add dev $i root netem $IMP; done; }
+            for d in "bsrv vs" "bcli vc"; do set -- $d; sudo ip netns exec $1 tc qdisc del dev $2 root 2>/dev/null
+              [ -n "${IMP:-}" ] && sudo ip netns exec $1 tc qdisc add dev $2 root netem $IMP; done; }
           sudo ip netns exec bsrv tc qdisc add dev vs root netem delay 1ms 2>&1 | tee -a info.txt; sudo ip netns exec bsrv tc qdisc del dev vs root
           fetch() { curl -sSIL -o /dev/null -w '%{url_effective}' https://github.com/$1/releases/latest | sed 's#.*/tag/##'; }
           rt=$(fetch rapiz1/rathole); ft=$(fetch fatedier/frp); fv=${ft#v}
@@ -59,7 +58,7 @@ jobs:
             nsx bcli python3 $S --role sink --size-mib $SIZE --idle 20 --json $W/$n.sink.json >/dev/null 2>&1 &
             SK=$!; sleep 1
             BH=""; if [ "$bh" != 0 ]; then ( sleep 3; IMP="loss 100%" impair; sleep $bh; IMP="$4" impair ) & BH=$!; fi
-            timeout 240 nsx bsrv python3 $S --role send --size-mib $SIZE --target 127.0.0.1:$port --json $W/$n.send.json >/dev/null 2>&1
+            sudo timeout 240 ip netns exec bsrv setpriv --reuid=$U --regid=$G --clear-groups python3 $S --role send --size-mib $SIZE --target 127.0.0.1:$port --json $W/$n.send.json >/dev/null 2>$W/$n.send.err
             wait $SK; [ -n "$BH" ] && wait $BH
             echo "$n done"
           }
@@ -85,8 +84,8 @@ jobs:
           s=json.load(open(sys.argv[1])); n=os.path.basename(sys.argv[1])[:-10]
           try: d=json.load(open(sys.argv[1].replace('.sink.','.send.')))
           except Exception: d={}
-          ok = s.get('sha_received')==d.get('sha_expected_of_full_stream')
-          v = 'correct' if ok else ('truncated' if s.get('received',0) < d.get('size_bytes',1) else 'corrupt')
+          ok = bool(d) and s.get('received',0)>0 and s.get('sha_received')==d.get('sha_expected_of_full_stream')
+          v = 'correct' if ok else ('NO-DATA/harness-failure' if not d or s.get('received',0)==0 else 'truncated' if s.get('received',0) < d.get('size_bytes',1) else 'corrupt')
           print(f"| {n} | {v} | {s.get('received',0)/1048576:.1f} | {d.get('duration_s','n/a')} | {d.get('retries','n/a')} |")
           P
             done
