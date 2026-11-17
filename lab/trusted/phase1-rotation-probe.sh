@@ -17,6 +17,9 @@ umask 077
   echo 'candidate binary is missing, empty or a symlink' >&2; exit 2;
 }
 (( $(wc -c < "$CANDIDATE_BINARY") <= 104857600 )) || { echo 'candidate binary exceeds 100 MiB' >&2; exit 2; }
+CANDIDATE_BINARY_SHA256="$(sha256sum "$CANDIDATE_BINARY" | awk '{print $1}')"
+[[ "$CANDIDATE_BINARY_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo 'could not calculate candidate binary SHA-256' >&2; exit 2; }
+echo "ROT_CANDIDATE_BINARY_SHA256=$CANDIDATE_BINARY_SHA256"
 
 validate_ip() { python3 - "$1" <<'PYIP'
 import ipaddress, sys
@@ -286,6 +289,12 @@ for side in iran abroad; do
   ssh_host "$side" "mkdir -m 0755 '$REMOTE_BASE' && test -d '$REMOTE_BASE' && test ! -L '$REMOTE_BASE' && test \$(stat -c '%U:%G:%a' '$REMOTE_BASE') = root:root:755"
   if [[ ! -e "$LOCAL_TMP/baft-tunnel" ]]; then install -m 0755 "$CANDIDATE_BINARY" "$LOCAL_TMP/baft-tunnel"; fi
   copy_to_host "$side" "$LOCAL_TMP/baft-tunnel" "$LOCAL_TMP/echo.py" "$LOCAL_TMP/payload.py"
+  remote_binary_sha256="$(ssh_host "$side" "sha256sum '$REMOTE_BASE/baft-tunnel' | cut -d ' ' -f1")"
+  [[ "$remote_binary_sha256" == "$CANDIDATE_BINARY_SHA256" ]] || {
+    echo "remote candidate binary digest mismatch: host=$side expected=$CANDIDATE_BINARY_SHA256 actual=$remote_binary_sha256" >&2
+    exit 1
+  }
+  echo "ROT_REMOTE_BINARY_VERIFIED host=$side sha256=$remote_binary_sha256"
   ssh_host "$side" "set -eu
     chown root:root '$REMOTE_BASE/baft-tunnel'
     chmod 0755 '$REMOTE_BASE/baft-tunnel'
@@ -375,9 +384,19 @@ PROBES="${PROBES:-3}"
 probe() {
   local label="$1" size="$2" t0 t1 result
   t0="$(date +%s.%N)"
-  if ssh_host iran "timeout 75 python3 '$REMOTE_BASE/payload.py' $size '$LOCAL_PORT'" >"$LOCAL_TMP/probe.out" 2>&1; then result=PASS; else result=FAIL; fi
+  if ssh_host iran "timeout 75 python3 '$REMOTE_BASE/payload.py' $size '$LOCAL_PORT'" >"$LOCAL_TMP/probe.out" 2>&1 \
+    && grep -Eq "^DATA_PATH_OK bytes=$size sha256=[0-9a-f]{64}$" "$LOCAL_TMP/probe.out"; then
+    result=PASS
+  else
+    result=FAIL
+  fi
   t1="$(date +%s.%N)"
   python3 -c 'import sys; print("ROT_PROBE label=%s size=%s result=%s secs=%.1f" % (sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[5])-float(sys.argv[4])))' "$label" "$size" "$result" "$t0" "$t1"
+  if [[ "$result" == PASS ]]; then
+    cat "$LOCAL_TMP/probe.out"
+  else
+    tail -n 20 "$LOCAL_TMP/probe.out" || true
+  fi
   [[ "$result" == PASS ]]
 }
 # First proof the data path works at all (fresh session, small payload), retrying while the session forms.
@@ -437,8 +456,29 @@ done
 run_phase "rotation_${ROTATE_SECS}s"
 ON_PASS="$PHASE_PASS"
 
-ssh_host iran "journalctl --no-pager -u '$IRAN_TUNNEL_UNIT' 2>/dev/null | grep -i -E 'rotat' | tail -n 20 || true" || true
+# A successful transfer alone is not proof that rotation occurred. Require observable
+# replacement-session events after the rotation-enabled forwarder was started.
+ROTATION_LOG="$(ssh_host iran "journalctl --no-pager -u '$IRAN_TUNNEL_UNIT' -o cat 2>/dev/null || true")"
+printf '%s\n' "$ROTATION_LOG" | grep -E 'session age limit reached|session rotated: draining the previous session|replacement session dial failed' || true
+ROTATION_EVENTS="$(printf '%s\n' "$ROTATION_LOG" | grep -c '^session rotated: draining the previous session$' || true)"
+[[ "$ROTATION_EVENTS" =~ ^[0-9]+$ ]] || ROTATION_EVENTS=0
+(( ROTATION_EVENTS >= 2 )) || {
+  echo "rotation evidence insufficient: expected at least 2 completed rotations, observed $ROTATION_EVENTS" >&2
+  exit 1
+}
+
+# Acceptance is intentionally differential and ordered: the aged, non-rotating
+# baseline must fail all probes; the rotation-enabled phase must pass all probes.
+(( OFF_PASS == 0 )) || {
+  echo "rotation-off baseline did not reproduce the failure: pass=$OFF_PASS total=$PROBES" >&2
+  exit 1
+}
+(( ON_PASS == PROBES )) || {
+  echo "rotation-on phase did not pass every probe: pass=$ON_PASS total=$PROBES" >&2
+  exit 1
+}
+echo "ROT_ACCEPTANCE=PASS order=rotation_off_then_rotation_on off=$OFF_PASS/$PROBES on=$ON_PASS/$PROBES rotation_events=$ROTATION_EVENTS"
 for side in iran abroad; do
   ssh_host "$side" "systemctl is-active --quiet '$(tunnel_unit_for "$side")'"
 done
-echo "ROT_LAB_SUMMARY candidate_sha=$CANDIDATE_SHA probes=$PROBES rotation_off_pass=$OFF_PASS rotation_${ROTATE_SECS}s_pass=$ON_PASS"
+echo "ROT_LAB_SUMMARY candidate_sha=$CANDIDATE_SHA binary_sha256=$CANDIDATE_BINARY_SHA256 probes=$PROBES rotation_off_pass=$OFF_PASS rotation_${ROTATE_SECS}s_pass=$ON_PASS rotation_events=$ROTATION_EVENTS"
