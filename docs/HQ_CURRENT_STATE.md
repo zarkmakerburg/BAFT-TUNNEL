@@ -45,13 +45,13 @@ PR base refs and statuses can change; re-fetch them before action. PR #327 was o
 
 ## Active task — P0-A raw TCP vs TLS aged-flow diagnosis
 
-**Status: IN PROGRESS / NOT VERIFIED.**
+**Status: PARTIAL CONTROL EVIDENCE RECEIVED / P0-A NOT VERIFIED.**
 
-- Diagnostic workflow: [run 44101542573](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44101542573), head SHA `65b50dea5562a15f8299a13afcec64d34a93bf58`, job `134102574533`; last observed step `Run control transfers (tls and tcp, both directions)` was `in_progress`.
-- Queued workflow: [run 44101769313](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44101769313), same head SHA; status `pending`, no job had started.
-- The workflow is explicitly **non-tunnel network control**; it runs a temporary Python transfer endpoint and does not execute BAFT-TUNNEL. It can perform a full TLS/TCP up/down bulk matrix when `AGES` is empty, or a single selected `AGE_MODE` aged-flow series when `AGES` is supplied.
-- The dispatch inputs for these two runs were not available in the inspected API response. Job-log retrieval for job `134102574533` still returns `BlobNotFound`; run `44101542573` has no listed artifacts. Therefore the actual mode/age matrix and any transfer outcome are **UNKNOWN**. Do not call either run PASS or FAIL yet.
-- Do not dispatch a duplicate run while the first holds the shared LAB concurrency group. Fetch status/jobs again; once finished, retrieve and validate client + server output, parameters, per-attempt bytes/timing/errors, and cleanup evidence. If logs remain inaccessible, record the precise evidence gap and use a supported alternate retrieval path; do not infer results.
+- Completed [run 44101542573](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44101542573), head SHA `65b50dea5562a15f8299a13afcec64d34a93bf58`, job `134102574533`: conclusion `success`. Job logs are now retrievable. Inputs in the log: `AGE_MODE=tcp`, `AGES=0,15,20,25,30,60`, `SIZE_KB=2048`, `ITER=3`, port 8443. This is raw TCP, not TLS and not BAFT-TUNNEL product traffic.
+- Client logs show all 18/18 transfers completed with `ok=true`, `bytes=2097152`, no reported error. Per-attempt client durations: age 0 = 1.40/0.87/0.86s; age 15 = 0.88/0.83/0.88s; age 20 = 94.14/24.40/98.41s; age 25 = 96.11/97.40/109.52s; age 30 = 100.86/85.30/93.72s; age 60 = 93.59/84.49/108.51s. Server logs also report 2,097,152 bytes for each transfer and no reported error; server durations include 5.54/1.88/1.96s (age 0), 20.24/17.22/17.28s (age 15), 119.42/45.92/119.92s (age 20), 126.31/123.99/136.14s (age 25), 136.40/116.97/125.44s (age 30), and 159.38/147.04/171.44s (age 60). The pronounced slowdown appears from age 20 onward in this raw-TCP control. This is diagnostic evidence only; it does not identify root cause or prove tunnel behavior.
+- [Run 44101769313](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44101769313), same workflow head, is still `in_progress`; job `134120451601` remains in the transfer step. Its logs are not yet retrievable (404 `BlobNotFound`) and no artifacts are listed. Its actual dispatch inputs/mode remain UNKNOWN.
+- The workflow is explicitly **non-tunnel network control**; it runs a temporary Python transfer endpoint and does not execute BAFT-TUNNEL. Preserve this distinction in all conclusions.
+- Do not dispatch another LAB workflow while run `44101769313` is active. Recheck status/jobs/logs/artifacts after completion; validate its mode, parameters and both client/server records. P0-A remains open until the paired TLS-vs-raw-TCP evidence is available and interpreted.
 
 ### P0 order
 
@@ -67,18 +67,17 @@ PR base refs and statuses can change; re-fetch them before action. PR #327 was o
 - `v0.3.0-rc.1` is not accepted because aged-flow upgrade soak remains unresolved.
 - A CI-green result does not change release maturity or imply production readiness.
 
-## Latest HQ RESUME reconciliation — 2026-11-17 14:42 UTC
+## Latest HQ continuation reconciliation — 2026-11-17 14:47 UTC
 
-- Live `main` remains `c3e2bda8cc4b598c410a665f3c18fb6cc2d944c2` (PR #325); roadmap snapshot still identifies `v0.2.1` as latest Stable.
-- PR #327 before this snapshot refresh: OPEN / Draft, head `db16bfd889637ac23826b66426163cfa2ae88b96`, base unchanged at the current `main`, `mergeable=true`, `mergeable_state=blocked`; no submitted reviews. Exact-head Check Runs: 10 total (7 IN_PROGRESS, 3 QUEUED), no completed result observed at this recheck.
-- P0-A run `44101542573` remains IN_PROGRESS on `65b50dea5562a15f8299a13afcec64d34a93bf58`; job `134102574533` is still in the transfer step. Direct job listing confirms this, but log retrieval again returns HTTP 404 `BlobNotFound`; no artifacts are listed.
-- P0-A run `44101769313` remains PENDING with no jobs and is queued behind the shared concurrency group. No inputs or transfer outcome were exposed by the inspected API. Both runs remain UNKNOWN / NOT VERIFIED; no PASS/FAIL classification is justified.
-- Read-only inspection of the workflow confirms a 45-minute job timeout and that the run measures a non-tunnel control endpoint. It is not product evidence. No new LAB run was dispatched, no LAB host was contacted by this resume, and no host/network mutation occurred.
-- This entry is written on the PR #327 branch; its commit advances the PR head. The resulting exact head and check runs must be fetched after the write. No merge, release, tag, deploy or production operation was performed.
+- P0-A raw TCP control run `44101542573` completed SUCCESS. Its retrieved job log establishes raw TCP ages 0/15/20/25/30/60, 2 MiB x3, with 18/18 client transfers and matching server byte counts successful. Client timing is fast at ages 0 and 15, then degrades severely at ages 20–60 (roughly 24–109s per client transfer); server timing likewise rises. This is an observed correlation, not a root-cause finding.
+- Run `44101769313` remains IN_PROGRESS, job `134120451601` at transfer step; logs currently return HTTP 404 `BlobNotFound`, no artifacts listed, dispatch inputs unknown. It must be identified and validated before further LAB dispatch.
+- The experiment is non-tunnel control traffic; no BAFT-TUNNEL behavior is established. P0-A remains open pending the TLS comparator and careful interpretation.
+- PR #327 live metadata: OPEN / Draft, head `a6b0c4fb4c6cd39bd2986c470819d70d82fb26fa`, base `c3e2bda8cc4b598c410a665f3c18fb6cc2d944c2`, mergeable=true, mergeable_state=blocked. Exact-head checks: 10 total, 7 completed SUCCESS, 3 IN_PROGRESS (Run benchmarks, rust, ubuntu-2204-baseline). No merge or review approval.
+- No new LAB dispatch, no firewall/route/sysctl changes, and no product host mutation. No merge, release, tag, deploy or production operation.
 
 ## Next action
 
-Continue the combined `HQ RESUME` flow from the active P0-A handoff: recheck runs **44101542573** and **44101769313** and the shared LAB concurrency state. Do not dispatch another LAB workflow until the first run releases the lock and its result/log availability is understood. Then classify the evidence strictly as PASS, FAIL or UNKNOWN and update this file plus Issue #2.
+Continue P0-A from the partial raw-TCP result: wait for run **44101769313** to finish, recover its logs, determine its mode/ages/parameters, and validate client + server evidence. Do not dispatch a third LAB workflow while it is active. Then compare raw TCP with TLS and update the evidence-backed diagnosis; keep all results explicitly labeled non-tunnel control.
 
 ## Resume checklist
 
