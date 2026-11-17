@@ -150,6 +150,10 @@ pub enum RuntimeConfig {
         /// identity and pinned fingerprint; at most 3, no duplicates, not for the baft engine.
         #[serde(default)]
         backup_remotes: Vec<String>,
+        /// ADR-0048: seconds after which a Direct forward session is replaced by a fresh one
+        /// (make before break). 0 (default) keeps one long-lived session; otherwise 30..=3600.
+        #[serde(default)]
+        session_rotate_secs: u64,
     },
 }
 
@@ -283,8 +287,10 @@ impl RuntimeConfig {
                 allow_non_loopback_listen,
                 baft,
                 backup_remotes,
+                session_rotate_secs,
             } => {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
+                validate_session_rotate(*session_rotate_secs, *direction, *engine)?;
                 validate_protocol_version(*protocol_version, *engine)?;
                 validate_backup_remotes(remote, backup_remotes, *engine)?;
                 let reverse =
@@ -722,6 +728,7 @@ impl RuntimeConfig {
                 allow_non_loopback_listen: _,
                 baft: _,
                 backup_remotes,
+                session_rotate_secs,
             } => {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 let noise = noise_settings(engine, &key, noise_peer_public);
@@ -743,6 +750,8 @@ impl RuntimeConfig {
                         noise,
                         max_streams,
                         backup_remotes,
+                        session_rotate: (session_rotate_secs > 0)
+                            .then(|| std::time::Duration::from_secs(session_rotate_secs)),
                     },
                     protocol_version,
                 )
@@ -750,6 +759,27 @@ impl RuntimeConfig {
             }
         }
     }
+}
+
+/// ADR-0048: session rotation applies to the Direct forward dialer only and stays inside a sane range.
+fn validate_session_rotate(
+    secs: u64,
+    direction: ConnectionDirection,
+    engine: EngineKind,
+) -> Result<()> {
+    if secs == 0 {
+        return Ok(());
+    }
+    if !(30..=3600).contains(&secs) {
+        bail!("session_rotate_secs must be 0 (off) or between 30 and 3600");
+    }
+    if direction != ConnectionDirection::Direct {
+        bail!("session_rotate_secs applies to Direct tunnels only");
+    }
+    if engine == EngineKind::Baft {
+        bail!("session_rotate_secs is not supported by the baft engine");
+    }
+    Ok(())
 }
 
 /// ADR-0039: alternate addresses of the same peer. Identity never changes per link, so the
@@ -1269,5 +1299,17 @@ mod tests {
         assert!(validate_backup_remotes("127.0.0.1:7000", &zero_port, EngineKind::TcpTls).is_err());
         let too_many: Vec<String> = (2..=5).map(|n| format!("127.0.0.{n}:7000")).collect();
         assert!(validate_backup_remotes("127.0.0.1:7000", &too_many, EngineKind::TcpTls).is_err());
+    }
+
+    #[test]
+    fn session_rotate_is_off_or_in_range_and_direct_only() {
+        use crate::authorization::ConnectionDirection::{Direct, Reverse};
+        assert!(validate_session_rotate(0, Reverse, EngineKind::Baft).is_ok());
+        assert!(validate_session_rotate(60, Direct, EngineKind::TcpTls).is_ok());
+        assert!(validate_session_rotate(30, Direct, EngineKind::NoiseTcp).is_ok());
+        assert!(validate_session_rotate(29, Direct, EngineKind::TcpTls).is_err());
+        assert!(validate_session_rotate(3601, Direct, EngineKind::TcpTls).is_err());
+        assert!(validate_session_rotate(60, Reverse, EngineKind::TcpTls).is_err());
+        assert!(validate_session_rotate(60, Direct, EngineKind::Baft).is_err());
     }
 }
