@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 type Page = "overview" | "tunnels" | "servers" | "monitoring" | "setup" | "diagnostics" | "activity" | "agent" | "settings";
 type Lang = "fa" | "en";
@@ -57,7 +57,7 @@ export default function App() {
   const [page,setPage]=useState<Page>("overview");
   const [lang,setLang]=useState<Lang>("fa");
   const [mobile,setMobile]=useState(false);
-  useMemo(()=>{const f=(e:Event)=>setPage((e as CustomEvent<Page>).detail);window.addEventListener("prototype-page",f);return ()=>window.removeEventListener("prototype-page",f);},[]);
+  useEffect(()=>{const f=(e:Event)=>setPage((e as CustomEvent<Page>).detail);window.addEventListener("prototype-page",f);return ()=>window.removeEventListener("prototype-page",f);},[]);
   const t=labels[lang];
   return <div className="comparison" dir={lang==="fa"?"rtl":"ltr"}>
     <header className="comparison-head"><div><span className="eyebrow">BAFT-TUNNEL · UI EXPLORATION</span><h1>{lang==="fa"?"مقایسه سه مسیر طراحی پنل":"Compare three panel design directions"}</h1><p>{lang==="fa"?"یک صفحه را انتخاب کن و هر سه ظاهر را هم‌زمان مقایسه کن. این محیط فقط پیش‌نمایش است و به Agent یا API وصل نیست.":"Choose a page and compare all three visual directions at once. This preview is not connected to an Agent or API."}</p></div><div className="controls"><label>{lang==="fa"?"صفحه":"Page"}<select value={page} onChange={e=>setPage(e.target.value as Page)}>{pages.map(p=><option value={p} key={p}>{t[p]}</option>)}</select></label><button onClick={()=>setLang(lang==="fa"?"en":"fa")}>{lang==="fa"?"English":"فارسی"}</button><button className="mobile-toggle" onClick={()=>setMobile(!mobile)}>{mobile?(lang==="fa"?"نمایش سه‌تایی":"Show all"): (lang==="fa"?"مقایسه تک‌به‌تک":"Focus one")}</button></div></header>
