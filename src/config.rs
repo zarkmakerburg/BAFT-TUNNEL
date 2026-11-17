@@ -153,6 +153,17 @@ pub enum RuntimeConfig {
     },
 }
 
+/// Inputs `doctor` needs from a config (ADR-0042).
+pub struct DoctorInputs<'a> {
+    pub uses_certificates: bool,
+    pub key: Option<&'a Path>,
+    pub key_credential: bool,
+    pub ca: &'a Path,
+    pub crl: &'a Path,
+    pub cert: &'a Path,
+    pub remotes: Vec<&'a str>,
+}
+
 impl RuntimeConfig {
     pub fn validate(&self) -> Result<()> {
         self.validate_with(true)
@@ -383,6 +394,50 @@ impl RuntimeConfig {
             ),
             Ok(_) => {}
             Err(error) => eprintln!("WARNING: could not determine CRL expiry: {error:#}"),
+        }
+    }
+
+    /// Read-only view for `doctor` (ADR-0042): paths and addresses, never key contents.
+    pub fn doctor_inputs(&self) -> DoctorInputs<'_> {
+        match self {
+            Self::Serve {
+                engine,
+                ca,
+                crl,
+                cert,
+                key,
+                key_credential,
+                ..
+            } => DoctorInputs {
+                uses_certificates: *engine != EngineKind::NoiseTcp,
+                key: key.as_deref(),
+                key_credential: key_credential.is_some(),
+                ca,
+                crl,
+                cert,
+                remotes: vec![],
+            },
+            Self::Forward {
+                engine,
+                ca,
+                crl,
+                cert,
+                key,
+                key_credential,
+                remote,
+                backup_remotes,
+                ..
+            } => DoctorInputs {
+                uses_certificates: *engine != EngineKind::NoiseTcp,
+                key: key.as_deref(),
+                key_credential: key_credential.is_some(),
+                ca,
+                crl,
+                cert,
+                remotes: std::iter::once(remote.as_str())
+                    .chain(backup_remotes.iter().map(String::as_str))
+                    .collect(),
+            },
         }
     }
 
