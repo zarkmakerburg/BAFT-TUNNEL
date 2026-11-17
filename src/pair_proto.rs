@@ -9,7 +9,9 @@
 #![allow(dead_code)] // wired into the agent and helper in ADR-0050 stage 4
 
 use std::{
-    net::SocketAddr,
+    collections::HashMap,
+    future::Future,
+    net::{IpAddr, SocketAddr},
     path::Path,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -27,6 +29,7 @@ use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    sync::{Semaphore, mpsc},
     time::timeout,
 };
 use tokio_rustls::{TlsAcceptor, TlsConnector};
@@ -34,8 +37,18 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 pub const CODE_PREFIX: &str = "BAFT1-";
 const MAX_CODE_CHARS: usize = 1400;
 const MAX_MESSAGE: usize = 16 * 1024;
-const MAX_TOKEN_ATTEMPTS: u32 = 3;
-const IO_DEADLINE: Duration = Duration::from_secs(15);
+/// Wrong or unreadable presentations allowed per source address, then that address is ignored.
+const MAX_FAILURES_PER_IP: u32 = 3;
+/// Total wrong presentations after which the window closes (a guessing attack, not a typo).
+const MAX_FAILURES_TOTAL: u32 = 20;
+const MAX_CONCURRENT: usize = 16;
+/// TLS handshake plus request must complete within this (slow-client protection).
+const HELLO_DEADLINE: Duration = Duration::from_secs(5);
+const WRITE_DEADLINE: Duration = Duration::from_secs(10);
+/// The joiner waits for the listener's decision; must exceed the listener's approval wait.
+pub const RESPONSE_DEADLINE: Duration = Duration::from_secs(180);
+/// After a successful response the listener waits for the joiner's final acknowledgement.
+const ACK_DEADLINE: Duration = Duration::from_secs(60);
 /// A pairing code is valid for this long.
 pub const CODE_TTL_SECS: u64 = 15 * 60;
 
@@ -279,10 +292,16 @@ pub struct JoinResponse {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ack {
+    pub ok: bool,
+}
+
 async fn write_msg<S: AsyncWriteExt + Unpin>(s: &mut S, value: &impl Serialize) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
     ensure!(bytes.len() <= MAX_MESSAGE, "message too large");
-    timeout(IO_DEADLINE, async {
+    timeout(WRITE_DEADLINE, async {
         s.write_all(&(bytes.len() as u32).to_be_bytes()).await?;
         s.write_all(&bytes).await?;
         s.flush().await
@@ -292,8 +311,11 @@ async fn write_msg<S: AsyncWriteExt + Unpin>(s: &mut S, value: &impl Serialize) 
     Ok(())
 }
 
-async fn read_msg<S: AsyncReadExt + Unpin, T: for<'a> Deserialize<'a>>(s: &mut S) -> Result<T> {
-    timeout(IO_DEADLINE, async {
+async fn read_msg<S: AsyncReadExt + Unpin, T: for<'a> Deserialize<'a>>(
+    s: &mut S,
+    deadline: Duration,
+) -> Result<T> {
+    timeout(deadline, async {
         let mut len = [0u8; 4];
         s.read_exact(&mut len).await?;
         let n = u32::from_be_bytes(len) as usize;
@@ -309,76 +331,189 @@ async fn read_msg<S: AsyncReadExt + Unpin, T: for<'a> Deserialize<'a>>(s: &mut S
 /// What the listener's approval/signing step decided about a verified joiner.
 pub type Decision = Result<JoinResponse>;
 
-/// Serve at most one successful pairing. `decide` runs only for a request whose token and node id
-/// match; it asks the user for approval and signs (ADR-0050). Returns when a pairing was issued,
-/// after [`MAX_TOKEN_ATTEMPTS`] wrong tokens, or at the code's expiry.
-pub async fn serve<F>(
+fn refused() -> JoinResponse {
+    JoinResponse {
+        ok: false,
+        reason: Some("pairing refused".into()),
+        ..Default::default()
+    }
+}
+
+#[derive(Default)]
+struct Limits {
+    per_ip: HashMap<IpAddr, u32>,
+    total: u32,
+}
+
+impl Limits {
+    fn banned(&self, ip: IpAddr) -> bool {
+        self.per_ip.get(&ip).copied().unwrap_or(0) >= MAX_FAILURES_PER_IP
+    }
+    /// Record one failure; true when the whole window must close.
+    fn fail(&mut self, ip: IpAddr) -> bool {
+        *self.per_ip.entry(ip).or_default() += 1;
+        self.total += 1;
+        self.total >= MAX_FAILURES_TOTAL
+    }
+}
+
+type Outcome = std::result::Result<SocketAddr, String>;
+
+struct Shared<F> {
+    code: PairCode,
+    acceptor: TlsAcceptor,
+    decide: F,
+    limits: std::sync::Mutex<Limits>,
+    used: std::sync::atomic::AtomicBool,
+}
+
+async fn handle<F, Fut>(
+    sh: Arc<Shared<F>>,
+    tcp: TcpStream,
+    peer: SocketAddr,
+    tx: mpsc::Sender<Outcome>,
+) where
+    F: Fn(JoinRequest, SocketAddr) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Decision> + Send,
+{
+    let fail = |sh: &Shared<F>| sh.limits.lock().is_ok_and(|mut l| l.fail(peer.ip()));
+    let hello = timeout(HELLO_DEADLINE, async {
+        let mut tls = sh.acceptor.accept(tcp).await?;
+        let req: JoinRequest = read_msg(&mut tls, HELLO_DEADLINE).await?;
+        anyhow::Ok((tls, req))
+    })
+    .await;
+    let Ok(Ok((mut tls, req))) = hello else {
+        if fail(&sh) {
+            let _ = tx
+                .send(Err("too many failed pairing attempts; window closed".into()))
+                .await;
+        }
+        return;
+    };
+    let valid =
+        ct_eq(&req.token, &sh.code.token) && req.node_id == sh.code.joiner_id && !sh.code.expired();
+    if !valid {
+        let close = fail(&sh);
+        let _ = write_msg(&mut tls, &refused()).await;
+        if close {
+            let _ = tx
+                .send(Err("too many failed pairing attempts; window closed".into()))
+                .await;
+        }
+        return;
+    }
+    // Single presentation: the first token-valid request ends the window whatever the outcome.
+    if sh.used.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let _ = write_msg(&mut tls, &refused()).await;
+        return;
+    }
+    let resp = (sh.decide)(req, peer).await.unwrap_or_else(|_| refused());
+    if write_msg(&mut tls, &resp).await.is_err() {
+        let _ = tx
+            .send(Err("could not deliver the pairing response".into()))
+            .await;
+        return;
+    }
+    if !resp.ok {
+        let _ = tx.send(Err("pairing was not approved".into())).await;
+        return;
+    }
+    // Commit only after the joiner confirms it installed everything.
+    match read_msg::<_, Ack>(&mut tls, ACK_DEADLINE).await {
+        Ok(Ack { ok: true }) => {
+            let _ = tx.send(Ok(peer)).await;
+        }
+        _ => {
+            let _ = tx
+                .send(Err(
+                    "the other server did not confirm; pairing cancelled".into()
+                ))
+                .await;
+        }
+    }
+    let _ = tls.shutdown().await;
+}
+
+/// Serve at most one pairing. `decide` runs only for a request whose token and node id match; it
+/// asks the user for approval and signs (ADR-0050). Returns the joiner's address only after the
+/// joiner acknowledged a complete install; errors on expiry, denial, a missing acknowledgement,
+/// or too many failed presentations.
+pub async fn serve<F, Fut>(
     listener: TcpListener,
     acceptor: TlsAcceptor,
     code: &PairCode,
-    mut decide: F,
+    decide: F,
 ) -> Result<SocketAddr>
 where
-    F: FnMut(&JoinRequest, SocketAddr) -> Decision,
+    F: Fn(JoinRequest, SocketAddr) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Decision> + Send,
 {
-    let mut failures = 0u32;
+    let sh = Arc::new(Shared {
+        code: code.clone(),
+        acceptor,
+        decide,
+        limits: std::sync::Mutex::new(Limits::default()),
+        used: std::sync::atomic::AtomicBool::new(false),
+    });
+    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
+    let (tx, mut rx) = mpsc::channel::<Outcome>(8);
     loop {
         let remaining = code.exp.saturating_sub(now_secs());
         ensure!(remaining > 0, "pairing code expired");
-        let (tcp, peer) = match timeout(Duration::from_secs(remaining), listener.accept()).await {
-            Ok(r) => r?,
-            Err(_) => bail!("pairing code expired"),
-        };
-        let Ok(Ok(mut tls)) = timeout(IO_DEADLINE, acceptor.accept(tcp)).await else {
-            continue;
-        };
-        let Ok(req) = read_msg::<_, JoinRequest>(&mut tls).await else {
-            continue;
-        };
-        let token_ok = ct_eq(&req.token, &code.token);
-        if !(token_ok && req.node_id == code.joiner_id) {
-            failures += 1;
-            let _ = write_msg(
-                &mut tls,
-                &JoinResponse {
-                    ok: false,
-                    reason: Some("pairing refused".into()),
-                    ..Default::default()
-                },
-            )
-            .await;
-            ensure!(
-                failures < MAX_TOKEN_ATTEMPTS,
-                "too many wrong pairing attempts; listener closed"
-            );
-            continue;
-        }
-        let resp = decide(&req, peer).unwrap_or(JoinResponse {
-            ok: false,
-            reason: Some("pairing refused".into()),
-            ..Default::default()
-        });
-        write_msg(&mut tls, &resp).await?;
-        let _ = tls.shutdown().await;
-        if resp.ok {
-            return Ok(peer);
+        tokio::select! {
+            accepted = timeout(Duration::from_secs(remaining), listener.accept()) => {
+                let (tcp, peer) = match accepted {
+                    Err(_) => bail!("pairing code expired"),
+                    Ok(Err(_)) => continue,
+                    Ok(Ok(v)) => v,
+                };
+                let banned = sh.limits.lock().is_ok_and(|l| l.banned(peer.ip()));
+                let Ok(permit) = sem.clone().try_acquire_owned() else { continue };
+                if banned { continue }
+                let (sh2, tx2) = (sh.clone(), tx.clone());
+                tokio::spawn(async move {
+                    handle(sh2, tcp, peer, tx2).await;
+                    drop(permit);
+                });
+            }
+            out = rx.recv() => match out {
+                Some(Ok(peer)) => return Ok(peer),
+                Some(Err(e)) => bail!(e),
+                None => bail!("pairing listener stopped"),
+            },
         }
     }
 }
 
-/// Dial the listener named in `code`, authenticate it by pin, send the CSR, return the response.
-pub async fn join(code: &PairCode, csr_pem: &str) -> Result<JoinResponse> {
+/// The joiner's open connection after a successful response; send the final acknowledgement.
+pub struct JoinSession {
+    tls: tokio_rustls::client::TlsStream<TcpStream>,
+}
+
+impl JoinSession {
+    pub async fn ack(mut self, ok: bool) -> Result<()> {
+        write_msg(&mut self.tls, &Ack { ok }).await?;
+        let _ = self.tls.shutdown().await;
+        Ok(())
+    }
+}
+
+/// Dial the listener named in `code`, authenticate it by pin, send the CSR, wait for the decision
+/// (as long as the user may take to approve). On success the caller installs the material and
+/// then calls [`JoinSession::ack`].
+pub async fn join(code: &PairCode, csr_pem: &str) -> Result<(JoinResponse, Option<JoinSession>)> {
     code.validate()?;
     ensure!(!code.expired(), "pairing code expired");
     let tcp = timeout(
-        IO_DEADLINE,
+        HELLO_DEADLINE * 3,
         TcpStream::connect((code.host.as_str(), code.port)),
     )
     .await
     .context("connect timed out")?
     .context("cannot reach the other server (is its tunnel port open?)")?;
     let name = ServerName::try_from("baft-pairing").expect("static name");
-    let mut tls = timeout(IO_DEADLINE, connector(&code.pin)?.connect(name, tcp))
+    let mut tls = timeout(HELLO_DEADLINE * 3, connector(&code.pin)?.connect(name, tcp))
         .await
         .context("TLS timed out")?
         .context("the server did not present the expected pairing certificate")?;
@@ -391,8 +526,9 @@ pub async fn join(code: &PairCode, csr_pem: &str) -> Result<JoinResponse> {
         },
     )
     .await?;
-    let resp: JoinResponse = read_msg(&mut tls).await?;
-    Ok(resp)
+    let resp: JoinResponse = read_msg(&mut tls, RESPONSE_DEADLINE).await?;
+    let session = resp.ok.then_some(JoinSession { tls });
+    Ok((resp, session))
 }
 
 #[cfg(test)]
@@ -424,6 +560,7 @@ mod tests {
     }
 
     fn csr(dir: &Path, id: &str) -> String {
+        std::fs::create_dir_all(dir).unwrap();
         let key = dir.join(format!("{id}.key"));
         String::from_utf8(
             crate::pair_ca::run(
@@ -447,6 +584,19 @@ mod tests {
         .unwrap()
     }
 
+    fn members() -> [Member; 2] {
+        [
+            Member {
+                node_id: "node-a".into(),
+                san: "IP:127.0.0.1".into(),
+            },
+            Member {
+                node_id: "node-b".into(),
+                san: "DNS:node-b.pair.test".into(),
+            },
+        ]
+    }
+
     #[test]
     fn code_round_trips_and_rejects_garbage() {
         let c = code(9443, &"a".repeat(64), now_secs() + 60);
@@ -460,40 +610,47 @@ mod tests {
         assert!(bad.encode().is_err());
     }
 
-    #[tokio::test]
-    async fn pairing_issues_a_valid_certificate_once() {
-        let work = tmp("ok");
+    async fn start(
+        work: &Path,
+        approve: bool,
+        delay: Duration,
+    ) -> (
+        PairCode,
+        tokio::task::JoinHandle<Result<SocketAddr>>,
+        PathBuf,
+    ) {
         let ca_dir = work.join("ca");
-        let members = [
-            Member {
-                node_id: "node-a".into(),
-                san: "IP:127.0.0.1".into(),
-            },
-            Member {
-                node_id: "node-b".into(),
-                san: "DNS:node-b.pair.test".into(),
-            },
-        ];
-        let ca_pem = create(&ca_dir, "Pair CA t", &members).unwrap();
+        create(&ca_dir, "Pair CA t", &members()).unwrap();
         let (acceptor, pin) = pairing_identity(&work.join("id")).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let c = code(port, &pin, now_secs() + 60);
-        let c2 = c.clone();
-        let ca_dir2 = ca_dir.clone();
+        let (c2, ca2) = (c.clone(), ca_dir.clone());
         let server = tokio::spawn(async move {
             serve(listener, acceptor, &c2, move |req, _peer| {
-                let leaf = sign(&ca_dir2, &req.node_id, &req.csr_pem)?;
-                Ok(JoinResponse {
-                    ok: true,
-                    certificate_pem: Some(leaf),
-                    ca_pem: Some(std::fs::read_to_string(ca_dir2.join("ca.crt"))?),
-                    crl_pem: Some(std::fs::read_to_string(ca_dir2.join("ca.crl"))?),
-                    ..Default::default()
-                })
+                let ca2 = ca2.clone();
+                async move {
+                    tokio::time::sleep(delay).await;
+                    anyhow::ensure!(approve, "denied");
+                    let leaf = sign(&ca2, &req.node_id, &req.csr_pem)?;
+                    Ok(JoinResponse {
+                        ok: true,
+                        certificate_pem: Some(leaf),
+                        ca_pem: Some(std::fs::read_to_string(ca2.join("ca.crt"))?),
+                        crl_pem: Some(std::fs::read_to_string(ca2.join("ca.crl"))?),
+                        ..Default::default()
+                    })
+                }
             })
             .await
         });
+        (c, server, ca_dir)
+    }
+
+    #[tokio::test]
+    async fn pairing_issues_a_valid_certificate_once_and_commits_only_after_ack() {
+        let work = tmp("ok");
+        let (c, server, _ca) = start(&work, true, Duration::from_millis(0)).await;
         // wrong pin: the joiner refuses before sending anything
         let mut wrong = c.clone();
         wrong.pin = "b".repeat(64);
@@ -501,12 +658,11 @@ mod tests {
         // wrong token is refused generically
         let mut bad = c.clone();
         bad.token = new_token();
-        let r = join(&bad, &csr(&work, "node-b")).await.unwrap();
-        assert!(!r.ok && r.certificate_pem.is_none());
+        let (r, s) = join(&bad, &csr(&work, "node-b")).await.unwrap();
+        assert!(!r.ok && r.certificate_pem.is_none() && s.is_none());
         // correct join
-        let r = join(&c, &csr(&work, "node-b")).await.unwrap();
+        let (r, session) = join(&c, &csr(&work, "node-b")).await.unwrap();
         assert!(r.ok, "{r:?}");
-        assert_eq!(r.ca_pem.as_deref(), Some(ca_pem.as_str()));
         std::fs::write(work.join("n.crt"), r.certificate_pem.unwrap()).unwrap();
         std::fs::write(work.join("ca.crt"), r.ca_pem.unwrap()).unwrap();
         std::fs::write(work.join("ca.crl"), r.crl_pem.unwrap()).unwrap();
@@ -517,29 +673,63 @@ mod tests {
             "DNS:node-b.pair.test",
         )
         .unwrap();
+        session.unwrap().ack(true).await.unwrap();
         server.await.unwrap().unwrap();
-        // single use: the listener is gone
+        assert!(join(&c, &csr(&work, "node-b")).await.is_err(), "single use");
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[tokio::test]
+    async fn missing_ack_or_nack_cancels_the_pairing() {
+        let work = tmp("nack");
+        let (c, server, _ca) = start(&work, true, Duration::from_millis(0)).await;
+        let (r, session) = join(&c, &csr(&work, "node-b")).await.unwrap();
+        assert!(r.ok);
+        session.unwrap().ack(false).await.unwrap();
+        assert!(server.await.unwrap().is_err());
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[tokio::test]
+    async fn deny_ends_the_window_and_the_token_cannot_be_retried() {
+        let work = tmp("deny");
+        let (c, server, _ca) = start(&work, false, Duration::from_millis(0)).await;
+        let (r, _s) = join(&c, &csr(&work, "node-b")).await.unwrap();
+        assert!(!r.ok);
+        assert!(server.await.unwrap().is_err());
         assert!(join(&c, &csr(&work, "node-b")).await.is_err());
         let _ = std::fs::remove_dir_all(&work);
     }
 
     #[tokio::test]
-    async fn listener_closes_after_three_wrong_tokens() {
-        let work = tmp("brute");
-        let (acceptor, pin) = pairing_identity(&work.join("id")).unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let c = code(port, &pin, now_secs() + 60);
-        let c2 = c.clone();
-        let server = tokio::spawn(async move {
-            serve(listener, acceptor, &c2, |_, _| bail!("must not be called")).await
-        });
+    async fn the_joiner_waits_longer_than_the_old_15_second_limit_for_a_slow_approval() {
+        assert!(RESPONSE_DEADLINE > Duration::from_secs(150));
+        let work = tmp("slow");
+        let (c, server, _ca) = start(&work, true, Duration::from_millis(1500)).await;
+        let started = std::time::Instant::now();
+        let (r, session) = join(&c, &csr(&work, "node-b")).await.unwrap();
+        assert!(r.ok && started.elapsed() >= Duration::from_millis(1400));
+        session.unwrap().ack(true).await.unwrap();
+        server.await.unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[tokio::test]
+    async fn a_stalled_client_does_not_block_pairing_and_one_address_cannot_close_the_window() {
+        let work = tmp("dos");
+        let (c, server, _ca) = start(&work, true, Duration::from_millis(0)).await;
+        // a connection that never speaks
+        let _idle = TcpStream::connect(("127.0.0.1", c.port)).await.unwrap();
+        // three garbage presentations from this address ban it, but the window stays open
         for _ in 0..3 {
             let mut bad = c.clone();
             bad.token = new_token();
             let _ = join(&bad, "x").await;
         }
-        assert!(server.await.unwrap().is_err());
+        assert!(!server.is_finished(), "window must stay open");
+        // the same (now banned) address can no longer pair; the window is closed by the test
+        assert!(join(&c, &csr(&work, "node-b")).await.is_err());
+        server.abort();
         let _ = std::fs::remove_dir_all(&work);
     }
 }

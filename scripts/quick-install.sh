@@ -71,7 +71,7 @@ TAG=""
 CHANNEL="stable"
 VERIFY_ONLY=0
 HTTPS_HOST=""; HTTPS_KIND=""; HTTPS_EMAIL=""; HTTPS_SELF=0; NO_HTTPS=0; NO_MENU=0
-PAIR_CODE=""; OFFER_NAME=""; OFFER_PORT=""; OFFER_TPORT=8443; OFFER_HOST=""
+PAIR_CODE=""; OFFER_NAME=""; AUTO_APPROVE=0; OFFER_PORT=""; OFFER_TPORT=8443; OFFER_HOST=""
 PAIR_CODE=""
 OFFER_NAME=""
 OFFER_PORT=""
@@ -92,6 +92,7 @@ Options:
   --register NAME       Instance name (default t1 with --pair/--offer); installs the local panel agent.
   --offer NAME          Automatic tunnel, first server (the one that accepts the connection): after
                         install, prints a one-time code, waits for the second server, then starts.
+  --auto-approve        With --offer and no terminal: accept the first server that presents the code (off by default).
   --pair CODE           Automatic tunnel, second server: enroll with the code from --offer, then start.
   --channel CHANNEL     stable (default): latest stable release only.
                         prerelease: latest release including Preview/prerelease.
@@ -143,6 +144,7 @@ while (($#)); do
     --no-https) NO_HTTPS=1; shift ;;
     --no-menu) NO_MENU=1; shift ;;
     --pair) (($# >= 2)) || die "--pair needs the code printed by the other server"; PAIR_CODE="$2"; shift 2 ;;
+    --auto-approve) AUTO_APPROVE=1; shift ;;
     --offer) (($# >= 2)) || die "--offer needs a tunnel name"; OFFER_NAME="$2"; shift 2 ;;
     --service-port) (($# >= 2)) || die "--service-port needs a port"; OFFER_PORT="$2"; shift 2 ;;
     --tunnel-port) (($# >= 2)) || die "--tunnel-port needs a port"; OFFER_TPORT="$2"; shift 2 ;;
@@ -382,11 +384,18 @@ if [[ -n "$PAIR_CODE" || -n "$OFFER_NAME" ]]; then
   PBIN=/usr/local/bin/baft-tunnel
   "$PBIN" pair --help >/dev/null 2>&1 || die "release $TAG has no automatic pairing yet; use a newer --tag/--channel prerelease"
   if [[ -n "$PAIR_CODE" ]]; then
-    "$PBIN" pair accept "$PAIR_CODE" --instance "$INSTANCE"
+    printf '%s\n' "$PAIR_CODE" | "$PBIN" pair accept - --instance "$INSTANCE"
   else
     OARGS=(--name "$OFFER_NAME" --service-port "$OFFER_PORT" --tunnel-port "$OFFER_TPORT" --instance "$INSTANCE")
     [[ -z "$OFFER_HOST" ]] || OARGS+=(--host "$OFFER_HOST")
-    if [[ -r /dev/tty ]]; then "$PBIN" pair offer "${OARGS[@]}" </dev/tty; else "$PBIN" pair offer "${OARGS[@]}" --yes </dev/null; fi
+    if [[ -r /dev/tty ]]; then
+      "$PBIN" pair offer "${OARGS[@]}" </dev/tty
+    elif (( AUTO_APPROVE == 1 )); then
+      echo "WARNING: --auto-approve: the first server presenting the code in the next 15 minutes is accepted without asking." >&2
+      "$PBIN" pair offer "${OARGS[@]}" --yes </dev/null
+    else
+      die "no terminal to approve the other server; run this from an interactive shell, use the panel, or add --auto-approve (the code is then the only protection)"
+    fi
   fi
   systemctl enable --now "baft-tunnel@$INSTANCE"
   PAIRED=1

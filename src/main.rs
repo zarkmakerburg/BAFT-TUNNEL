@@ -226,7 +226,11 @@ enum PairCommand {
         #[arg(long)]
         instance: String,
     },
-    /// Run on the other server with the code printed by `offer`.
+    /// Network side of a pairing (internal; started by `offer`/the helper, drops privileges).
+    #[command(hide = true)]
+    Worker,
+    /// Run on the other server with the code printed by `offer`. Use `-` to read the code from
+    /// standard input (keeps it out of the process list).
     Accept {
         code: String,
         #[arg(long, default_value = "/etc/baft-tunnel")]
@@ -753,14 +757,20 @@ async fn run() -> Result<()> {
                     tunnel_port,
                     host,
                 },
-                |node, peer| {
+                |p: pair_flow::Pending| async move {
+                    eprintln!("Server {} connects from {}. Its key fingerprint: {}", p.node_id, p.peer, p.verify);
+                    eprintln!("Check that the other server shows the same fingerprint.");
                     if yes {
                         return true;
                     }
-                    eprint!("Approve server {node} connecting from {peer}? [y/N] ");
-                    let mut line = String::new();
-                    std::io::stdin().read_line(&mut line).is_ok()
-                        && matches!(line.trim(), "y" | "Y" | "yes")
+                    tokio::task::spawn_blocking(|| {
+                        eprint!("Approve? [y/N] ");
+                        let mut line = String::new();
+                        std::io::stdin().read_line(&mut line).is_ok()
+                            && matches!(line.trim(), "y" | "Y" | "yes")
+                    })
+                    .await
+                    .unwrap_or(false)
                 },
                 |code| {
                     println!("On the other server run (valid 15 minutes, single use):\n\n  baft-tunnel pair accept {code}\n\nWaiting for it. Open TCP port tunnel-port on this server's firewall yourself; BAFT-TUNNEL never changes firewall rules.");
@@ -779,7 +789,8 @@ async fn run() -> Result<()> {
                 &instance,
                 std::path::Path::new(apply::CONTROL_DIR),
                 std::path::Path::new("/etc/baft-tunnel"),
-            )?;
+            )
+            .await?;
             println!("pairing helper for {instance}: state={}", status["state"].as_str().unwrap_or("-"));
             Ok(())
         }
@@ -790,7 +801,22 @@ async fn run() -> Result<()> {
                     dir,
                     instance,
                 },
-        } => pair_flow::accept(&code, &dir, instance).await,
+        } => {
+            let code = if code == "-" {
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                line.trim().to_string()
+            } else {
+                code
+            };
+            pair_flow::accept(&code, &dir, instance, |v| {
+                eprintln!("Key fingerprint: {v} (the other server asks you to compare it)");
+            })
+            .await
+        }
+        Command::Pair {
+            command: PairCommand::Worker,
+        } => pair_flow::worker_stdio().await,
         Command::NoiseKeygen { out } => {
             let public = engine::write_noise_keypair(&out)?;
             println!("{public}");

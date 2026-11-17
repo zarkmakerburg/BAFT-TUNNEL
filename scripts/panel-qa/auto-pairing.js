@@ -54,7 +54,7 @@ function serve() {
           if (m === 'GET' && u.pathname === '/v1/pair/status') {
             polls += 1;
             if (role === 'first') {
-              const seq = polls < 2 ? { state: 'waiting', code: CODE, expires_in: 900 } : polls < 4 ? { state: 'approval', peer: { node_id: 'demo-f-1a2b3c', address: '203.0.113.9:5555' } } : { state: 'done' };
+              const seq = polls < 2 ? { state: 'waiting', code: CODE, expires_in: 900 } : polls < 4 ? { state: 'approval', nonce: 'n0nce', verify: 'ab12-cd34-ef56', peer: { node_id: 'demo-f-1a2b3c', address: '203.0.113.9:5555' } } : { state: 'done' };
               if (seq.state === 'done') configured = true;
               return route.fulfill({ json: seq });
             }
@@ -77,7 +77,8 @@ function serve() {
           ok(tag + ' shows the code and the exact command for the second server', (await page.locator('pre').innerText()).includes('pair accept ' + CODE));
           await page.locator('button.primary').waitFor();
           await page.locator('button.primary').click(); // approve
-          ok(tag + ' approval is sent as approve=true', posts.some(p => p.path === '/v1/pair/approve' && JSON.parse(p.body).approve === true));
+          ok(tag + ' approval is sent as approve=true', posts.some(p => p.path === '/v1/pair/approve' && JSON.parse(p.body).approve === true && JSON.parse(p.body).nonce === 'n0nce'));
+          ok(tag + ' verification string shown', (await page.content()).includes('ab12-cd34-ef56'));
           const offer = posts.find(p => p.path === '/v1/pair/offer');
           ok(tag + ' offer payload has only name, port and confirm', offer && JSON.stringify(Object.keys(JSON.parse(offer.body)).sort()) === JSON.stringify(['confirm', 'name', 'service_port']));
         } else {

@@ -88,22 +88,24 @@ fn write_status(control_dir: &Path, name: &str, value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn approved(control_dir: &Path, name: &str) -> bool {
+/// Wait for the user's decision on this exact join request: the approval file must carry the
+/// nonce published in the `approval` status, so a stale or foreign file cannot approve it.
+async fn approved(control_dir: &Path, name: &str, nonce: &str) -> bool {
     let path = control_dir.join(format!("{name}.{APPROVE_SUFFIX}"));
     let started = Instant::now();
     while started.elapsed() < APPROVAL_WAIT {
         if let Ok(bytes) = read_bounded(&path) {
             let _ = std::fs::remove_file(&path);
             return serde_json::from_slice::<Value>(&bytes)
-                .is_ok_and(|v| v["decision"] == "approve");
+                .is_ok_and(|v| v["decision"] == "approve" && v["nonce"] == nonce);
         }
-        std::thread::sleep(Duration::from_millis(300));
+        tokio::time::sleep(Duration::from_millis(300)).await;
     }
     false
 }
 
 /// One helper run (the fixed command of `baft-tunnel-control-pair@NAME.service`).
-pub fn run(name: &str, control_dir: &Path, config_dir: &Path) -> Result<Value> {
+pub async fn run(name: &str, control_dir: &Path, config_dir: &Path) -> Result<Value> {
     ensure!(crate::apply::valid_instance(name), "invalid instance name");
     let req_path = control_dir.join(format!("{name}.{REQUEST_SUFFIX}"));
     let bytes = read_bounded(&req_path);
@@ -117,46 +119,46 @@ pub fn run(name: &str, control_dir: &Path, config_dir: &Path) -> Result<Value> {
             return Ok(v);
         }
     };
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
     let instance = Some(name.to_string());
-    let result = rt.block_on(async {
-        match request {
-            PairRequest::Offer { name: tunnel, service_port, tunnel_port, host } => {
-                crate::pair_flow::offer(
-                    crate::pair_flow::OfferOptions {
-                        dir: config_dir.to_path_buf(),
-                        instance,
-                        name: tunnel,
-                        service_port,
-                        tunnel_port,
-                        host,
-                    },
-                    |node, peer| {
-                        let _ = write_status(
-                            control_dir,
-                            name,
-                            &json!({"state": "approval", "peer": {"node_id": node, "address": peer.to_string()}}),
-                        );
-                        approved(control_dir, name)
-                    },
-                    |code| {
-                        let _ = write_status(
-                            control_dir,
-                            name,
-                            &json!({"state": "waiting", "code": code, "expires_in": crate::pair_proto::CODE_TTL_SECS}),
-                        );
-                    },
-                )
-                .await
-            }
-            PairRequest::Accept { code } => {
-                let _ = write_status(control_dir, name, &json!({"state": "working"}));
-                crate::pair_flow::accept(&code, config_dir, instance).await
-            }
+    let result = match request {
+        PairRequest::Offer { name: tunnel, service_port, tunnel_port, host } => {
+            crate::pair_flow::offer(
+                crate::pair_flow::OfferOptions {
+                    dir: config_dir.to_path_buf(),
+                    instance,
+                    name: tunnel,
+                    service_port,
+                    tunnel_port,
+                    host,
+                },
+                |p: crate::pair_flow::Pending| async move {
+                    let nonce = hex::encode(rand::random::<[u8; 8]>());
+                    let _ = write_status(
+                        control_dir,
+                        name,
+                        &json!({"state": "approval", "nonce": nonce, "verify": p.verify,
+                                "peer": {"node_id": p.node_id, "address": p.peer.to_string()}}),
+                    );
+                    approved(control_dir, name, &nonce).await
+                },
+                |code| {
+                    let _ = write_status(
+                        control_dir,
+                        name,
+                        &json!({"state": "waiting", "code": code, "port": tunnel_port, "expires_in": crate::pair_proto::CODE_TTL_SECS}),
+                    );
+                },
+            )
+            .await
         }
-    });
+        PairRequest::Accept { code } => {
+            let _ = write_status(control_dir, name, &json!({"state": "working"}));
+            crate::pair_flow::accept(&code, config_dir, instance, |v| {
+                let _ = write_status(control_dir, name, &json!({"state": "working", "verify": v}));
+            })
+            .await
+        }
+    };
     let status = match result {
         Ok(()) => json!({"state": "done"}),
         Err(e) => json!({"state": "failed", "reason": format!("{e:#}")}),
@@ -203,7 +205,13 @@ pub fn status(control_dir: &Path, name: &str) -> Value {
     }
 }
 
-pub fn approve(control_dir: &Path, name: &str, approve: bool) -> Result<(), String> {
+/// Record the user's decision for the join request currently awaiting approval (`nonce` comes from
+/// the `approval` status). Refused when no approval is pending or the nonce differs.
+pub fn approve(control_dir: &Path, name: &str, approve: bool, nonce: &str) -> Result<(), String> {
+    let current = status(control_dir, name);
+    if current["state"] != "approval" || current["nonce"] != nonce {
+        return Err("no matching approval is pending".into());
+    }
     let path = control_dir.join(format!("{name}.{APPROVE_SUFFIX}"));
     let _ = std::fs::remove_file(&path);
     let mut file = std::fs::OpenOptions::new()
@@ -213,7 +221,7 @@ pub fn approve(control_dir: &Path, name: &str, approve: bool) -> Result<(), Stri
         .open(&path)
         .map_err(|e| format!("cannot write the approval: {e}"))?;
     file.write_all(
-        json!({"decision": if approve { "approve" } else { "deny" }})
+        json!({"decision": if approve { "approve" } else { "deny" }, "nonce": nonce})
             .to_string()
             .as_bytes(),
     )
@@ -231,8 +239,8 @@ mod tests {
         p
     }
 
-    #[test]
-    fn helper_offer_and_accept_round_trip_through_request_files() {
+    #[tokio::test]
+    async fn helper_offer_and_accept_round_trip_through_request_files() {
         // The helper adopts files for the service user, which only exists on installed hosts.
         // SAFETY: geteuid has no preconditions.
         if unsafe { libc::geteuid() } == 0 {
@@ -255,43 +263,46 @@ mod tests {
             "one pending request at a time"
         );
         let (c1, d1) = (ctl.clone(), da.clone());
-        let offer = std::thread::spawn(move || run("ta", &c1, &d1).unwrap());
+        let offer = tokio::spawn(async move { run("ta", &c1, &d1).await.unwrap() });
         let code = loop {
             let s = status(&ctl, "ta");
             if s["state"] == "waiting" {
                 break s["code"].as_str().unwrap().to_string();
             }
-            std::thread::sleep(Duration::from_millis(100));
+            tokio::time::sleep(Duration::from_millis(100)).await;
         };
         submit(&ctl, "tb", &json!({"op": "accept", "code": code})).unwrap();
         let (c2, d2) = (ctl.clone(), db.clone());
-        let accept = std::thread::spawn(move || run("tb", &c2, &d2).unwrap());
+        let accept = tokio::spawn(async move { run("tb", &c2, &d2).await.unwrap() });
         loop {
-            if status(&ctl, "ta")["state"] == "approval" {
-                approve(&ctl, "ta", true).unwrap();
+            let st = status(&ctl, "ta");
+            if st["state"] == "approval" {
+                assert!(approve(&ctl, "ta", true, "wrong-nonce").is_err());
+                assert_eq!(st["verify"].as_str().unwrap().len(), 14);
+                approve(&ctl, "ta", true, st["nonce"].as_str().unwrap()).unwrap();
                 break;
             }
-            std::thread::sleep(Duration::from_millis(100));
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert_eq!(offer.join().unwrap()["state"], "done");
-        assert_eq!(accept.join().unwrap()["state"], "done");
+        assert_eq!(offer.await.unwrap()["state"], "done");
+        assert_eq!(accept.await.unwrap()["state"], "done");
         assert!(da.join("ta.json").exists() && db.join("tb.json").exists());
         // the status file never carries key material
         let text = std::fs::read_to_string(ctl.join("ta.pair-status")).unwrap();
         assert!(!text.contains("PRIVATE") && !text.contains("token"));
     }
 
-    #[test]
-    fn invalid_or_unknown_requests_fail_closed() {
+    #[tokio::test]
+    async fn invalid_or_unknown_requests_fail_closed() {
         let ctl = tmp("bad");
         std::fs::write(
             ctl.join("t1.pair"),
             br#"{"op":"offer","name":"x","service_port":9000,"evil":1}"#,
         )
         .unwrap();
-        let r = run("t1", &ctl, &tmp("c")).unwrap();
+        let r = run("t1", &ctl, &tmp("c")).await.unwrap();
         assert_eq!(r["state"], "failed");
         assert!(!ctl.join("t1.pair").exists(), "request is consumed");
-        assert!(run("../x", &ctl, &tmp("d")).is_err());
+        assert!(run("../x", &ctl, &tmp("d")).await.is_err());
     }
 }

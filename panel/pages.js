@@ -847,14 +847,16 @@
             h('p', { class: 'sub', text: t('auto.cmd') }), h('pre', { dir: 'ltr', text: cmd(ps.code) }),
             h('div', { class: 'nav-row' }, h('button', { type: 'button', text: t('auto.copy.cmd'), onclick: function () { copyText(cmd(ps.code)); } }),
               h('button', { type: 'button', text: t('auto.copy.code'), onclick: function () { copyText(ps.code); } })),
-            h('p', { class: 'sub', text: t('auto.fw', { port: '8443' }) }));
+            h('p', { class: 'sub', text: t('auto.fw', { port: String(ps.port || 8443) }) }));
         } else if (ps.state === 'approval' && ps.peer) {
-          kids.push(h('div', { class: 'banner' }, h('strong', { text: t('auto.appr.t') }), h('p', { text: t('auto.appr.b', { node: ps.peer.node_id, addr: ps.peer.address }) })),
+          kids.push(h('div', { class: 'banner' }, h('strong', { text: t('auto.appr.t') }), h('p', { text: t('auto.appr.b', { node: ps.peer.node_id, addr: ps.peer.address }) }),
+            h('p', null, t('auto.verify'), ' ', h('strong', { dir: 'ltr', text: ps.verify || '' })), h('p', { class: 'sub', text: t('auto.verify.hint') })),
             h('div', { class: 'nav-row' },
-              h('button', { type: 'button', class: 'primary', text: t('auto.appr.yes'), onclick: function () { BAFT.api('POST', '/v1/pair/approve', { approve: true }); } }),
-              h('button', { type: 'button', text: t('auto.appr.no'), onclick: function () { BAFT.api('POST', '/v1/pair/approve', { approve: false }); } })));
+              h('button', { type: 'button', class: 'primary', text: t('auto.appr.yes'), onclick: function () { BAFT.api('POST', '/v1/pair/approve', { approve: true, nonce: ps.nonce }); } }),
+              h('button', { type: 'button', text: t('auto.appr.no'), onclick: function () { BAFT.api('POST', '/v1/pair/approve', { approve: false, nonce: ps.nonce }); } })));
         } else {
           kids.push(h('p', { role: 'status', text: t('auto.working') }));
+          if (ps.verify) { kids.push(h('p', null, t('auto.verify'), ' ', h('strong', { dir: 'ltr', text: ps.verify })), h('p', { class: 'sub', text: t('auto.verify.hint2') })); }
         }
       } else if (a.phase === 'starting') {
         kids.push(h('p', { role: 'status', text: t('auto.starting') }));

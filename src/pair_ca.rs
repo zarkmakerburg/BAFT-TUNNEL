@@ -24,9 +24,9 @@ const OPENSSL: &str = "/usr/bin/openssl";
 const NODE_URI_PREFIX: &str = "urn:baft-tunnel:node:";
 const MAX_CSR_BYTES: usize = 4096;
 /// Leaf validity; automatic renewal is a later stage (ADR-0050 plan step 6).
-pub const LEAF_DAYS: u32 = 365;
+pub const LEAF_DAYS: u32 = 1800;
 /// CRL validity for the (initially empty) pair CRL; renewed automatically by the same helper.
-pub const CRL_DAYS: u32 = 90;
+pub const CRL_DAYS: u32 = 1800;
 
 /// One allowed node: its id and the DNS name or IP its certificate carries.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,7 +217,7 @@ pub fn create(dir: &Path, name: &str, members: &[Member; 2]) -> Result<String> {
 
 /// Issue a CRL (the CA database is empty unless something was revoked) valid for `days`.
 pub fn crl(dir: &Path, days: u32) -> Result<String> {
-    ensure!((2..=365).contains(&days), "CRL days out of range");
+    ensure!((2..=3650).contains(&days), "CRL days out of range");
     let cnf = dir.join("openssl.cnf");
     let out = run(
         &[
@@ -234,6 +234,16 @@ pub fn crl(dir: &Path, days: u32) -> Result<String> {
     let pem = String::from_utf8(out).context("CRL is not UTF-8")?;
     fs::write(dir.join("ca.crl"), &pem)?;
     Ok(pem)
+}
+
+/// Short human-comparable fingerprint of a CSR's public key (`ab12-cd34-ef56`). Both servers show
+/// it, so the user can see that the key being approved is the one the other server generated.
+pub fn csr_fingerprint(csr_pem: &str) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    ensure!(csr_pem.len() <= MAX_CSR_BYTES, "CSR too large");
+    let pubkey = run(&["req", "-pubkey", "-noout"], Some(csr_pem.as_bytes()))?;
+    let h = hex::encode(&Sha256::digest(&pubkey)[..6]);
+    Ok(format!("{}-{}-{}", &h[0..4], &h[4..8], &h[8..12]))
 }
 
 /// Sign `csr_pem` for `node_id`. Refuses unknown ids, wrong CN, non-P-256 keys, bad CSR signature.

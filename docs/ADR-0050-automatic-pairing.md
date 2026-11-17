@@ -59,3 +59,55 @@ Add **auto mode**. The offline-CA mode stays available as "Advanced / my own CA"
 6. Automatic CRL renewal, docs, acceptance script; LAB two-host run requested from the coordinator.
 
 Evidence labels: stages 1-5 are CI/local only; no LAB claim until the two-host run.
+
+## Addendum 1 (2026-11-17): review fixes
+
+- **Privilege separation (H1).** The process that touches the network is a worker (`baft-tunnel pair worker`, a child of
+  the root helper) that drops to the service user, clears supplementary groups, sets no-new-privileges and verifies it
+  cannot regain root before it reads anything. It generates the one-time pairing identity itself and receives only the
+  token, joiner id, expiry and port over a pipe; the pair CA and every private key stay in the root parent. The worker
+  forwards the single verified join request; the parent signs only for the joiner id fixed in the code (never the listener
+  id), so a compromised worker cannot obtain another identity. Without root the same worker runs in-process.
+- **Approval (H2/H3).** The joiner waits as long as the approval may take (180 s against a 120 s approval window). The
+  first token-valid request ends the window whatever happens, so a denial ends the pairing and the token cannot be
+  retried. The `approval` status carries a random nonce; the approve request must repeat it, only in the `approval` state.
+  Both servers show a short fingerprint (`ab12-cd34-ef56`) of the joiner's key, so the user can see that the approved key
+  is the one the joiner generated.
+- **Commit and rollback.** The listener reports success only after the joiner acknowledged a complete install; a nack,
+  timeout or any failure removes everything the pairing created on both sides. A pairing refuses to start in a directory
+  that already holds a configuration (one pair per configuration directory).
+- **Limits.** 3 failures per source address, 20 in total (then the window closes), 16 concurrent connections, 5 s
+  handshake deadline; parser details are not echoed to the panel.
+- **Lifetimes.** CA 1825 days, leaves and CRL 1800 days. Revocation is re-pairing; automatic renewal stays a later step.
+  Name constraints cover DNS/IP only; the node-id allowlist is enforced by the fixed ids above and the data plane.
+- **Installer.** `--offer` without a terminal is refused unless `--auto-approve` is given (with a warning); the code is
+  passed to `pair accept -` on standard input. Pairing exists only on demand and is never on by default.
+
+## Addendum 2 (2026-11-17): location question and Reverse (design, not yet implemented)
+
+Owner input: ask "is this server in Iran or abroad?" and derive the rest.
+
+1. **Question.** Each server answers once: Iran or abroad. Together with "does the service run on this server?" (the first
+   server already supplies the service port) this fixes everything else; the user still only picks name and ports.
+2. **Who listens.** The listener must be reachable. Inbound from abroad to an Iran server is usually blocked or throttled,
+   so the abroad server listens whenever one server is abroad and one in Iran. Both abroad or both in Iran: either can
+   listen; default is the server that created the code.
+3. **Direct or Reverse.** If the service runs on the abroad server, the tunnel is Direct with the Iran server dialing out
+   (forward). If the service runs on the Iran server, the tunnel is Reverse: the Iran server is the service node that dials
+   out and the abroad server is the public node that accepts users (ADR-0021 Amendment 1, ADR-0037). The choice is a
+   preselected default shown in plain words, never a silent switch, and never a downgrade of an explicit Reverse request to
+   Direct.
+4. **Defaults by location.** `session_rotate_secs` (ADR-0049, 5-3600, Direct dialer only) defaults to 10 on the Iran-side
+   Direct dialer given the aged-flow throttle; Reverse cannot rotate, which the UI states. Backup links and ports are not
+   preselected.
+5. **Preflight, not assumption.** Before creating the code the panel runs a reachability check of the chosen listener port
+   from the other server's side (the join itself is the first proof: a refused connect becomes "the other server cannot
+   reach port N; open it in this server's firewall or hosting panel", plain language, no firewall changes by us). Location is
+   a hint; reachability is evidence.
+6. **Reverse pairing.** Reuses the pair CA, code, worker, approval and rollback unchanged. The code gains a direction
+   (`direct`|`reverse`, already a field) and the roles map: listener = public node (user ingress), joiner = service node
+   (dials out, holds the target). Bundles/config come from the same `setup::init`/`join` Reverse path the guided setup
+   uses. Reverse stays Preview and unadvertised until the two-host acceptance gate of ADR-0037; the capability contract is
+   read from `GET /v1/engines`, so the flow offers Reverse only while that contract does.
+7. **Stages.** (a) location question and Direct defaults in the panel/CLI; (b) Reverse pairing core + tests; (c) panel and
+   installer wording; (d) two-host LAB run requested from the coordinator, queued after the pairing LAB run.

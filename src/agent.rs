@@ -744,6 +744,7 @@ struct PairAcceptBody {
 #[serde(deny_unknown_fields)]
 struct PairApproveBody {
     approve: bool,
+    nonce: String,
 }
 
 /// Automatic pairing (ADR-0050), setup mode only: offer/accept/status/approve through the root helper.
@@ -751,12 +752,8 @@ fn pair_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) 
     let Some(name) = ctx.instance.as_deref() else {
         return (409, json!({"error": "pairing needs an installed instance"}));
     };
-    let bad = |e: serde_json::Error| {
-        (
-            422,
-            json!({"error": "invalid request", "detail": e.to_string()}),
-        )
-    };
+    // Parser details are not echoed back (nothing about the request's content is reflected).
+    let bad = |_: serde_json::Error| (422, json!({"error": "invalid request"}));
     let submit = |req: Value| match crate::pair_helper::submit(&ctx.pair_dir, name, &req) {
         Ok(()) => (202, json!({"state": "starting"})),
         Err(e) => (409, json!({"error": e})),
@@ -797,10 +794,7 @@ fn pair_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) 
             Err(e) => bad(e),
             Ok(b) if !b.confirm => (422, json!({"error": "pairing requires \"confirm\": true"})),
             Ok(b) => match crate::pair_proto::PairCode::decode(&b.code) {
-                Err(e) => (
-                    422,
-                    json!({"error": "invalid pairing code", "detail": e.to_string()}),
-                ),
+                Err(_) => (422, json!({"error": "invalid pairing code"})),
                 Ok(c) if c.expired() => (
                     422,
                     json!({"error": "this pairing code has expired; create a new one"}),
@@ -810,7 +804,7 @@ fn pair_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) 
         },
         ("POST", "/v1/pair/approve") => match serde_json::from_slice::<PairApproveBody>(body) {
             Err(e) => bad(e),
-            Ok(b) => match crate::pair_helper::approve(&ctx.pair_dir, name, b.approve) {
+            Ok(b) => match crate::pair_helper::approve(&ctx.pair_dir, name, b.approve, &b.nonce) {
                 Ok(()) => (200, json!({"ok": true})),
                 Err(e) => (409, json!({"error": e})),
             },
@@ -6101,7 +6095,7 @@ mod tests {
         );
         std::fs::write(
             ctl.join("pair1.pair-status"),
-            br#"{"state":"approval","peer":{"node_id":"n","address":"1.2.3.4:5"}}"#,
+            br#"{"state":"approval","nonce":"abc123","verify":"aaaa-bbbb-cccc","peer":{"node_id":"n","address":"1.2.3.4:5"}}"#,
         )
         .unwrap();
         assert_eq!(
@@ -6112,6 +6106,28 @@ mod tests {
             route(&post("/v1/pair/approve"), br#"{"approve":true}"#, &ctx)
                 .await
                 .0,
+            422,
+            "approval needs the nonce"
+        );
+        assert_eq!(
+            route(
+                &post("/v1/pair/approve"),
+                br#"{"approve":true,"nonce":"zzz"}"#,
+                &ctx
+            )
+            .await
+            .0,
+            409,
+            "wrong nonce"
+        );
+        assert_eq!(
+            route(
+                &post("/v1/pair/approve"),
+                br#"{"approve":true,"nonce":"abc123"}"#,
+                &ctx
+            )
+            .await
+            .0,
             200
         );
         let a: Value =
