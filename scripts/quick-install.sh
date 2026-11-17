@@ -71,6 +71,12 @@ TAG=""
 CHANNEL="stable"
 VERIFY_ONLY=0
 HTTPS_HOST=""; HTTPS_KIND=""; HTTPS_EMAIL=""; HTTPS_SELF=0; NO_HTTPS=0; NO_MENU=0
+PAIR_CODE=""; OFFER_NAME=""; OFFER_PORT=""; OFFER_TPORT=8443; OFFER_HOST=""
+PAIR_CODE=""
+OFFER_NAME=""
+OFFER_PORT=""
+OFFER_TPORT=8443
+OFFER_HOST=""
 CHANNEL_SET=0
 
 usage() {
@@ -78,12 +84,15 @@ usage() {
 BAFT-TUNNEL quick installer (Ubuntu Linux x86_64)
 
 Usage:
-  quick-install.sh --register NAME [--channel stable|prerelease | --tag vX.Y.Z[-rc.N]]
+  quick-install.sh (--register NAME | --pair CODE | --offer NAME --service-port PORT [--tunnel-port PORT] [--host ADDR]) [--channel stable|prerelease | --tag vX.Y.Z[-rc.N]]
                    [--agent-listen 127.0.0.1:PORT]
                    [--domain NAME | --ip ADDRESS] [--email ADDR] [--self-signed] [--no-https] [--no-menu]
 
 Options:
-  --register NAME       Required instance name; installs the local panel agent.
+  --register NAME       Instance name (default t1 with --pair/--offer); installs the local panel agent.
+  --offer NAME          Automatic tunnel, first server (the one that accepts the connection): after
+                        install, prints a one-time code, waits for the second server, then starts.
+  --pair CODE           Automatic tunnel, second server: enroll with the code from --offer, then start.
   --channel CHANNEL     stable (default): latest stable release only.
                         prerelease: latest release including Preview/prerelease.
   --tag TAG             Install this exact published release (instead of latest).
@@ -133,11 +142,22 @@ while (($#)); do
     --self-signed) HTTPS_SELF=1; shift ;;
     --no-https) NO_HTTPS=1; shift ;;
     --no-menu) NO_MENU=1; shift ;;
+    --pair) (($# >= 2)) || die "--pair needs the code printed by the other server"; PAIR_CODE="$2"; shift 2 ;;
+    --offer) (($# >= 2)) || die "--offer needs a tunnel name"; OFFER_NAME="$2"; shift 2 ;;
+    --service-port) (($# >= 2)) || die "--service-port needs a port"; OFFER_PORT="$2"; shift 2 ;;
+    --tunnel-port) (($# >= 2)) || die "--tunnel-port needs a port"; OFFER_TPORT="$2"; shift 2 ;;
+    --host) (($# >= 2)) || die "--host needs an address"; OFFER_HOST="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
   esac
 done
 
+if [[ -n "$PAIR_CODE$OFFER_NAME" && -z "$INSTANCE" ]]; then INSTANCE=t1; fi
+[[ -z "$PAIR_CODE" || -z "$OFFER_NAME" ]] || die "use either --pair CODE or --offer NAME, not both"
+if [[ -n "$OFFER_NAME" ]]; then
+  [[ "$OFFER_PORT" =~ ^[0-9]{4,5}$ ]] || die "--offer needs --service-port PORT (the service on this server that the tunnel exposes)"
+  [[ "$OFFER_TPORT" =~ ^[0-9]{4,5}$ ]] || die "--tunnel-port must be a port number"
+fi
 if (( VERIFY_ONLY == 0 )); then
   [[ "$INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$ ]] || die "--register NAME is required (1-63 letters, digits, _ or -; starts with a letter or digit)"
 elif [[ -n "$INSTANCE" ]]; then
@@ -357,8 +377,23 @@ if (( NO_HTTPS == 0 )) && [[ -f "$PKG/scripts/panel-https.sh" ]]; then
     echo "Fix the reason, then retry: sudo bash /usr/local/lib/baft-tunnel/scripts/panel-https.sh --domain NAME (or --ip ADDRESS)" >&2
   fi
 fi
+PAIRED=0
+if [[ -n "$PAIR_CODE" || -n "$OFFER_NAME" ]]; then
+  PBIN=/usr/local/bin/baft-tunnel
+  "$PBIN" pair --help >/dev/null 2>&1 || die "release $TAG has no automatic pairing yet; use a newer --tag/--channel prerelease"
+  if [[ -n "$PAIR_CODE" ]]; then
+    "$PBIN" pair accept "$PAIR_CODE" --instance "$INSTANCE"
+  else
+    OARGS=(--name "$OFFER_NAME" --service-port "$OFFER_PORT" --tunnel-port "$OFFER_TPORT" --instance "$INSTANCE")
+    [[ -z "$OFFER_HOST" ]] || OARGS+=(--host "$OFFER_HOST")
+    if [[ -r /dev/tty ]]; then "$PBIN" pair offer "${OARGS[@]}" </dev/tty; else "$PBIN" pair offer "${OARGS[@]}" --yes </dev/null; fi
+  fi
+  systemctl enable --now "baft-tunnel@$INSTANCE"
+  PAIRED=1
+  echo "Tunnel configured and started: baft-tunnel@$INSTANCE. Check it in the panel (Tunnels) or: systemctl status baft-tunnel@$INSTANCE"
+fi
 echo
-echo "The tunnel itself was not started. Set it up in the panel Wizard (supported tcp-tls path)."
+if (( PAIRED == 0 )); then echo "The tunnel itself was not started. Set it up in the panel Wizard (supported tcp-tls path)."; fi
 if (( HTTPS_OK == 1 )); then
   echo "Panel (HTTPS): $PANEL_LINK   password (login token): sudo cat /var/lib/baft-tunnel-agent/token"
 else
