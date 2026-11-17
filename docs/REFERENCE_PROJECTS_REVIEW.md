@@ -50,10 +50,26 @@ URLs are those recorded in repository documents. "—" means the repository reco
 | 11 | rathole-tunnel | `https://github.com/Musixal/rathole-tunnel` | same | HEAD `ed49cdd88945` | Scripts read | Verified. GPL-3.0; committed unverifiable binaries; not used |
 | 12 | Hashem Panel | — (no URL recorded in repository documents reviewed) | ADVISOR_ASSESSMENT | README-level only | README claims | Identity beyond name/licence **Unverified** here. AGPL-3.0 per the advisor file. The owner's earlier mission notes list Hashem as a panel pattern reference (PRODUCT_ROADMAP §1) |
 | 13 | Pangolin | — (no URL recorded) | ADVISOR_ASSESSMENT | README-level | README claims | **Unverified** beyond name. Mixed AGPL-3.0 / commercial per-file headers per the advisor file |
-| 14 | Tailscale | — (no URL recorded) | ADVISOR_ASSESSMENT | README-level | Not assessed in depth | BSD-3-Clause per the advisor file |
+| 14 | Tailscale | — (no URL recorded) | ADVISOR_ASSESSMENT | README-level | Not assessed in depth | **Dropped as a reference by the owner on 2026-11-17** (not needed; other tunnel projects are the useful references). Kept in the older documents for traceability only |
 | 15 | BAFT (owner's own engine) | `zarkmakerburg/BAFT` (not the product repo) | ENGINE_ECOSYSTEM_COMPARISON §2.1 | `2acb495eafe5` | Used as a separate pinned engine process (ADR-0019) | Verified. **Not a reference to copy from**; never merge into this repository |
 
-**Not found in any repository record:** a project named "Backhaul" review; any Backpack finding that predates the 2026-11-08 ecosystem study; any other earlier-evaluated repository beyond the table. Earlier conversations or handover notes outside the repository (for example chat history) were **not** available to this thread, so reviews that exist only there are **Unverified/unrecoverable here**. Open question OQ-2 asks the owner to name any missing project.
+**Not found in any repository record:** a review of Backhaul; any Backpack finding that predates the 2026-11-08 ecosystem study; any other earlier-evaluated repository beyond the table. Earlier conversations outside the repository were not available to this thread, so reviews that exist only there are **Unverified/unrecoverable here**.
+
+### 2a. Additional tunnel references (added 2026-11-17 on the owner's instruction)
+
+The owner said Tailscale is not needed and that other tunnel projects should be mined for ideas. Candidates below were looked up through GitHub repository search on 2026-11-17, which returned the exact name, licence tag, main language and last push. **Only those facts are verified.** No README or source of these projects was read in this pass, so every "idea" is **Proposed from the project's category, not from its code**, and must be checked against the README/source before any ADR cites it. Licence tags are GitHub's detected SPDX values, not a legal review. Independent implementation only; no code is copied (ADR-0019, ADR-0038).
+
+| Project | Repository | Language | Licence tag | Last push | Candidate idea (Proposed, unread) | Status |
+|---|---|---|---|---|---|---|
+| Backhaul | `Musixal/Backhaul` (885 stars) | Go | AGPL-3.0 | 2025-09-04 | Reverse tunnel with several selectable transports and a multiplexed variant; same author as `Musixal/rathole-tunnel` in §2. Compare with BackPack and our Reverse Preview | **Deferred** study; ideas only (AGPL) |
+| EasyTier | `EasyTier/EasyTier` (14.8k) | Rust | LGPL-3.0 | 2026-11-17 | Peer-to-peer mesh VPN in Rust (multi-peer, NAT traversal). Relevant to Fleet/multi-node thinking only | **Deferred**; LGPL does not permit copying into a proprietary core without compliance work |
+| wstunnel | `erebe/wstunnel` (7.2k) | Rust | BSD-3-Clause | 2026-10-19 | TCP/UDP carried over WebSocket/HTTP; a model for a future WS carrier (ADR-0010 plans carriers each with its own ADR) | **Deferred** (WS carrier not built) |
+| bore | `ekzhang/bore` (11.6k) | Rust | MIT | 2026-02-04 | Minimal reverse TCP tunnel with a shared-secret handshake; a small readable reference for the Reverse control/data split | **Deferred**; secondary to rathole |
+| Ehco | `Ehco1996/ehco` (1.3k) | Go | GPL-3.0 | 2026-11-08 | TCP/UDP relay with WS/WSS/mux transports and traffic metrics | **Deferred**; ideas only (GPL) |
+| nps | `ehang-io/nps` (34k) | Go | GPL-3.0 | 2024-05-30 | Intranet-penetration proxy with a web console and multi-client management; a product/panel reference | **Deferred**; ideas only (GPL); not pushed since 2024 |
+| sing-box | `SagerNet/sing-box` (40k) | Go | `NOASSERTION` (custom/unclear) | 2026-11-17 | Universal proxy platform | **Not assessed**; licence tag unclear, so no idea is adopted until the licence is read |
+
+Searched and **not confirmed**: `go-gost/gost` and `apernet/hysteria` returned no result for the exact search used; neither is listed. Direct repository metadata for these projects could not be read from this session (access is scoped to the product repositories), so no further fact beyond the table is claimed.
 
 ## 3. Licensing comparison
 
@@ -69,7 +85,6 @@ Source for all rows: the cited review documents (Historical, from each project's
 | rathole | Apache-2.0 | Code reuse legally possible with notices; policy still design-only, re-implement against the authenticated session |
 | FRP | Apache-2.0 | Go; ideas / separate process only |
 | Chisel | MIT | Go; ideas only. Cleanest Go licence |
-| Tailscale | BSD-3-Clause | Go; ideas only |
 | spoof-tunnel | Apache-2.0 | Rejected on risk, not licence |
 | TAQ-BOSTAN | Apache-2.0 | Scripts, ideas only |
 | Phormal, rathole-tunnel | GPL-3.0 | Ideas only |
@@ -260,7 +275,7 @@ These verify handover statements against repository records. Nothing was modifie
 | ID | Question | Recommendation (Proposed) | Blocks |
 |---|---|---|---|
 | OQ-1 | Re-verify each reference licence against the upstream repositories now (this file relies on earlier recorded reads) | Yes, before any copy decision; counsel review for any relicense | Any copy/relicense |
-| OQ-2 | Name any earlier-evaluated reference not in §2 (for example Backhaul, if it was reviewed in chat history that is not in the repository) | Provide names/URLs; they will be added with the same labels | Completeness of §2 |
+| OQ-2 | ~~Name missing references~~ Answered 2026-11-17: Tailscale not needed; mine other tunnel projects. §2a lists seven verified candidates. Which of them should get a real README/source study first? | Backhaul (reverse, closest to our Reverse Preview), then wstunnel (WS carrier design) | Study order |
 | OQ-3 | Confirm advisor priority R-1, R-2, R-4 before further 0.3.0 operator items (ADVISOR §9) | Confirm | Roadmap order |
 | OQ-4 | Machine-checkable outage rule and re-evaluation of the 0.2.2 acceptance basis (§15.1) | Adopt R-6; no change to the published release unless the owner decides | Acceptance policy |
 | OQ-5 | Multi-hour benchmark window: delegated approval exists as a one-time exception (ADVISOR §9, 2026-11-17); harness for LAB use not yet built | Keep; schedule only after harness and stall controls | R-5 |
