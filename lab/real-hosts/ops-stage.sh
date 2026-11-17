@@ -240,32 +240,8 @@ done
 [[ "$(op_apply iran $CLI forward op-cli-0001 | jf replayed)" == True ]] || { echo "idempotent replay failed" >&2; exit 1; }
 [[ "$(op_apply iran $CLI forward op-cli-0002 | jf result)" == refused ]] || { echo "Apply start on a running forward node was not refused" >&2; exit 1; }
 
-OP_CROSS_VERSION=0
-if [[ "$OP_INITIAL_SHA" != "$MVP_SHA" ]]; then
-  echo "--- cross-version upgrade: previous prerelease runtime to target signed release ---"
-  for side in iran abroad; do
-    inst=$CLI; [[ "$side" == abroad ]] && inst=$SRV
-    ssh_host "$side" "bash '$PKG/scripts/update.sh' --binary '$REMOTE_DIR/baft-tunnel-op-upgrade' --instance $inst --health-secs 20" | grep -q '^UPDATE_OK' || { echo "cross-version update on $side was not accepted" >&2; exit 1; }
-    [[ "$(ssh_host "$side" "sha256sum $UB | cut -d' ' -f1")" == "$MVP_SHA" ]] || { echo "cross-version update on $side did not install the target binary" >&2; exit 1; }
-  done
-  # Restart the old Agent processes so subsequent evidence is served by the target release too.
-  for side in iran abroad; do
-    cfg=$CLI; [[ "$side" == abroad ]] && cfg=$SRV
-    ssh_host "$side" "set -e; [ -s '$REMOTE_DIR/agent.pid' ] && kill \$(cat '$REMOTE_DIR/agent.pid') 2>/dev/null || true; rm -f '$REMOTE_DIR/agent.pid';
-      nohup setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG --instance $cfg > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
-      for n in \$(seq 1 40); do python3 -c 'import urllib.request;urllib.request.urlopen(\"http://127.0.0.1:$MAG/v1/health\",timeout=1)' 2>/dev/null && exit 0; sleep 0.25; done; tail -20 '$REMOTE_DIR/agent.log'; exit 1"
-  done
-  sleep 12
-  op_wait 90 >/dev/null || { echo "tunnel did not recover after the cross-version upgrade" >&2; exit 1; }
-  probe_host iran 2097289
-  op_evidence cross_version 65536
-  OP_CROSS_VERSION=1
-fi
-
-# 0.3.0 operator features, checked on the target binary before the soak so a path outage during
-# the soak cannot hide them: host tunnel list (ADR-0036), update notice (ADR-0035), certificate
-# expiry warning, support bundle. Releases without GET /v1/update skip this block (OPS_030=skipped).
-OPS_030="skipped"
+ops_030_checks() { # runs once, on the first agent generation that serves GET /v1/update
+  [[ -n "${OPS_030_DONE:-}" ]] && return 0
 if [[ "$(p1_api iran GET /v1/update | python3 -c 'import json,sys
 try: print("state" in json.load(sys.stdin))
 except Exception: print(False)')" == True ]]; then
@@ -318,7 +294,38 @@ PY
   done
   OPS_030="host_tunnels=1 update_notice_real=current update_notice_fixture=1 cert_warning=renew_soon support_bundle=1"
 fi
-echo "OPS_030_RESULT $OPS_030"
+  OPS_030_DONE=1
+  echo "OPS_030_RESULT $OPS_030"
+}
+OPS_030="skipped"
+OP_CROSS_VERSION=0
+if [[ "$OP_INITIAL_SHA" != "$MVP_SHA" ]]; then
+  echo "--- cross-version upgrade: previous prerelease runtime to target signed release ---"
+  for side in iran abroad; do
+    inst=$CLI; [[ "$side" == abroad ]] && inst=$SRV
+    ssh_host "$side" "bash '$PKG/scripts/update.sh' --binary '$REMOTE_DIR/baft-tunnel-op-upgrade' --instance $inst --health-secs 20" | grep -q '^UPDATE_OK' || { echo "cross-version update on $side was not accepted" >&2; exit 1; }
+    [[ "$(ssh_host "$side" "sha256sum $UB | cut -d' ' -f1")" == "$MVP_SHA" ]] || { echo "cross-version update on $side did not install the target binary" >&2; exit 1; }
+  done
+  # Restart the old Agent processes so subsequent evidence is served by the target release too.
+  for side in iran abroad; do
+    cfg=$CLI; [[ "$side" == abroad ]] && cfg=$SRV
+    ssh_host "$side" "set -e; [ -s '$REMOTE_DIR/agent.pid' ] && kill \$(cat '$REMOTE_DIR/agent.pid') 2>/dev/null || true; rm -f '$REMOTE_DIR/agent.pid';
+      nohup setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG --instance $cfg > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
+      for n in \$(seq 1 40); do python3 -c 'import urllib.request;urllib.request.urlopen(\"http://127.0.0.1:$MAG/v1/health\",timeout=1)' 2>/dev/null && exit 0; sleep 0.25; done; tail -20 '$REMOTE_DIR/agent.log'; exit 1"
+  done
+  # Feature checks on the target agents first, so a data-path failure below cannot hide them.
+  ops_030_checks
+  sleep 12
+  op_wait 90 >/dev/null || { echo "tunnel did not recover after the cross-version upgrade" >&2; exit 1; }
+  probe_host iran 2097289
+  op_evidence cross_version 65536
+  OP_CROSS_VERSION=1
+fi
+
+# 0.3.0 operator features, checked on the target binary before the soak so a path outage during
+# the soak cannot hide them: host tunnel list (ADR-0036), update notice (ADR-0035), certificate
+# expiry warning, support bundle. Releases without GET /v1/update skip this block (OPS_030=skipped).
+ops_030_checks
 
 soak_diag() { # reason : evidence at the moment a soak probe fails (journals without per-stream noise, tunnel sockets, load); max 3 per run
   (( ${SOAK_DIAG_N:-0} < 3 )) || return 0
