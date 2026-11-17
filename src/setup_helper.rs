@@ -91,6 +91,7 @@ pub fn request_document(r: &ApplyRequest) -> Value {
             "service_port": p.service_port,
             "tunnel_port": p.tunnel_port,
             "peer_host": p.peer_host,
+            "backup_peer_hosts": p.backup_peer_hosts,
             "server_name": p.server_name,
             "dir": p.dir,
             "instance": p.instance,

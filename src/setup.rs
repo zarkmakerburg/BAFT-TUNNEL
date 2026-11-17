@@ -69,6 +69,9 @@ pub struct PlanRequest {
     pub tunnel_port: u16,
     /// Required for `forward` (an IP address); rejected for `serve`.
     pub peer_host: Option<String>,
+    /// Optional backup peer addresses (IP), `forward` only; each is dialed on `tunnel_port` when
+    /// the primary fails (ADR-0039). At most [`MAX_BACKUP_HOSTS`], distinct, not the primary.
+    pub backup_peer_hosts: Vec<String>,
     /// Required for `tcp-tls` + `forward`; rejected otherwise.
     pub server_name: Option<String>,
     pub dir: PathBuf,
@@ -89,6 +92,38 @@ pub struct SetupPlan {
     pub config: Value,
     pub files: Vec<PlannedFile>,
     pub pending: Vec<&'static str>,
+}
+
+/// Maximum backup peers (primary + 3 = the link policy's MAX_LINKS).
+pub const MAX_BACKUP_HOSTS: usize = 3;
+
+/// Validate backup peer hosts and return them as socket addresses on `port`.
+fn backup_remotes(req: &PlanRequest, primary: Option<IpAddr>) -> Result<Vec<String>> {
+    if req.backup_peer_hosts.is_empty() {
+        return Ok(vec![]);
+    }
+    if req.role != Role::Forward {
+        bail!("backup peer hosts are only valid for role forward");
+    }
+    if req.engine == EngineKind::Baft {
+        bail!("backup peer hosts are not supported by the baft engine");
+    }
+    if req.backup_peer_hosts.len() > MAX_BACKUP_HOSTS {
+        bail!("at most {MAX_BACKUP_HOSTS} backup peer hosts");
+    }
+    let mut seen: Vec<IpAddr> = primary.into_iter().collect();
+    let mut out = Vec::new();
+    for host in &req.backup_peer_hosts {
+        let ip = host
+            .parse::<IpAddr>()
+            .map_err(|_| anyhow::anyhow!("backup peer host must be an IP address"))?;
+        if seen.contains(&ip) {
+            bail!("backup peer hosts must be distinct and differ from the peer host");
+        }
+        seen.push(ip);
+        out.push(std::net::SocketAddr::new(ip, req.tunnel_port).to_string());
+    }
+    Ok(out)
 }
 
 fn check_port(value: u16, what: &str) -> Result<()> {
@@ -128,6 +163,9 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
         (Role::Serve, Some(_)) => bail!("role serve must not set a peer host"),
         (Role::Serve, None) => None,
     };
+    if req.role == Role::Serve {
+        backup_remotes(req, None)?;
+    }
     let reverse = req.direction == ConnectionDirection::Reverse;
     if reverse && req.engine == EngineKind::Baft {
         bail!("the baft engine is Preview, Direct only; it does not support reverse");
@@ -211,6 +249,10 @@ pub fn plan(req: &PlanRequest) -> Result<SetupPlan> {
             let ip = peer_ip.expect("checked above");
             let remote = std::net::SocketAddr::new(ip, req.tunnel_port).to_string();
             map.insert("remote".into(), json!(remote));
+            let backups = backup_remotes(req, Some(ip))?;
+            if !backups.is_empty() {
+                map.insert("backup_remotes".into(), json!(backups));
+            }
             if let Some(name) = &req.server_name {
                 map.insert("server_name".into(), json!(name));
             }
@@ -408,6 +450,8 @@ struct State {
     service_port: u16,
     tunnel_port: u16,
     peer_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    backup_peer_hosts: Vec<String>,
     own_public: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     engine_sha256: Option<String>,
@@ -516,6 +560,7 @@ pub fn init(req: &PlanRequest, bundle_out: Option<&Path>) -> Result<InitResult> 
         service_port: req.service_port,
         tunnel_port: req.tunnel_port,
         peer_host: req.peer_host.clone(),
+        backup_peer_hosts: req.backup_peer_hosts.clone(),
         own_public: public,
         engine_sha256,
         config_file: config_file.clone(),
@@ -818,6 +863,7 @@ pub fn join(dir: &Path, bundle_path: &Path, checksum: &str) -> Result<PathBuf> {
         service_port: state.service_port,
         tunnel_port: state.tunnel_port,
         peer_host: state.peer_host,
+        backup_peer_hosts: state.backup_peer_hosts,
         server_name,
         dir: dir.to_path_buf(),
         instance: None,
@@ -865,6 +911,7 @@ mod tests {
             service_port: 8080,
             tunnel_port: DEFAULT_TUNNEL_PORT,
             peer_host: (role == Role::Forward).then(|| "203.0.113.7".to_owned()),
+            backup_peer_hosts: vec![],
             server_name: (engine == EngineKind::TcpTls && role == Role::Forward)
                 .then(|| "abroad.lab".to_owned()),
             dir: PathBuf::from("/etc/baft-tunnel"),
@@ -1559,5 +1606,44 @@ mod tests {
             .to_string();
         assert!(err.contains("engine"), "{err}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn backup_peer_hosts_become_validated_backup_remotes_in_the_runtime_config() {
+        let mut r = request(EngineKind::NoiseTcp, Role::Forward);
+        r.backup_peer_hosts = vec!["198.51.100.4".into(), "2001:db8::9".into()];
+        let planned = plan(&r).unwrap();
+        assert_eq!(
+            planned.config["backup_remotes"],
+            json!([
+                format!("198.51.100.4:{DEFAULT_TUNNEL_PORT}"),
+                format!("[2001:db8::9]:{DEFAULT_TUNNEL_PORT}")
+            ])
+        );
+        // The template must parse as the real runtime config, which validates the list.
+        match parses_as_runtime_config(&planned) {
+            RuntimeConfig::Forward { backup_remotes, .. } => assert_eq!(backup_remotes.len(), 2),
+            RuntimeConfig::Serve { .. } => panic!("expected a forward config"),
+        }
+
+        let bad = |f: &dyn Fn(&mut PlanRequest)| {
+            let mut r = request(EngineKind::NoiseTcp, Role::Forward);
+            f(&mut r);
+            plan(&r).is_err()
+        };
+        assert!(bad(&|r| r.backup_peer_hosts = vec!["example.com".into()]));
+        assert!(bad(&|r| r.backup_peer_hosts = vec!["203.0.113.7".into()])); // same as primary
+        assert!(bad(
+            &|r| r.backup_peer_hosts = vec!["198.51.100.4".into(), "198.51.100.4".into()]
+        ));
+        assert!(bad(
+            &|r| r.backup_peer_hosts = (1..=4).map(|i| format!("198.51.100.{i}")).collect()
+        ));
+        let mut serve = request(EngineKind::NoiseTcp, Role::Serve);
+        serve.backup_peer_hosts = vec!["198.51.100.4".into()];
+        assert!(plan(&serve).is_err());
+        let mut baft = request(EngineKind::Baft, Role::Forward);
+        baft.backup_peer_hosts = vec!["198.51.100.4".into()];
+        assert!(plan(&baft).is_err());
     }
 }

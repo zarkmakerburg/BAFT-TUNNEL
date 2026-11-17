@@ -926,6 +926,8 @@ pub(crate) struct PlanBody {
     service_port: u16,
     tunnel_port: Option<u16>,
     peer_host: Option<String>,
+    #[serde(default)]
+    backup_peer_hosts: Vec<String>,
     server_name: Option<String>,
     dir: Option<PathBuf>,
     instance: Option<String>,
@@ -948,6 +950,7 @@ impl PlanBody {
                 .tunnel_port
                 .unwrap_or(crate::setup::DEFAULT_TUNNEL_PORT),
             peer_host: self.peer_host.clone(),
+            backup_peer_hosts: self.backup_peer_hosts.clone(),
             server_name: self.server_name.clone(),
             dir: self
                 .dir
@@ -2379,6 +2382,9 @@ fn setup_plan(body: &[u8]) -> (u16, Value) {
         );
         if let Some(h) = &req.peer_host {
             init += &format!(" --peer-host {}", shell_quote(h)?);
+        }
+        for h in &req.backup_peer_hosts {
+            init += &format!(" --backup-peer-host {}", shell_quote(h)?);
         }
         if let Some(n) = &req.server_name {
             init += &format!(" --server-name {}", shell_quote(n)?);
@@ -5996,6 +6002,7 @@ mod tests {
                 service_port: 18180,
                 tunnel_port: 18181,
                 peer_host: Some("127.0.0.1".into()),
+                backup_peer_hosts: vec![],
                 server_name: None,
                 dir: peer.clone(),
                 instance: None,
