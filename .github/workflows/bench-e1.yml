@@ -1,0 +1,72 @@
+name: Bench E1 loopback (Rathole, FRP vs null control)
+
+# E1 = single hosted runner, loopback only. CI-level evidence, NOT LAB, NOT real path.
+# Downloads upstream release binaries at run time and records version + sha256. No secrets, no LAB hosts.
+on:
+  pull_request:
+    paths: ['bench/**', '.github/workflows/bench-e1.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e1:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run E1
+        run: |
+          set -uo pipefail
+          W=$RUNNER_TEMP/b; mkdir -p $W; cd $W
+          echo "runner: $(nproc) cpu, $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2), $(uname -r)" | tee info.txt
+          fetch() { # repo pattern
+            tag=$(curl -sSIL -o /dev/null -w '%{url_effective}' https://github.com/$1/releases/latest | sed 's#.*/tag/##')
+            echo "$1 $tag" | tee -a info.txt; echo "$tag"
+          }
+          rt=$(fetch rapiz1/rathole | tail -1)
+          curl -fsSL -o rathole.zip https://github.com/rapiz1/rathole/releases/download/$rt/rathole-x86_64-unknown-linux-gnu.zip && unzip -qo rathole.zip && chmod +x rathole && sha256sum rathole | tee -a info.txt || echo "rathole unavailable" | tee -a info.txt
+          ft=$(fetch fatedier/frp | tail -1); fv=${ft#v}
+          curl -fsSL -o frp.tgz https://github.com/fatedier/frp/releases/download/$ft/frp_${fv}_linux_amd64.tar.gz && tar xzf frp.tgz --strip-components=1 && sha256sum frps frpc | tee -a info.txt || echo "frp unavailable" | tee -a info.txt
+          TOK=$(head -c16 /dev/urandom | base64 | tr -d '=+/')
+          S=$GITHUB_WORKSPACE/bench/harness.py
+          run() { # name target extra...
+            n=$1; t=$2; shift 2
+            python3 $S --size-mib 512 ${t:+--target $t} --json $W/$n.json "$@" >/dev/null 2>$W/$n.err; echo "$n done rc=$?"
+          }
+          # null control
+          run null ""
+          # rathole
+          if [ -x rathole ]; then
+            printf '[server]\nbind_addr="127.0.0.1:2333"\n[server.services.s]\ntoken="%s"\nbind_addr="127.0.0.1:5202"\n' $TOK > rs.toml
+            printf '[client]\nremote_addr="127.0.0.1:2333"\n[client.services.s]\ntoken="%s"\nlocal_addr="127.0.0.1:39001"\n' $TOK > rc.toml
+            ./rathole -s rs.toml >rs.log 2>&1 & RS=$!; sleep 1; ./rathole -c rc.toml >rc.log 2>&1 & RC=$!; sleep 2
+            run rathole 127.0.0.1:5202
+            # fault: restart client mid-transfer
+            ( sleep 1.5; kill $RC; sleep 1; ./rathole -c rc.toml >rc2.log 2>&1 & ) &
+            run rathole_clientkill 127.0.0.1:5202
+            kill $RS $RC 2>/dev/null; pkill -f 'rathole -c' ; sleep 1
+          fi
+          # frp
+          if [ -x frps ]; then
+            printf 'bindPort=7000\nbindAddr="127.0.0.1"\nauth.token="%s"\n' $TOK > frps.toml
+            printf 'serverAddr="127.0.0.1"\nserverPort=7000\nauth.token="%s"\n[[proxies]]\nname="s"\ntype="tcp"\nlocalIP="127.0.0.1"\nlocalPort=39001\nremotePort=5203\n' $TOK > frpc.toml
+            ./frps -c frps.toml >fs.log 2>&1 & FS=$!; sleep 1; ./frpc -c frpc.toml >fc.log 2>&1 & FC=$!; sleep 2
+            run frp 127.0.0.1:5203
+            ( sleep 1.5; kill $FC; sleep 1; ./frpc -c frpc.toml >fc2.log 2>&1 & ) &
+            run frp_clientkill 127.0.0.1:5203
+            kill $FS $FC 2>/dev/null; pkill -f 'frpc -c'
+          fi
+          {
+            echo '## E1 loopback (hosted runner, CI-level evidence only)'; echo '```'; cat info.txt; echo '```'
+            echo '| run | verdict | MiB/s | retries | cpu_s | rss_MiB | faults |'; echo '|---|---|---|---|---|---|---|'
+            for f in $W/*.json; do python3 - "$f" <<'P'
+          import json,sys
+          d=json.load(open(sys.argv[1])); n=sys.argv[1].split('/')[-1][:-5]
+          print(f"| {n} | {d['verdict']} | {d['MiB_per_s']} | {d['retries']} | {d['harness_cpu_s']} | {d['harness_maxrss_MiB']} | {len(d['faults'])} |")
+          P
+            done
+          } | tee -a $GITHUB_STEP_SUMMARY
