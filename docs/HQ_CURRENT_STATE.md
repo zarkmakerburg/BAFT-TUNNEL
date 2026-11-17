@@ -13,10 +13,20 @@
 - **Non-negotiable constraints:** Rust core; no Go in core; no `CAP_NET_ADMIN`; no firewall/route/sysctl changes; do not advertise unaccepted Reverse/Noise capabilities; preserve all worktrees and branches; no destructive reset or force-push.
 - **Permission rule:** permissions do not transfer merely because this file exists or `HQ ON` is active. Recheck task-specific/ chat-scoped authorization and the project's merge, release, deployment and LAB gates before acting.
 
+## Automatic checkpoint policy
+
+- A lightweight in-thread ledger is refreshed after every user message and every tool operation: intent, decisions/constraints, task state, exact refs, observed result, valid approvals, blocker and next safe action.
+- A durable checkpoint updates this file and appends Issue #2 after material decisions, instruction completion/failure/blockage, repository/PR/CI/LAB state changes, new evidence, changed priorities/blockers, handoffs/task switches, and before long-running operations (then again after outcome).
+- A durable checkpoint is also due every 3 substantive user turns or 10 meaningful tool operations, whichever comes first.
+- No-op conversational turns do not create empty Issue #2 comments. Turn-level tracking still applies.
+- Verify both snapshot and Issue #2 read-back before calling a checkpoint complete. A failed write is **CHECKPOINT INCOMPLETE**.
+- This is best-effort while the chat and tools are available; it cannot run after abrupt client termination or in the background. Checkpoint during work, not at an assumed context limit.
+- A checkpoint is not an approval and does not transfer task-specific permissions. Full rules: [HQ_CHECKPOINT_PROTOCOL.md](HQ_CHECKPOINT_PROTOCOL.md).
+
 ## Live repository snapshot
 
 - **main HEAD at last verification:** `c3e2bda8cc4b598c410a665f3c18fb6cc2d944c2` — PR #325, documentation update for advisor-panel UX captures.
-- **main exact-SHA checks:** 9 Check Runs observed; 7 completed successfully and 2 were still `in_progress` (`rust`, `ubuntu-2204-baseline`). This is **not** an all-green main result at this checkpoint.
+- **main exact-SHA checks:** 11 Check Runs observed on `c3e2bda8cc4b598c410a665f3c18fb6cc2d944c2`; all 11 completed with `success` at this verification. This describes CI only, not LAB acceptance.
 - **Open PRs at last verification:**
 
 | PR | Head SHA | State | Verified note |
@@ -24,10 +34,10 @@
 | [#323](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/323) | `d1897c5cb3a6af89868ce57255136a6087d908d3` | Draft / Open | 11 Check Runs green on this head; no review recorded. Noise-TCP Direct rotation harness only; not TCP-TLS evidence. |
 | [#324](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/324) | `2ca82c8b86d75ffe4db9aae9fc8e1025635e1f7d` | Draft / Open | 11 Check Runs green on this head; no review recorded. Skills/governance + roadmap documentation; parallel, non-blocking track. |
 | [#326](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/326) | `ab8095d59cf77bf16bd13e34a81acf77adc463c5` | Draft / Open | F1 pure rules + ADR-0045 accepted with conditions; mergeability/check state not yet verified. |
-| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `dccd060b926648ea29b26a80e1c3b58e255a2f4a` | Draft / Open | This checkpoint implementation; documentation-only. 10 exact-head Check Runs were in progress at PR creation; no pass claimed. |
+| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | See live PR head (this checkpoint updates the branch) | Draft / Open | Automatic checkpoint policy + cross-thread recovery docs; documentation-only. Fresh exact-head CI must be rechecked after this snapshot commit; no pass inferred. |
 | [#171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171) | `e64ea2fca5b3dd17b709ecf9c92a2cf933da32cb` | Draft / Open | Central Fleet architecture only; deferred after 0.4.0. |
 
-PR base refs and statuses can change; re-fetch them before action. PR #327 was opened from the recorded main SHA and its initial compare showed 3 commits ahead / 0 behind; its mergeability was subsequently confirmed true, with merge blocked while checks run. PR #169 is the separate HQ playbook and is not BAFT-TUNNEL product scope.
+PR base refs and statuses can change; re-fetch them before action. PR #327 was opened from the recorded main SHA and was mergeable=true at the last check, but merge remained blocked by required checks. This checkpoint itself advances its head, so fetch the live PR head/checks before any review or merge decision. PR #169 is the separate HQ playbook and is not BAFT-TUNNEL product scope.
 
 ## Active task — P0-A raw TCP vs TLS aged-flow diagnosis
 
@@ -36,7 +46,7 @@ PR base refs and statuses can change; re-fetch them before action. PR #327 was o
 - Diagnostic workflow: [run 44101542573](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44101542573), head SHA `65b50dea5562a15f8299a13afcec64d34a93bf58`, job `134102574533`; last observed step `Run control transfers (tls and tcp, both directions)` was `in_progress`.
 - Queued workflow: [run 44101769313](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44101769313), same head SHA; status `pending`, no job had started.
 - The workflow is explicitly **non-tunnel network control**; it runs a temporary Python transfer endpoint and does not execute BAFT-TUNNEL. It can perform a full TLS/TCP up/down bulk matrix when `AGES` is empty, or a single selected `AGE_MODE` aged-flow series when `AGES` is supplied.
-- The dispatch inputs for these two runs were not available in the inspected API response. Job-log retrieval returned `BlobNotFound`; no artifacts were listed. Therefore the actual mode/age matrix and any transfer outcome are **UNKNOWN**. Do not call either run PASS or FAIL yet.
+- The dispatch inputs for these two runs were not available in the inspected API response. Job-log retrieval for job `134102574533` still returns `BlobNotFound`; run `44101542573` has no listed artifacts. Therefore the actual mode/age matrix and any transfer outcome are **UNKNOWN**. Do not call either run PASS or FAIL yet.
 - Do not dispatch a duplicate run while the first holds the shared LAB concurrency group. Fetch status/jobs again; once finished, retrieve and validate client + server output, parameters, per-attempt bytes/timing/errors, and cleanup evidence. If logs remain inaccessible, record the precise evidence gap and use a supported alternate retrieval path; do not infer results.
 
 ### P0 order
