@@ -146,6 +146,10 @@ pub enum RuntimeConfig {
         allow_non_loopback_listen: bool,
         #[serde(default)]
         baft: Option<BaftSettings>,
+        /// Alternate addresses of the same peer, tried in order after `remote` (ADR-0039). Same
+        /// identity and pinned fingerprint; at most 3, no duplicates, not for the baft engine.
+        #[serde(default)]
+        backup_remotes: Vec<String>,
     },
 }
 
@@ -267,9 +271,11 @@ impl RuntimeConfig {
                 max_streams,
                 allow_non_loopback_listen,
                 baft,
+                backup_remotes,
             } => {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
                 validate_protocol_version(*protocol_version, *engine)?;
+                validate_backup_remotes(remote, backup_remotes, *engine)?;
                 let reverse =
                     *direction == ConnectionDirection::Reverse && *engine != EngineKind::Baft;
                 match reverse {
@@ -660,6 +666,7 @@ impl RuntimeConfig {
                 max_streams,
                 allow_non_loopback_listen: _,
                 baft: _,
+                backup_remotes,
             } => {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 let noise = noise_settings(engine, &key, noise_peer_public);
@@ -680,6 +687,7 @@ impl RuntimeConfig {
                         key,
                         noise,
                         max_streams,
+                        backup_remotes,
                     },
                     protocol_version,
                 )
@@ -687,6 +695,33 @@ impl RuntimeConfig {
             }
         }
     }
+}
+
+/// ADR-0039: alternate addresses of the same peer. Identity never changes per link, so the
+/// pinned fingerprint and CA already bind every address; a different server fails TLS.
+fn validate_backup_remotes(remote: &str, backups: &[String], engine: EngineKind) -> Result<()> {
+    if backups.is_empty() {
+        return Ok(());
+    }
+    if engine == EngineKind::Baft {
+        bail!("backup_remotes is not supported by the baft engine");
+    }
+    if backups.len() >= crate::link_policy::MAX_LINKS {
+        bail!(
+            "at most {} backup_remotes are allowed",
+            crate::link_policy::MAX_LINKS - 1
+        );
+    }
+    let mut seen = vec![parse_socket(remote, "remote")?];
+    for backup in backups {
+        let address = parse_socket(backup, "backup_remotes")?;
+        validate_target(address)?;
+        if seen.contains(&address) {
+            bail!("backup_remotes must not repeat remote or each other");
+        }
+        seen.push(address);
+    }
+    Ok(())
 }
 
 fn noise_settings(
@@ -1161,5 +1196,23 @@ mod tests {
         assert!(validate_forward_listen(public, false).is_err());
         assert!(validate_forward_listen(public, true).is_ok());
         assert!(validate_forward_listen("127.0.0.1:0".parse().unwrap(), true).is_err());
+    }
+
+    #[test]
+    fn backup_remotes_are_bounded_unique_socket_addresses_and_not_for_baft() {
+        let ok = vec!["127.0.0.2:7000".to_owned(), "127.0.0.3:7000".to_owned()];
+        assert!(validate_backup_remotes("127.0.0.1:7000", &ok, EngineKind::TcpTls).is_ok());
+        assert!(validate_backup_remotes("127.0.0.1:7000", &[], EngineKind::Baft).is_ok());
+        assert!(validate_backup_remotes("127.0.0.1:7000", &ok, EngineKind::Baft).is_err());
+        let dup = vec!["127.0.0.1:7000".to_owned()];
+        assert!(validate_backup_remotes("127.0.0.1:7000", &dup, EngineKind::TcpTls).is_err());
+        let repeated = vec!["127.0.0.2:7000".to_owned(), "127.0.0.2:7000".to_owned()];
+        assert!(validate_backup_remotes("127.0.0.1:7000", &repeated, EngineKind::TcpTls).is_err());
+        let bad = vec!["not-an-address".to_owned()];
+        assert!(validate_backup_remotes("127.0.0.1:7000", &bad, EngineKind::TcpTls).is_err());
+        let zero_port = vec!["127.0.0.2:0".to_owned()];
+        assert!(validate_backup_remotes("127.0.0.1:7000", &zero_port, EngineKind::TcpTls).is_err());
+        let too_many: Vec<String> = (2..=5).map(|n| format!("127.0.0.{n}:7000")).collect();
+        assert!(validate_backup_remotes("127.0.0.1:7000", &too_many, EngineKind::TcpTls).is_err());
     }
 }

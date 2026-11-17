@@ -3,7 +3,8 @@
 //! randomness. The caller passes a monotonic `now` and a jitter value, so every
 //! decision is deterministic and testable.
 //!
-//! Not wired into `tunnel.rs` yet (follow-up); hence the dead-code allowance.
+//! Wired into the dial loops of `tunnel.rs` via `LinkSet` (failback and snapshot are not used
+//! yet, hence the dead-code allowance).
 #![allow(dead_code)]
 
 use std::time::Duration;

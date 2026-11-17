@@ -30,6 +30,8 @@ mod history_store;
 mod integrity_probe;
 #[path = "../src/key_custody.rs"]
 mod key_custody;
+#[path = "../src/link_policy.rs"]
+mod link_policy;
 #[path = "../src/noise.rs"]
 mod noise;
 #[path = "../src/observe.rs"]

@@ -28,6 +28,8 @@ pub mod history_store;
 pub mod integrity_probe;
 #[path = "../../src/key_custody.rs"]
 pub mod key_custody;
+#[path = "../../src/link_policy.rs"]
+pub mod link_policy;
 #[path = "../../src/noise.rs"]
 pub mod noise;
 #[path = "../../src/observe.rs"]

@@ -437,6 +437,7 @@ async fn run() -> Result<()> {
                 max_streams,
                 allow_non_loopback_listen,
                 baft: None,
+                backup_remotes: vec![],
             };
             config.validate()?;
             config.apply().await
