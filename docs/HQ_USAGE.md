@@ -29,7 +29,18 @@ Persian: `HQ ON` فعال‌سازی در همین Thread · `HQ OFF` توقف (
 
 Commands never authorize merge, tag, release, signing, deploy, repo-protection changes or host changes; each is a separate gate (profile `permissions`).
 
-## 3. Evidence rules
+## 3. Persistent checkpoint and cross-thread recovery
+
+The compact live handoff is [HQ_CURRENT_STATE.md](HQ_CURRENT_STATE.md); the procedure is [HQ_CHECKPOINT_PROTOCOL.md](HQ_CHECKPOINT_PROTOCOL.md). The current-state file is a replaceable snapshot, while Issue #2 remains the append-only historical record.
+
+| Command | Meaning |
+|---|---|
+| `HQ CHECKPOINT` | Refresh live GitHub state, update the current snapshot, and append a dated handoff to Issue #2. |
+| `HQ RESUME` | Read the checkpoint protocol/snapshot and board history, verify mutable facts live, then continue the recorded next action. |
+
+For a new thread: activate `HQ ON`, read `AGENTS.md` → profile → this guide → checkpoint protocol → current state → newest Issue #2 comments, then verify live refs/checks/runs before acting. A checkpoint is an index, not evidence or permission. Do not carry chat-scoped authorizations into a new thread without reconfirmation.
+
+## 4. Evidence rules
 
 Every important report states, as far as possible: date and scope; branch and exact SHA; PR/Issue number; workflow run and job ID; result **PASS / FAIL / UNKNOWN (NOT VERIFIED)**; evidence level; limits, risks, next action.
 
@@ -38,14 +49,14 @@ Every important report states, as far as possible: date and scope; branch and ex
 - Missing, stale or ambiguous evidence is UNKNOWN, never PASS.
 - Append dated entries to Issue #2 (format in its section 9); do not rewrite history. Link evidence, never paste secrets, host addresses or keys.
 
-## 4. Safety
+## 5. Safety
 
 - Work only on the explicitly bound repositories; never import other projects' hosts, secrets or state.
 - Unregistered hosts are out of scope. One real-host LAB workflow at a time; announce on Issue #2 first.
 - Preserve other agents' branches, worktrees and stashes; check for concurrent edits; no destructive reset, no force-push.
 - Never claim a result without live evidence. Enabling HQ is never approval for a risky action.
 
-## 5. BAFT-TUNNEL-specific constraints
+## 6. BAFT-TUNNEL-specific constraints
 
 - BAFT-TUNNEL is independent of BAFT. Rust is the core; Go does not enter the core (the BAFT engine is a separate pinned process).
 - `CAP_NET_ADMIN` is not accepted in any component; use a safer design (see ADR-0030). Firewall status stays Unknown.
@@ -55,6 +66,6 @@ Every important report states, as far as possible: date and scope; branch and ex
 
 Example of time-stamped reporting (illustrative only): "2026-11-15 — `main` at `<sha>`: CI PASS (hosted). Real LAB: UNKNOWN for this SHA. Blocker: none recorded."
 
-## 6. Starting a new thread
+## 7. Starting a new thread
 
 1. `HQ ON`. 2. Read `AGENTS.md` → profile → this file → latest Issue #2 comments. 3. State the task, its gate and the evidence you will produce. 4. Do only that; report SHA/PR/run and UNKNOWNs; log on Issue #2.
