@@ -1,10 +1,10 @@
 # BAFT-TUNNEL — Product Roadmap and Verified Delivery Queue
 
-**Status snapshot:** 2026-11-17 — **Stable `v0.2.1` is the latest released Stable** (`v0.2.0` before it). Stable `v0.2.2` and `v0.3.0` are not tagged yet; see [§9.7](#97-status-addendum-2026-11-17). Older text below is historical.
-**Source baseline:** `main` at `faba00fb3b12aac6395049c351be93027700890d` (PR #259, roadmap replan; code identical to `9b151ce`, PR #258). This SHA is the value when the file was written; `main` moves, so verify with `git rev-parse origin/main`. Evidence level for the release itself: signed Stable tag `v0.2.0` on `76c12cb` (= rc.12 binary, sha256 `4c922d02…9136`); post-release PRs #255/#257/#258 are merged to `main` and are **not** in any release yet. Earlier baselines (`b61765f`, `82d77b3`, U7 pinned to `1219f547`) are historical.
-**Gate status:** P0-1..P0-5 remain closed. D2 panel-managed `tcp-tls` CSR/certificate lifecycle is implemented and merged in [PR #150](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/150) (merge `e5a7451f259be7df14187a58db5fe1c29c51a81b`); exact-head CI/two-host evidence is recorded in that PR, and a trusted repeat on the immutable RC.7 candidate passed in [LAB run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181). U1 CRL renewal and real two-host push are proven by [LAB run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) on ancestor code SHA `8be74376176442106669f4a81293f0865629ecaf`: CRL number `0x1002→0x1003`, 30-day validity, both nodes report `crl_state=ok`, 2 MiB tunnel recovery, short/replayed CRLs refused. The repeat D2 LAB reported `host_drift=none`; the earlier unrelated nftables delta was not reproduced, but its source remains unattributed (S10).
-**Release:** `v0.2.0` is the latest Stable release (not a prerelease); evidence in [STABLE_0.2.0_EVIDENCE.md](STABLE_0.2.0_EVIDENCE.md). Reverse and BAFT ship as **Preview**; `ready` stays Unknown by design. The earlier `v0.1.0-rc.8` text and LAB run references elsewhere in this file are historical and kept for traceability. Production deploy is not claimed.
-**Product status:** latest released version: **Stable v0.2.0**. Maturity: **Active Development** (Reverse and BAFT are Preview). Production readiness: **not verified**; `ready` remains Unknown unless independently verified under the readiness contract. Main is protected; all code changes continue through PRs and exact-SHA CI.
+**Status snapshot:** 2026-11-17 — **Stable v0.2.1 is the latest released Stable**. v0.2.2-rc.3 and v0.3.0-rc.1 are prereleases, not Stable; v0.3.0 remains blocked by the Direct aged-flow acceptance issue (see §9.8).
+**Source baseline:** main at 65b50dea5562a15f8299a13afcec64d34a93bf58 (merge of PR #322). The exact-SHA Check Run records are 9/9 success (CI evidence only). Open PR #323 is Draft at 3639ae18fd3c3d23dc0eb39a8685286e1e8889f7 with 11/11 Check Runs success but no review and no LAB run; PR #171 remains Draft and architecture-only.
+**Gate status:** P0-1..P0-5 remain closed. Firewall status stays Unknown by decision (ADR-0030); no component takes CAP_NET_ADMIN. Reverse and BAFT remain Preview. No production-readiness claim.
+**Release:** latest Stable is v0.2.1 (2026-11-16). v0.2.2-rc.3 and v0.3.0-rc.1 are prereleases only; neither v0.2.2 nor v0.3.0 is Stable.
+**Product status:** Active Development. Production readiness is not verified; ready remains Unknown unless independently verified under the readiness contract. All product changes continue through PRs and exact-SHA CI.
 
 This file is the single source of truth for phases, engines and delivery order. Item-by-item status, findings, risks, effort and owner-hands items behind the current queue: [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md). Detailed cross-project extraction, verified code state and implementation instructions: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). Exact historical test evidence and run IDs: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). Persian task pointer: [PROJECT_BOARD.md](PROJECT_BOARD.md). HQ decisions and append-only evidence log: [Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
@@ -301,7 +301,7 @@ Evidence levels: CI ≠ VM ≠ LAB ≠ Production. Nothing below is production e
 
 The README one-line install still pins `v0.2.1`. It moves to the next Stable tag only after that tag exists.
 
-**Blocking finding: aged-flow throttling on the Iran path (research, cause not established).** Since about 16:00Z on 2026-11-16, large transfers over a long-lived Direct session (Iran dials abroad) are cut at about 0.6 to 1 MB with yamux timeouts on both nodes, on 0.2.2 and 0.3.0-rc.1 alike; Reverse is clean on the same path. LAB run [44056840174](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44056840174) (no BAFT-TUNNEL in the path, plain TLS between the two hosts, 2 MiB echo after the connection has aged) completed and, per the stall thread's report, shows a fresh connection finishing in under a second while connections aged 60 s or more need about 80 to 100 s for the same 2 MiB, with no transfer error. That points at a flow-age-dependent limit in the network path rather than at the tunnel engine, but the cause is not established: raw TCP versus TLS on aged flows is the open diagnostic (PR #313). No workaround, circumvention or censorship-resistance claim is made. Stable 0.3.0 waits for this to be understood or fixed.
+**Blocking finding: aged-flow throttling on the Iran path (research, cause not established).** Since about 16:00Z on 2026-11-16, large transfers over a long-lived Direct session (Iran dials abroad) are cut at about 0.6 to 1 MB with yamux timeouts on both nodes, on 0.2.2 and 0.3.0-rc.1 alike; Reverse is clean on the same path. LAB run [44056840174](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44056840174) (no BAFT-TUNNEL in the path, plain TLS between the two hosts, 2 MiB echo after the connection has aged) completed and, per the stall thread's report, shows a fresh connection finishing in under a second while connections aged 60 s or more need about 80 to 100 s for the same 2 MiB, with no transfer error. That points at a flow-age-dependent limit in the network path rather than at the tunnel engine, but the cause is not established. PR #313 is merged; the existing lab-tls-bulk-control.yml workflow supports both raw tcp and tls aged-flow modes, but a matched two-mode real-LAB comparison is still missing (see §9.8). No workaround, circumvention or censorship-resistance claim is made. Stable 0.3.0 waits for this to be understood or fixed.
 
 **0.3.0 operator items (all merged):** O1 protocol v2 default (#268), O2 host tunnel list (#279, ADR-0036), O3 offline update notice (#275, ADR-0035), O4 certificate expiry warning (#270), O5 support bundle (#272), O6 Reverse Preview with two-node integrity probe (#282, #283, ADR-0037), O7 fuzz target for state files (#281). Panel display of the new items and the host list with two real instances are not LAB-tested.
 
@@ -317,6 +317,43 @@ The README one-line install still pins `v0.2.1`. It moves to the next Stable tag
 | Policy Pack (0.4.0) | TP-0.1 research (#301), engine-agnostic interface behind the `policy-pack` feature (#305, ADR-0044), status contract proposed (ADR-0047), baseline harness on the real relay path (#310, simulated) | The relay does not call the policy yet; the baseline is one simulated run, not LAB |
 | Fleet | Design (ADR-0045) and an honest Fleet section on the Servers page (#307) | No control plane |
 | UDP carrier | Design only (ADR-0046, Proposed, #244) | No carrier code |
-| Competitive benchmark | Advisor assessment (#302); E2 netns/netem harness against Rathole and FRP in draft (PR #308, controlled CI runner, not LAB) | E2 result |
+| Competitive benchmark | E1 loopback and E2 netns/netem harness against Rathole and FRP; BAFT-TUNNEL v0.3.0-rc.1 added by merged PR #322 | CI/controlled-runner evidence only; results and limitations are recorded in §9.8; no real-network benchmark |
 
 **Documentation:** this addendum and the 0.3.0 evidence draft bring the roadmap to 2026-11-17; HQ Issue #2 gets a matching append-only entry. Firewall status stays Unknown (ADR-0030); no component takes `CAP_NET_ADMIN`.
+
+
+### 9.8 Live revalidation — 2026-11-17
+
+Evidence levels remain separate: CI ≠ local test ≠ VM ≠ controlled NetNS/Netem ≠ real two-host LAB ≠ Production.
+
+**Live GitHub state**
+- main: 65b50dea5562a15f8299a13afcec64d34a93bf58, merged PR #322. The exact-SHA API returned 9/9 Check Runs with completed/success; this is CI evidence only.
+- PR #323: Draft, head 3639ae18fd3c3d23dc0eb39a8685286e1e8889f7, 11/11 Check Runs success, no review and no real-host LAB. It tests noise-tcp Direct session rotation, not the tcp-tls aged-flow acceptance path.
+- PR #171: Draft, architecture-only Central Fleet work; defer until after 0.4.0.
+- Latest Stable remains v0.2.1. v0.2.2-rc.3 and v0.3.0-rc.1 remain prereleases; the latter is not accepted as Stable.
+
+**Benchmark evidence added by PR #322**
+- E1 loopback run [44066563608](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44066563608), on PR #322 head 5fcb443699a0ef8cbdf7793c167a26714c2f7c12: 3 GiB normal transfer measured BAFT-TUNNEL at 276.5 MiB/s, Rathole at 276.2 MiB/s and FRP at 216.9 MiB/s. Client-kill mid-transfer was truncated for all three.
+- E2 NetNS/Netem run [44066563650](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44066563650), same PR head: in the 5-second blackhole scenario BAFT-TUNNEL received 24/32 MiB and was truncated; Rathole and FRP completed 32/32 MiB. Clean, delay+jitter and 0.5% loss scenarios completed for all three.
+- These are hosted CI / controlled namespace simulations, not real Iran/abroad network results. The benchmark job checked the prerelease binary against SHA256SUMS; it did not verify Cosign in that job.
+
+**Aged-flow diagnosis and session rotation**
+- Existing trusted workflow .github/workflows/lab-tls-bulk-control.yml is already on main and accepts AGE_MODE=tcp|tls plus an AGES list. PR #313 is merged; the remaining work is to execute comparable raw-TCP and raw-TLS runs, not to recreate the workflow.
+- Existing real-LAB evidence [44056840174](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44056840174) and [44063608341](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44063608341) is raw-TLS evidence; it does not supply the raw-TCP control.
+- Proposed controlled comparison: size_kb=2048, iterations=3, ages=0,15,20,25,30,60, age_mode=tcp and then age_mode=tls, same registered hosts, port, SNI and echo direction. Capture the per-transfer JSON output and compare each age point. If path conditions vary between the two runs, repeat or alternate the order before drawing a conclusion.
+- No dispatch was made in this takeover. The project profile requires task-specific owner authorization for real-host operations; a broad request to continue project work is not treated as approval for this particular LAB run.
+- ADR-0049 / PR #315 adds optional Direct-only make-before-break session rotation, off by default. Its two-host acceptance is still pending. The feature protects new streams after rotation; a single long in-flight stream remains on its aged session.
+- PR #323 is not an acceptance result. Its current harness is Noise-TCP Direct-only; it records phase counts but does not enforce the required rotation_off failure / rotation_on success outcome, does not assert that a replacement session was actually established, and does not verify the copied remote binary checksum after SCP. The off-then-on phase order is also vulnerable to time-dependent path changes. The committed __pycache__ bytecode file is correctly deleted by the PR; it is not an open finding. Fix these gaps before using the harness as a gate.
+
+**Prioritized execution queue**
+1. **P0 — Diagnose aged-flow behaviour:** complete the raw TCP vs TLS two-host comparison using the existing workflow, after task-specific owner authorization. Do not infer the cause from TLS-only evidence.
+2. **P1 — Finish session-rotation acceptance:** review and repair PR #323 (explicit result gate, observable replacement-session proof, remote binary digest verification, counterbalanced phases, and tcp-tls coverage or an explicitly narrower claim); then run the trusted two-host LAB after authorization.
+3. **P2 — Transport Health:** connect real RTT/probe samples to runtime state; enforce sample freshness and preserve Unknown when no valid sample exists.
+4. **P3 — Multi-Link:** complete real failover/failback acceptance with anti-flap behaviour; do not claim success from backup_remotes dial wiring alone.
+5. **P4 — Stream Resume:** wire the pure resume core into Protocol v3, handshake, reconnect and replay/duplicate prevention; verify integrity across interruptions.
+6. **P5 — Doctor:** validate the offline/read-only diagnostics on the actual two-host LAB path.
+7. **P6 — Noise Reverse:** independent cryptographic/security review and two-host acceptance; keep it unavailable in Catalog, Preflight and Wizard until every gate passes.
+8. **P7 — Policy Pack:** defer runtime policy decisions until Transport Health has real, fresh measurements; simulated TP-0.1 results are not enough.
+9. **P8 — Fleet:** keep Central Fleet after 0.4.0; PR #171 remains design-only.
+
+Safety remains unchanged: no CAP_NET_ADMIN, no firewall/route/sysctl modifications, no unapproved host changes, no false Healthy/Ready claims, and no Stable/release/deploy action without its separate owner gate.
