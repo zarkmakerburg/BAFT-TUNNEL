@@ -24,6 +24,7 @@ mod policy;
 mod policy_baseline;
 mod resumable;
 mod resume_core;
+mod resume_wire;
 #[allow(dead_code)] // manifest API is consumed by packaging and the registry (ADR-0020)
 mod runtime_host;
 mod session_status;

@@ -38,6 +38,57 @@ struct ServerHello {
     capabilities: Vec<StreamCapability>,
     client_nonce: String,
     server_nonce: String,
+    /// Protocol v3 only: single-use resume token (16 random bytes, hex). Absent for v1/v2 and
+    /// rejected there, so an older peer can never be handed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resume_token: Option<String>,
+}
+
+const RESUME_TOKEN_BYTES: usize = 16;
+
+/// Material both sides hold after a v3 handshake. The token is the bearer secret; the binding is
+/// `resume_binding` over the original handshake, kept so a later resume can prove it belongs to
+/// the same identities, tunnel and direction (ADR-0040).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeGrant {
+    pub token: [u8; RESUME_TOKEN_BYTES],
+    pub binding: [u8; 32],
+}
+
+/// `SHA-256("baft-resume-v1" || len-prefixed client_id, server_id, tunnel_id, direction, client_nonce,
+/// server_nonce)`. Every field is length-prefixed so two different field splits can never hash
+/// the same.
+pub fn resume_binding(
+    client_id: &str,
+    server_id: &str,
+    tunnel_id: &str,
+    direction: ConnectionDirection,
+    client_nonce: &str,
+    server_nonce: &str,
+) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"baft-resume-v1");
+    for field in [
+        client_id,
+        server_id,
+        tunnel_id,
+        direction.as_str(),
+        client_nonce,
+        server_nonce,
+    ] {
+        h.update((field.len() as u32).to_be_bytes());
+        h.update(field.as_bytes());
+    }
+    h.finalize().into()
+}
+
+fn decode_token(value: &str) -> Option<[u8; RESUME_TOKEN_BYTES]> {
+    if value.len() != RESUME_TOKEN_BYTES * 2 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = [0_u8; RESUME_TOKEN_BYTES];
+    hex::decode_to_slice(value, &mut out).ok()?;
+    Some(out)
 }
 
 pub fn validate_identity(value: &str) -> Result<()> {
@@ -138,6 +189,40 @@ pub async fn client_handshake_versioned<S: AsyncRead + AsyncWrite + Unpin>(
     direction: ConnectionDirection,
     version: u16,
 ) -> Result<()> {
+    client_handshake_inner(stream, local, peer, tunnel, direction, version)
+        .await
+        .map(|_| ())
+}
+
+/// v3 client handshake that also returns the resume grant. Refuses any other version.
+#[allow(dead_code)]
+pub async fn client_handshake_grant<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    local: &str,
+    peer: &str,
+    tunnel: &str,
+    direction: ConnectionDirection,
+) -> Result<ResumeGrant> {
+    client_handshake_inner(
+        stream,
+        local,
+        peer,
+        tunnel,
+        direction,
+        crate::authorization::PROTOCOL_V3,
+    )
+    .await?
+    .context("v3 handshake returned no resume grant")
+}
+
+async fn client_handshake_inner<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    local: &str,
+    peer: &str,
+    tunnel: &str,
+    direction: ConnectionDirection,
+    version: u16,
+) -> Result<Option<ResumeGrant>> {
     let capabilities = capabilities_for_version(version)?;
     let client_nonce = nonce();
     write_message(
@@ -171,7 +256,27 @@ pub async fn client_handshake_versioned<S: AsyncRead + AsyncWrite + Unpin>(
     {
         bail!("peer rejected or returned an invalid protocol handshake");
     }
-    Ok(())
+    // v3 requires a well-formed token; v1/v2 must not carry one (no downgrade, no smuggling).
+    if version == crate::authorization::PROTOCOL_V3 {
+        let token = response
+            .resume_token
+            .as_deref()
+            .and_then(decode_token)
+            .context("v3 peer returned a missing or malformed resume token")?;
+        let binding = resume_binding(
+            local,
+            peer,
+            tunnel,
+            direction,
+            &client_nonce,
+            &response.server_nonce,
+        );
+        return Ok(Some(ResumeGrant { token, binding }));
+    }
+    if response.resume_token.is_some() {
+        bail!("peer returned a resume token for a protocol that has none");
+    }
+    Ok(None)
 }
 
 #[allow(dead_code)]
@@ -193,6 +298,40 @@ pub async fn server_handshake_versioned<S: AsyncRead + AsyncWrite + Unpin>(
     direction: ConnectionDirection,
     version: u16,
 ) -> Result<()> {
+    server_handshake_inner(stream, local, peer, tunnel, direction, version)
+        .await
+        .map(|_| ())
+}
+
+/// v3 server handshake that also returns the resume grant. Refuses any other version.
+#[allow(dead_code)]
+pub async fn server_handshake_grant<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    local: &str,
+    peer: &str,
+    tunnel: &str,
+    direction: ConnectionDirection,
+) -> Result<ResumeGrant> {
+    server_handshake_inner(
+        stream,
+        local,
+        peer,
+        tunnel,
+        direction,
+        crate::authorization::PROTOCOL_V3,
+    )
+    .await?
+    .context("v3 handshake returned no resume grant")
+}
+
+async fn server_handshake_inner<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    local: &str,
+    peer: &str,
+    tunnel: &str,
+    direction: ConnectionDirection,
+    version: u16,
+) -> Result<Option<ResumeGrant>> {
     let capabilities = capabilities_for_version(version)?;
     let request: ClientHello = read_message(stream).await?;
     if request.version != version {
@@ -217,6 +356,24 @@ pub async fn server_handshake_versioned<S: AsyncRead + AsyncWrite + Unpin>(
     if request.capabilities != capabilities {
         bail!("peer protocol capability set does not match configured version");
     }
+    let server_nonce = nonce();
+    let grant = if version == crate::authorization::PROTOCOL_V3 {
+        let mut token = [0_u8; RESUME_TOKEN_BYTES];
+        OsRng.fill_bytes(&mut token);
+        Some(ResumeGrant {
+            token,
+            binding: resume_binding(
+                peer,
+                local,
+                tunnel,
+                direction,
+                &request.nonce,
+                &server_nonce,
+            ),
+        })
+    } else {
+        None
+    };
     write_message(
         stream,
         &ServerHello {
@@ -227,10 +384,12 @@ pub async fn server_handshake_versioned<S: AsyncRead + AsyncWrite + Unpin>(
             direction,
             capabilities: capabilities.to_vec(),
             client_nonce: request.nonce,
-            server_nonce: nonce(),
+            server_nonce,
+            resume_token: grant.as_ref().map(|g| hex::encode(g.token)),
         },
     )
-    .await
+    .await?;
+    Ok(grant)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -476,6 +635,7 @@ mod tests {
                     capabilities: PHASE1_CAPABILITIES.to_vec(),
                     client_nonce: request.nonce.clone(),
                     server_nonce: nonce(),
+                    resume_token: None,
                 };
                 match mutation {
                     0 => response.version = VERSION + 1,
@@ -566,6 +726,7 @@ mod tests {
                     capabilities: PHASE1_CAPABILITIES.to_vec(),
                     client_nonce: request.nonce,
                     server_nonce: bad_owned,
+                    resume_token: None,
                 };
                 write_message(&mut server, &response).await.unwrap();
             });
@@ -982,6 +1143,69 @@ mod tests {
             PROTOCOL_V3,
         )
         .await;
+        assert!(server.await.unwrap().is_err() && client.is_err());
+    }
+
+    /// A v3 client accepts only a well-formed token; v1/v2 clients refuse any token at all.
+    #[tokio::test]
+    async fn resume_token_is_required_for_v3_and_forbidden_otherwise() {
+        use crate::authorization::{PROTOCOL_V2, PROTOCOL_V3, capabilities_for_version};
+        for (version, token, ok) in [
+            (PROTOCOL_V3, None, false),
+            (PROTOCOL_V3, Some("zz"), false),
+            (PROTOCOL_V3, Some("00112233445566778899aabbccddeeff"), true),
+            (
+                PROTOCOL_V3,
+                Some("00112233445566778899aabbccddeeff00"),
+                false,
+            ),
+            (PROTOCOL_V2, Some("00112233445566778899aabbccddeeff"), false),
+            (PROTOCOL_V2, None, true),
+            (1, Some("00112233445566778899aabbccddeeff"), false),
+        ] {
+            let (mut client, mut server) = duplex(4096);
+            let caps = capabilities_for_version(version).unwrap().to_vec();
+            let token = token.map(str::to_owned);
+            let task = tokio::spawn(async move {
+                let request: ClientHello = read_message(&mut server).await.unwrap();
+                let response = ServerHello {
+                    version,
+                    server_id: "abroad".into(),
+                    client_id: "iran".into(),
+                    tunnel_id: "t".into(),
+                    direction: ConnectionDirection::Direct,
+                    capabilities: caps,
+                    client_nonce: request.nonce,
+                    server_nonce: nonce(),
+                    resume_token: token,
+                };
+                write_message(&mut server, &response).await.unwrap();
+            });
+            let r = client_handshake_versioned(
+                &mut client,
+                "iran",
+                "abroad",
+                "t",
+                ConnectionDirection::Direct,
+                version,
+            )
+            .await;
+            task.await.unwrap();
+            assert_eq!(r.is_ok(), ok, "v{version} token handling");
+        }
+    }
+
+    /// A v3 server never reuses a token across sessions and the grant functions refuse Reverse.
+    #[tokio::test]
+    async fn grant_functions_are_v3_direct_only() {
+        let (mut c, mut s) = duplex(4096);
+        let server = tokio::spawn(async move {
+            server_handshake_grant(&mut s, "abroad", "iran", "t", ConnectionDirection::Reverse)
+                .await
+        });
+        let client =
+            client_handshake_grant(&mut c, "iran", "abroad", "t", ConnectionDirection::Reverse)
+                .await;
         assert!(server.await.unwrap().is_err() && client.is_err());
     }
 }

@@ -62,3 +62,7 @@ Decision (coordinator, owner-delegated, 2026-11-17): resume in the first release
 
 ### Implementation status
 Step 1 (2026-11-17): `PROTOCOL_V3` and the `ResumeStreams` session capability exist in the authorization layer. v3 sessions are Direct only; v1, v2 and v3 peers reject each other in both directions (tests); `ResumeStreams` is refused as a stream type; integrity probes keep working on v2 and later through `supports_integrity_probe`. v3 is **not selectable** in config or setup and nothing implements resume, so no resume claim exists.
+
+Step 2 (2026-11-17, #340): `src/resumable.rs` is the pure frame codec and per-direction endpoint engine (Data/Ack/Fin/Reset, 64 KiB payload, replay from the peer's received offset, bounded by window and tunnel budget) with a random-cut property test. Not wired.
+
+Step 3 (2026-11-17): the v3 `ServerHello` carries a 16-byte `resume_token` (required and well-formed for v3, rejected for v1/v2). Both sides derive `resume_binding` (length-prefixed SHA-256 over ids, tunnel, direction and both nonces) and agree on it; `src/resume_wire.rs` defines `ResumeHello`/`ResumeReply` (strict, 16 KiB, at most 256 distinct streams) and redeems the old token against the *current* identities, so a different identity, tunnel, direction or nonce fails with `BindingMismatch`, and the token is burned on every outcome but `Unknown` (replay, expiry tests). Authorization of the new session stays a precondition and is enforced by step 4. Not wired into the tunnel: no resume claim exists yet.
