@@ -315,3 +315,22 @@ No new engines or protocols, no Fleet or billing, no React migration, no `noise-
 - B4 **Done** 2026-11-14: PR #201 merged (`86ba404`); real two-host LAB through the Wizard/agent API passed on that exact SHA ([LAB run 43644908151](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43644908151)): signed rc.7 engine (cosign + SHA256SUMS, digest = pin) installed with `--baft-engine`, engine-store preflight pass, baft-profile CSR create/recover, offline CA `issue-baft-node`, Init/Join/Start/Stop via agent, wrong checksum refused, 64 KiB and 2 MiB byte-exact, uninstall left no store/users/units. BAFT stays Preview, Direct only; status/traffic stay unknown.
 
 - Signed prerelease **v0.1.0-rc.8** (tag on main `ad7aa99`, release run [43648306433](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43648306433), cosign + SHA256SUMS + SBOM). **REAL two-host LAB PASSED** 2026-11-15 for the signed rc.7 → rc.8 upgrade path ([run 43670274992](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43670274992), workflow from main `1570e45`): both tags cosign-verified against `release.yml@refs/tags/<tag>`, rc.7 install then upgrade to rc.8 (`cross_version_update=1`), Direct Apply start serve/forward as non-root, 64 KiB/2 MiB byte-exact, diagnostics/status/traffic agree, replay and running-refused, **one-hour soak 3600 s, 268 rounds, 0 failed probes**, fd/RSS flat, 0 restarts, SIGKILL recovery 4–5 s, backup/restore with identical owners/modes, guarded update and automatic rollback of a failing binary, revoked certificate refused, clean uninstall, 0 BAFT firewall rules (only unrelated host ipset drift on abroad). Earlier attempts 43651034301 (1 failed soak probe ×2, no restarts) and 43663426882 (soak 0/255 failed; post-update evidence read after the 60 s traffic window) led to LAB-script fixes #206/#207 only; no product change. Evidence level: real two-host LAB, not Production. rc.8 remains a prerelease; Reverse and BAFT stay Preview.
+
+
+## 10. Cross-project capability adoption: Rakhsh and BackPack
+
+The detailed, authoritative adoption queue is in [PRODUCT_ROADMAP.md §9.8](PRODUCT_ROADMAP.md#98-cross-project-capability-adoption--rakhsh--backpack-2026-11-17). This section keeps the remaining-work plan aligned; it does not promote proposed work to implementation.
+
+| Tier | Work | Current evidence / dependency | Exit condition |
+|---|---|---|---|
+| X0 | Aged-flow diagnosis (raw TCP vs TLS; fresh vs aged flow) | Active P0 blocker; cause not established | Repeatable measurements and evidence-based diagnosis; no unsupported workaround claims |
+| X1 | Transport Health telemetry | Model/status exist; real probe source missing | Real RTT/jitter/loss or active probes, freshness guards and two-host validation |
+| X1 | Multi-Link failover/failback | Dial path has backup remotes; no actual failover LAB acceptance | Two-host failure/recovery/failback test, anti-flap and byte integrity |
+| X1 | Doctor read-only validation | Offline checks exist; LAB use not recorded | Ubuntu 22.04 validation, read-only proof, actionable output and secret-free logs |
+| X2 | Stream Resume protocol integration | Pure core only; not wired into protocol/data path | Protocol contract, replay/duplicate protection, bounded resources, reconnect and adversarial tests |
+| X2 | Adaptive Data Pool and fallback policy | Research only; coordinate with Policy Pack and Multi-Link | One non-duplicative design, bounded resource behavior and baseline benchmark |
+| X2 | Reverse/Noise security profile | Noise Direct Experimental; Noise Reverse unavailable | Threat model, no-downgrade contract, fuzzing, review and real two-host data-path acceptance |
+| X3 | UDP/KCP/FEC, QUIC, WebSocket/WSS | Research candidates only | Per-transport use case, ADR, licence/security review, implementation and two-host acceptance |
+| X-HARDEN | Backup/restore, signed update/rollback | Existing mechanisms and evidence; retain regression gates | Preserve integrity, signature, rollback, ownership/mode and N-1→N acceptance |
+
+**Constraints:** Rust core only; no direct Rakhsh/BackPack source copying; BackPack's Go/AGPL-3.0 implementation is reference material only; no CAP_NET_ADMIN; no production-host changes; CI/simulation is not REAL-LAB. The current P0 stability work remains ahead of new transport implementation.

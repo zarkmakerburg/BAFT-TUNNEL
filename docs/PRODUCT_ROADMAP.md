@@ -357,3 +357,43 @@ Evidence levels remain separate: CI ≠ local test ≠ VM ≠ controlled NetNS/N
 9. **P8 — Fleet:** keep Central Fleet after 0.4.0; PR #171 remains design-only.
 
 Safety remains unchanged: no CAP_NET_ADMIN, no firewall/route/sysctl modifications, no unapproved host changes, no false Healthy/Ready claims, and no Stable/release/deploy action without its separate owner gate.
+
+
+### 9.8 Cross-project capability adoption — Rakhsh + BackPack (2026-11-17)
+
+This is the approved planning scope for extracting useful engineering capabilities from the reference repositories. It does **not** mean that these capabilities are implemented, accepted, or authorized for release. The independent BAFT-TUNNEL Rust architecture remains authoritative.
+
+**Reference sources and boundaries**
+- [Rakhsh](https://github.com/CluvexStudio/rakhsh): use its capability and operational patterns as design input. Existing analysis/licence boundary is recorded in ADR-0038; code-copy policy is ADR-0043. No Rakhsh source is copied into BAFT-TUNNEL.
+- [BackPack](https://github.com/AminMGMT/BackPack): use its transport, multiplexing, resilience and operations ideas as design input. It is a Go/AGPL-3.0 reference; do not import its Go runtime or copy its source into the Rust core. Reimplement independently only after a use case, design review and licence review.
+- The reference projects are not product dependencies. No capability may be advertised merely because a reference implements it.
+
+**Capability adoption queue**
+
+| Priority / horizon | Capability | Reference input | BAFT-TUNNEL status at this snapshot | Required work and acceptance |
+|---|---|---|---|---|
+| P0 — active stability work | Aged-flow diagnosis and TCP/TLS transfer reliability | BackPack transport/diagnostic ideas; independent network measurement | Blocking research; cause not established | Finish raw-TCP vs TLS aged-flow comparison and repeatable measurements at multiple flow ages/time windows; distinguish network-path behavior from tunnel defects. No workaround or censorship-resistance claim without evidence. |
+| P1 — 0.3.x operability | Transport Health | Rakhsh / BackPack | Model and status publication exist (#293, #306, ADR-0041); quality remains Unknown without real samples | Add real RTT/jitter/loss or active-probe sources, freshness and stale guards, per-path attribution, and honest Healthy/Degraded/Unknown transitions. Unit/CI first, then two-host LAB. |
+| P1 — 0.3.x resilience | Multi-Link and failover/failback | Rakhsh / BackPack | `backup_remotes` is wired (#296, ADR-0039); actual failover is not LAB-accepted | Prove active path selection, failure detection, recovery, failback and anti-flap behavior; assert data integrity and bounded recovery on two hosts. No CAP_NET_ADMIN; userspace-only. |
+| P1 — 0.3.x diagnostics | Doctor | Rakhsh | Offline read-only config/host checks exist (#298, ADR-0042); LAB use not recorded | Validate on supported Ubuntu 22.04 hosts; report actionable findings, evidence source and freshness; enforce read-only behavior and no secret leakage. |
+| P2 — 0.4.x | Stream Resume | Rakhsh / BackPack | Pure core exists (#309, ADR-0040); not wired into protocol or tunnel path | Define protocol semantics, session/stream identity, replay and duplicate protection, bounded replay buffers, backpressure and expiry. Test interruption/reconnect, adversarial replay and resource limits. Process-restart continuation is not claimed without separate proof. |
+| P2 — 0.4.x | Adaptive Data Pool / connection scheduling | BackPack; coordinate with Adaptive Traffic Policy Pack | Not implemented as a BackPack-derived capability; policy-pack work is separate and proposed | Research bounded pool sizing, admission, fairness, queue limits and congestion behavior. Avoid duplicate abstractions with ADR-0031/0044; benchmark against a fixed baseline before implementation. |
+| P2 — 0.4.x | Fallback and load-balancing policy | BackPack; coordinate with Multi-Link | Partially overlaps Multi-Link/failover; not a separate accepted engine | Specify only after Multi-Link evidence. Define deterministic policy, health thresholds, hysteresis, operator override and per-path telemetry; do not silently rotate engines. |
+| P2 — 0.4.x security review | Reverse transport security / Noise profile | BackPack's Noise/X25519/ChaCha20-Poly1305 design as research input | Noise-TCP Direct remains Experimental; Noise Reverse unavailable | Reuse reviewed Rust ecosystem primitives and established protocol patterns; no custom cryptography. Require threat model, key lifecycle, downgrade resistance, interoperability vectors, fuzzing, independent review and real two-host data-path acceptance before exposure. |
+| P3 — later transport candidates | UDP/datagram carrier and KCP/FEC | BackPack | Design/research only; UDP carrier has separate ADR-0046 / #244 | Separate transport ADR, threat and abuse analysis, bounded memory/CPU, congestion/fairness policy, loss/reordering tests, security audit and two-host LAB. KCP/FEC are candidates, not committed requirements. |
+| P3 — later transport candidates | QUIC | BackPack | Not implemented or advertised | Require a concrete deployment use case, Rust implementation/library review, TLS/identity integration, congestion/resource analysis, interoperability and two-host LAB. |
+| P3 — later transport candidates | WebSocket / WSS | BackPack | Not implemented or advertised | Require a concrete proxy/network compatibility use case, authenticated upgrade, origin/endpoint policy, resource limits, downgrade controls and two-host LAB. |
+| Existing capability — hardening | Backup / Restore | BackPack operational pattern; existing BAFT-TUNNEL ADR-0025 | Local backup/restore and rollback mechanisms already exist with recorded evidence; not a new feature commitment | Keep regression coverage for integrity, ownership/modes, secret handling and tamper refusal. Revisit only for a specific missing operator workflow. |
+| Existing capability — hardening | Signed Update / Rollback | BackPack operational pattern; existing release pipeline and ADR-0025 | Signed release verification and guarded rollback already exist; guided panel update is a 0.3.0 candidate (O3) | Preserve signature + digest + manifest verification, explicit operator confirmation, rollback evidence and N-1→N LAB acceptance. No silent auto-update. |
+| Existing capability — architecture | Control Plane / Data Plane separation and multiplexing | Rakhsh / BackPack | Existing local Agent/API, StreamEngine and Yamux boundaries; Fleet remains later design | Preserve explicit boundaries; do not duplicate BAFT's Session/Flow model or merge control traffic into unbounded data paths. Any remote control plane stays after 0.4.0 and requires its own security/authorization design. |
+| Existing capability — diagnostics | Padding and traffic-shaping ideas | BackPack | Not committed; no concealment guarantee | Research only if a specific threat model and measurable objective exist. Any padding must have strict bandwidth/CPU caps, privacy review and honest limits; never claim invisibility or censorship resistance. |
+
+**Sequencing and gates**
+1. Do not displace the current P0 aged-flow investigation or the exact-head completion/review of PR #323.
+2. Complete Transport Health data sourcing, Multi-Link real failover/failback evidence, and Doctor read-only validation before adding new carriers.
+3. Integrate Stream Resume only after its protocol contract and adversarial/resource tests are approved.
+4. Treat Adaptive Data Pool and fallback/load balancing as coordinated design work, not parallel duplicate implementations of the existing Policy Pack or Multi-Link.
+5. UDP/KCP/FEC, QUIC, WebSocket/WSS and any padding/shaping remain later candidates; each needs a separate use case, ADR, licence/security review, tests and real two-host acceptance.
+6. No Go in the core; no direct source copying from Rakhsh or BackPack; no CAP_NET_ADMIN; no change to advertised engine/direction capability without its acceptance gate.
+
+**Reporting rule:** every item must be labelled one of Implemented, Partial, Planned, Blocked or Not Verified, and accompanied by exact PR/ADR/SHA plus CI/LAB evidence where applicable. A design, source file, CI simulation or reference-project feature is not proof of a delivered BAFT-TUNNEL capability.
