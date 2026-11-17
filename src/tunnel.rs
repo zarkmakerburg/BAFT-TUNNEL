@@ -114,7 +114,7 @@ pub struct ForwardOptions {
     pub backup_remotes: Vec<String>,
 }
 
-fn yamux_config(max: usize) -> YamuxConfig {
+pub(crate) fn yamux_config(max: usize) -> YamuxConfig {
     YamuxConfig {
         accept_backlog: max,
         enable_keepalive: true,
@@ -241,7 +241,11 @@ where
 /// Relay both directions until each side closes, failing a direction that is idle too long.
 /// `peer` is the tunnel side (the multiplexed stream); `local` is the local socket. Relayed
 /// payload bytes are counted per direction for the unit's traffic counters (ADR-0024).
-async fn relay_with_idle_timeout<A, B>(peer: A, local: B, idle: Duration) -> std::io::Result<()>
+pub(crate) async fn relay_with_idle_timeout<A, B>(
+    peer: A,
+    local: B,
+    idle: Duration,
+) -> std::io::Result<()>
 where
     A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
