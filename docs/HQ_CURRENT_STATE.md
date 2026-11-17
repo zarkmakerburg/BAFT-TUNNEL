@@ -166,6 +166,14 @@ Recheck PR #323 exact-head required workflows until terminal. If green, obtain a
 - Mac is online. Three known BAFT-TUNNEL worktrees were checked and are clean at their recorded commits. Relevant Mac skills were read: code review, security audit, test-gap audit, verification-before-completion, and worktree safety. Rust-specific `rs-*` skills were not located in the inspected roots.
 - **Next safe action:** obtain an independent agent review of PR #323 at its exact current head. Keep it Draft; no merge and no LAB dispatch until review findings are read, the head remains unchanged, and the separate owner-authorized LAB gate is reconfirmed. Do not conflate this Noise-TCP Direct harness with the P0-A raw TCP/TLS control finding.
 
+## Latest HQ continuation reconciliation — 2026-11-17 15:25 UTC
+
+- Attempted to start an independent CodeAgent review for PR #323 using the connected CodeAgent Mobile integration. The request failed with `AGENT_NOT_AVAILABLE`: no linked agent can run the review.
+- `list_agents` returned only managed wallet-based agents (DeepSeek V4 Flash, DeepSeek V4, Qwen3 Coder, Codex, Claude); the integration's PR-review action supports the default linked agent only. `list_sessions(status=online)` returned no sessions. No agent was started and no wallet spend occurred.
+- The Mac has no `codex` or `claude` CLI available. GitHub CLI is authenticated. The repository collaborator list contains only `zarkmakerburg`; no independent human collaborator is currently available to request.
+- PR #323 remains OPEN / Draft at `7177bb4566d5dd5b4fddc45d69a325a82729d68e`, 11/11 exact-head checks SUCCESS, no submitted reviews, no requested reviewers. The candidate-selection guard is present. No LAB dispatch.
+- The checkpoint snapshot and Issue #2 board must record this review blocker. No merge, LAB, tag, release, deploy or host operation was performed.
+
 ## Next action
 
-Request an independent CodeAgent review of PR #323, exact head `7177bb4566d5dd5b4fddc45d69a325a82729d68e`. Read the findings, revalidate the PR head and exact-head CI, then determine whether any fixes are required. Only after review is resolved should the separate owner-authorized two-host Noise-TCP Direct LAB be considered. No merge, LAB dispatch, tag, release, deploy, host mutation, firewall/route/sysctl change or CAP_NET_ADMIN use is authorized by this checkpoint.
+Independent review of PR #323 is BLOCKED because there is no linked CodeAgent provider or independent GitHub collaborator available. To proceed, the owner must either link an agent provider in CodeAgent Mobile or add/name an independent GitHub collaborator reviewer. After that, request the review against exact HEAD `7177bb4566d5dd5b4fddc45d69a325a82729d68e`, read and resolve findings, revalidate exact-head CI, and only then consider the separate owner-authorized two-host Noise-TCP Direct LAB. Do not merge or dispatch LAB while this gate is open.
