@@ -22,6 +22,7 @@ mod pki_helper;
 mod policy;
 #[cfg(test)]
 mod policy_baseline;
+mod resumable;
 mod resume_core;
 #[allow(dead_code)] // manifest API is consumed by packaging and the registry (ADR-0020)
 mod runtime_host;
