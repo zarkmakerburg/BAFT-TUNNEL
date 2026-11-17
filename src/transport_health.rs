@@ -2,7 +2,8 @@
 //! supplies a monotonic `now`. Health describes the quality of one link. It is
 //! **not** Integrity (ADR-0028) and must never be merged with it.
 //!
-//! Not wired into the agent yet (follow-up); hence the dead-code allowance.
+//! Wired into the unit (`health.json`, quality unknown until an RTT source exists) and the agent
+//! status; the RTT/probe feed is a follow-up, hence the dead-code allowance.
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
