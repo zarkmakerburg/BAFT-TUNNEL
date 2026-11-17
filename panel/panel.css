@@ -327,3 +327,6 @@ dialog.ov::backdrop{background:var(--scrim)}
 }
 @media (forced-colors:active){.badge,.choice,.card{border:1px solid CanvasText}}
 @media (max-width:600px){.chart:not(.chart-ring) text{font-size:22px}}
+
+/* in-wizard remedy link: looks like a link, is a button (keyboard + screen reader friendly) */
+button.linklike { background: none; border: 0; padding: 0 .25rem; color: var(--accent, inherit); text-decoration: underline; cursor: pointer; font: inherit; }
