@@ -56,6 +56,18 @@ jobs:
           set -euo pipefail
           [[ "$CONFIRM" == RUN_LAB_ROTATION_PROBE ]] || { echo 'Explicit confirmation is required' >&2; exit 2; }
           [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate_sha must be a full lowercase 40-character SHA' >&2; exit 2; }
+          # Refuse an older green main commit that predates the merged rotation implementation.
+          gh api "repos/$REPOSITORY/pulls/315" > "$RUNNER_TEMP/rotation-pr.json"
+          jq -e '.merged == true and (.merge_commit_sha | type == "string" and test("^[0-9a-f]{40}$"))' "$RUNNER_TEMP/rotation-pr.json" >/dev/null || {
+            echo 'PR #315 must be merged before the rotation LAB can run' >&2
+            exit 2
+          }
+          ROTATION_MERGE_SHA="$(jq -r '.merge_commit_sha' "$RUNNER_TEMP/rotation-pr.json")"
+          git cat-file -e "$ROTATION_MERGE_SHA^{commit}"
+          git merge-base --is-ancestor "$ROTATION_MERGE_SHA" "$REQUESTED_SHA" || {
+            echo 'candidate SHA does not contain the merged PR #315 rotation implementation' >&2
+            exit 2
+          }
           gh api "repos/$REPOSITORY/commits/$REQUESTED_SHA/check-runs" > "$RUNNER_TEMP/candidate-checks.json"
           jq -e '.total_count > 0' "$RUNNER_TEMP/candidate-checks.json" >/dev/null || {
             echo 'candidate SHA has no check runs' >&2
