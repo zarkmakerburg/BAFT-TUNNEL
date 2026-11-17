@@ -44,6 +44,12 @@ pub(crate) const MAX_BACKOFF: Duration = Duration::from_secs(60);
 pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 const STREAM_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a rotated-out session may keep serving its in-flight streams before it is closed.
+const ROTATE_DRAIN_TIMEOUT: Duration = Duration::from_secs(120);
+/// Retry spacing when dialing a replacement session fails (the old session keeps serving).
+const ROTATE_RETRY: Duration = Duration::from_secs(15);
+#[cfg(test)]
+static ROTATIONS_COMPLETED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 /// Reverse ingress: how long a user connection may wait for the service node's session before it is
 /// closed. Bounded so users get a clean close instead of a silent hang while the service node is away.
 const INGRESS_QUEUE_MAX_WAIT: Duration = if cfg!(test) {
@@ -112,6 +118,9 @@ pub struct ForwardOptions {
     /// Alternate addresses of the SAME peer (same identity, same pinned fingerprint), in priority
     /// order after `remote` (ADR-0039). Empty keeps the single-link behaviour.
     pub backup_remotes: Vec<String>,
+    /// ADR-0049: replace the session with a fresh one (make before break) after this age. `None`
+    /// keeps one long-lived session. Direct forward dialer only.
+    pub session_rotate: Option<Duration>,
 }
 
 pub(crate) fn yamux_config(max: usize) -> YamuxConfig {
@@ -912,6 +921,57 @@ async fn run_forward_session(
 
 #[allow(clippy::too_many_arguments)] // Keep authenticated session, identity and probe authority explicit.
 async fn run_forward_session_versioned(
+    session: Session<BoxedSecureStream>,
+    receiver: &mut Receiver<TcpStream>,
+    slots: &Arc<Semaphore>,
+    direction: ConnectionDirection,
+    tunnel: &str,
+    peer: &str,
+    protocol_version: u16,
+    probe_control: Arc<crate::integrity_probe::ProbeControl>,
+    probe_limiter: Arc<crate::integrity_probe::ProbeLimiter>,
+    shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    run_forward_session_core(
+        session,
+        receiver,
+        slots,
+        direction,
+        tunnel,
+        peer,
+        protocol_version,
+        probe_control,
+        probe_limiter,
+        shutdown,
+        None,
+    )
+    .await
+}
+
+type DialFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Session<BoxedSecureStream>>> + Send + 'a>,
+>;
+
+/// Keeps a rotated-out session alive for its in-flight streams, then closes it (ADR-0049).
+async fn drain_rotated_session(
+    mut control: tokio_yamux::Control,
+    mut driver: tokio::task::JoinHandle<Result<()>>,
+    mut stream_tasks: JoinSet<()>,
+) {
+    let finish = async { while stream_tasks.join_next().await.is_some() {} };
+    if timeout(ROTATE_DRAIN_TIMEOUT, finish).await.is_err() {
+        eprintln!("rotated session drain deadline reached; closing it");
+        stream_tasks.abort_all();
+    }
+    control.close().await;
+    if timeout(STREAM_DRAIN_TIMEOUT, &mut driver).await.is_err() {
+        driver.abort();
+        let _ = driver.await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // Keep authenticated session, identity and probe authority explicit.
+async fn run_forward_session_core(
     mut session: Session<BoxedSecureStream>,
     receiver: &mut Receiver<TcpStream>,
     slots: &Arc<Semaphore>,
@@ -922,6 +982,7 @@ async fn run_forward_session_versioned(
     probe_control: Arc<crate::integrity_probe::ProbeControl>,
     probe_limiter: Arc<crate::integrity_probe::ProbeLimiter>,
     mut shutdown: watch::Receiver<bool>,
+    mut rotate: Option<watch::Receiver<bool>>,
 ) -> Result<()> {
     let _probe_guard_and_rx = probe_control.begin_session();
     let (_probe_guard, mut probe_rx) = _probe_guard_and_rx;
@@ -1072,6 +1133,22 @@ async fn run_forward_session_versioned(
                     }
                 });
             }
+            rotated = async {
+                match rotate.as_mut() {
+                    Some(signal) => signal.wait_for(|due| *due).await.is_ok(),
+                    None => std::future::pending().await,
+                }
+            } => {
+                if rotated {
+                    // The replacement is already authenticated: stop taking new local connections
+                    // here (the caller resumes the same queue on the new session) and let this
+                    // session finish its in-flight streams in the background.
+                    eprintln!("session rotated: draining the previous session");
+                    tokio::spawn(drain_rotated_session(control, driver, stream_tasks));
+                    return Ok(());
+                }
+                rotate = None;
+            }
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     control.close().await;
@@ -1108,29 +1185,39 @@ async fn supervise_forward(
 ) {
     let mut backoff = INITIAL_BACKOFF;
     let mut links = LinkSet::new(&options);
+    // ADR-0049: a replacement session dialed before the current one is retired.
+    let mut carried: Option<Session<BoxedSecureStream>> = None;
     loop {
         if receiver.is_closed() || *shutdown.borrow() {
             break;
         }
-        if let Some(set) = links.as_mut() {
-            match set.pick() {
-                Ok(link) => options.remote = set.remote(link).to_string(),
-                Err(wait) => {
-                    tokio::select! {
-                        _ = sleep(wait) => {},
-                        changed = shutdown.changed() => {
-                            if changed.is_err() || *shutdown.borrow() { break; }
+        if carried.is_none() {
+            if let Some(set) = links.as_mut() {
+                match set.pick() {
+                    Ok(link) => options.remote = set.remote(link).to_string(),
+                    Err(wait) => {
+                        tokio::select! {
+                            _ = sleep(wait) => {},
+                            changed = shutdown.changed() => {
+                                if changed.is_err() || *shutdown.borrow() { break; }
+                            }
                         }
+                        continue;
                     }
-                    continue;
                 }
             }
         }
-        let connection = tokio::select! {
-            result = connect_peer_versioned(&options, protocol_version) => result,
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() { break; }
-                continue;
+        let rotated_in = carried.is_some();
+        let connection = match carried.take() {
+            Some(session) => Ok(session),
+            None => {
+                tokio::select! {
+                    result = connect_peer_versioned(&options, protocol_version) => result,
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() { break; }
+                        continue;
+                    }
+                }
             }
         };
         let mut lost_session = false;
@@ -1138,26 +1225,81 @@ async fn supervise_forward(
             Ok(session) => {
                 eprintln!("authenticated tunnel session established");
                 backoff = INITIAL_BACKOFF;
-                if let Some(set) = links.as_mut() {
-                    set.up();
+                if !rotated_in {
+                    if let Some(set) = links.as_mut() {
+                        set.up();
+                    }
                 }
-                if let Err(error) = run_forward_session_versioned(
-                    session,
-                    &mut receiver,
-                    &slots,
-                    options.direction,
-                    &options.tunnel_id,
-                    &options.peer_id,
-                    protocol_version,
-                    probe_control.clone(),
-                    probe_limiter.clone(),
-                    shutdown.clone(),
-                )
-                .await
-                {
+                let (rotate_tx, rotate_rx) = watch::channel(false);
+                let (outcome, replacement) = {
+                    let run = run_forward_session_core(
+                        session,
+                        &mut receiver,
+                        &slots,
+                        options.direction,
+                        &options.tunnel_id,
+                        &options.peer_id,
+                        protocol_version,
+                        probe_control.clone(),
+                        probe_limiter.clone(),
+                        shutdown.clone(),
+                        options.session_rotate.map(|_| rotate_rx),
+                    );
+                    tokio::pin!(run);
+                    let mut dial: Option<DialFuture<'_>> = None;
+                    let mut due = options.session_rotate.map(|age| {
+                        // Up to 10% jitter so rotations of several tunnels do not align.
+                        let jitter = age / 10 * (OsRng.next_u32() % 1000) / 1000;
+                        tokio::time::Instant::now() + age + jitter
+                    });
+                    let mut replacement: Option<Session<BoxedSecureStream>> = None;
+                    let outcome = loop {
+                        let dialing = dial.is_some();
+                        tokio::select! {
+                            result = &mut run => break result,
+                            _ = async {
+                                match due {
+                                    Some(at) if !dialing => tokio::time::sleep_until(at).await,
+                                    _ => std::future::pending().await,
+                                }
+                            } => {
+                                eprintln!("session age limit reached; dialing a replacement session");
+                                dial = Some(Box::pin(connect_peer_versioned(&options, protocol_version)));
+                            }
+                            dialed = async {
+                                match dial.as_mut() {
+                                    Some(future) => future.as_mut().await,
+                                    None => std::future::pending().await,
+                                }
+                            } => {
+                                dial = None;
+                                match dialed {
+                                    Ok(next) => {
+                                        replacement = Some(next);
+                                        due = None;
+                                        let _ = rotate_tx.send(true);
+                                    }
+                                    Err(error) => {
+                                        eprintln!("replacement session dial failed; keeping the current one: {error:#}");
+                                        due = Some(tokio::time::Instant::now() + ROTATE_RETRY);
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    drop(dial);
+                    (outcome, replacement)
+                };
+                if let Err(error) = outcome {
                     if !receiver.is_closed() {
                         eprintln!("tunnel session lost: {error:#}");
                     }
+                    // The replacement (if any) is dropped with the failed session's turn; redial normally.
+                } else if replacement.is_some() {
+                    #[cfg(test)]
+                    ROTATIONS_COMPLETED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    carried = replacement;
+                    continue;
                 }
                 lost_session = true;
                 if let Some(set) = links.as_mut() {
@@ -1961,6 +2103,7 @@ mod tests {
             noise: None,
             max_streams: 8,
             backup_remotes: vec![],
+            session_rotate: None,
         };
         let session = timeout(Duration::from_secs(10), connect_peer(&forward_options))
             .await
@@ -2017,6 +2160,152 @@ mod tests {
     async fn authenticated_tcp_tls_forwarding_works_with_each_side_as_dialer() {
         authenticated_forwarding_case("iran", "abroad").await;
         authenticated_forwarding_case("abroad", "iran").await;
+    }
+
+    #[tokio::test]
+    async fn session_rotation_keeps_old_streams_alive_and_serves_new_ones() {
+        let directory = std::env::temp_dir().join(format!(
+            "baft-rotate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let server_key = directory.join("server.noise");
+        let client_key = directory.join("client.noise");
+        let server_public = crate::engine::write_noise_keypair(&server_key).unwrap();
+        let client_public = crate::engine::write_noise_keypair(&client_key).unwrap();
+        let echo_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let echo_address = echo_listener.local_addr().unwrap();
+        let echo_task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = echo_listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buffer = [0_u8; 1024];
+                    while let Ok(count) = stream.read(&mut buffer).await {
+                        if count == 0 || stream.write_all(&buffer[..count]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_address = reservation.local_addr().unwrap();
+        drop(reservation);
+        let direction = ConnectionDirection::Direct;
+        let server_task = tokio::spawn(serve(ServerOptions {
+            listen: server_address.to_string(),
+            target: echo_address.to_string(),
+            ingress: None,
+            local_id: "abroad".to_owned(),
+            peer_id: "iran".to_owned(),
+            tunnel_id: "rotate".to_owned(),
+            direction,
+            peer_fingerprint: String::new(),
+            ca: PathBuf::new(),
+            crl: PathBuf::new(),
+            cert: PathBuf::new(),
+            key: server_key.clone(),
+            noise: Some(NoiseSettings {
+                private_key: server_key,
+                peer_public: client_public,
+            }),
+            max_streams: 8,
+        }));
+        for _ in 0..100 {
+            if TcpStream::connect(server_address).await.is_ok() {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        let options = ForwardOptions {
+            listen: "127.0.0.1:0".to_owned(),
+            target: None,
+            remote: server_address.to_string(),
+            server_name: String::new(),
+            local_id: "iran".to_owned(),
+            peer_id: "abroad".to_owned(),
+            tunnel_id: "rotate".to_owned(),
+            direction,
+            peer_fingerprint: String::new(),
+            ca: PathBuf::new(),
+            crl: PathBuf::new(),
+            cert: PathBuf::new(),
+            key: client_key.clone(),
+            noise: Some(NoiseSettings {
+                private_key: client_key,
+                peer_public: server_public,
+            }),
+            max_streams: 8,
+            backup_remotes: vec![],
+            session_rotate: Some(Duration::from_secs(1)),
+        };
+        let (sender, receiver) = mpsc::channel(8);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let before = ROTATIONS_COMPLETED.load(std::sync::atomic::Ordering::SeqCst);
+        let supervisor = tokio::spawn(supervise_forward(
+            options,
+            receiver,
+            Arc::new(Semaphore::new(8)),
+            PROTOCOL_V1,
+            Arc::new(crate::integrity_probe::ProbeControl::default()),
+            Arc::new(crate::integrity_probe::ProbeLimiter::default()),
+            shutdown_rx,
+        ));
+        let local_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_address = local_listener.local_addr().unwrap();
+        async fn open(
+            sender: &mpsc::Sender<TcpStream>,
+            listener: &TcpListener,
+            address: SocketAddr,
+        ) -> TcpStream {
+            let client = TcpStream::connect(address).await.unwrap();
+            let (accepted, _) = listener.accept().await.unwrap();
+            sender.send(accepted).await.unwrap();
+            client
+        }
+        async fn echo(stream: &mut TcpStream, byte: u8) {
+            let payload = vec![byte; 4096];
+            timeout(Duration::from_secs(10), async {
+                stream.write_all(&payload).await.unwrap();
+                let mut received = vec![0_u8; payload.len()];
+                stream.read_exact(&mut received).await.unwrap();
+                assert_eq!(received, payload);
+            })
+            .await
+            .expect("echo through the tunnel timed out");
+        }
+        // A stream opened before the first rotation must survive it (make before break).
+        let mut early = open(&sender, &local_listener, local_address).await;
+        echo(&mut early, 1).await;
+        let mut waited = 0;
+        while ROTATIONS_COMPLETED.load(std::sync::atomic::Ordering::SeqCst) < before + 2
+            && waited < 200
+        {
+            sleep(Duration::from_millis(100)).await;
+            waited += 1;
+        }
+        assert!(
+            ROTATIONS_COMPLETED.load(std::sync::atomic::Ordering::SeqCst) >= before + 2,
+            "the session was not rotated twice within 20 s"
+        );
+        echo(&mut early, 2).await;
+        let mut late = open(&sender, &local_listener, local_address).await;
+        echo(&mut late, 3).await;
+        drop(early);
+        drop(late);
+        supervisor.abort();
+        server_task.abort();
+        echo_task.abort();
+        let _ = supervisor.await;
+        let _ = server_task.await;
+        let _ = echo_task.await;
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
@@ -2106,6 +2395,7 @@ mod tests {
             }),
             max_streams: 8,
             backup_remotes: vec![],
+            session_rotate: None,
         };
 
         // A dialer that pins the wrong server key must not obtain a session.
@@ -2290,6 +2580,7 @@ mod tests {
                 }),
                 max_streams: 8,
                 backup_remotes: vec![],
+                session_rotate: None,
             })
             .await
         });
@@ -2403,6 +2694,7 @@ mod tests {
             }),
             max_streams: 8,
             backup_remotes: vec![],
+            session_rotate: None,
         };
 
         // A service node that disagrees on the direction label is refused at the hello.
@@ -2657,6 +2949,7 @@ mod tests {
                 }),
                 max_streams: 8,
                 backup_remotes: vec![tunnel_address.to_string()],
+                session_rotate: None,
             })
             .await
         });
@@ -2699,6 +2992,7 @@ mod tests {
             noise: None,
             max_streams: 8,
             backup_remotes: vec![],
+            session_rotate: None,
         };
         assert!(LinkSet::new(&options).is_none());
         options.backup_remotes = vec!["127.0.0.1:2".to_owned()];

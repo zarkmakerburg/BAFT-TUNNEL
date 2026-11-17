@@ -455,6 +455,7 @@ async fn run() -> Result<()> {
                 allow_non_loopback_listen,
                 baft: None,
                 backup_remotes: vec![],
+                session_rotate_secs: 0,
             };
             config.validate()?;
             config.apply().await
