@@ -35,11 +35,11 @@
 
 | PR | Head SHA | State | Verified note |
 |---|---|---|---|
-| [#323](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/323) | `7177bb4566d5dd5b4fddc45d69a325a82729d68e` | Draft / Open | Candidate gate now queries merged PR #315 and requires its merge commit to be an ancestor of candidate SHA; static contract test added. New exact-head checks started (2 IN_PROGRESS at recheck); no independent review. Noise-TCP Direct only. No LAB dispatch. |
+| [#323](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/323) | `7177bb4566d5dd5b4fddc45d69a325a82729d68e` | Draft / Open | Candidate ancestry guard + static test added. Latest exact-head checks: 1 SUCCESS, 7 IN_PROGRESS, 2 QUEUED; no independent review. Noise-TCP Direct only. No LAB dispatch. |
 | [#324](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/324) | `2ca82c8b86d75ffe4db9aae9fc8e1025635e1f7d` | Draft / Open | 11 Check Runs green on this head; no review recorded. Skills/governance + roadmap documentation; parallel, non-blocking track. |
 | [#326](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/326) | `ab8095d59cf77bf16bd13e34a81acf77adc463c5` | Draft / Open | F1 pure rules + ADR-0045 accepted with conditions; mergeability/check state not yet verified. |
-| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `225e606135e3225faeaa14d8f03d8a504e7433d9` | Draft / Open | Automatic checkpoint policy + combined activate-and-continue `HQ RESUME`; documentation-only. Live metadata: mergeable=true, `mergeable_state=blocked`; exact-head checks 2/10 SUCCESS, 8 IN_PROGRESS. No submitted reviews. |
-| [#171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171) | `e64ea2fca5b3dd17b709ecf9c92a2cf933da32cb` | Draft / Open | Central Fleet architecture only; deferred after 0.4.0. |
+| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `38c909db4ab97d1e4142393c3b50d93b959f799e` | Draft / Open | Automatic checkpoint policy + combined activate-and-continue `HQ RESUME`; documentation-only. Live metadata: mergeable=true, `mergeable_state=blocked`; exact-head checks 0 SUCCESS, 1 IN_PROGRESS, 9 QUEUED. No submitted reviews. |
+| [#328](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/328) | `c2a92a2270c93d3b495ecd38da4fcbe24d7aaeb5` | Draft / Open | Roadmap aged-flow addendum: paired non-tunnel raw TCP/TLS controls now recorded; 5 exact-head checks QUEUED at last recheck; documentation-only. |\n| [#171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171) | `e64ea2fca5b3dd17b709ecf9c92a2cf933da32cb` | Draft / Open | Central Fleet architecture only; deferred after 0.4.0. |
 
 PR base refs and statuses can change; re-fetch them before action. PR #327 was opened from the recorded main SHA and was mergeable=true at the last check, but merge remained blocked by required checks. This checkpoint itself advances its head, so fetch the live PR head/checks before any review or merge decision. PR #169 is the separate HQ playbook and is not BAFT-TUNNEL product scope.
 
@@ -138,3 +138,17 @@ P0-B: close the PR #323 candidate ancestry guard gap (must prove PR #315 is merg
 ## Next action
 
 Recheck PR #323 exact-head required workflows until terminal. If green, obtain an independent review (none is currently recorded) before considering any owner-authorized real two-host Noise-TCP Direct LAB. In parallel, prepare a read-only, no-CAP_NET_ADMIN root-cause isolation plan for the aged-flow correlation.
+
+
+## Latest HQ continuation reconciliation — 2026-11-17 15:24 UTC
+
+- P0-A paired raw TCP/TLS non-tunnel controls are complete. Both 18/18 client transfers succeeded at all six ages; both modes show fast 0/15s and slow 20s onward. TLS does not remove the correlation; age-25 TLS is noisy. Root cause and product-path impact remain unverified.
+- PR #323 head `7177bb4566d5dd5b4fddc45d69a325a82729d68e`: candidate validation now requires PR #315 merged and its merge commit to be ancestor of candidate SHA; static test added. Exact-head checks latest: 1 SUCCESS, 7 IN_PROGRESS, 2 QUEUED. OPEN / Draft, blocked, no independent review. No LAB dispatch.
+- PR #328 created from main `c3e2bda8cc4b598c410a665f3c18fb6cc2d944c2`, head `c2a92a2270c93d3b495ecd38da4fcbe24d7aaeb5`, documentation-only update to Roadmap §9.7 correcting stale raw-vs-TLS status and recording the evidence/caveats. 5 exact-head checks QUEUED at last recheck; OPEN / Draft.
+- PR #327 latest head `38c909db4ab97d1e4142393c3b50d93b959f799e`: 0 SUCCESS, 1 IN_PROGRESS, 9 QUEUED; OPEN / Draft, blocked.
+- No independent review, no merge, no LAB dispatch, no host mutation, no firewall/route/sysctl/CAP_NET_ADMIN change, no release/deploy.
+- Next: wait for exact-head checks on #323/#328/#327; arrange independent review for #323 before any LAB. Keep product-specific root-cause isolation separate and non-privileged.
+
+## Next action
+
+Recheck exact-head CI for PR #323, #327 and #328. For #323, independent review is still a hard gate before the real Noise-TCP Direct two-host LAB. Keep P0-A's root cause/product impact unverified; do not claim TLS rotation mitigation.
