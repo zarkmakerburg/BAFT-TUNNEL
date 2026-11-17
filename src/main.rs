@@ -9,6 +9,7 @@ mod control_socket;
 mod doctor;
 mod engine;
 mod engine_store;
+mod fleet;
 mod handshake;
 mod history_store;
 mod integrity_probe;
