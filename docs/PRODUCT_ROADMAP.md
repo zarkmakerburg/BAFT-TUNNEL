@@ -1,6 +1,6 @@
 # BAFT-TUNNEL — Product Roadmap and Verified Delivery Queue
 
-**Status snapshot:** 2026-11-17 — **Stable `v0.2.1` is the latest released Stable** (`v0.2.0` before it). Stable `v0.2.2` and `v0.3.0` are not tagged yet; see [§9.7](#97-status-addendum-2026-11-17). Older text below is historical.
+**Status snapshot:** 2026-11-17 — **Stable `v0.2.2` is the latest released Stable** (published 2026-11-17 15:39Z, tag `5dd0890`; `v0.2.1`, `v0.2.0` before it). Stable `v0.3.0` is not tagged; see [§9.7](#97-status-addendum-2026-11-17) (historical) and [§9.8](#98-reconciliation-2026-11-17-reference-review). Older text below is historical.
 **Source baseline:** `main` at `faba00fb3b12aac6395049c351be93027700890d` (PR #259, roadmap replan; code identical to `9b151ce`, PR #258). This SHA is the value when the file was written; `main` moves, so verify with `git rev-parse origin/main`. Evidence level for the release itself: signed Stable tag `v0.2.0` on `76c12cb` (= rc.12 binary, sha256 `4c922d02…9136`); post-release PRs #255/#257/#258 are merged to `main` and are **not** in any release yet. Earlier baselines (`b61765f`, `82d77b3`, U7 pinned to `1219f547`) are historical.
 **Gate status:** P0-1..P0-5 remain closed. D2 panel-managed `tcp-tls` CSR/certificate lifecycle is implemented and merged in [PR #150](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/150) (merge `e5a7451f259be7df14187a58db5fe1c29c51a81b`); exact-head CI/two-host evidence is recorded in that PR, and a trusted repeat on the immutable RC.7 candidate passed in [LAB run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181). U1 CRL renewal and real two-host push are proven by [LAB run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) on ancestor code SHA `8be74376176442106669f4a81293f0865629ecaf`: CRL number `0x1002→0x1003`, 30-day validity, both nodes report `crl_state=ok`, 2 MiB tunnel recovery, short/replayed CRLs refused. The repeat D2 LAB reported `host_drift=none`; the earlier unrelated nftables delta was not reproduced, but its source remains unattributed (S10).
 **Release:** `v0.2.0` is the latest Stable release (not a prerelease); evidence in [STABLE_0.2.0_EVIDENCE.md](STABLE_0.2.0_EVIDENCE.md). Reverse and BAFT ship as **Preview**; `ready` stays Unknown by design. The earlier `v0.1.0-rc.8` text and LAB run references elsewhere in this file are historical and kept for traceability. Production deploy is not claimed.
@@ -296,7 +296,7 @@ Evidence levels: CI ≠ VM ≠ LAB ≠ Production. Nothing below is production e
 |---|---|---|
 | `v0.2.0` | Stable, released 2026-11-15 | [STABLE_0.2.0_EVIDENCE.md](STABLE_0.2.0_EVIDENCE.md) |
 | `v0.2.1` | Stable, released 2026-11-16 | [STABLE_0.2.1_EVIDENCE.md](STABLE_0.2.1_EVIDENCE.md) |
-| `v0.2.2` | **Not tagged.** Signed `v0.2.2-rc.3` on `5dd0890` passed the LAB checks (one soak accepted under the outage rule). The Stable tag push needs the owner's own approval and an admin machine; the owner has no access to that machine for now. | [STABLE_0.2.2_EVIDENCE.md](STABLE_0.2.2_EVIDENCE.md) |
+| `v0.2.2` | **Superseded by §9.8: now published Stable.** (Text at time of writing: not tagged; rc.3 on `5dd0890` passed the LAB checks, one soak accepted under the outage rule.) | [STABLE_0.2.2_EVIDENCE.md](STABLE_0.2.2_EVIDENCE.md) |
 | `v0.3.0` | **Not accepted.** Signed `v0.3.0-rc.1` on `69f43ed`: Reverse Preview, domain installs and the 0.3.0 operator features pass in LAB; the upgrade soak does not pass because of the aged-flow stall below. | [STABLE_0.3.0_EVIDENCE.md](STABLE_0.3.0_EVIDENCE.md) |
 
 The README one-line install still pins `v0.2.1`. It moves to the next Stable tag only after that tag exists.
@@ -320,3 +320,32 @@ The README one-line install still pins `v0.2.1`. It moves to the next Stable tag
 | Competitive benchmark | Advisor assessment (#302); E2 netns/netem harness against Rathole and FRP in draft (PR #308, controlled CI runner, not LAB) | E2 result |
 
 **Documentation:** this addendum and the 0.3.0 evidence draft bring the roadmap to 2026-11-17; HQ Issue #2 gets a matching append-only entry. Firewall status stays Unknown (ADR-0030); no component takes `CAP_NET_ADMIN`.
+
+### 9.8 Reconciliation 2026-11-17 (reference review)
+
+Source: [REFERENCE_PROJECTS_REVIEW.md](REFERENCE_PROJECTS_REVIEW.md) at `main` `b7172bc`. Documentation only; evidence levels unchanged (CI ≠ simulated ≠ LAB ≠ Production). Accepted ADR ≠ implemented.
+
+**Corrections to earlier text**
+- Stable `v0.2.2` is **released** (non-prerelease, tag `5dd0890`, published 2026-11-17 15:39Z; assets with `SHA256SUMS` and cosign bundle). The README one-line pin to `v0.2.2` is draft PR #329, not merged at this SHA.
+- §9.7 listed v0.2.2 as not tagged; that row is historical.
+- PR #315 (ADR-0049 optional Direct session rotation, default off) and PR #330 (E2 blackhole repeat, hosted-runner netns, CI only) are merged. The rotation LAB before/after (draft PR #323) is not dispatched and needs independent review plus owner LAB authorization.
+
+**Product status by reference lesson** (full matrix: REFERENCE_PROJECTS_REVIEW §12)
+
+| Item | Status | Evidence | Next |
+|---|---|---|---|
+| Multi-link failover (ADR-0039) | Partial: `backup_remotes` in the dial path (#296); link policy pure, unwired (#292) | CI/unit; no LAB failover run | Advisor R-2 |
+| Transport health (ADR-0041) | Merged unwired (#293); status publishing (#306), quality Unknown | Unit | R-1: RTT/probe source |
+| Stream resume (ADR-0040) | Merged unwired core (#309); protocol v3 design only | Unit | R-3, after R-1/R-2 and a fault harness |
+| Doctor (ADR-0042) | Partial: offline CLI (#298) | CI | R-8: carrier path test |
+| Session rotation vs aged flows (ADR-0049) | Merged, default off | CI test only | LAB before/after (#323) |
+| Policy Pack (ADR-0031/0044/0047/0048) | Merged unwired; baseline simulated | Simulation | Wire only after measurement |
+| Fleet (ADR-0045) | Design accepted with conditions; F1 pure rules draft #326 | None | After 0.4.0 |
+| UDP carrier (ADR-0046) | Design only | None | Own audit and LAB |
+| Competitive benchmark | E2 netns harness (#330); no LAB run, no recorded cross-project result | CI-level only | One-time multi-hour window approved (delegated), unscheduled |
+
+**Aged-flow finding and the failed 0.2.2 soak runs.** Runs 43897433228 and 43910396414 (rc.2 to rc.3 upgrade soaks, 2026-11-16) failed soak probes (`payload mismatch`, 2 MiB cut at about 0.5-1 MB) with 0 restarts. Run 43945271865 was accepted under the human-judged outage rule, and Stable followed. The aged-flow throttle was later reproduced without BAFT-TUNNEL in the path (runs 44056840174, 44063608341). The acceptance basis should be re-evaluated; a machine-checkable control probe (advisor R-6) is proposed. No change to the published release is proposed here.
+
+**Open owner decisions:** REFERENCE_PROJECTS_REVIEW §16 (OQ-1 to OQ-10).
+
+**Excluded from product progress:** HQ governance (#169, #324, #327, #328, project-hq).
