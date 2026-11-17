@@ -36,9 +36,9 @@ The compact live handoff is [HQ_CURRENT_STATE.md](HQ_CURRENT_STATE.md); the proc
 | Command | Meaning |
 |---|---|
 | `HQ CHECKPOINT` | Refresh live GitHub state, update the current snapshot, and append a dated handoff to Issue #2. |
-| `HQ RESUME` | Read the checkpoint protocol/snapshot and board history, verify mutable facts live, then continue the recorded next action. |
+| `HQ RESUME` | If HQ is OFF, activate it and resume in one command. Read the checkpoint/snapshot and newest board history, verify mutable facts live, then execute the first safe, authorized, unfinished action from the last checkpoint. Do not stop at activation or return an activation-only report. Report resumed progress, action/evidence, blockers and next action. |
 
-For a new thread: activate `HQ ON`, read `AGENTS.md` → profile → this guide → checkpoint protocol → current state → newest Issue #2 comments, then verify live refs/checks/runs before acting. A checkpoint is an index, not evidence or permission. Do not carry chat-scoped authorizations into a new thread without reconfirmation.
+For a new thread, either send `HQ ON` and then a work command, or send `HQ RESUME` directly. `HQ RESUME` performs activation if needed, reads `AGENTS.md` → profile → this guide → checkpoint protocol → current state → newest Issue #2 comments, verifies live refs/checks/runs, and continues the first safe, authorized, unfinished action. Its reply is a continuation report, not an activation announcement. A checkpoint is an index, not evidence or permission. Do not carry chat-scoped authorizations into a new thread without reconfirmation.
 
 
 ### Automatic checkpoints
