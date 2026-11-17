@@ -1,8 +1,19 @@
 # برد پروژه BAFT-TUNNEL — نمای کوتاه فارسی
 
+## وضعیت زنده 2026-11-17
+
+- main: 65b50dea5562a15f8299a13afcec64d34a93bf58؛ 9/9 Check Run ثبت‌شده موفق (فقط CI، نه LAB).
+- آخرین نسخه پایدار: **v0.2.1**. نسخه‌های v0.2.2-rc.3 و v0.3.0-rc.1 پیش‌انتشارند؛ v0.3.0 هنوز به‌دلیل مسئله Flow قدیمی پذیرفته نشده است.
+- PR #323: Draft، SHA 3639ae18fd3c3d23dc0eb39a8685286e1e8889f7، 11/11 Check موفق، بدون Review و LAB. PR #171 فقط طراحی Fleet است و بعد از 0.4.0 می‌ماند.
+- اولویت اول: مقایسه TCP خام و TLS روی Flowهای تازه و پیرشده با Workflow موجود؛ PR #313 ادغام شده و هنوز مقایسهٔ دوحالتهٔ واقعی ثبت نشده است.
+- پس از آن: اصلاح و پذیرش Session Rotation، منبع واقعی Transport Health، Failover/Failback، Stream Resume، Doctor، گیت امنیتی Noise Reverse و سپس Policy Pack. Fleet بعد از 0.4.0.
+- اجرای LAB واقعی در این Thread انجام نشده است؛ برای آن مجوز مشخص مالک لازم است. CAP_NET_ADMIN پذیرفته نیست، Firewall روی Unknown می‌ماند و Reverse تا پذیرش کامل غیرفعال است.
+
+جزئیات، شواهد، محدودیت‌ها و ترتیب کامل در [Roadmap](PRODUCT_ROADMAP.md) ثبت شده‌اند. این برد فقط نمای کوتاه است.
+
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
-## به‌روزرسانی 2026-11-16
+## Snapshot تاریخی 2026-11-16
 
 - آخرین نسخهٔ منتشرشده: **Stable `v0.2.0`** (تگ `76c12cb`، 2026-11-15). بلوغ محصول: **Active Development** (Reverse و BAFT در حالت Preview). آمادگی Production: **تأییدنشده**.
 - `main` در `faba00f` (کد برابر `9b151ce`؛ SHA در زمان نگارش است و با `git rev-parse origin/main` بررسی می‌شود)؛ PRهای #255، #257 و #258 ادغام شده‌اند ولی در هیچ نسخه‌ای نیستند (نامزد 0.2.1).
@@ -10,13 +21,13 @@
 - B3 با تصمیم ADR-0030 روی `Unknown` بسته است؛ B5 و B6 فقط شاهد CI دارند.
 - PRهای #197، #173 و #169 بسته شدند (#169 به درخواست مالک از پروژه خارج شد). #171 (Fleet) Draft می‌ماند و بعد از 0.4.0 است؛ #260 اصلاحات 0.2.1 در جریان است.
 
-## به‌روزرسانی 2026-11-15
+## Snapshot تاریخی 2026-11-15
 
 - `main` در `b61765f` (۸ Check موفق، فقط سطح CI)؛ آخرین نسخه: `v0.1.0-rc.8` (Pre-release، نه پایدار).
 - B4 انجام شد (PR #201؛ LAB واقعی دو‌سروره [43644908151](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43644908151)). ارتقای rc.7→rc.8 روی LAB واقعی موفق: [43670274992](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43670274992) (۲۶۸ دور، بدون Probe ناموفق).
 - باز: B3 (فایروال `Unknown`؛ طراحی مبتنی بر `CAP_NET_ADMIN` پذیرفته نیست)، B5، B6، S10، ممیزی امنیتی پیش از Stable. #197 و #173 بسته شدند.
 
-## وضعیت در 2026-11-13
+## Snapshot تاریخی 2026-11-13
 
 - **Baseline بررسی‌شده:** `main` در SHA `82d77b3113ba6d966d1792f772940c70c0dfb4bc` (ادغام PR #194؛ اصلاح حسابداری اتصال‌های Health Check در Harness B2). U7 روی والد محصول `1219f547` اجرا شد.
 - **U7:** PASS — هر سه Job در اجرای trusted [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) موفق شدند؛ تست واقعی دو‌سروره روی RC.7 امضاشده تکمیل شد.
@@ -34,25 +45,14 @@
 - **TCP-TLS Direct:** مسیر پشتیبانی‌شده با شواهد واقعی LAB. **Reverse:** فقط Preview. **Noise-TCP:** Direct آزمایشی؛ Reverse اثبات‌نشده و غیرقابل انتخاب.
 - **پنل:** رابط محلی سبک، فارسی RTL و انگلیسی LTR؛ Fleet مرکزی، آمار کامل ترافیک و Firewall inspection هنوز موجود نیست.
 
-## مسیر اجرایی بعدی
+## مسیر اجرایی فعلی
 
-موارد قبلی این بخش (Diagnostics و وضعیت End-to-End و شمارنده و Audit، ارزیابی امنیتی، Backup/Update، پذیرش Reverse و BAFT) انجام شده‌اند. ترتیب جدید (ارزیابی 2026-11-09؛ جزئیات در [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md)):
+1. **P0:** تکمیل مقایسهٔ TCP خام و TLS روی دو میزبان واقعی؛ فقط پس از مجوز مشخص مالک.
+2. **P1:** اصلاح Harness مربوط به PR #323 و سپس پذیرش واقعی Session Rotation.
+3. **P2–P5:** Transport Health واقعی، Failover/Failback، Stream Resume و Doctor.
+4. **P6–P8:** ممیزی و LAB برای Noise Reverse، سپس Policy Pack؛ Fleet بعد از 0.4.0.
 
-۱. **Q1/Q2/Q3/Q4:** انجام شده‌اند؛ U8 در PR #165 ادغام شد.
-۲. **U1:** انجام شده؛ اجرای [42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) تمدید CRL سی‌روزه، Push روی هر دو میزبان، افزایش شماره CRL و بازیابی تونل را ثابت کرد.
-۳. **D2 / U5b:** انجام شده؛ PR #150 ادغام و اجرای تکراری trusted LAB شمارهٔ 42996224181 موفق شد.
-۴. **U2/U3/U5a/U4/U6:** پیاده‌سازی شده‌اند؛ شواهد و جزئیات در Roadmap.
-۵. **U7:** با اجرای [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) پذیرفته شد؛ Soak دقیقاً ۳۶۰۰ ثانیه، ۲۶۴ دور و صفر Probe ناموفق بود. Backup/Restore، Update/Rollback، Revocation، Uninstall و پاک‌سازی نیز موفق شدند.
-۶. **U8:** تکمیل و ادغام شد؛ [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165)، Commit ادغام `52a2825`؛ تمام CIها PASS.
-۷. **B1:** انجام و ادغام شد؛ `311b706` (شواهد ساختاریافتهٔ محلی‌شده) و `62d7ee6` (حذف کلیدهای تکراری `diag.next.*` و تست جلوگیری از تکرار). شواهد تاریخی CI در [PR #168](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/168).
-۸. **B2:** پذیرش Direct انجام شد؛ اجرای trusted دو‌میزبانه [43407066796](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43407066796) با Candidate ثابت `b15b0a3f49e0e5b7c4fcaaec3b3da49cd22514c6` و SHA باینری `726e292afe323becd9cd6c4d79c7fb0cd4ae69013334369e304176b248c69e89` موفق شد. هر دو Probe، انتقال داده قبل/بعد، Audit، Restart و Cooldown تأیید شدند. تست منفی Tamper در PR #193 با Relay درون‌حافظه‌ای و خطای `SHA-256 mismatch` اثبات شده؛ این تست دو‌میزبانهٔ زنده نیست. `ready` همچنان Unknown است و Reverse جداگانه گیت دارد. جزئیات در [ADR-0028](ADR-0028-authenticated-integrity-probe.md) و [Roadmap](PRODUCT_ROADMAP.md).
-۹. **B3–B6:** باز هستند؛ طبق Roadmap و با حفظ ترتیب وابستگی‌ها.
-
-**موارد باز:** منشأ Drift شش‌خطی Address Set روی میزبان خارج در U7 (S10؛ هیچ قانون BAFT-TUNNEL وجود نداشت)، آزمون پنل روی گوشی واقعی، B3–B6 و گیت‌های انتشار. بازبینی امنیتی مستقل فعلاً به درخواست مالک متوقف است. Soak بیش از یک ساعت برنامه‌ریزی نمی‌شود. (بررسی حقوقی AGPL موتور BAFT حذف شد: BAFT متعلق به مالک است و استفاده از آن به‌صورت باینری جدا طبق ADR-0019 مجاز است؛ تأیید مالک 2026-11-09.)
-
-- **کارهای ادغام‌شدهٔ خارج از صف:** بنچمارک‌های CodSpeed برای مسیرهای داغ تونل (`7bf0b9a`) و سیستم طراحی Fleet مرکزی (`DESIGN.md`، `0e66077`)؛ هیچ‌کدام ادعای محصول نیستند و Fleet فقط طراحی مستند است.
-
-جزئیات، معیارهای پذیرش و دستورالعمل Agent فقط در [سند فنی تطبیق قابلیت‌ها](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md) و [Roadmap](PRODUCT_ROADMAP.md) نگهداری می‌شود. این برد عمداً وضعیت موازی جداگانه ایجاد نمی‌کند.
+برای جزئیات و معیارهای خروج هر مرحله فقط به [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md) §9.8 مراجعه کن؛ این برد Roadmap موازی ایجاد نمی‌کند.
 
 ## قواعد ثابت
 
