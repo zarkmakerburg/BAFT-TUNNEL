@@ -66,7 +66,8 @@ jobs:
             scenario $tool $port clean ""
             scenario $tool $port delay40_jit10 "delay 40ms 10ms rate 40mbit"
             scenario $tool $port loss05 "delay 20ms loss 0.5% rate 40mbit"
-            scenario $tool $port blackhole5s "delay 20ms rate 40mbit" 5
+            for i in 1 2 3 4 5; do scenario $tool $port blackhole5s_r$i "delay 20ms rate 40mbit" 5; done
+            for i in 1 2 3; do scenario $tool $port blackhole2s_r$i "delay 20ms rate 40mbit" 2; done
           }
           nsx bsrv ./rathole -s rs.toml >rs.log 2>&1 & sleep 1
           nsx bcli ./rathole -c rc.toml >rc.log 2>&1 & sleep 2
