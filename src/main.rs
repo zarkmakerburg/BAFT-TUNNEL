@@ -17,6 +17,8 @@ mod link_policy;
 mod noise;
 mod observe;
 mod pki_helper;
+#[cfg(feature = "policy-pack")]
+mod policy;
 #[allow(dead_code)] // manifest API is consumed by packaging and the registry (ADR-0020)
 mod runtime_host;
 mod session_status;
