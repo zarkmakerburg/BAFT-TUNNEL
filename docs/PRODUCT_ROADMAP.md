@@ -326,9 +326,9 @@ The README one-line install still pins `v0.2.1`. It moves to the next Stable tag
 Source: [REFERENCE_PROJECTS_REVIEW.md](REFERENCE_PROJECTS_REVIEW.md) at `main` `b7172bc`. Documentation only; evidence levels unchanged (CI ≠ simulated ≠ LAB ≠ Production). Accepted ADR ≠ implemented.
 
 **Corrections to earlier text**
-- Stable `v0.2.2` is **released** (non-prerelease, tag `5dd0890`, published 2026-11-17 15:39Z; assets with `SHA256SUMS` and cosign bundle). The README one-line pin to `v0.2.2` is draft PR #329, not merged at this SHA.
+- Stable `v0.2.2` is **released** (non-prerelease, tag `5dd0890`, published 2026-11-17 15:39Z; assets with `SHA256SUMS` and cosign bundle). The README one-line pin to `v0.2.2` (PR #329) was merged 2026-11-17 16:12:01Z.
 - §9.7 listed v0.2.2 as not tagged; that row is historical.
-- PR #315 (ADR-0049 optional Direct session rotation, default off) and PR #330 (E2 blackhole repeat, hosted-runner netns, CI only) are merged. The rotation LAB before/after (draft PR #323) is not dispatched and needs independent review plus owner LAB authorization.
+- PR #315 (ADR-0049 optional Direct session rotation, default off) and PR #330 (E2 blackhole repeat, hosted-runner netns, CI only) are merged. PR #323 (rotation probe workflow) was merged 2026-11-17 16:01:34Z (`c2c64bc`). Rotation LAB (reported by the owner on PR #331; this session did not open the run): real two-host run [44121043530](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44121043530), **Noise-TCP Direct**, 2 MiB x3: rotation off 0/3 complete, `session_rotate_secs=10` 3/3 complete, 12 rotation events, `ROT_ACCEPTANCE=PASS`. **Not TCP-TLS evidence**; TCP-TLS rotation, the aged-flow cause and any Production claim remain unproven.
 
 **Product status by reference lesson** (full matrix: REFERENCE_PROJECTS_REVIEW §12)
 
@@ -338,7 +338,7 @@ Source: [REFERENCE_PROJECTS_REVIEW.md](REFERENCE_PROJECTS_REVIEW.md) at `main` `
 | Transport health (ADR-0041) | Merged unwired (#293); status publishing (#306), quality Unknown | Unit | R-1: RTT/probe source |
 | Stream resume (ADR-0040) | Merged unwired core (#309); protocol v3 design only | Unit | R-3, after R-1/R-2 and a fault harness |
 | Doctor (ADR-0042) | Partial: offline CLI (#298) | CI | R-8: carrier path test |
-| Session rotation vs aged flows (ADR-0049) | Merged, default off | CI test only | LAB before/after (#323) |
+| Session rotation vs aged flows (ADR-0049) | Merged, default off | CI test; Noise-TCP Direct two-host LAB run 44121043530 (owner-reported): off 0/3, 10 s rotation 3/3, `ROT_ACCEPTANCE=PASS`; **not TCP-TLS** | TCP-TLS LAB before/after |
 | Policy Pack (ADR-0031/0044/0047/0048) | Merged unwired; baseline simulated | Simulation | Wire only after measurement |
 | Fleet (ADR-0045) | Design accepted with conditions; F1 pure rules draft #326 | None | After 0.4.0 |
 | UDP carrier (ADR-0046) | Design only | None | Own audit and LAB |
