@@ -24,18 +24,22 @@ def expected(n):
     for b in gen(n): h.update(b)
     return h.hexdigest()
 
-def sink(port, res, ready):
+def sink(port, res, ready, bind="127.0.0.1", idle=15):
     s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(("127.0.0.1", port)); s.listen(8); ready.set()
+    s.bind((bind, port)); s.listen(8); ready.set(); s.settimeout(idle)
     h, n, t0 = hashlib.sha256(), 0, None
     while True:
-        c, _ = s.accept()
+        try: c, _ = s.accept()
+        except socket.timeout: break
+        c.settimeout(idle)
         t0 = t0 or time.time()
-        while True:
-            d = c.recv(CH)
-            if not d: break
-            h.update(d); n += len(d)
-            res["n"], res["sha"], res["t1"] = n, h.hexdigest(), time.time()
+        try:
+            while True:
+                d = c.recv(CH)
+                if not d: break
+                h.update(d); n += len(d)
+                res["n"], res["sha"], res["t1"] = n, h.hexdigest(), time.time()
+        except socket.timeout: pass
         c.close()
         if n >= res["want"]: break
     res["t0"] = t0
@@ -79,8 +83,21 @@ if __name__ == "__main__":
     a = argparse.ArgumentParser()
     a.add_argument("--size-mib", type=int, default=64); a.add_argument("--target")
     a.add_argument("--cut-at-mib", type=int, default=0); a.add_argument("--cut-s", type=float, default=2)
-    a.add_argument("--json"); a = a.parse_args()
+    a.add_argument("--json"); a.add_argument("--role", default="both", choices=["both", "sink", "send"])
+    a.add_argument("--sink-port", type=int, default=39001); a.add_argument("--idle", type=float, default=15)
+    a = a.parse_args()
     size = a.size_mib << 20; log = []; res = {"want": size}; ready = threading.Event()
+    if a.role == "sink":  # wait for data, write {received, sha}
+        threading.Thread(target=sink, args=(a.sink_port, res, ready, "127.0.0.1", a.idle)).start(); ready.wait()
+        while threading.active_count() > 1: time.sleep(0.2)
+        out = {"role": "sink", "received": res.get("n", 0), "sha_received": res.get("sha"), "t0": res.get("t0"), "t1": res.get("t1")}
+        print(json.dumps(out));  a.json and open(a.json, "w").write(json.dumps(out)); raise SystemExit
+    if a.role == "send":  # send stream to --target, write {sent, expected sha, retries, duration}
+        host, port = a.target.rsplit(":", 1); t0 = time.time()
+        sent, retries = send((host, int(port)), size, 0, log)
+        out = {"role": "send", "size_bytes": size, "sent": sent, "retries": retries, "duration_s": round(time.time() - t0, 3),
+               "sha_expected_of_full_stream": expected(size), "faults": [(x[0], round(x[1] - t0, 2)) for x in log]}
+        print(json.dumps(out)); a.json and open(a.json, "w").write(json.dumps(out)); raise SystemExit
     sp = 39001; threading.Thread(target=sink, args=(sp, res, ready), daemon=True).start(); ready.wait()
     if a.target:
         host, port = a.target.rsplit(":", 1); addr = (host, int(port)); mode = "target"

@@ -1,0 +1,93 @@
+name: Bench E2 netns netem (Rathole, FRP)
+
+# E2 = controlled network on ONE hosted runner: two disposable network namespaces joined by a veth pair,
+# impairment set with tc netem INSIDE those namespaces only. CI-level evidence, NOT LAB, NOT a real path.
+# No LAB hosts, no secrets, no change outside the namespaces (they are deleted at the end).
+on:
+  pull_request:
+    paths: ['bench/**', '.github/workflows/bench-e2.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run E2
+        run: |
+          set +e; set -uo pipefail
+          W=$RUNNER_TEMP/b2; mkdir -p $W; cd $W
+          S=$GITHUB_WORKSPACE/bench/harness.py
+          U=$(id -u); G=$(id -g)
+          nsx() { n=$1; shift; sudo ip netns exec $n setpriv --reuid=$U --regid=$G --clear-groups "$@"; }
+          cleanup() { sudo ip netns del bsrv 2>/dev/null; sudo ip netns del bcli 2>/dev/null; pkill -f '[r]athole -' ; pkill -f '[f]rp[sc] -c'; true; }
+          trap cleanup EXIT
+          echo "runner: $(nproc) cpu, $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2), $(uname -r)" | tee info.txt
+          sudo modprobe sch_netem 2>&1 | tee -a info.txt
+          sudo ip netns add bsrv && sudo ip netns add bcli
+          sudo ip link add vs type veth peer name vc
+          sudo ip link set vs netns bsrv; sudo ip link set vc netns bcli
+          sudo ip -n bsrv addr add 10.9.0.1/24 dev vs; sudo ip -n bcli addr add 10.9.0.2/24 dev vc
+          for n in bsrv bcli; do sudo ip -n $n link set lo up; done
+          sudo ip -n bsrv link set vs up; sudo ip -n bcli link set vc up
+          nsx bcli ping -c1 -W2 10.9.0.1 >/dev/null && echo "veth ok" | tee -a info.txt || { echo "veth FAILED" | tee -a info.txt; exit 0; }
+          impair() { # args to netem, "" = clear
+            for d in "bsrv vs" "bcli vc"; do set -- $d $IMP; n=$1; i=$2; shift 2
+              sudo ip netns exec $n tc qdisc del dev $i root 2>/dev/null
+              [ -n "${IMP:-}" ] && sudo ip netns exec $n tc qdisc add dev $i root netem $IMP; done; }
+          sudo ip netns exec bsrv tc qdisc add dev vs root netem delay 1ms 2>&1 | tee -a info.txt; sudo ip netns exec bsrv tc qdisc del dev vs root
+          fetch() { curl -sSIL -o /dev/null -w '%{url_effective}' https://github.com/$1/releases/latest | sed 's#.*/tag/##'; }
+          rt=$(fetch rapiz1/rathole); ft=$(fetch fatedier/frp); fv=${ft#v}
+          echo "rapiz1/rathole $rt; fatedier/frp $ft" | tee -a info.txt
+          curl -fsSL -o rathole.zip https://github.com/rapiz1/rathole/releases/download/$rt/rathole-x86_64-unknown-linux-gnu.zip && unzip -qo rathole.zip && chmod +x rathole && sha256sum rathole | tee -a info.txt
+          curl -fsSL -o frp.tgz https://github.com/fatedier/frp/releases/download/$ft/frp_${fv}_linux_amd64.tar.gz && tar xzf frp.tgz --strip-components=1 && sha256sum frps frpc | tee -a info.txt
+          TOK=$(head -c16 /dev/urandom | base64 | tr -d '=+/')
+          printf '[server]\nbind_addr="10.9.0.1:2333"\n[server.services.s]\ntoken="%s"\nbind_addr="127.0.0.1:5202"\n' $TOK > rs.toml
+          printf '[client]\nremote_addr="10.9.0.1:2333"\n[client.services.s]\ntoken="%s"\nlocal_addr="127.0.0.1:39001"\n' $TOK > rc.toml
+          printf 'bindPort=7000\nbindAddr="10.9.0.1"\nauth.token="%s"\n' $TOK > frps.toml
+          printf 'serverAddr="10.9.0.1"\nserverPort=7000\nauth.token="%s"\n[[proxies]]\nname="s"\ntype="tcp"\nlocalIP="127.0.0.1"\nlocalPort=39001\nremotePort=5203\n' $TOK > frpc.toml
+          SIZE=32
+          scenario() { # tool port label netem [blackhole_s]
+            tool=$1; port=$2; lab=$3; IMP="$4"; bh=${5:-0}; n=${tool}_$lab
+            impair
+            nsx bcli python3 $S --role sink --size-mib $SIZE --idle 20 --json $W/$n.sink.json >/dev/null 2>&1 &
+            SK=$!; sleep 1
+            if [ "$bh" != 0 ]; then ( sleep 3; IMP="loss 100%" impair; sleep $bh; IMP="$4" impair ) & fi
+            timeout 240 nsx bsrv python3 $S --role send --size-mib $SIZE --target 127.0.0.1:$port --json $W/$n.send.json >/dev/null 2>&1
+            wait $SK; wait
+            echo "$n done"
+          }
+          run_tool() { tool=$1; port=$2
+            scenario $tool $port clean ""
+            scenario $tool $port delay40_jit10 "delay 40ms 10ms"
+            scenario $tool $port loss05 "delay 20ms loss 0.5%"
+            scenario $tool $port blackhole5s "delay 20ms" 5
+          }
+          nsx bsrv ./rathole -s rs.toml >rs.log 2>&1 & sleep 1
+          nsx bcli ./rathole -c rc.toml >rc.log 2>&1 & sleep 2
+          run_tool rathole 5202
+          pkill -f '[r]athole -'; sleep 1
+          nsx bsrv ./frps -c frps.toml >fs.log 2>&1 & sleep 1
+          nsx bcli ./frpc -c frpc.toml >fc.log 2>&1 & sleep 2
+          run_tool frp 5203
+          {
+            echo '## E2 netns netem (one hosted runner, CI-level evidence only)'; echo '```'; cat info.txt; echo '```'
+            echo "Transfer ${SIZE} MiB per run; impairment applied on both veth ends (egress) inside the namespaces."
+            echo '| run | verdict | received_MiB | send_s | retries |'; echo '|---|---|---|---|---|'
+            for s in $W/*.sink.json; do python3 - "$s" <<'P'
+          import json,sys,os
+          s=json.load(open(sys.argv[1])); n=os.path.basename(sys.argv[1])[:-10]
+          try: d=json.load(open(sys.argv[1].replace('.sink.','.send.')))
+          except Exception: d={}
+          ok = s.get('sha_received')==d.get('sha_expected_of_full_stream')
+          v = 'correct' if ok else ('truncated' if s.get('received',0) < d.get('size_bytes',1) else 'corrupt')
+          print(f"| {n} | {v} | {s.get('received',0)/1048576:.1f} | {d.get('duration_s','n/a')} | {d.get('retries','n/a')} |")
+          P
+            done
+          } | tee -a $GITHUB_STEP_SUMMARY
