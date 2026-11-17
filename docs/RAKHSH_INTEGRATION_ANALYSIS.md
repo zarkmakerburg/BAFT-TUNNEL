@@ -92,10 +92,10 @@ New attack surface from the P0 work, all user-space and inside the existing auth
 | Item | Branch / PR | State |
 |---|---|---|
 | Analysis + ADR-0038..0041 | `claude/project-thread-o35er1` | this PR |
-| Link policy module (P0) | pending | |
-| Health model (P0) | pending | |
-| Resume (P0) | design only in ADR-0040 | |
-| Doctor, config schema (P1) | pending | |
+| Link policy module (P0), pure logic, not wired | PR #292 (`claude/project-thread-o35er1-link-policy`) | 16 unit tests, clippy clean, local |
+| Health model (P0), pure logic, not wired | PR #293 (`claude/project-thread-o35er1-health`) | 13 unit tests, clippy clean, local |
+| Resume (P0) | design only, ADR-0040 | no code |
+| Doctor, config schema (P1), P2 quota/DNS | design only, ADR-0042 | no code; preflight already covers most checks |
 
 ## 11. Performance results
 
