@@ -1,0 +1,113 @@
+{
+  "version": 2,
+  "skills": {
+    "rs-async-patterns": {
+      "source": "bassem-elsodany/rs-skills",
+      "ref": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "commit": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "sourceType": "github",
+      "skillPath": "skills/rs-async-patterns/SKILL.md",
+      "computedHash": "a18a8d32728ad404c955395ecf631d683d5daba17fb33a05f49a9f72901d3099",
+      "installMode": "copy"
+    },
+    "rs-bugfix": {
+      "source": "bassem-elsodany/rs-skills",
+      "ref": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "commit": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "sourceType": "github",
+      "skillPath": "skills/rs-bugfix/SKILL.md",
+      "computedHash": "2a38c01d6fa7c6a95bf2f2279e3597a4b509d154d1f5b53423c098cb9acebc73",
+      "installMode": "copy"
+    },
+    "rs-concurrency": {
+      "source": "bassem-elsodany/rs-skills",
+      "ref": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "commit": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "sourceType": "github",
+      "skillPath": "skills/rs-concurrency/SKILL.md",
+      "computedHash": "3bcfef00dadf7281185bffc3f3c21c8bfbb80c5bfc1d2a1ac829b29247b1e68f",
+      "installMode": "copy"
+    },
+    "rs-domain-distributed": {
+      "source": "bassem-elsodany/rs-skills",
+      "ref": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "commit": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "sourceType": "github",
+      "skillPath": "skills/rs-domain-distributed/SKILL.md",
+      "computedHash": "58ab7ea2d8685f8f9d699bb5b5c13bdf8492ac59c6c1e9dcd1ad9059c06cc290",
+      "installMode": "copy"
+    },
+    "rs-fuzzing": {
+      "source": "bassem-elsodany/rs-skills",
+      "ref": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "commit": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "sourceType": "github",
+      "skillPath": "skills/rs-fuzzing/SKILL.md",
+      "computedHash": "92ff512643a143f473c7b9e430b1ee333e1b6e56fa86dcd87e13169245c8b86d",
+      "installMode": "copy"
+    },
+    "rs-observability": {
+      "source": "bassem-elsodany/rs-skills",
+      "ref": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "commit": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "sourceType": "github",
+      "skillPath": "skills/rs-observability/SKILL.md",
+      "computedHash": "11df4c2c368f5a9a7defad72e5b39cf44214b447884d2fb098e580b25b783578",
+      "installMode": "copy"
+    },
+    "rs-ports-adapters": {
+      "source": "bassem-elsodany/rs-skills",
+      "ref": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "commit": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "sourceType": "github",
+      "skillPath": "skills/rs-ports-adapters/SKILL.md",
+      "computedHash": "16e8a237a4943718bd460bd8ca4cf428c64b8e8e42818cb11e3509cc1611fe35",
+      "installMode": "copy"
+    },
+    "rs-reuse-first": {
+      "source": "bassem-elsodany/rs-skills",
+      "ref": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "commit": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "sourceType": "github",
+      "skillPath": "skills/rs-reuse-first/SKILL.md",
+      "computedHash": "fece63aa7271d6257c0f8b00800406c38579c593ac6801457e0f84c1e271af68",
+      "installMode": "copy"
+    },
+    "rs-review": {
+      "source": "bassem-elsodany/rs-skills",
+      "ref": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "commit": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "sourceType": "github",
+      "skillPath": "skills/rs-review/SKILL.md",
+      "computedHash": "d967ad6fc0a485e9f917570462e1b69a2381e15aefb276a9500891b125c549b3",
+      "installMode": "copy"
+    },
+    "rs-security-review": {
+      "source": "bassem-elsodany/rs-skills",
+      "ref": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "commit": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "sourceType": "github",
+      "skillPath": "skills/rs-security-review/SKILL.md",
+      "computedHash": "85d8bbd7bd629b1f3fac83a1fb88c27760fa848bb43c12ef471d88e81ac35f05",
+      "installMode": "copy"
+    },
+    "rs-style": {
+      "source": "bassem-elsodany/rs-skills",
+      "ref": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "commit": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "sourceType": "github",
+      "skillPath": "skills/rs-style/SKILL.md",
+      "computedHash": "06d8d0eddd3174acaf889e6ec6e8c31a39dbd49366fcfa367f171565de784513",
+      "installMode": "copy"
+    },
+    "rs-testing": {
+      "source": "bassem-elsodany/rs-skills",
+      "ref": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "commit": "999cb52ec82d4ddfc719398fa991a837f471f931",
+      "sourceType": "github",
+      "skillPath": "skills/rs-testing/SKILL.md",
+      "computedHash": "017ea48b368f3088c54216dd4637ff8588a70ba8a90ab5a033e9cf95254e5cb8",
+      "installMode": "copy"
+    }
+  }
+}

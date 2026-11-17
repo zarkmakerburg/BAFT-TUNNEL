@@ -1,0 +1,15 @@
+[package]
+name = "fuzz-example"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"], optional = true }
+
+[features]
+arbitrary = ["dep:arbitrary"]    # enabled only by the fuzz crate; keeps the library dependency-light
+
+[lints.rust]
+unsafe_code = "forbid"
