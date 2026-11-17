@@ -1,4 +1,4 @@
-# ADR-0045: UDP/datagram carrier (design)
+# ADR-0046: UDP/datagram carrier (design)
 
 **Status:** Proposed. Design only; nothing is implemented, no dependency is added.
 **Date:** 2026-11-17
