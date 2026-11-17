@@ -24,6 +24,44 @@ These are conversational HQ commands, not shell commands:
 - **`HQ STATUS`** — read-only live reconciliation; do not edit the snapshot or board.
 - **`.`, `..`, `...`** — retain the project profile's continuation semantics. Each command must verify the current state before action; the snapshot is a starting index, not proof.
 
+## Automatic checkpoint policy
+
+HQ must not wait for the user to say that a thread is ending. Apply a two-layer checkpoint after **every user message** and after **every executed instruction / tool operation**:
+
+### 1. Turn-level checkpoint (every message)
+
+After each user message, update the in-thread working ledger before proceeding:
+- current user intent and the instruction being handled;
+- decisions and constraints newly stated or changed;
+- active task, exact branch/SHA/run where known;
+- operation state: NOT STARTED / IN PROGRESS / PASS / FAIL / UNKNOWN / BLOCKED;
+- approvals that are still valid for this exact task;
+- the next safe action and any blocker.
+
+After each tool operation, record its observed result in that ledger before making a dependent call. A planned action is never recorded as completed. If a user message is conversational and changes no project state, this lightweight ledger is sufficient; do not create a noisy, empty Issue #2 comment.
+
+### 2. Durable checkpoint (automatic triggers)
+
+Update `HQ_CURRENT_STATE.md`, append a dated Issue #2 comment, and verify both writes whenever any of these occurs:
+- a user decision, scope, priority, constraint, or task authorization materially changes;
+- a repository/worktree/branch/commit/PR/review/CI/workflow state changes;
+- an instruction completes, fails, or becomes blocked after performing project work;
+- new test, CI, security-review, or LAB evidence is produced or its status changes;
+- a blocker, risk, acceptance gap, or next action materially changes;
+- work is handed off, paused, switched to another task, or a long-running operation is about to be started.
+
+Also create a durable checkpoint after every **3 substantive user turns or 10 meaningful tool operations, whichever comes first**, even if the work is still in progress. Before a long-running or asynchronous operation, first persist its intended scope, exact target and current authorization; checkpoint again when its outcome is known.
+
+### 3. Checkpoint quality and anti-spam rules
+
+- Refresh mutable facts from GitHub before writing; include exact SHAs, PR/run IDs, evidence class, limitations, blockers and one next action.
+- Keep Issue #2 append-only. The snapshot is replaceable and must link to source evidence; never duplicate raw logs or secrets.
+- Do not write an Issue #2 entry for a no-op conversational turn unless it changes the recovery state. The turn-level ledger still applies.
+- Never call a checkpoint complete until the snapshot and Issue #2 entry have both been written and read back successfully.
+- If a write or verification fails, report **CHECKPOINT INCOMPLETE**, preserve the exact failure, and retry only when safe.
+- This is best-effort within an active ChatGPT session. It cannot run after the client terminates the thread, in the background, or when tools are unavailable; therefore checkpoints must be created during work, not deferred until a guessed context limit.
+- A checkpoint is not an approval and does not extend or transfer task-specific permissions.
+
 ## Checkpoint procedure
 
 1. Confirm the bound repository is exactly `zarkmakerburg/BAFT-TUNNEL`.
