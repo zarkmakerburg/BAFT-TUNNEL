@@ -80,7 +80,7 @@ fn constraint(san: &str) -> String {
     }
 }
 
-fn run(args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+pub(crate) fn run(args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
     let mut child = Command::new(OPENSSL)
         .args(args)
         .env_clear()
@@ -109,7 +109,7 @@ fn run(args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-fn write_private(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let mut f = fs::OpenOptions::new()
         .write(true)
         .create_new(true)

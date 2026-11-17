@@ -355,6 +355,17 @@ impl ReloadingAcceptor {
     }
 }
 
+/// TLS 1.3 server for the one-shot pairing exchange (ADR-0050): no client certificate; the
+/// joiner authenticates with a one-time token and the server by the pin carried in the code.
+pub fn pairing_acceptor(cert: &Path, key: &Path) -> Result<TlsAcceptor> {
+    let mut config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+        .with_no_client_auth()
+        .with_single_cert(certificates(cert)?, private_key(key)?)
+        .context("build TLS 1.3 pairing server configuration")?;
+    config.max_early_data_size = 0;
+    Ok(TlsAcceptor::from(Arc::new(config)))
+}
+
 pub fn server_config(ca: &Path, crl: &Path, cert: &Path, key: &Path) -> Result<TlsAcceptor> {
     let verifier = WebPkiClientVerifier::builder(Arc::new(roots(ca)?))
         .with_crls(revocation_lists(crl)?)

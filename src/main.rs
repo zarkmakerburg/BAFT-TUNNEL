@@ -17,6 +17,7 @@ mod link_policy;
 mod noise;
 mod observe;
 mod pair_ca;
+mod pair_proto;
 mod pki_helper;
 #[cfg(feature = "policy-pack")]
 mod policy;
