@@ -1,6 +1,6 @@
 # ADR-0044: Engine-agnostic traffic policy interface
 
-**Status:** Proposed. Nothing is implemented.
+**Status:** Proposed. Interface types and a pass-through Balanced policy exist behind the `policy-pack` cargo feature (`src/policy.rs`, off by default, not called by the relay). No queue, scheduler or profile exists.
 **Date:** 2026-11-17
 **Related:** [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) decisions 11-14, [ADR-0018](ADR-0018-engine-framework.md), [ADR-0019](ADR-0019-baft-engine-host.md), research [POLICY_PACK_TP-0.1_RESEARCH.md](POLICY_PACK_TP-0.1_RESEARCH.md), issue [#245](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/245) (TP-2.0)
 
