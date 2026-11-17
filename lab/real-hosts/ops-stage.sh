@@ -262,6 +262,64 @@ if [[ "$OP_INITIAL_SHA" != "$MVP_SHA" ]]; then
   OP_CROSS_VERSION=1
 fi
 
+# 0.3.0 operator features, checked on the target binary before the soak so a path outage during
+# the soak cannot hide them: host tunnel list (ADR-0036), update notice (ADR-0035), certificate
+# expiry warning, support bundle. Releases without GET /v1/update skip this block (OPS_030=skipped).
+OPS_030="skipped"
+if [[ "$(p1_api iran GET /v1/update | python3 -c 'import json,sys
+try: print("state" in json.load(sys.stdin))
+except Exception: print(False)')" == True ]]; then
+  echo "--- 0.3.0 features: host tunnel list, update notice, certificate warning, support bundle ---"
+  for pair in "iran $CLI" "abroad $SRV"; do
+    read -r fside finst <<<"$pair"
+    p1_api "$fside" GET /v1/host/tunnels >"$LOCAL_TMP/op-host-$fside.json"
+    python3 - "$LOCAL_TMP/op-host-$fside.json" "$finst" <<'PY' || { echo "host tunnel list on $fside does not show $finst as current, configured and active" >&2; exit 1; }
+import json, sys
+b = json.load(open(sys.argv[1])); t = [x for x in b["tunnels"] if x["instance"] == sys.argv[2]]
+assert len(t) == 1 and t[0]["current"] is True and t[0]["configured"] is True and t[0]["active"] == "active", b
+assert b["total"] >= 1 and b["truncated"] is False, b
+assert "PRIVATE KEY" not in json.dumps(b), "key material in the host list"
+PY
+    # Real check against the GitHub release API from this host (no fixture): the latest Stable is older
+    # than the installed 0.3.x, so the notice must say current and offer no command.
+    ssh_host "$fside" "bash '$PKG/scripts/update-check.sh' --state-dir $AGD >/dev/null && chown baft-tunnel-agent: $AGD/update-check.json" ||
+      { echo "update-check.sh could not record the latest release on $fside" >&2; exit 1; }
+    p1_api "$fside" GET /v1/update >"$LOCAL_TMP/op-update-$fside.json"
+    python3 - "$LOCAL_TMP/op-update-$fside.json" <<'PY' || { echo "update notice on $fside is not 'current' after a real check" >&2; exit 1; }
+import json, re, sys
+u = json.load(open(sys.argv[1]))
+assert u["state"] == "current" and re.fullmatch(r"v\d+\.\d+\.\d+", u["latest_tag"] or "") and u["command"] is None, u
+PY
+    # Fixture (labelled as such): a newer Stable must turn the notice on with the signed one-line command.
+    ssh_host "$fside" "printf '{\"tag_name\":\"v99.0.0\",\"prerelease\":false}' > '$REMOTE_DIR/latest.json' && bash '$PKG/scripts/update-check.sh' --state-dir $AGD --api-json '$REMOTE_DIR/latest.json' >/dev/null && chown baft-tunnel-agent: $AGD/update-check.json"
+    p1_api "$fside" GET /v1/update >"$LOCAL_TMP/op-update2-$fside.json"
+    python3 - "$LOCAL_TMP/op-update2-$fside.json" <<'PY' || { echo "update notice on $fside did not show a newer Stable" >&2; exit 1; }
+import json, sys
+u = json.load(open(sys.argv[1]))
+assert u["state"] == "update_available" and u["latest_tag"] == "v99.0.0" and "/v99.0.0/scripts/quick-install.sh" in (u["command"] or ""), u
+PY
+    ssh_host "$fside" "rm -f $AGD/update-check.json '$REMOTE_DIR/latest.json'"
+    # The LAB CA issues 30-day node certificates, so the real certificate must raise the renew_soon warning.
+    p1_api "$fside" GET /v1/status >"$LOCAL_TMP/op-status030-$fside.json"
+    python3 - "$LOCAL_TMP/op-status030-$fside.json" <<'PY' || { echo "status on $fside lacks the certificate expiry warning" >&2; exit 1; }
+import json, sys
+w = [x for x in json.load(open(sys.argv[1]))["warnings"] if x.get("id") == "certificate"]
+assert len(w) == 1 and w[0]["state"] == "renew_soon" and w[0]["severity"] == "warning" and 0 < w[0]["seconds_remaining"] <= 30 * 86400, w
+PY
+    p1_api "$fside" GET /v1/support >"$LOCAL_TMP/op-support-$fside.json"
+    ssh_host "$fside" "cat $AGD/token" >"$LOCAL_TMP/op-tok-$fside"
+    python3 - "$LOCAL_TMP/op-support-$fside.json" "$LOCAL_TMP/op-tok-$fside" <<'PY' || { echo "support bundle on $fside is incomplete or holds a secret" >&2; rm -f "$LOCAL_TMP/op-tok-$fside"; exit 1; }
+import json, sys
+raw = open(sys.argv[1]).read(); b = json.loads(raw); tok = open(sys.argv[2]).read().strip()
+assert {"status", "diagnostics", "excluded"} <= set(b), sorted(b)
+assert tok and tok not in raw and "PRIVATE KEY" not in raw, "secret in the support bundle"
+PY
+    rm -f "$LOCAL_TMP/op-tok-$fside"
+  done
+  OPS_030="host_tunnels=1 update_notice_real=current update_notice_fixture=1 cert_warning=renew_soon support_bundle=1"
+fi
+echo "OPS_030_RESULT $OPS_030"
+
 soak_diag() { # reason : evidence at the moment a soak probe fails (journals without per-stream noise, tunnel sockets, load); max 3 per run
   (( ${SOAK_DIAG_N:-0} < 3 )) || return 0
   SOAK_DIAG_N=$(( ${SOAK_DIAG_N:-0} + 1 ))
@@ -477,4 +535,4 @@ for side in iran abroad; do
     OP_FW_DRIFT+=("$side")
   fi
 done
-echo "OPS_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} update_sha256=${OP_NEW_SHA} setup_direction_direct=1 apply_start_serve=applied apply_start_forward=applied non_root=1 receipt_session=${OP_SESSION} receipt_ready=${OP_READY} integrity_64k_2m=1 evidence_diag_status_traffic=1 replay=1 running_refused=1 ${OP_SOAK_LINE} serve_sigkill_s=${OP_SRV_KILL_S} forward_sigkill_s=${OP_CLI_KILL_S} serve_apply_restart_s=${OP_SRV_APPLY_S} forward_apply_restart_s=${OP_CLI_APPLY_S} backup_restore=1 restore_owners_modes_identical=1 restore_recovery_s=${OP_RESTORE_S} update_ok=1 update_recovery_s=${OP_UPDATE_S} bad_update_rolled_back=1 rollback_recovery_s=${OP_ROLLBACK_S} ${OP_CRL_LINE} revoked_refused=1 uninstalled=1 listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=${OP_FW_DRIFT[*]:-none} cross_version_update=${OP_CROSS_VERSION}"
+echo "OPS_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} update_sha256=${OP_NEW_SHA} setup_direction_direct=1 apply_start_serve=applied apply_start_forward=applied non_root=1 receipt_session=${OP_SESSION} receipt_ready=${OP_READY} integrity_64k_2m=1 evidence_diag_status_traffic=1 replay=1 running_refused=1 ${OP_SOAK_LINE} serve_sigkill_s=${OP_SRV_KILL_S} forward_sigkill_s=${OP_CLI_KILL_S} serve_apply_restart_s=${OP_SRV_APPLY_S} forward_apply_restart_s=${OP_CLI_APPLY_S} backup_restore=1 restore_owners_modes_identical=1 restore_recovery_s=${OP_RESTORE_S} update_ok=1 update_recovery_s=${OP_UPDATE_S} bad_update_rolled_back=1 rollback_recovery_s=${OP_ROLLBACK_S} ${OP_CRL_LINE} revoked_refused=1 uninstalled=1 listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=${OP_FW_DRIFT[*]:-none} cross_version_update=${OP_CROSS_VERSION} ${OPS_030}"
