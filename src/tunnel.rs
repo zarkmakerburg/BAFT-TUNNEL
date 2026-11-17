@@ -109,6 +109,9 @@ pub struct ForwardOptions {
     /// `Some` selects the `noise-tcp` engine; the TLS fields are then unused.
     pub noise: Option<NoiseSettings>,
     pub max_streams: usize,
+    /// Alternate addresses of the SAME peer (same identity, same pinned fingerprint), in priority
+    /// order after `remote` (ADR-0039). Empty keeps the single-link behaviour.
+    pub backup_remotes: Vec<String>,
 }
 
 fn yamux_config(max: usize) -> YamuxConfig {
@@ -255,6 +258,76 @@ where
 
 fn next_backoff(current: Duration) -> Duration {
     current.saturating_mul(2).min(MAX_BACKOFF)
+}
+
+/// Ordered links of one tunnel (ADR-0039): `remote` first, then `backup_remotes`. Wraps the pure
+/// `LinkPolicy`; failback is off (it would close a healthy session, and resume does not exist yet).
+struct LinkSet {
+    remotes: Vec<String>,
+    policy: crate::link_policy::LinkPolicy,
+    start: std::time::Instant,
+    current: usize,
+}
+
+impl LinkSet {
+    /// `None` when there are no backups, so the original single-link loop is untouched.
+    fn new(options: &ForwardOptions) -> Option<Self> {
+        if options.backup_remotes.is_empty() {
+            return None;
+        }
+        let mut remotes = vec![options.remote.clone()];
+        remotes.extend(options.backup_remotes.iter().cloned());
+        let policy = crate::link_policy::LinkPolicy::new(
+            crate::link_policy::PolicyConfig::default(),
+            remotes.len(),
+        )
+        .ok()?;
+        Some(Self {
+            remotes,
+            policy,
+            start: std::time::Instant::now(),
+            current: 0,
+        })
+    }
+
+    fn remote(&self, link: usize) -> &str {
+        &self.remotes[link]
+    }
+
+    /// `Ok(link)`: dial it now. `Err(wait)`: every link is penalized, wait that long.
+    fn pick(&mut self) -> std::result::Result<usize, Duration> {
+        use crate::link_policy::Decision;
+        let now = self.start.elapsed();
+        match self.policy.next(now) {
+            Decision::Dial { link, probe, .. } => {
+                self.policy.dial_started(link, probe, now);
+                self.current = link;
+                Ok(link)
+            }
+            Decision::Wait { until, .. } => Err(until.saturating_sub(now)),
+            // An attempt is already in flight (a spurious wake interrupted it): retry that link.
+            Decision::Stay | Decision::Switch { .. } => Ok(self.current),
+        }
+    }
+
+    fn up(&mut self) {
+        self.policy.session_up(self.current, self.start.elapsed());
+    }
+
+    fn failed(&mut self) {
+        let jitter = OsRng.next_u32() % 1000;
+        self.policy.dial_failed(
+            self.current,
+            crate::link_policy::FailureKind::Network,
+            self.start.elapsed(),
+            jitter,
+        );
+    }
+
+    fn lost(&mut self) {
+        let jitter = OsRng.next_u32() % 1000;
+        self.policy.session_lost(self.start.elapsed(), jitter);
+    }
 }
 
 /// User-facing side of a reverse tunnel on the reachable node: local connections wait here for the
@@ -1021,7 +1094,7 @@ async fn run_forward_session_versioned(
 }
 
 async fn supervise_forward(
-    options: ForwardOptions,
+    mut options: ForwardOptions,
     mut receiver: Receiver<TcpStream>,
     slots: Arc<Semaphore>,
     protocol_version: u16,
@@ -1030,9 +1103,24 @@ async fn supervise_forward(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut backoff = INITIAL_BACKOFF;
+    let mut links = LinkSet::new(&options);
     loop {
         if receiver.is_closed() || *shutdown.borrow() {
             break;
+        }
+        if let Some(set) = links.as_mut() {
+            match set.pick() {
+                Ok(link) => options.remote = set.remote(link).to_string(),
+                Err(wait) => {
+                    tokio::select! {
+                        _ = sleep(wait) => {},
+                        changed = shutdown.changed() => {
+                            if changed.is_err() || *shutdown.borrow() { break; }
+                        }
+                    }
+                    continue;
+                }
+            }
         }
         let connection = tokio::select! {
             result = connect_peer_versioned(&options, protocol_version) => result,
@@ -1041,10 +1129,14 @@ async fn supervise_forward(
                 continue;
             }
         };
+        let mut lost_session = false;
         match connection {
             Ok(session) => {
                 eprintln!("authenticated tunnel session established");
                 backoff = INITIAL_BACKOFF;
+                if let Some(set) = links.as_mut() {
+                    set.up();
+                }
                 if let Err(error) = run_forward_session_versioned(
                     session,
                     &mut receiver,
@@ -1063,26 +1155,44 @@ async fn supervise_forward(
                         eprintln!("tunnel session lost: {error:#}");
                     }
                 }
+                lost_session = true;
+                if let Some(set) = links.as_mut() {
+                    set.lost();
+                }
             }
             Err(error) => {
                 if receiver.is_closed() {
                     break;
                 }
                 eprintln!("tunnel connection attempt failed: {error:#}");
+                if let Some(set) = links.as_mut() {
+                    set.failed();
+                }
             }
         }
 
         if receiver.is_closed() {
             break;
         }
+        // Multi-link: a failed dial moves on to the next link at once (penalties decide waits);
+        // only a lost session pauses, so a peer that drops us immediately cannot cause a spin.
+        let pause = if links.is_none() {
+            Some(backoff)
+        } else {
+            lost_session.then_some(INITIAL_BACKOFF)
+        };
         let jitter_ms = u64::from(OsRng.next_u32() % 500);
-        tokio::select! {
-            _ = sleep(backoff + Duration::from_millis(jitter_ms)) => {},
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() { break; }
+        if let Some(pause) = pause {
+            tokio::select! {
+                _ = sleep(pause + Duration::from_millis(jitter_ms)) => {},
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() { break; }
+                }
+            }
+            if links.is_none() {
+                backoff = next_backoff(backoff);
             }
         }
-        backoff = next_backoff(backoff);
     }
 }
 
@@ -1151,7 +1261,7 @@ async fn reverse_service_versioned_with_control(
 }
 
 async fn supervise_reverse_service(
-    options: ForwardOptions,
+    mut options: ForwardOptions,
     target: SocketAddr,
     slots: Arc<Semaphore>,
     protocol_version: u16,
@@ -1160,9 +1270,24 @@ async fn supervise_reverse_service(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut backoff = INITIAL_BACKOFF;
+    let mut links = LinkSet::new(&options);
     loop {
         if *shutdown.borrow() {
             break;
+        }
+        if let Some(set) = links.as_mut() {
+            match set.pick() {
+                Ok(link) => options.remote = set.remote(link).to_string(),
+                Err(wait) => {
+                    tokio::select! {
+                        _ = sleep(wait) => {},
+                        changed = shutdown.changed() => {
+                            if changed.is_err() || *shutdown.borrow() { break; }
+                        }
+                    }
+                    continue;
+                }
+            }
         }
         let connection = tokio::select! {
             result = connect_peer_versioned(&options, protocol_version) => result,
@@ -1171,10 +1296,14 @@ async fn supervise_reverse_service(
                 continue;
             }
         };
+        let mut lost_session = false;
         match connection {
             Ok(session) => {
                 eprintln!("authenticated reverse tunnel session established");
                 backoff = INITIAL_BACKOFF;
+                if let Some(set) = links.as_mut() {
+                    set.up();
+                }
                 let _mark = crate::session_status::SessionMark::open(
                     &options.tunnel_id,
                     &options.peer_id,
@@ -1192,21 +1321,39 @@ async fn supervise_reverse_service(
                     shutdown.clone(),
                 )
                 .await;
+                if let Some(set) = links.as_mut() {
+                    set.lost();
+                }
                 if *shutdown.borrow() {
                     break;
                 }
                 eprintln!("reverse tunnel session lost; reconnecting");
+                lost_session = true;
             }
-            Err(error) => eprintln!("tunnel connection attempt failed: {error:#}"),
+            Err(error) => {
+                eprintln!("tunnel connection attempt failed: {error:#}");
+                if let Some(set) = links.as_mut() {
+                    set.failed();
+                }
+            }
         }
+        let pause = if links.is_none() {
+            Some(backoff)
+        } else {
+            lost_session.then_some(INITIAL_BACKOFF)
+        };
         let jitter_ms = u64::from(OsRng.next_u32() % 500);
-        tokio::select! {
-            _ = sleep(backoff + Duration::from_millis(jitter_ms)) => {},
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() { break; }
+        if let Some(pause) = pause {
+            tokio::select! {
+                _ = sleep(pause + Duration::from_millis(jitter_ms)) => {},
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() { break; }
+                }
+            }
+            if links.is_none() {
+                backoff = next_backoff(backoff);
             }
         }
-        backoff = next_backoff(backoff);
     }
 }
 
@@ -1809,6 +1956,7 @@ mod tests {
             key: client_key_path,
             noise: None,
             max_streams: 8,
+            backup_remotes: vec![],
         };
         let session = timeout(Duration::from_secs(10), connect_peer(&forward_options))
             .await
@@ -1953,6 +2101,7 @@ mod tests {
                 peer_public,
             }),
             max_streams: 8,
+            backup_remotes: vec![],
         };
 
         // A dialer that pins the wrong server key must not obtain a session.
@@ -2136,6 +2285,7 @@ mod tests {
                     peer_public: public_pub,
                 }),
                 max_streams: 8,
+                backup_remotes: vec![],
             })
             .await
         });
@@ -2248,6 +2398,7 @@ mod tests {
                 peer_public: public_pub.clone(),
             }),
             max_streams: 8,
+            backup_remotes: vec![],
         };
 
         // A service node that disagrees on the direction label is refused at the hello.
@@ -2409,5 +2560,158 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    /// ADR-0039: the first link is dead, the backup is the real peer; the service node must fail
+    /// over on its own and carry traffic. In-process Noise, local evidence only, not LAB.
+    #[tokio::test]
+    async fn reverse_service_fails_over_to_a_backup_remote() {
+        let directory = std::env::temp_dir().join(format!(
+            "baft-failover-e2e-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let public_key = directory.join("public.noise");
+        let private_key = directory.join("private.noise");
+        let public_pub = crate::engine::write_noise_keypair(&public_key).unwrap();
+        let private_pub = crate::engine::write_noise_keypair(&private_key).unwrap();
+
+        let echo_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let echo_address = echo_listener.local_addr().unwrap();
+        let echo_task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = echo_listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buffer = [0_u8; 1024];
+                    while let Ok(count) = stream.read(&mut buffer).await {
+                        if count == 0 || stream.write_all(&buffer[..count]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        async fn reserve() -> SocketAddr {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            drop(listener);
+            address
+        }
+        let dead_address = reserve().await;
+        let tunnel_address = reserve().await;
+        let ingress_address = reserve().await;
+        let direction = ConnectionDirection::Reverse;
+        let public_task = tokio::spawn(serve(ServerOptions {
+            listen: tunnel_address.to_string(),
+            target: String::new(),
+            ingress: Some(ingress_address.to_string()),
+            local_id: "public".to_owned(),
+            peer_id: "private".to_owned(),
+            tunnel_id: "failover".to_owned(),
+            direction,
+            peer_fingerprint: String::new(),
+            ca: PathBuf::new(),
+            crl: PathBuf::new(),
+            cert: PathBuf::new(),
+            key: public_key.clone(),
+            noise: Some(NoiseSettings {
+                private_key: public_key,
+                peer_public: private_pub,
+            }),
+            max_streams: 8,
+        }));
+        for _ in 0..100 {
+            if TcpStream::connect(ingress_address).await.is_ok() {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        let service_task = tokio::spawn(async move {
+            forward(ForwardOptions {
+                listen: String::new(),
+                target: Some(echo_address.to_string()),
+                remote: dead_address.to_string(),
+                server_name: String::new(),
+                local_id: "private".to_owned(),
+                peer_id: "public".to_owned(),
+                tunnel_id: "failover".to_owned(),
+                direction,
+                peer_fingerprint: String::new(),
+                ca: PathBuf::new(),
+                crl: PathBuf::new(),
+                cert: PathBuf::new(),
+                key: private_key.clone(),
+                noise: Some(NoiseSettings {
+                    private_key,
+                    peer_public: public_pub,
+                }),
+                max_streams: 8,
+                backup_remotes: vec![tunnel_address.to_string()],
+            })
+            .await
+        });
+        let mut visitor = TcpStream::connect(ingress_address).await.unwrap();
+        let payload: Vec<u8> = (0..4096).map(|i| (i % 251) as u8).collect();
+        timeout(Duration::from_secs(20), async {
+            visitor.write_all(&payload).await.unwrap();
+            let mut received = vec![0_u8; payload.len()];
+            visitor.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, payload);
+        })
+        .await
+        .expect("traffic did not flow after failing over to the backup remote");
+
+        service_task.abort();
+        public_task.abort();
+        echo_task.abort();
+        let _ = service_task.await;
+        let _ = public_task.await;
+        let _ = echo_task.await;
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn link_set_is_absent_without_backups_and_orders_links_with_them() {
+        let mut options = ForwardOptions {
+            listen: String::new(),
+            target: None,
+            remote: "127.0.0.1:1".to_owned(),
+            server_name: String::new(),
+            local_id: "a".to_owned(),
+            peer_id: "b".to_owned(),
+            tunnel_id: "t".to_owned(),
+            direction: ConnectionDirection::Direct,
+            peer_fingerprint: String::new(),
+            ca: PathBuf::new(),
+            crl: PathBuf::new(),
+            cert: PathBuf::new(),
+            key: PathBuf::new(),
+            noise: None,
+            max_streams: 8,
+            backup_remotes: vec![],
+        };
+        assert!(LinkSet::new(&options).is_none());
+        options.backup_remotes = vec!["127.0.0.1:2".to_owned()];
+        let mut set = LinkSet::new(&options).unwrap();
+        assert_eq!(set.pick(), Ok(0));
+        assert_eq!(set.remote(0), "127.0.0.1:1");
+        set.failed();
+        assert_eq!(
+            set.pick(),
+            Ok(1),
+            "a failed primary moves on to the backup at once"
+        );
+        assert_eq!(set.remote(1), "127.0.0.1:2");
+        set.failed();
+        assert!(
+            set.pick().is_err(),
+            "both links penalized: wait, do not spin"
+        );
     }
 }
