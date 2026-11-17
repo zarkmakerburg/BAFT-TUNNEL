@@ -35,7 +35,7 @@ jobs:
           S=$GITHUB_WORKSPACE/bench/harness.py
           run() { # name target extra...
             n=$1; t=$2; shift 2
-            python3 $S --size-mib 512 ${t:+--target $t} --json $W/$n.json "$@" >/dev/null 2>$W/$n.err; echo "$n done rc=$?"
+            python3 $S --size-mib ${SZ:-512} ${t:+--target $t} --json $W/$n.json "$@" >/dev/null 2>$W/$n.err; echo "$n done rc=$?"
           }
           # null control
           run null ""
@@ -46,8 +46,8 @@ jobs:
             ./rathole -s rs.toml >rs.log 2>&1 & RS=$!; sleep 1; ./rathole -c rc.toml >rc.log 2>&1 & RC=$!; sleep 2
             run rathole 127.0.0.1:5202
             # fault: restart client mid-transfer
-            ( sleep 1.5; kill $RC; sleep 1; ./rathole -c rc.toml >rc2.log 2>&1 & ) &
-            run rathole_clientkill 127.0.0.1:5202
+            ( sleep 0.7; kill $RC; sleep 1; ./rathole -c rc.toml >rc2.log 2>&1 & ) &
+            SZ=3072 run rathole_clientkill 127.0.0.1:5202
             kill $RS $RC 2>/dev/null; pkill -f '[r]athole -c' || true; sleep 1
           fi
           # frp
@@ -56,8 +56,8 @@ jobs:
             printf 'serverAddr="127.0.0.1"\nserverPort=7000\nauth.token="%s"\n[[proxies]]\nname="s"\ntype="tcp"\nlocalIP="127.0.0.1"\nlocalPort=39001\nremotePort=5203\n' $TOK > frpc.toml
             ./frps -c frps.toml >fs.log 2>&1 & FS=$!; sleep 1; ./frpc -c frpc.toml >fc.log 2>&1 & FC=$!; sleep 2
             run frp 127.0.0.1:5203
-            ( sleep 1.5; kill $FC; sleep 1; ./frpc -c frpc.toml >fc2.log 2>&1 & ) &
-            run frp_clientkill 127.0.0.1:5203
+            ( sleep 0.7; kill $FC; sleep 1; ./frpc -c frpc.toml >fc2.log 2>&1 & ) &
+            SZ=3072 run frp_clientkill 127.0.0.1:5203
             kill $FS $FC 2>/dev/null; pkill -f '[f]rpc -c' || true
           fi
           {
