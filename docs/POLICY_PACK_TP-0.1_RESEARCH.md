@@ -66,6 +66,17 @@ Phase 1 uses method 1 first. Evidence label for every result: `simulated`, `VM`,
 - Whether `tokio-yamux` shares the connection fairly between streams under load is not verified here; the harness' loaded-versus-idle scenario will show it.
 - Per-engine behaviour of `noise-tcp` versus `tcp-tls` under the same load is not compared.
 
-## 8. Open item found while building the harness (2026-11-17, unresolved)
+## 8. Harness stall: resolved (2026-11-17)
 
-A first in-process harness (loopback TCP through a rate-limited proxy, the product's `yamux_config`, one bulk writer beside a ping stream) did **not** produce load: the bulk stream stopped at the initial 256 KiB Yamux stream window and never resumed (server read all 262,143 bytes, the sender's `send_window` reached 0 and stayed there for 3 s). Without the rate limit the same stream stopped near 4 MiB. Not yet known whether this is a harness defect (reader/waker arrangement), a `tokio-yamux` 0.3 window-update behaviour that production traffic avoids for a reason not yet identified, or a real limit. Production relay code (`relay_with_idle_timeout`) was not run in this experiment, and LAB 2 MB probes and soaks pass, so no product defect is claimed. TP-1.2 must resolve this first; the WIP harness is kept at `/mnt/project-files/policy-pack/policy_baseline.wip.rs` (not merged, evidence level would be `simulated`).
+The first harness wrote to the Yamux stream directly and stalled at the 256 KiB window. Rebuilt on the product's own relay path (`relay_with_idle_timeout` on both ends, `yamux_config`), the bulk stream flows (about 29 MB in 10.5 s at a 2.5 MB/s bottleneck). The stall was a defect of the first harness, not a product defect. Why the direct-write variant stalled is not investigated further.
+
+## 9. First Baseline numbers (evidence level: simulated, not VM, not LAB)
+
+`src/policy_baseline.rs`, run `cargo test --release policy_baseline -- --ignored --nocapture`. Loopback TCP through a rate-limited proxy (2.5 MB/s each way, serialization delay only, no propagation delay, loss or jitter); one 64-byte ping stream (every 20 ms) with and without one competing bulk stream; pack off (today's path). One run on a development container, 10 s per scenario.
+
+| Scenario | Samples | RTT p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| idle | 424 | 2.3 ms | 3.3 ms | 3.5 ms | 35 ms |
+| bulk competing | 6 | 1,970 ms | 2,004 ms | 2,004 ms | 2,004 ms |
+
+Reading: with a bulk stream on the same tunnel, interactive round trips grew by about three orders of magnitude, consistent with the hypothesis that a deep BAFT-TUNNEL-side queue (the 4 MiB Yamux stream window plus buffers) sits in front of the bottleneck. This supports building H1/H4 (bounded queues, smaller effective window for Bulk) and is the number TP-2.1 must beat. Limits: a single run, a simulated bottleneck, no propagation delay; absolute values are not path latency and make no claim about real networks. TP-1.2 still needs repeated runs, other rates, the `noise-tcp` engine, and CI/VM and LAB stages.
