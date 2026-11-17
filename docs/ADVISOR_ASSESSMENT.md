@@ -255,7 +255,7 @@ Format: Problem / Current State / Evidence / Options / Recommendation / Trade-of
 
 ## 9. Open items for the owner
 
-- Allow one multi-hour benchmark window (conflict 1).
+- ~~Allow one multi-hour benchmark window (conflict 1).~~ Approved 2026-11-17 by the coordinator (delegated by the owner) as a one-time exception to the soak cap. Conditions: announce before the run, one run at a time on the shared LAB hosts, schedule after the v0.3.0-rc.1 LAB rerun and the tcp-tls stall control (about 16:30Z), pin competitor commits/versions at run time, isolated and cleaned up, no secrets, no firewall/route/sysctl changes, results reported as LAB evidence only. Status: approved, not scheduled; the harness (R-5) does not exist yet and no run has happened.
 - Confirm priority order R-1, R-2, R-4 before further 0.3.0 items.
 - Confirm whether to capture pinned reference commits by granting read access to those repositories to a future session.
 
