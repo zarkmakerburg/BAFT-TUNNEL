@@ -38,7 +38,7 @@
 | [#323](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/323) | `d1897c5cb3a6af89868ce57255136a6087d908d3` | Draft / Open | 11 Check Runs green on this head; no review recorded. Noise-TCP Direct rotation harness only; not TCP-TLS evidence. |
 | [#324](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/324) | `2ca82c8b86d75ffe4db9aae9fc8e1025635e1f7d` | Draft / Open | 11 Check Runs green on this head; no review recorded. Skills/governance + roadmap documentation; parallel, non-blocking track. |
 | [#326](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/326) | `ab8095d59cf77bf16bd13e34a81acf77adc463c5` | Draft / Open | F1 pure rules + ADR-0045 accepted with conditions; mergeability/check state not yet verified. |
-| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `db16bfd889637ac23826b66426163cfa2ae88b96` (head immediately before this snapshot refresh) | Draft / Open | Automatic checkpoint policy + combined activate-and-continue `HQ RESUME`; documentation-only. Live PR metadata: mergeable=true, mergeable_state=blocked, no submitted reviews. Exact-head checks at recheck: 10 total, 7 IN_PROGRESS and 3 QUEUED; no CI PASS claimed. This snapshot refresh advances the branch; refetch exact head/checks after write. |
+| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `8526508820f5ee9db4d9f5aac3822ef3d9e6063c` | Draft / Open | Automatic checkpoint policy + combined activate-and-continue `HQ RESUME`; documentation-only. Live metadata: mergeable=true, `mergeable_state=clean`; no submitted reviews. Exact-head checks: 11/11 completed SUCCESS. Still Draft and not approved/merged. |
 | [#171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171) | `e64ea2fca5b3dd17b709ecf9c92a2cf933da32cb` | Draft / Open | Central Fleet architecture only; deferred after 0.4.0. |
 
 PR base refs and statuses can change; re-fetch them before action. PR #327 was opened from the recorded main SHA and was mergeable=true at the last check, but merge remained blocked by required checks. This checkpoint itself advances its head, so fetch the live PR head/checks before any review or merge decision. PR #169 is the separate HQ playbook and is not BAFT-TUNNEL product scope.
@@ -86,3 +86,15 @@ Continue P0-A from the partial raw-TCP result: wait for run **44101769313** to f
 3. Verify live main SHA, open PR heads/reviews/checks, active runs/jobs/logs/artifacts and Roadmap priority.
 4. Confirm applicable authorization and safety gates.
 5. Continue from **Next action**; do not repeat completed work or trust stale snapshot fields without live verification.
+
+
+## Latest HQ continuation reconciliation — 2026-11-17 14:56 UTC
+
+- P0-A run **44101769313** remains IN_PROGRESS; job **134120451601** is still in the transfer step. GitHub's last run update remains **14:45:27 UTC** despite rechecks at 14:55 UTC. Logs return 404 `BlobNotFound`; no artifacts exist. Actual dispatch inputs/mode remain UNKNOWN. Run began 14:19:03 UTC; its job timeout is 45 minutes. Do not infer the comparator mode or treat this as failure before terminal status.
+- Do not dispatch another LAB workflow while this run is active. At the next safe recheck, inspect run/job status, logs and artifacts; if it reaches terminal state, recover inputs and validate both client/server evidence before any interpretation.
+- PR #327 exact head `8526508820f5ee9db4d9f5aac3822ef3d9e6063c`: all 11/11 Check Runs completed SUCCESS. Live PR remains OPEN / Draft, mergeable=true, mergeable_state=clean, no submitted reviews. Green CI is not approval; do not merge while Draft and without review/owner gate.
+- No third LAB dispatch, host mutation, firewall/route/sysctl change, merge, release or deploy.
+
+## Next action
+
+Continue P0-A: wait/recheck run **44101769313**. Determine its actual mode, ages and parameters from workflow logs/dispatch evidence, then validate client and server bytes/timings/errors. Do not launch another LAB run while it is active. Keep the evidence explicitly labeled non-tunnel control traffic.
