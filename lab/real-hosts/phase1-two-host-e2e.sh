@@ -1055,8 +1055,9 @@ stop_role iran forward
 sleep 1
 start_serve abroad abroad iran direct "$IRAN_PIN" abroad.crt abroad.key
 start_forward iran iran abroad "$LAB_ABROAD_HOST" abroad.lab direct "$ABROAD_PIN" iran.crt iran.key
-sleep 4
-if ! ssh_host abroad "grep -qi 'revok' '$REMOTE_DIR/serve.log'"; then
+# Poll: the first connection attempt can take longer than a few seconds on the Iran path, and an
+# empty log then is not a pass or a fail (LAB run 44032181972 had no attempt at all after 4 s).
+if ! ssh_host abroad "for n in \$(seq 1 30); do grep -qi 'revok' '$REMOTE_DIR/serve.log' && exit 0; sleep 1; done; exit 1"; then
   echo "Revoked client certificate was not rejected by the TLS server" >&2
   exit 1
 fi
@@ -1069,8 +1070,9 @@ openssl ca -gencrl -batch -config "$LOCAL_TMP/openssl.cnf" -out "$LOCAL_TMP/ca.c
 for side in iran abroad; do copy_to_host "$side" "$LOCAL_TMP/ca.crl"; done
 start_serve abroad abroad control direct "$CONTROL_PIN" abroad.crt abroad.key
 start_forward iran control abroad "$LAB_ABROAD_HOST" abroad.lab direct "$ABROAD_PIN" control.crt control.key
-sleep 4
-if ! ssh_host iran "grep -qi 'revok' '$REMOTE_DIR/forward.log'"; then
+# Poll: the first connection attempt can take longer than a few seconds on the Iran path, and an
+# empty log then is not a pass or a fail (LAB run 44032181972 had no attempt at all after 4 s).
+if ! ssh_host iran "for n in \$(seq 1 30); do grep -qi 'revok' '$REMOTE_DIR/forward.log' && exit 0; sleep 1; done; exit 1"; then
   echo "Revoked server certificate was not rejected by the TLS client" >&2
   exit 1
 fi
