@@ -18,3 +18,6 @@ Per-tunnel byte counters up/down (the session counters already exist), period qu
 
 ## 4. DNS and split routing (P2, design only)
 Out of scope for the tunnel engine: it would make BAFT-TUNNEL a general proxy/router. If ever wanted, it is an optional separate module with its own ADR, listener bound to loopback by default, authentication on non-loopback, resolver over the tunnel only (no leaking to the host resolver), and leak tests. No work until the owner asks for it.
+
+## Implementation status (2026-11-17)
+Implemented: `baft-tunnel doctor --config FILE [--network] [--json]` (`src/doctor.rs`), an offline, read-only check of one config file: parse (unknown keys already rejected by serde `deny_unknown_fields`), public validation, identity and protocol line, key file permissions, CA/CRL/cert presence, node certificate and CRL expiry, link list, optional single TCP connect per remote. Exit code 0 (pass/warning), 1 (any FAIL), 2 (UNKNOWN and no FAIL). Integrity evidence, link health and agent socket security are listed under `not_checked` (they need the live agent), never as results. Not done: agent-API doctor, schema table as the single reference, deprecation warnings, "did you mean" hints, docs generated from the schema.

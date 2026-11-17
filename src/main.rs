@@ -6,6 +6,7 @@ mod baft_engine;
 mod capabilities;
 mod config;
 mod control_socket;
+mod doctor;
 mod engine;
 mod engine_store;
 mod handshake;
@@ -101,6 +102,17 @@ enum Command {
         /// Permit a non-loopback --listen address (unauthenticated local clients can then use the tunnel).
         #[arg(long)]
         allow_non_loopback_listen: bool,
+    },
+    /// Read-only checks of one config file on this host (PASS/WARNING/FAIL/UNKNOWN).
+    Doctor {
+        #[arg(long)]
+        config: PathBuf,
+        /// Also try one TCP connect to each dialed remote (no data is sent).
+        #[arg(long)]
+        network: bool,
+        /// Machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
     },
     /// Validate or preview a JSON configuration without opening network listeners.
     Config {
@@ -441,6 +453,19 @@ async fn run() -> Result<()> {
             };
             config.validate()?;
             config.apply().await
+        }
+        Command::Doctor {
+            config,
+            network,
+            json,
+        } => {
+            let report = doctor::run(&config, network);
+            if json {
+                println!("{}", report.to_json());
+            } else {
+                print!("{}", report.human());
+            }
+            std::process::exit(i32::from(report.exit_code()));
         }
         Command::Config {
             command: ConfigCommand::Validate { config: path },
