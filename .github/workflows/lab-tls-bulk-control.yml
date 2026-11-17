@@ -1,0 +1,105 @@
+name: LAB non-tunnel TLS/TCP bulk transfer control (diagnostic)
+
+# Measures raw bulk transfer between the LAB hosts WITHOUT any BAFT-TUNNEL code, to tell a path
+# problem from a product problem. A throwaway python server runs on the abroad host on an extra
+# port for the duration of the run; the Iran host connects. No install, restart, firewall, route
+# or sysctl change. Output is per-transfer JSON lines (bytes, seconds, errno). No secrets printed.
+on:
+  workflow_dispatch:
+    inputs:
+      port:
+        description: TCP port the abroad host accepts from the Iran host (must already be reachable)
+        required: false
+        type: string
+        default: '8443'
+      size_kb:
+        description: Transfer size per attempt in KiB (64-8192)
+        required: false
+        type: string
+        default: '2048'
+      iterations:
+        description: Attempts per mode and direction (1-20)
+        required: false
+        type: string
+        default: '5'
+      sni:
+        description: TLS SNI sent by the client (empty = none)
+        required: false
+        type: string
+        default: ''
+      confirm:
+        description: Type RUN_LAB_BULK_CONTROL to authorize the isolated two-host control transfer
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-trusted-lab-hosts
+  cancel-in-progress: false
+
+jobs:
+  bulk-control:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Run control transfers (tls and tcp, both directions)
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          PORT: ${{ inputs.port }}
+          SIZE_KB: ${{ inputs.size_kb }}
+          ITER: ${{ inputs.iterations }}
+          SNI: ${{ inputs.sni }}
+          LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+          LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
+          LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          LAB_SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+          LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+          LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+          LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+          LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == RUN_LAB_BULK_CONTROL ]] || { echo "confirmation missing" >&2; exit 2; }
+          [[ "$PORT" =~ ^[0-9]{2,5}$ && "$SIZE_KB" =~ ^[0-9]+$ && "$ITER" =~ ^[0-9]+$ ]] || { echo "bad numeric input" >&2; exit 2; }
+          [[ "$SNI" =~ ^[A-Za-z0-9.-]{0,100}$ ]] || { echo "bad sni" >&2; exit 2; }
+          (( SIZE_KB >= 64 && SIZE_KB <= 8192 && ITER >= 1 && ITER <= 20 && PORT >= 1024 && PORT <= 65535 )) || { echo "input out of range" >&2; exit 2; }
+          size=$(( SIZE_KB * 1024 ))
+          key="$RUNNER_TEMP/bc-id"; kh="$RUNNER_TEMP/bc-kh"
+          printf '%s\n' "$LAB_SSH_PRIVATE_KEY" > "$key"; printf '%s\n' "$LAB_SSH_KNOWN_HOSTS" > "$kh"
+          chmod 0600 "$key" "$kh"; unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS
+          opts=(-i "$key" -o UserKnownHostsFile="$kh" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15)
+          ir=(ssh "${opts[@]}" -p "${LAB_IRAN_SSH_PORT:-22}" "$LAB_IRAN_SSH_USER@$LAB_IRAN_HOST")
+          ab=(ssh "${opts[@]}" -p "${LAB_ABROAD_SSH_PORT:-22}" "$LAB_ABROAD_SSH_USER@$LAB_ABROAD_HOST")
+          d=/tmp/baft-bulk-control-$$
+          cleanup() {
+            "${ab[@]}" "pkill -f '$d/[t]ls-bulk-control.py'; rm -rf $d" >/dev/null 2>&1 || true
+            "${ir[@]}" "rm -rf $d" >/dev/null 2>&1 || true
+            rm -f "$key" "$kh"
+          }
+          trap cleanup EXIT
+          "${ab[@]}" "mkdir -m 700 $d"; "${ir[@]}" "mkdir -m 700 $d"
+          for h in ab ir; do
+            if [[ $h == ab ]]; then c=("${ab[@]}"); else c=("${ir[@]}"); fi
+            "${c[@]}" "cat > $d/tls-bulk-control.py" < lab/real-hosts/tls-bulk-control.py
+          done
+          echo "abroad port $PORT: listeners before run:"; "${ab[@]}" "ss -ltn 'sport = :$PORT' | tail -n +2 | wc -l"
+          for mode in tls tcp; do
+            for dir in up down; do
+              echo "=== $mode $dir ${SIZE_KB}KiB x$ITER ($(date -u +%H:%M:%SZ)) ==="
+              "${ab[@]}" "nohup python3 $d/tls-bulk-control.py server $PORT $mode $ITER $d > $d/srv-$mode-$dir.log 2>&1 < /dev/null &"
+              sleep 2
+              ahost="$LAB_ABROAD_HOST"
+              "${ir[@]}" "timeout 300 python3 $d/tls-bulk-control.py client $ahost $PORT $mode $dir $size $ITER '$SNI'" 2>&1 | sed "s/$ahost/<abroad>/g" || echo "client failed"
+              sleep 2
+              echo "--- server side ---"; "${ab[@]}" "cat $d/srv-$mode-$dir.log; pkill -f '$d/[t]ls-bulk-control.py server' || true" 2>&1 || true
+            done
+          done
