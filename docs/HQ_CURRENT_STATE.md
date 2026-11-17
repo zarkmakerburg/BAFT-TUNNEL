@@ -29,19 +29,26 @@
 
 ## Live repository snapshot
 
-- **main HEAD at last verification:** `c3e2bda8cc4b598c410a665f3c18fb6cc2d944c2` — PR #325, documentation update for advisor-panel UX captures.
-- **main exact-SHA checks:** 11 Check Runs observed on `c3e2bda8cc4b598c410a665f3c18fb6cc2d944c2`; all 11 completed with `success` at this verification. This describes CI only, not LAB acceptance.
-- **Open PRs at last verification:**
+- **Verified at:** 2026-11-17 15:24 UTC.
+- **main HEAD:** `c3e2bda8cc4b598c410a665f3c18fb6cc2d944c2` (PR #325); 13/13 Check Runs SUCCESS. Required branch-protection contexts are `rust`, `ubuntu-2204-baseline`, and `lab-config`, all SUCCESS on this exact SHA. This is hosted CI, not LAB evidence.
+- **Open product PRs (live list):**
 
-| PR | Head SHA | State | Verified note |
-|---|---|---|---|
-| [#323](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/323) | `7177bb4566d5dd5b4fddc45d69a325a82729d68e` | Draft / Open | Candidate ancestry guard + static test added. Latest exact-head checks: 1 SUCCESS, 7 IN_PROGRESS, 2 QUEUED; no independent review. Noise-TCP Direct only. No LAB dispatch. |
-| [#324](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/324) | `2ca82c8b86d75ffe4db9aae9fc8e1025635e1f7d` | Draft / Open | 11 Check Runs green on this head; no review recorded. Skills/governance + roadmap documentation; parallel, non-blocking track. |
-| [#326](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/326) | `ab8095d59cf77bf16bd13e34a81acf77adc463c5` | Draft / Open | F1 pure rules + ADR-0045 accepted with conditions; mergeability/check state not yet verified. |
-| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `38c909db4ab97d1e4142393c3b50d93b959f799e` | Draft / Open | Automatic checkpoint policy + combined activate-and-continue `HQ RESUME`; documentation-only. Live metadata: mergeable=true, `mergeable_state=blocked`; exact-head checks 0 SUCCESS, 1 IN_PROGRESS, 9 QUEUED. No submitted reviews. |
-| [#328](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/328) | `c2a92a2270c93d3b495ecd38da4fcbe24d7aaeb5` | Draft / Open | Roadmap aged-flow addendum: paired non-tunnel raw TCP/TLS controls now recorded; 5 exact-head checks QUEUED at last recheck; documentation-only. |\n| [#171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171) | `e64ea2fca5b3dd17b709ecf9c92a2cf933da32cb` | Draft / Open | Central Fleet architecture only; deferred after 0.4.0. |
+| PR | Head SHA | State | Exact-head CI | Review / note |
+|---|---|---|---|---|
+| [#323](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/323) | `7177bb4566d5dd5b4fddc45d69a325a82729d68e` | Draft / Open | 11/11 SUCCESS; all required contexts SUCCESS | No submitted reviews/requested reviewers. Candidate guard requires merged PR #315 and its merge commit ancestor. Noise-TCP Direct harness only; no LAB dispatch. |
+| [#324](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/324) | `2ca82c8b86d75ffe4db9aae9fc8e1025635e1f7d` | Draft / Open | 11/11 SUCCESS | Skills/governance documentation; non-blocking parallel track; no review recorded. |
+| [#326](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/326) | `ab8095d59cf77bf16bd13e34a81acf77adc463c5` | Draft / Open | 12/12 SUCCESS | Fleet F1 pure rules / ADR-0045; base is older than current main; no review recorded. |
+| [#327](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/327) | `b67631acec69472927bb7c99394aa3fbf98e2553` | Draft / Open | 10/11 SUCCESS, 1 IN_PROGRESS (`rust`) at last exact-head read | HQ checkpoint protocol/snapshot docs; this checkpoint update advances its head and restarts CI. |
+| [#328](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/328) | `c2a92a2270c93d3b495ecd38da4fcbe24d7aaeb5` | Draft / Open | 11/11 SUCCESS | Roadmap §9.7 raw TCP/TLS aged-flow correction; documentation-only; no review recorded. |
+| [#171](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/171) | `e64ea2fca5b3dd17b709ecf9c92a2cf933da32cb` | Draft / Open | Not rechecked in this resume | Central Fleet architecture; deferred until after 0.4.0. |
 
-PR base refs and statuses can change; re-fetch them before action. PR #327 was opened from the recorded main SHA and was mergeable=true at the last check, but merge remained blocked by required checks. This checkpoint itself advances its head, so fetch the live PR head/checks before any review or merge decision. PR #169 is the separate HQ playbook and is not BAFT-TUNNEL product scope.
+All PRs above remain Draft. CI status is exact-head and time-sensitive; re-fetch before any landing decision. PR #169 is the separate HQ playbook and is not BAFT-TUNNEL product scope.
+
+- **Release refs:** `v0.2.1` is the latest Stable tag. `v0.2.2` tag does not exist. `v0.2.2-rc.3` is a published prerelease whose tag object resolves to commit `5dd0890cac9deddcac66c3105d3fbaf9164e391e`; `v0.3.0-rc.1` is also a prerelease. No Stable tag/release was created in this resume.
+- **Worktrees on Mac:** HQ takeover worktree `hq/agent-skills-roadmap-20261117` at `bc1e2ebedea96ed61e183675a30fa5720a35764f`, clean; PR #323 review worktree detached at `d1897c5cb3a6af89868ce57255136a6087d908d3`, clean; roadmap worktree detached at `2ca82c8b86d75ffe4db9aae9fc8e1025635e1f7d`, clean. Preserve all three.
+- **Mac Agent Skills accessed in this resume:** `awesome-code-review`, `awesome-security-audit`, `awesome-test-gap-audit`, `verification-before-completion`, and `using-git-worktrees`. The previously referenced Rust-specific `rs-*` skill files were not found in the checked Mac skill roots in this session; do not claim they were loaded here.
+
+PR #327 remains a documentation-only Draft. Its CI may be restarted by each snapshot update. PR #169 remains outside product scope.
 
 ## Active task — P0-A raw TCP vs TLS aged-flow diagnosis
 
@@ -149,6 +156,16 @@ Recheck PR #323 exact-head required workflows until terminal. If green, obtain a
 - No independent review, no merge, no LAB dispatch, no host mutation, no firewall/route/sysctl/CAP_NET_ADMIN change, no release/deploy.
 - Next: wait for exact-head checks on #323/#328/#327; arrange independent review for #323 before any LAB. Keep product-specific root-cause isolation separate and non-privileged.
 
+## Latest HQ continuation reconciliation — 2026-11-17 15:24 UTC
+
+- HQ RESUME re-read the HQ playbook, BAFT-TUNNEL entry point, project profile, usage guide, checkpoint protocol, current snapshot, latest Issue #2 comments, roadmap, remaining-work plan, release policy, merge policy and LAB access contract.
+- Live main is `c3e2bda8cc4b598c410a665f3c18fb6cc2d944c2`; 13/13 exact-SHA Check Runs SUCCESS. Required branch-protection contexts are all green.
+- PR #323 exact head `7177bb4566d5dd5b4fddc45d69a325a82729d68e`: 11/11 exact-head checks SUCCESS, including all three required contexts. PR remains OPEN / Draft, mergeable=true, with no submitted reviews and no requested reviewers. The candidate-selection guard for merged PR #315 is present. No LAB was dispatched.
+- PR #324: 11/11 SUCCESS; PR #326: 12/12 SUCCESS; PR #328: 11/11 SUCCESS. All remain Draft. PR #327 before this snapshot write: 10/11 SUCCESS, with `rust` still IN_PROGRESS; its head advances because this snapshot is being refreshed. PR #171 remains Draft and deferred; its CI was not rechecked.
+- Release verification: latest Stable tag is `v0.2.1`; no `v0.2.2` tag exists. `v0.2.2-rc.3` remains a prerelease on `5dd0890cac9deddcac66c3105d3fbaf9164e391e`. No tag or release action was taken.
+- Mac is online. Three known BAFT-TUNNEL worktrees were checked and are clean at their recorded commits. Relevant Mac skills were read: code review, security audit, test-gap audit, verification-before-completion, and worktree safety. Rust-specific `rs-*` skills were not located in the inspected roots.
+- **Next safe action:** obtain an independent agent review of PR #323 at its exact current head. Keep it Draft; no merge and no LAB dispatch until review findings are read, the head remains unchanged, and the separate owner-authorized LAB gate is reconfirmed. Do not conflate this Noise-TCP Direct harness with the P0-A raw TCP/TLS control finding.
+
 ## Next action
 
-Recheck exact-head CI for PR #323, #327 and #328. For #323, independent review is still a hard gate before the real Noise-TCP Direct two-host LAB. Keep P0-A's root cause/product impact unverified; do not claim TLS rotation mitigation.
+Request an independent CodeAgent review of PR #323, exact head `7177bb4566d5dd5b4fddc45d69a325a82729d68e`. Read the findings, revalidate the PR head and exact-head CI, then determine whether any fixes are required. Only after review is resolved should the separate owner-authorized two-host Noise-TCP Direct LAB be considered. No merge, LAB dispatch, tag, release, deploy, host mutation, firewall/route/sysctl change or CAP_NET_ADMIN use is authorized by this checkpoint.
