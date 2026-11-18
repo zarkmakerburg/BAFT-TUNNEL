@@ -69,6 +69,8 @@ jobs:
         run: bash lab/trusted/test-phase1-transport-health.sh
       - name: Check the Fleet report LAB harness contract
         run: bash lab/trusted/test-phase1-fleet-report.sh
+      - name: Check the Doctor LAB harness contract
+        run: bash lab/trusted/test-phase1-doctor.sh
       - name: Test offline PKI lifecycle (temporary CA only)
         run: bash scripts/pki/test.sh
       - name: Test guarded CRL update validation (temporary CAs only)
