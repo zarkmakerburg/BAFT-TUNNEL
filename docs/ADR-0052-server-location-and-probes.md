@@ -41,6 +41,9 @@ Probe results show reachability and latency only. They say nothing about tunnel 
 ### 4. Panel
 In "Add server": after the address is entered, the card shows Country (with source), Suggested role, "From this server" reachability, and a per-city table for Iran probes with Unknown rows where not measured. The opt-in switch for external probes sits in Advanced with the privacy text. Persian RTL first.
 
+## Implementation note (2026-11-18): offline country
+`src/geoip.rs` reads `geoip-country.csv` from the state directory (DB-IP "IP to Country Lite", CC BY 4.0, attribution shown in the panel result and in `GET /v1/geo`). `scripts/geoip-update.sh` is the operator-run update path (monthly file; the agent never downloads). Parsing 730k ranges takes about 0.8 s once, reloaded when the file changes. `GET /v1/geo` returns country only (never the address) for this node's outbound IPv4 and the configured peer, with a reason when null. A country typed by the operator in a run request is labelled `user-declared`. A private outbound address means NAT, so it stays Unknown.
+
 ## Staged plan
 1. This ADR (review of external providers named in 3.3 is a follow-up).
 2. `src/target_guard.rs`: pure public-target check, role suggestion from country code, result cache with TTL and budget; unit tests (done with this PR).

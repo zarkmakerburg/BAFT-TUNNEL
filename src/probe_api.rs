@@ -169,12 +169,14 @@ pub async fn run(state_dir: Option<&Path>, body: &[u8]) -> (u16, Value) {
     let Ok(ip) = target_guard::check_public(ip) else {
         return (422, json!({"error": "target must be a public IP address"}));
     };
-    if let Ok(s) = shared().lock() {
-        if let Some((at, cached)) = s.cache.get(&(ip, port)) {
-            if at.elapsed() < CACHE_TTL {
-                let mut out = cached.clone();
-                out["cached_s"] = json!(at.elapsed().as_secs());
-                return (200, out);
+    if v.get("country").is_none() {
+        if let Ok(s) = shared().lock() {
+            if let Some((at, cached)) = s.cache.get(&(ip, port)) {
+                if at.elapsed() < CACHE_TTL {
+                    let mut out = cached.clone();
+                    out["cached_s"] = json!(at.elapsed().as_secs());
+                    return (200, out);
+                }
             }
         }
     }
@@ -207,10 +209,21 @@ pub async fn run(state_dir: Option<&Path>, body: &[u8]) -> (u16, Value) {
     } else {
         None
     };
+    let country = match v.get("country").and_then(Value::as_str) {
+        Some(c) if c.len() == 2 && c.bytes().all(|b| b.is_ascii_alphabetic()) => {
+            json!({"value": c.to_ascii_uppercase(), "source": "user-declared"})
+        }
+        _ => match crate::geoip::country(state_dir, ip) {
+            Some(c) => json!({"value": c, "source": "offline database",
+                              "attribution": crate::geoip::ATTRIBUTION}),
+            None => json!({"value": null, "source": "none",
+                           "reason": "no offline GeoIP database installed or no entry"}),
+        },
+    };
     let out = json!({
         "target": ip.to_string(), "port": port,
-        "country": {"value": null, "source": "none", "reason": "no offline GeoIP database installed"},
-        "suggested_role": target_guard::suggest_role(None),
+        "country": country,
+        "suggested_role": target_guard::suggest_role(country["value"].as_str()),
         "from_here": here,
         "providers": [
             provider_json("check-host", consent.checkhost, ch.as_ref(), "disabled"),
@@ -295,6 +308,10 @@ mod tests {
         assert!(v["providers"][0]["rows"].as_array().unwrap().is_empty());
         assert!(v["country"]["value"].is_null());
         assert!(v["suggested_role"].is_null());
+        let (_, v) = run(None, br#"{"ip":"192.0.0.9","port":9,"country":"ir"}"#).await;
+        assert_eq!(v["country"]["value"], "IR");
+        assert_eq!(v["country"]["source"], "user-declared");
+        assert_eq!(v["suggested_role"], "iran");
         assert_eq!(v["from_here"]["label"], "measured from this server");
     }
 }

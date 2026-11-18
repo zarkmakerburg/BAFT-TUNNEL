@@ -46,6 +46,8 @@ pub mod probe_api;
 #[path = "../../src/probe_http.rs"]
 #[allow(dead_code)]
 pub mod probe_http;
+#[path = "../../src/geoip.rs"]
+pub mod geoip;
 #[path = "../../src/target_guard.rs"]
 #[allow(dead_code)]
 pub mod target_guard;
