@@ -58,11 +58,25 @@ installer and verifier; publish a new tag after this change is merged.
   Iran network path throttles flows older than roughly 15 to 20 seconds; paired raw TCP/TLS
   controls outside the tunnel are tracked in the roadmap. It is not yet proven that the product
   is unaffected. Optional Direct session rotation (ADR-0049, off by default) is the planned
-  mitigation and has CI evidence only; it has no LAB result yet.
+  mitigation; LAB results are listed under v0.3.0-rc.4 below.
 - The `CertificateRevoked` lines in those logs follow the failure and belong to the end-of-run
   revocation checks; they were not shown to be the cause of the truncated payloads.
 - Reverse `tcp-tls` and the BAFT engine remain Preview; `ready` and ordinary `integrity`
   remain Unknown by design.
+
+### v0.3.0-rc.4 (prerelease)
+
+- **Aged Direct flows without rotation (LAB evidence).** The v0.2.2 to rc.4 upgrade LAB without
+  rotation (run 44257587909, 18 November 2026) passed signature checks, upgrade and rollback
+  preflight, the cross-version restart and the 0.3.0 feature checks, then returned 589716 of
+  2097289 bytes on the first post-upgrade 2 MiB probe, the same signature as v0.2.2; the soak did
+  not run. Direct session rotation (ADR-0049, `session_rotate_secs`, off by default) avoids it in
+  LAB: the same upgrade with rotation at 10 s (run 44271619864) completed the one-hour soak with
+  278 rounds, 0 failed probes, 0 restarts and flat fd/RSS, and the tcp-tls and Noise-TCP rotation
+  probes passed (runs 44269675131 and 44266349971, off 0 of 3, on 3 of 3). Rotation is opt-in,
+  so default configurations still show the limit until it is enabled.
+- Evidence is LAB on the Iran path for Direct only. Reverse, BAFT and stream resume (protocol v3,
+  default off, Preview; chaos LAB run 44283746412) are not covered by these results.
 
 ## Notes
 
