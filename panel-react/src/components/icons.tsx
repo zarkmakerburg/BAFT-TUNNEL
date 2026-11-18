@@ -1,6 +1,7 @@
 const ICONS: Record<string, string[]> = {
   overview: ['M3 3h7v9H3z', 'M14 3h7v5h-7z', 'M14 12h7v9h-7z', 'M3 16h7v5H3z'],
   tunnels: ['M3 8h14', 'M13 4l4 4-4 4', 'M21 16H7', 'M11 12l-4 4 4 4'],
+  fleet: ['M12 3l8 4.5v9L12 21l-8-4.5v-9z', 'M12 12l8-4.5', 'M12 12v9', 'M12 12L4 7.5'],
   servers: ['M3 4h18v7H3z', 'M3 13h18v7H3z', 'M7 7.5h.01', 'M7 16.5h.01', 'M11 7.5h6', 'M11 16.5h6'],
   monitoring: ['M3 3v18h18', 'M7 15l4-5 3 3 5-7'],
   setup: ['M12 3v4', 'M12 17v4', 'M3 12h4', 'M17 12h4', 'M12 8a4 4 0 100 8 4 4 0 000-8z'],

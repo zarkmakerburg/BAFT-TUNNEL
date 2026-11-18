@@ -342,7 +342,7 @@ dialog.ov::backdrop{background:var(--scrim)}
 /* short windows: compact navigation so the sidebar never grows its own scrollbar */
 @media (min-width:901px) and (max-height:760px){
   .sidebar{padding-block:var(--s3);gap:var(--s2)}.nav-group{margin-block-end:var(--s2)}
-  .nav a{min-block-size:34px;padding-block:var(--s1)}
+  .nav a{min-block-size:30px;padding-block:2px}.nav-h{display:none}
 }
 @media (max-height:520px) and (max-width:900px){.topbar{min-block-size:48px}.content{padding-block-start:var(--s2)}}
 /* top bar: heading never wraps or collides with the actions; language/theme live in Settings on phones */
@@ -452,3 +452,8 @@ td .ltr,td code{overflow-wrap:anywhere;display:inline-block;max-inline-size:26ch
   .wire .packets{inset-block:4px;inset-inline:auto;inset-inline-start:calc(50% - 4px);inline-size:8px;block-size:auto}
   .wire .packets i{inset-inline-start:0;inset-block-start:0}
 }
+.fleet-node .fdot{display:inline-block;inline-size:9px;block-size:9px;border-radius:50%;background:var(--muted);margin-inline-end:8px;position:relative}
+.fleet-node.fresh-live .fdot{background:var(--ok);box-shadow:0 0 10px var(--ok)}
+.fleet-node.fresh-stale .fdot{background:var(--warn)}
+.fleet-node.fresh-live{border-color:color-mix(in srgb,var(--ok) 35%,var(--line,transparent))}
+@media (prefers-reduced-motion:no-preference){.fleet-node.fresh-live .fdot::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:1px solid var(--ok);animation:ping 2.4s ease-out infinite}}

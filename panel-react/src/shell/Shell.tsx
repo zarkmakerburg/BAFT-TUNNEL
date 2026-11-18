@@ -14,11 +14,12 @@ import { Setup } from '../pages/Setup';
 import { Diagnostics } from '../pages/Diagnostics';
 import { Activity } from '../pages/Activity';
 import { AgentPage } from '../pages/Agent';
+import { Fleet } from '../pages/Fleet';
 import { Settings } from '../pages/Settings';
 import { NotificationList } from '../pages/parts';
 
 const PAGES: Record<Route['id'], () => ReactNode> = {
-  overview: () => <Overview />, tunnels: () => <Tunnels />, servers: () => <Servers />, monitoring: () => <Monitoring />,
+  overview: () => <Overview />, tunnels: () => <Tunnels />, servers: () => <Servers />, fleet: () => <Fleet />, monitoring: () => <Monitoring />,
   setup: () => <Setup />, diagnostics: () => <Diagnostics />, activity: () => <Activity />, agent: () => <AgentPage />, settings: () => <Settings />,
 };
 

@@ -4,7 +4,7 @@
 const { chromium } = require('/opt/node22/lib/node_modules/playwright');
 const fs = require('fs');
 const [base, token, out] = process.argv.slice(2);
-const ROUTES = ['overview', 'tunnels', 'servers', 'monitoring', 'setup', 'diagnostics', 'activity', 'agent', 'settings'];
+const ROUTES = ['overview', 'tunnels', 'servers', 'fleet', 'monitoring', 'setup', 'diagnostics', 'activity', 'agent', 'settings'];
 const VIEWS = { 'desktop-1440': [1440, 900], 'desktop-1024': [1024, 700], 'tablet-820': [820, 1100], 'tablet-768-land': [1024, 768], 'mobile-390': [390, 844], 'mobile-360-short': [360, 640], 'mobile-320': [320, 568], 'mobile-land': [844, 390], 'desktop-short': [1280, 600] };
 const now = Math.floor(Date.now() / 1000);
 const samples = Array.from({ length: 300 }, (_, i) => ({ t: now - (300 - i) * 5, up: i % 40 !== 7, rtt_ms: 40 + (i % 17) }));

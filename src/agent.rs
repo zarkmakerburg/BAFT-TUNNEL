@@ -578,8 +578,8 @@ const PANEL_ASSETS: &[(&str, &str, &str)] = &[
         "text/javascript; charset=utf-8",
         include_str!("../panel/boot.js"),
     ),
-    // React panel (panel-react/, committed build output). Served beside the classic panel, which stays
-    // the default at "/" until the React panel is accepted; same API, same token, same CSP.
+    // React panel (panel-react/, committed build output). Served at "/" (default) and "/next/"; the
+    // classic panel stays at "/classic" for one release; same API, same token, same CSP.
     (
         "/next/index.html",
         "text/html; charset=utf-8",
@@ -619,8 +619,9 @@ fn static_asset(head: &str) -> Option<(&'static str, &'static [u8])> {
         return None;
     }
     let path = match parts.next()? {
-        "/" => "/index.html",
-        "/next" | "/next/" => "/next/index.html",
+        // React panel is the default; the classic panel stays at /classic for one release as a fallback.
+        "/" | "/next" | "/next/" => "/next/index.html",
+        "/classic" | "/classic/" => "/index.html",
         other => other,
     };
     if let Some((_, bytes)) = FONT_ASSETS.iter().find(|(name, _)| *name == path) {
@@ -4267,13 +4268,14 @@ mod tests {
             }
         }
         assert_eq!(call(None, "POST", "/", None, "").await.0, 404);
-        // The React panel is served beside the classic one, under the same CSP, and "/" stays classic.
-        for path in ["/next", "/next/"] {
+        // The React panel is the default at "/" and "/next"; the classic panel is the fallback at "/classic".
+        for path in ["/", "/next", "/next/"] {
             let (code, out) = call(None, "GET", path, None, "").await;
             assert_eq!(code, 200, "{path}");
             assert!(out.contains("script-src 'self'") && out.contains("/next/assets/app.js"));
         }
-        let (_, classic) = call(None, "GET", "/", None, "").await;
+        let (code, classic) = call(None, "GET", "/classic", None, "").await;
+        assert_eq!(code, 200);
         assert!(classic.contains("/app.js") && !classic.contains("/next/assets/app.js"));
     }
 

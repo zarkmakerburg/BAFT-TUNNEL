@@ -77,3 +77,9 @@ Style: "liquid glass" cards, buttons, bars and dialogs (translucent, blurred, ed
 - Bundle (file) pairing and the Fleet panel remain classic/not yet built: Fleet has no Agent API yet (ADR-0051 F1 transport). Update/rollback is guidance only in both panels (the Agent is unprivileged; `scripts/update.sh` and `scripts/rollback.sh` run as root). Apply and automatic pairing were exercised only against the layout/regression suite here; a real two-host run is still LAB work.
 - Committed `dist/` must be rebuilt by hand; a CI freshness check is a follow-up.
 - #344 still carries the old ADR-0051 file name; this PR supersedes it.
+
+## Default switch (owner decision 2026-11-18)
+
+- `/` now serves the React panel (also at `/next/`); the classic panel stays at `/classic` for one release as a fallback, then is removed.
+- New Fleet page: `GET /v1/fleet/nodes` (hub state, per-node freshness/version/update, instances). Stale or never-reported nodes show Unknown, never a last value; an empty list reads "none enrolled (unknown, not zero)". Add server (Path A) reuses the automatic pairing flow; SSH enrollment (Path B) is not offered.
+- Evidence so far: local build, `cargo test panel_`, regress and 180-page layout audit against a local agent. Not yet: CI on the exact SHA, independent review, two-host LAB smoke.
