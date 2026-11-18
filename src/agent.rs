@@ -673,6 +673,8 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/pair/accept"
             | "/v1/pair/status"
             | "/v1/pair/approve"
+            | "/v1/probe/consent"
+            | "/v1/probe/run"
     ) {
         return (404, json!({"error": "not found"}));
     }
@@ -686,6 +688,16 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         return setup_mode_route(method, path, body, ctx).await;
     };
     match (method, path) {
+        ("GET", "/v1/probe/consent") => (
+            200,
+            crate::probe_api::consent_json(crate::probe_api::read_consent(
+                ctx.state_dir.as_deref(),
+            )),
+        ),
+        ("POST", "/v1/probe/consent") => {
+            crate::probe_api::consent_set(ctx.state_dir.as_deref(), body)
+        }
+        ("POST", "/v1/probe/run") => crate::probe_api::run(ctx.state_dir.as_deref(), body).await,
         ("GET", "/v1/status") => (200, status(ctx, config).await),
         ("GET", "/v1/traffic") => (200, traffic(ctx)),
         ("GET", "/v1/update") => (200, update_notice(ctx)),
@@ -826,6 +838,16 @@ async fn setup_mode_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (
         (_, "/v1/pair/offer" | "/v1/pair/accept" | "/v1/pair/status" | "/v1/pair/approve") => {
             pair_route(method, path, body, ctx)
         }
+        ("GET", "/v1/probe/consent") => (
+            200,
+            crate::probe_api::consent_json(crate::probe_api::read_consent(
+                ctx.state_dir.as_deref(),
+            )),
+        ),
+        ("POST", "/v1/probe/consent") => {
+            crate::probe_api::consent_set(ctx.state_dir.as_deref(), body)
+        }
+        ("POST", "/v1/probe/run") => crate::probe_api::run(ctx.state_dir.as_deref(), body).await,
         ("GET", "/v1/status") => (200, setup_status(ctx)),
         ("GET", "/v1/engines") => (200, engines()),
         ("GET", "/v1/host/tunnels") => (200, host_tunnels(ctx)),

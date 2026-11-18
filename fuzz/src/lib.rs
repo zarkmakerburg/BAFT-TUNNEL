@@ -34,6 +34,21 @@ pub mod link_policy;
 pub mod noise;
 #[path = "../../src/observe.rs"]
 pub mod observe;
+#[path = "../../src/fleet.rs"]
+#[allow(dead_code)]
+pub mod fleet;
+#[path = "../../src/probe_adapters.rs"]
+#[allow(dead_code)]
+pub mod probe_adapters;
+#[path = "../../src/probe_api.rs"]
+#[allow(dead_code)]
+pub mod probe_api;
+#[path = "../../src/probe_http.rs"]
+#[allow(dead_code)]
+pub mod probe_http;
+#[path = "../../src/target_guard.rs"]
+#[allow(dead_code)]
+pub mod target_guard;
 #[path = "../../src/pair_ca.rs"]
 pub mod pair_ca;
 #[path = "../../src/pair_flow.rs"]
