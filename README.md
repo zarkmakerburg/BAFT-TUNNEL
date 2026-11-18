@@ -29,9 +29,9 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 
 ## Project status
 
-<sub>Updated: 12 November 2026 · source baseline: `main` `32bf85f` · roadmap: [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
+<sub>Updated: 18 November 2026 · source baseline: `main` `faef660` (at time of writing) · roadmap: [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
 
-> **Active development — signed pre-release `v0.1.0-rc.7`; not production-ready.** Trusted U7 acceptance passed on the signed RC.7 package in [run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428): both LAB hosts completed setup, Direct traffic integrity, 3600-second soak, backup/restore, update/rollback, revocation and uninstall. U8 operator documentation was completed and merged in [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165) (merge `52a2825254f8254386f71af7220c7cb244200fc2`). B1 structured localized evidence is merged on `main` (`311b706`, with the duplicate `diag.next.*` key fix in `62d7ee6`). B2 implementation-start prerequisites are satisfied: [ADR-0028](docs/ADR-0028-authenticated-integrity-probe.md), the owner-accepted Option A v1/v2 peer-upgrade policy and the contract vectors in `tests/protocol_v2_contract.rs`. The B2 runtime probe is not implemented yet — the protocol is still v1 and that work is tracked in PR #177.
+> **Stable `v0.3.0` released 18 November 2026 (signed); not production-ready.** Earlier milestone: trusted U7 acceptance passed on the signed RC.7 package in [run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428): both LAB hosts completed setup, Direct traffic integrity, 3600-second soak, backup/restore, update/rollback, revocation and uninstall. U8 operator documentation was completed and merged in [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165) (merge `52a2825254f8254386f71af7220c7cb244200fc2`). B1 structured localized evidence is merged on `main` (`311b706`, with the duplicate `diag.next.*` key fix in `62d7ee6`). B2 integrity probe ("Test tunnel") is implemented under [ADR-0028](docs/ADR-0028-authenticated-integrity-probe.md) and accepted for Direct on trusted two-host run [43407066796](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43407066796). Protocol v2 is the default (O1, #268).
 
 - **`tcp-tls` Direct:** supported pre-release path with real two-host integrity, recovery, revocation, operations, and bounded soak/loss evidence.
 - **`tcp-tls` Reverse:** real outbound-only data path with recovery and impairment evidence; remains **Preview**, not Stable.
@@ -39,8 +39,8 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 - **BAFT engine:** separate, pinned Go process; **Preview, Direct only**. It is visible in the catalogue but guided setup cannot yet configure it.
 - **Panel PKI (D2):** panel → local Agent → root helper → isolated offline CA → certificate/CA/CRL import → pairing → Start passed the trusted two-host repeat ([run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181)). This is Direct evidence and does not imply Stable readiness.
 - **CRL renewal/push (U1):** a 30-day CRL was renewed offline, pushed and activated on both LAB nodes, and tunnel recovery/integrity passed ([run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521), product-code SHA `8be7437`, an ancestor of current main).
-- Apply receipts report observed effects; `ready` remains **Unknown** by design. The panel and Agent are local to each host; there is no central Fleet or online enrollment service.
-- U7 scope is Direct only; `ready` and ordinary diagnostics `integrity` remain Unknown. An unrelated six-line firewall/address-set drift on the abroad LAB host remains open as S10; no BAFT-TUNNEL firewall rules were present. Stable release and production deployment have not occurred. The owner paused the independent pre-stable security review; it must not be restarted without a new instruction. LAB soak is capped at one hour.
+- Apply receipts report observed effects; `ready` remains **Unknown** by design. The panel and Agent are local to each host. Fleet report transport is Preview and default off; there is no central control plane or online enrollment yet.
+- U7 scope is Direct only; `ready` and ordinary diagnostics `integrity` remain Unknown. An unrelated six-line firewall/address-set drift on the abroad LAB host remains open as S10; no BAFT-TUNNEL firewall rules were present. Stable `v0.3.0` is released; production deployment has not occurred. The owner paused the independent pre-stable security review; it must not be restarted without a new instruction. LAB soak is capped at one hour.
 
 | Area | Current state |
 |---|---|
@@ -51,9 +51,9 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 | `noise-tcp` | Experimental Direct only |
 | BAFT engine | Separate pinned process; Preview Direct only; not configurable in Wizard |
 | PKI | Offline CA, certificate issuance/revocation, multi-CA/CRL overlap, operator CRL renewal and SSH push |
-| Agent / panel | Per-host loopback Agent and dependency-free static JavaScript panel; Persian RTL and English LTR |
-| Control plane / Fleet | Not implemented; online enrollment is deferred |
-| Release | Signed prereleases only; no stable release |
+| Agent / panel | Per-host loopback Agent. React panel is the default at `/` (decision [ADR-0054](docs/ADR-0054-react-local-agent-panel.md), merged in [PR #350](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/350)); the classic static JavaScript panel stays at `/classic` for one release. Persian RTL and English LTR |
+| Control plane / Fleet | Report transport LAB PASS (one run); Add server Path A operator API merged, signer not wired; SSH enrollment and remote update not enabled |
+| Release | Stable `v0.3.0` (signed); Reverse, BAFT engine and stream resume remain Preview |
 
 Project record: [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
@@ -86,7 +86,7 @@ curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --channel prerelease -
 curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --channel prerelease --pair 'BAFT1-...'
 ```
 
-Both servers show the same short key fingerprint; approve only if they match. The code is single-use and expires in 15 minutes. Open the tunnel port (default TCP 8443) on the first server's firewall yourself; BAFT-TUNNEL never changes firewall rules. Without a terminal `--offer` refuses to run unless you add `--auto-approve`. Direct `tcp-tls` only for now; the panel asks whether each server is in Iran or abroad (`--location iran|abroad` on the shell); an Iran server that dials out gets a 10 s session rotation default. Reverse is designed in ADR-0050 Addendum 2 and not implemented yet. Evidence: CI and local tests; no LAB run yet.
+Both servers show the same short key fingerprint; approve only if they match. The code is single-use and expires in 15 minutes. Open the tunnel port (default TCP 8443) on the first server's firewall yourself; BAFT-TUNNEL never changes firewall rules. Without a terminal `--offer` refuses to run unless you add `--auto-approve`. Direct `tcp-tls` only for now; the panel asks whether each server is in Iran or abroad (`--location iran|abroad` on the shell); an Iran server that dials out gets a 10 s session rotation default. Reverse is designed in ADR-0050 Addendum 2 and not implemented yet. Evidence: LAB PASS on one run for pairing ([44224936582](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44224936582)); see [roadmap §9.7](docs/PRODUCT_ROADMAP.md) for the rest.
 
 ### HTTPS panel (domain or IP)
 
@@ -160,7 +160,7 @@ These are bounded LAB results, not a production-readiness certification or a lon
 
 ## Roadmap
 
-The authoritative phase model and delivery order are maintained in [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md). U7 signed-RC.7 MVP acceptance passed; U8 operator guides are merged. B1 is merged (`311b706`, `62d7ee6`). B2 implementation-start prerequisites are satisfied, but the runtime integrity probe is not implemented yet (the protocol remains v1) and is tracked in PR #177; B3–B6 follow in roadmap order. Later Fleet/control-plane and additional transport work remains gated; do not infer that a planned item is shipped from this README.
+The authoritative phase model and delivery order are maintained in [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md). U7 signed-RC.7 MVP acceptance passed; U8 operator guides are merged. B1 is merged (`311b706`, `62d7ee6`). B2 (Direct integrity probe) is accepted; B3–B6 follow in roadmap order. Later Fleet/control-plane and additional transport work remains gated; do not infer that a planned item is shipped from this README.
 
 ## Repository guide
 
@@ -171,6 +171,7 @@ The authoritative phase model and delivery order are maintained in [docs/PRODUCT
 - [Operator guide](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/OPERATOR_GUIDE.md) (interactive install menu: `sudo scripts/install.sh` or `sudo baft-tunnel menu`, Persian/English)
 - [Real-host LAB setup](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/REAL_HOSTS_LAB.md)
 - [Connection topology and Reverse (ADR-0021)](docs/ADR-0021-connection-topology-and-reverse.md)
+- [React local Agent panel (ADR-0054)](docs/ADR-0054-react-local-agent-panel.md)
 - [Product roadmap](docs/PRODUCT_ROADMAP.md)
 - [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2)
 - [Engineering guardrails](docs/ENGINEERING_GUARDRAILS.md)
