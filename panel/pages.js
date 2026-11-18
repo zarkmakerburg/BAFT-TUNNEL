@@ -145,7 +145,7 @@
       if (st.consentErr) { kids.push(h('p', { class: 'error', role: 'alert', text: st.consentErr })); }
       if (st.res) {
         var r = st.res, rows = [];
-        rows.push([t('probe.country'), r.country && r.country.value ? BAFT.ltr(r.country.value) : t('unknown') + ' · ' + t('probe.nogeo')]);
+        rows.push([t('probe.country'), r.country && r.country.value ? BAFT.ltr(r.country.value) + ' · ' + BAFT.ltr(String(r.country.source || '')) + (r.country.attribution ? ' · ' + BAFT.ltr(r.country.attribution) : '') : t('unknown') + ' · ' + t('probe.nogeo')]);
         rows.push([t('probe.role'), r.suggested_role ? t(r.suggested_role === 'iran' ? 'probe.role.iran' : 'probe.role.abroad') : t('unknown')]);
         rows.push([t('probe.here'), stateCell(r.from_here || {})]);
         kids.push(h('hr', { class: 'sep' }), h('h3', { text: t('probe.result') }), kv(rows));

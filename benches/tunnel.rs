@@ -25,6 +25,9 @@ mod engine_store;
 #[path = "../src/fleet.rs"]
 #[allow(dead_code)]
 mod fleet;
+#[path = "../src/geoip.rs"]
+#[allow(dead_code)]
+mod geoip;
 #[path = "../src/handshake.rs"]
 mod handshake;
 #[path = "../src/history_store.rs"]

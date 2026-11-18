@@ -675,6 +675,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/pair/approve"
             | "/v1/probe/consent"
             | "/v1/probe/run"
+            | "/v1/geo"
     ) {
         return (404, json!({"error": "not found"}));
     }
@@ -698,6 +699,10 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             crate::probe_api::consent_set(ctx.state_dir.as_deref(), body)
         }
         ("POST", "/v1/probe/run") => crate::probe_api::run(ctx.state_dir.as_deref(), body).await,
+        ("GET", "/v1/geo") => (
+            200,
+            crate::geoip::geo_json(ctx.state_dir.as_deref(), config.remote()),
+        ),
         ("GET", "/v1/status") => (200, status(ctx, config).await),
         ("GET", "/v1/traffic") => (200, traffic(ctx)),
         ("GET", "/v1/update") => (200, update_notice(ctx)),
@@ -848,6 +853,7 @@ async fn setup_mode_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (
             crate::probe_api::consent_set(ctx.state_dir.as_deref(), body)
         }
         ("POST", "/v1/probe/run") => crate::probe_api::run(ctx.state_dir.as_deref(), body).await,
+        ("GET", "/v1/geo") => (200, crate::geoip::geo_json(ctx.state_dir.as_deref(), None)),
         ("GET", "/v1/status") => (200, setup_status(ctx)),
         ("GET", "/v1/engines") => (200, engines()),
         ("GET", "/v1/host/tunnels") => (200, host_tunnels(ctx)),
