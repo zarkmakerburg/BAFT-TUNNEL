@@ -1,0 +1,82 @@
+name: LAB E3 leftovers check and cleanup (exact temp dir only)
+
+# Removes what a cancelled lab-bench-e3.yml run may have left: processes whose command line contains
+# /tmp/baft-e3-<run_id>/ and that directory, on the two LAB hosts. It touches nothing else: no
+# install, no systemd, no firewall/route/sysctl change. mode=check only reports; mode=clean also
+# kills and deletes. No secrets printed (host addresses are masked secrets).
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: The lab-bench-e3.yml run id whose temp dir /tmp/baft-e3-<run_id> to inspect (digits only)
+        required: true
+        type: string
+      port:
+        description: Port the E3 serve listened on (reported only)
+        required: false
+        type: string
+        default: '8443'
+      mode:
+        description: 'check = report only, clean = kill matching processes and delete the dir'
+        required: false
+        type: choice
+        options: [check, clean]
+        default: check
+      confirm:
+        description: Type RUN_LAB_E3_CLEANUP to authorize
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-trusted-lab-hosts
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 10
+    steps:
+      - name: Check or clean
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          RUN_ID: ${{ inputs.run_id }}
+          PORT: ${{ inputs.port }}
+          MODE: ${{ inputs.mode }}
+          LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+          LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
+          LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          LAB_SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+          LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+          LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+          LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+          LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+        run: |
+          set -uo pipefail
+          [[ "$CONFIRM" == RUN_LAB_E3_CLEANUP ]] || { echo "confirmation missing" >&2; exit 2; }
+          [[ "$RUN_ID" =~ ^[0-9]{6,15}$ && "$PORT" =~ ^[0-9]{4,5}$ && ( "$MODE" == check || "$MODE" == clean ) ]] || { echo "bad input" >&2; exit 2; }
+          key="$RUNNER_TEMP/c-id"; kh="$RUNNER_TEMP/c-kh"
+          printf '%s\n' "$LAB_SSH_PRIVATE_KEY" > "$key"; printf '%s\n' "$LAB_SSH_KNOWN_HOSTS" > "$kh"
+          chmod 0600 "$key" "$kh"; unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS
+          trap 'rm -f "$key" "$kh"' EXIT
+          opts=(-i "$key" -o UserKnownHostsFile="$kh" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
+          d=/tmp/baft-e3-$RUN_ID; pat="[/]tmp/baft-e3-$RUN_ID/"   # bracket trick: the pattern does not match this shell's own command line
+          for h in iran abroad; do
+            if [[ $h == iran ]]; then host="$LAB_IRAN_HOST"; user="$LAB_IRAN_SSH_USER"; p="${LAB_IRAN_SSH_PORT:-22}"; else host="$LAB_ABROAD_HOST"; user="$LAB_ABROAD_SSH_USER"; p="${LAB_ABROAD_SSH_PORT:-22}"; fi
+            run() { timeout 60 ssh "${opts[@]}" -p "$p" "$user@$host" "$1" 2>&1 | sed "s/$host/<host>/g"; }
+            echo "===== $h ($(date -u +%H:%M:%SZ)) mode=$MODE dir=$d ====="
+            echo "-- matching processes (pid, command; only those containing the dir):"
+            run "pgrep -af '$pat' || echo none"
+            echo "-- dir exists / size:"; run "du -sh $d 2>/dev/null || echo absent"
+            echo "-- listeners on port $PORT:"; run "ss -ltn 'sport = :$PORT' | tail -n +2 | wc -l"
+            if [[ "$MODE" == clean ]]; then
+              run "pkill -f '$pat'; sleep 2; pkill -KILL -f '$pat'; rm -rf $d; echo cleaned"
+              echo "-- after: processes / dir / listeners:"
+              run "(pgrep -af '$pat' | wc -l); (test -e $d && echo dir-still-present || echo dir-gone); ss -ltn 'sport = :$PORT' | tail -n +2 | wc -l"
+            fi
+          done
