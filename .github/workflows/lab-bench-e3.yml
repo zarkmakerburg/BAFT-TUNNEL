@@ -150,6 +150,11 @@ jobs:
           print(json.dumps({"round":int(r),"start_utc":t0,"killed_forward":km=="1","verdict":v,"received_MiB":round(s.get("received",0)/1048576,1),"send_s":dur,"MiB_per_s":mibs,"retries":d.get("retries"),"serve_alive":aab,"forward_alive":air,"serve_rss_KiB":rab,"forward_rss_KiB":rir}))
           P
             st "round $r done: $(tail -n 1 "$W/rounds.jsonl")"
+          if ! tail -n 1 "$W/rounds.jsonl" | grep -q '"verdict": "correct"'; then   # diagnostics for a non-correct round (logs hold no secrets; hosts masked)
+            for h in ab ir; do if [[ $h == ab ]]; then c=("${ab[@]}"); f=serve.log; else c=("${ir[@]}"); f=forward.log; fi
+              st "diag $f (last 12 lines)"; "${c[@]}" "tail -n 12 $d/$f 2>&1; ss -tn 2>/dev/null | grep -c ':${PORT}' || true" 2>&1 | sed "s/$LAB_IRAN_HOST/<iran>/g;s/$LAB_ABROAD_HOST/<abroad>/g"
+            done
+          fi
             if (( r < ROUNDS )); then st "sleep ${INTERVAL}s"; sleep "$INTERVAL"; fi
           done
           {
