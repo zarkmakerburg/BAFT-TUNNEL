@@ -146,7 +146,7 @@ export function Shell() {
             <button type="button" className="ghost icon-btn bell" aria-haspopup="dialog" aria-label={n ? t('ui.notif.n', { n: fmtNum(lang, n, 0) }) : t('ui.notif')} onClick={() => setOverlay('notif')}>
               <Icon name="bell" />{n > 0 && <span className="count">{fmtNum(lang, n, 0)}</span>}
             </button>
-            <button type="button" className="ghost icon-btn" aria-label={t('settings.theme')} title={t('settings.theme')} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}><Icon name={theme === 'light' ? 'moon' : 'sun'} /></button>
+            <button type="button" className="ghost icon-btn theme-btn" aria-label={t('settings.theme')} title={t('settings.theme')} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}><Icon name={theme === 'light' ? 'moon' : 'sun'} /></button>
             <LangButton />
           </header>
           <main>

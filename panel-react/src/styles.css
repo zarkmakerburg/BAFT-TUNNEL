@@ -41,9 +41,10 @@
 @media (pointer:coarse){:root{--ctl:44px}}
 
 *{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
+html{-webkit-text-size-adjust:100%;background:var(--bg);overflow-x:clip}
 html.lock{overflow:hidden}
-body{margin:0;background:var(--bg);color:var(--fg);font:var(--fs-2)/1.65 var(--font);font-variant-numeric:tabular-nums}
+html{scroll-padding-block-start:calc(var(--topbar) + var(--s3))}
+body{margin:0;background:transparent;color:var(--fg);min-inline-size:0;overflow-x:clip;overscroll-behavior-y:none;font:var(--fs-2)/1.65 var(--font);font-variant-numeric:tabular-nums}
 h1,h2,h3,h4{margin:0;line-height:1.35}
 h1{font-size:var(--fs-4);font-weight:700}h2{font-size:var(--fs-3);font-weight:650}h3{font-size:var(--fs-1);color:var(--muted);font-weight:600;margin-block:var(--s3) var(--s2)}
 p{margin:0 0 var(--s2)}
@@ -88,9 +89,9 @@ input[aria-invalid=true]{border-color:var(--bad)}
 kbd{border:1px solid var(--line-strong);border-radius:var(--r-sm);padding:0 var(--s1);color:var(--muted);font-size:var(--fs-0)}
 
 /* shell */
-.shell{display:grid;grid-template-columns:var(--sidebar) minmax(0,1fr);min-block-size:100dvh}
+.shell{display:grid;grid-template-columns:var(--sidebar) minmax(0,1fr);min-block-size:100vh;min-block-size:100dvh}
 .shell[data-nav=rail]{grid-template-columns:var(--rail) minmax(0,1fr)}
-.sidebar{position:sticky;inset-block-start:0;block-size:100dvh;display:flex;flex-direction:column;background:var(--nav);border-inline-end:1px solid var(--line);padding:var(--s4) var(--s3);gap:var(--s4);overflow:auto}
+.sidebar{position:sticky;inset-block-start:0;block-size:100vh;block-size:100dvh;display:flex;flex-direction:column;background:var(--nav);border-inline-end:1px solid var(--line);padding:var(--s4) var(--s3);gap:var(--s4);overflow:auto}
 .brand{display:flex;align-items:center;gap:var(--s2);font-weight:700;font-size:var(--fs-3)}
 .brand-mark{inline-size:30px;block-size:30px;fill:none;stroke-width:3;stroke-linecap:round}
 .brand-mark .a{stroke:var(--accent)}.brand-mark .b{stroke:var(--info)}
@@ -115,7 +116,7 @@ kbd{border:1px solid var(--line-strong);border-radius:var(--r-sm);padding:0 var(
 .fresh{font-size:var(--fs-0);color:var(--muted);white-space:nowrap}.fresh.stale{color:var(--warn)}
 .search-btn{color:var(--muted);gap:var(--s2)}
 .bell{position:relative}.count{position:absolute;inset-block-start:2px;inset-inline-end:2px;min-inline-size:16px;block-size:16px;border-radius:var(--r-pill);background:var(--bad);color:#1b0a09;font-size:10px;line-height:16px;text-align:center;font-weight:700;padding-inline:3px}
-.content{padding:var(--s5);max-inline-size:1280px;inline-size:100%;margin-inline:auto;outline:none}
+.content{padding:var(--s5);max-inline-size:1480px;inline-size:100%;margin-inline:auto;outline:none}
 .shell.is-stale .view{opacity:.82}
 .view.enter{animation:enter var(--t-base) var(--ease)}
 @keyframes enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -241,12 +242,122 @@ details summary{cursor:pointer;color:var(--muted);margin-block:var(--s2)}
   .tab .nav-l{overflow:hidden;text-overflow:ellipsis;max-inline-size:100%;white-space:nowrap}
   .grid.cols-2,.form-grid{grid-template-columns:1fr}
   .toasts{inset-block-end:calc(var(--tabbar) + var(--s3))}
-  /* tables become labelled cards */
-  table.cards thead{position:absolute;inline-size:1px;block-size:1px;overflow:hidden;clip-path:inset(50%)}
-  table.cards,table.cards tbody,table.cards tr,table.cards td{display:block}
-  table.cards tr{border:1px solid var(--line);border-radius:var(--r);padding:var(--s2);margin-block-end:var(--s2)}
-  table.cards td{display:flex;justify-content:space-between;gap:var(--s3);border:0;padding:var(--s1) var(--s2)}
-  table.cards td::before{content:attr(data-label);color:var(--muted);flex:none}
 }
 @media (max-width:520px){.topbar>.pill{display:none}.grid.kpis{grid-template-columns:1fr}.stepper li{min-inline-size:100%}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+
+/* ===== Liquid glass layer =====
+   Cards, buttons, bars and dialogs are translucent, blurred and edge-lit over a soft fixed backdrop.
+   Falls back to the solid surfaces above when backdrop-filter is unavailable or the user asks for
+   reduced transparency. Text always sits on a surface with enough contrast (see --glass-* tokens). */
+:root,:root[data-theme=dark]{
+  --glass:rgba(24,36,76,.46);--glass-strong:rgba(30,44,92,.62);--glass-edge:rgba(255,255,255,.16);--glass-hi:rgba(255,255,255,.28);--glass-lo:rgba(255,255,255,.04);
+  --glass-shadow:0 10px 30px rgba(2,6,20,.38),0 1px 0 rgba(255,255,255,.06) inset;
+  --amb-1:rgba(92,200,255,.20);--amb-2:rgba(122,110,255,.18);--amb-3:rgba(76,208,143,.09);
+}
+:root[data-theme=light]{
+  --glass:rgba(255,255,255,.58);--glass-strong:rgba(255,255,255,.78);--glass-edge:rgba(255,255,255,.85);--glass-hi:rgba(255,255,255,.95);--glass-lo:rgba(255,255,255,.35);
+  --glass-shadow:0 10px 28px rgba(30,60,120,.14),0 1px 0 rgba(255,255,255,.9) inset;
+  --amb-1:rgba(10,95,168,.16);--amb-2:rgba(122,110,255,.14);--amb-3:rgba(76,208,143,.10);
+}
+@media (prefers-color-scheme:light){:root[data-theme=auto]{
+  --glass:rgba(255,255,255,.58);--glass-strong:rgba(255,255,255,.78);--glass-edge:rgba(255,255,255,.85);--glass-hi:rgba(255,255,255,.95);--glass-lo:rgba(255,255,255,.35);
+  --glass-shadow:0 10px 28px rgba(30,60,120,.14),0 1px 0 rgba(255,255,255,.9) inset;
+  --amb-1:rgba(10,95,168,.16);--amb-2:rgba(122,110,255,.14);--amb-3:rgba(76,208,143,.10)}}
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:radial-gradient(60vmax 50vmax at 12% -8%,var(--amb-1),transparent 60%),radial-gradient(55vmax 45vmax at 105% 12%,var(--amb-2),transparent 60%),radial-gradient(50vmax 40vmax at 40% 112%,var(--amb-3),transparent 60%)}
+
+.card,.kpi,.banner,.hero,.choice,.stepper li,.empty,.sidebar,.topbar,.tabbar,dialog.ov{
+  background:linear-gradient(160deg,var(--glass-lo),transparent 55%),var(--glass);
+  border:1px solid var(--glass-edge);
+  box-shadow:var(--glass-shadow);
+}
+.card.inner{background:var(--glass-lo);box-shadow:none}
+.card,.kpi,.hero,.banner{border-radius:var(--r-lg)}
+.sidebar{border-inline-end-color:var(--glass-edge);box-shadow:none;border-block:0;border-inline-start:0}
+.topbar{border-width:0 0 1px;box-shadow:0 1px 0 var(--glass-lo) inset}
+.tabbar{border-width:1px 0 0}
+.banner.info{background:linear-gradient(160deg,var(--glass-lo),transparent 55%),color-mix(in srgb,var(--info-bg) 55%,transparent)}
+.banner.bad{background:linear-gradient(160deg,var(--glass-lo),transparent 55%),color-mix(in srgb,var(--bad-bg) 62%,transparent)}
+.banner.warn,.banner.partial{background:linear-gradient(160deg,var(--glass-lo),transparent 55%),color-mix(in srgb,var(--warn-bg) 62%,transparent)}
+.choice.on,.stepper li[aria-current=step]{background:linear-gradient(160deg,var(--glass-hi),transparent 70%) ,color-mix(in srgb,var(--accent-soft) 70%,transparent);border-color:var(--accent-line)}
+.nav a[aria-current=page]{background:color-mix(in srgb,var(--accent-soft) 75%,transparent)}
+
+/* buttons: glass pills with an edge highlight; primary is tinted glass */
+button,.btn,.segmented{
+  background:linear-gradient(180deg,var(--glass-hi),transparent 60%),var(--glass);
+  border:1px solid var(--glass-edge);
+  box-shadow:0 1px 0 var(--glass-hi) inset,0 4px 14px rgba(2,6,20,.18);
+}
+button,.btn{border-radius:var(--r-pill)}
+.segmented{border-radius:var(--r-pill)}
+.segmented button{background:transparent;box-shadow:none;border:0;border-radius:0}
+.segmented button[aria-pressed=true]{background:color-mix(in srgb,var(--accent) 28%,transparent);color:var(--fg)}
+button:hover,.btn:hover{background:linear-gradient(180deg,var(--glass-hi),transparent 55%),var(--glass-strong)}
+.primary{background:linear-gradient(180deg,rgba(255,255,255,.38),transparent 55%),color-mix(in srgb,var(--accent) 88%,transparent);color:var(--accent-fg);border-color:color-mix(in srgb,var(--accent) 70%,#fff 30%)}
+.primary:hover{background:linear-gradient(180deg,rgba(255,255,255,.46),transparent 55%),var(--accent);filter:none}
+.danger{background:linear-gradient(180deg,rgba(255,255,255,.3),transparent 55%),color-mix(in srgb,var(--bad) 90%,transparent)}
+.ghost,.ghost:hover{box-shadow:none}
+.ghost{background:transparent;border-color:transparent}
+.ghost:hover{background:var(--glass)}
+.icon-btn{border-radius:50%}
+.nav a,.cmd a{border-radius:var(--r-pill)}
+input,select{background:var(--glass-lo);border-color:var(--glass-edge);box-shadow:0 1px 2px rgba(2,6,20,.25) inset;border-radius:var(--r)}
+.pill{backdrop-filter:none}
+dialog.ov::backdrop{background:var(--scrim)}
+.tip-box,.toast{background:var(--glass-strong);border:1px solid var(--glass-edge);box-shadow:var(--glass-shadow)}
+
+@supports (backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px)){
+  .card,.kpi,.banner,.hero,.choice,.stepper li,.empty,.sidebar,.tabbar,dialog.ov,.tip-box,.toast{-webkit-backdrop-filter:blur(16px) saturate(1.5);backdrop-filter:blur(16px) saturate(1.5)}
+  .topbar{-webkit-backdrop-filter:blur(20px) saturate(1.6);backdrop-filter:blur(20px) saturate(1.6)}
+  button,.btn,.segmented{-webkit-backdrop-filter:blur(10px) saturate(1.4);backdrop-filter:blur(10px) saturate(1.4)}
+  .card .card,.card button,.card .btn,.card .segmented,.card .pill,.card .choice,.card .empty,.kpi button,.banner button,.banner .btn,dialog.ov button,dialog.ov .btn,.sidebar button,.sidebar .btn,.tabbar button,.topbar button,.topbar .btn,.choice .pill,.stepper li{-webkit-backdrop-filter:none;backdrop-filter:none}
+  dialog.ov::backdrop{-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+}
+/* no blur available, or the user prefers less transparency: solid surfaces, same layout */
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  .card,.kpi,.banner,.hero,.choice,.stepper li,.empty,.sidebar,.topbar,.tabbar,dialog.ov{background:var(--surface)}
+  button,.btn,.segmented{background:var(--surface-2)}
+}
+@media (prefers-reduced-transparency:reduce){
+  body::before{display:none}
+  .card,.kpi,.banner,.hero,.choice,.stepper li,.empty,.sidebar,.topbar,.tabbar,dialog.ov,.tip-box,.toast{background:var(--surface);-webkit-backdrop-filter:none;backdrop-filter:none}
+  button,.btn,.segmented{background:var(--surface-2);-webkit-backdrop-filter:none;backdrop-filter:none}
+  .primary{background:var(--accent)}
+}
+
+/* ===== sizing and scrolling fixes ===== */
+/* iOS zooms the whole page when a field under 16px gets focus: keep touch fields at 16px */
+@media (pointer:coarse){input,select,textarea{font-size:16px}}
+/* respect the notch and the home indicator */
+.topbar{padding-inline-start:max(var(--s5),env(safe-area-inset-left));padding-inline-end:max(var(--s5),env(safe-area-inset-right))}
+.kpi-value{font-size:clamp(1.15rem,1.2rem + 1vw,1.6rem)}
+.chart svg:not(:has(.up)){block-size:clamp(100px,16vw,160px)}
+@media (max-width:900px){
+  .topbar{padding-inline:max(var(--s3),env(safe-area-inset-left)) max(var(--s3),env(safe-area-inset-right))}
+  .tabbar{block-size:calc(var(--tabbar) + env(safe-area-inset-bottom));padding-block-end:env(safe-area-inset-bottom)}
+  .content{padding-block-end:calc(var(--tabbar) + env(safe-area-inset-bottom) + var(--s5))}
+  .toasts{inset-block-end:calc(var(--tabbar) + env(safe-area-inset-bottom) + var(--s3))}
+  dialog.ov-drawer{padding-block-end:calc(var(--s4) + env(safe-area-inset-bottom))}
+}
+/* short windows: compact navigation so the sidebar never grows its own scrollbar */
+@media (min-width:901px) and (max-height:760px){
+  .sidebar{padding-block:var(--s3);gap:var(--s2)}.nav-group{margin-block-end:var(--s2)}
+  .nav a{min-block-size:34px;padding-block:var(--s1)}
+}
+@media (max-height:520px) and (max-width:900px){.topbar{min-block-size:48px}.content{padding-block-start:var(--s2)}}
+/* top bar: heading never wraps or collides with the actions; language/theme live in Settings on phones */
+.heading h1{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.crumb{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:900px){.topbar .lang-btn span{display:none}.topbar .lang-btn{padding:0;inline-size:var(--ctl)}.topbar .pill{max-inline-size:34vw;overflow:hidden;text-overflow:ellipsis}}
+@media (max-width:640px){.theme-btn,.topbar .lang-btn{display:none}.heading h1{font-size:var(--fs-3)}}
+/* tables: real tables from 701px up (long values wrap instead of widening the page), labelled cards below */
+td,th{overflow-wrap:break-word}
+td .ltr,td code{overflow-wrap:anywhere;display:inline-block;max-inline-size:26ch}
+@media (max-width:700px){
+  table.cards thead{position:absolute;inline-size:1px;block-size:1px;overflow:hidden;clip-path:inset(50%)}
+  table.cards,table.cards tbody,table.cards tr,table.cards td{display:block}
+  table.cards tr{border:1px solid var(--glass-edge);border-radius:var(--r);padding:var(--s2);margin-block-end:var(--s2);background:var(--glass-lo)}
+  table.cards td{display:flex;justify-content:space-between;gap:var(--s3);border:0;padding:var(--s1) var(--s2)}
+  table.cards td::before{content:attr(data-label);color:var(--muted);flex:none}
+}
