@@ -32,6 +32,13 @@ function useDeclared(id: string | undefined): [string, (c: string) => void] {
 }
 
 const flagOf = (c: string): string => (/^[A-Z]{2}$/.test(c) ? String.fromCodePoint(...[...c].map((x) => 0x1f1a5 + x.charCodeAt(0))) : '');
+// Graticule every 30 degrees (drawn once; purely decorative orientation lines).
+const GRATICULE = (() => {
+  let d = '';
+  for (let lon = -180; lon <= 180; lon += 30) d += `M${(lon + 180) * MAP_S} 0V${MAP_H}`;
+  for (let lat = -30; lat <= 60; lat += 30) d += `M0 ${(MAP_TOP - lat) * MAP_S}H${MAP_W}`;
+  return d;
+})();
 const proj = (lat: number, lon: number): [number, number] => [(lon + 180) * MAP_S, (MAP_TOP - lat) * MAP_S];
 
 /* ---------- small pieces ---------- */
@@ -177,8 +184,14 @@ export function GeoMap({ d }: { d: Loaded }) {
     <Card title={t('viz.geo.title')} action={<Pill kind={mine || theirs ? 'info' : dMine || dTheirs ? 'ok' : 'unknown'}>{mine || theirs ? t('viz.geo.declared.pill') : dMine || dTheirs ? t('viz.geo.detected.pill') : t('viz.geo.none.pill')}</Pill>}>
       <figure className={`geomap link-${lk}`}>
         <svg viewBox={view} role="img" aria-label={a && b ? t('viz.geo.aria', { a: nm(effMine), b: nm(effTheirs) }) : t('viz.geo.aria.none')} preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <radialGradient id="sea" cx="55%" cy="45%" r="75%"><stop offset="0" className="sea-a" /><stop offset="1" className="sea-b" /></radialGradient>
+          </defs>
+          <rect x="0" y="0" width={MAP_W} height={MAP_H} fill="url(#sea)" />
+          <path d={GRATICULE} className="grat" />
           <path d={LAND} className={dots ? 'land land-dots' : 'land'} />
           {arc && <path d={arc} className="arc" />}
+          {arc && lk === 'flow' && <circle r={viewW / 200} className="pulse"><animateMotion dur="2.4s" repeatCount="indefinite" path={arc} /></circle>}
           {pin(a, 'me', effMine)}{pin(b, 'peer', effTheirs)}
         </svg>
         {!(a && b) && <figcaption className="geo-hint sub">{t('viz.geo.unset.hint')}</figcaption>}

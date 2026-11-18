@@ -411,3 +411,7 @@ td .ltr,td code{overflow-wrap:anywhere;display:inline-block;max-inline-size:26ch
 .vitals+.sub{margin-block-start:var(--s3)}
 .geomap .land-dots{fill:none;stroke:color-mix(in srgb,var(--muted) 70%,transparent);stroke-width:1.1;stroke-dasharray:.1 2.4;stroke-linecap:round;vector-effect:non-scaling-stroke}
 .pin-label{fill:var(--fg);paint-order:stroke;stroke:var(--bg,#0b1220);stroke-width:.35em;stroke-linejoin:round;font-weight:600;pointer-events:none}
+.sea-a{stop-color:color-mix(in srgb,var(--accent) 16%,var(--surface-2))}.sea-b{stop-color:var(--surface)}
+.geomap .grat{fill:none;stroke:color-mix(in srgb,var(--muted) 22%,transparent);stroke-width:.5;vector-effect:non-scaling-stroke}
+.pulse{fill:var(--ok)}
+@media (prefers-reduced-motion:reduce){.pulse{display:none}}

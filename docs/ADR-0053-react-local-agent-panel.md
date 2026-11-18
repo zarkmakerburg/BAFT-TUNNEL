@@ -56,3 +56,13 @@ The production artifact must remain static and be served by the existing Rust Ag
 - Development and CI gain a Node-based build step, but deployed nodes continue to run only the Rust Agent and static assets.
 - The existing vanilla implementation remains the fallback during staged migration.
 - This ADR does not claim that prototypes, migration, browser QA or packaging changes are already implemented or tested.
+
+## Addendum (2026-11-18): relationship to the BAFT Control Center (BCC) panel
+
+The owner (zark) is the copyright holder of `zarkmakerburg/BAFT` (AGPL-3.0, Go) and stated on 2026-11-18 that reusing its code is allowed. This panel is TypeScript/React only; the Rust core stays free of Go (ADR-0019 unchanged: BAFT remains a separate binary and no BAFT control plane is imported).
+
+What was taken, and how:
+- **Ideas and visual language** from the BCC network map (equirectangular world, nodes at country points, an arc per tunnel, only reported data drawn, flags and country labels, dotted-land style, graticule, ocean gradient): reimplemented independently as an SVG component (`panel-react/src/components/viz.tsx`). No BCC source file or texture was copied.
+- **World geometry** is Natural Earth land (public domain) via `world-atlas` 2.0.2 (ISC), converted by `panel-react/scripts/gen-worldmap.mjs`. BCC's `world-land.js` and Earth textures were not used (textures would also need an `img-src` CSP change, which this panel does not make).
+- **Skipped on purpose:** multi-node features (node list, failover, auto-select, update center, backups, operations cards) because the local Agent has no API for them and they belong to Fleet/control-plane work (ADR-0051); the 3D welcome globe and photo textures (CSP, weight, no data value).
+- **Data rule unchanged:** real Agent data only; unknown values are shown as Unknown.
