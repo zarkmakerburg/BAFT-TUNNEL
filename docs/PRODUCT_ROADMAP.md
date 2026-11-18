@@ -305,18 +305,21 @@ The README one-line install still pins `v0.2.1`. It moves to the next Stable tag
 
 **0.3.0 operator items (all merged):** O1 protocol v2 default (#268), O2 host tunnel list (#279, ADR-0036), O3 offline update notice (#275, ADR-0035), O4 certificate expiry warning (#270), O5 support bundle (#272), O6 Reverse Preview with two-node integrity probe (#282, #283, ADR-0037), O7 fuzz target for state files (#281). Panel display of the new items and the host list with two real instances are not LAB-tested.
 
-**After 0.3.0 (merged on main, no release contains them; none is a delivered product capability yet)**
+**After 0.3.0 (state on main at 2026-11-18; Stable v0.3.0 is released; evidence levels never mix: CI is not VM, VM is not LAB, LAB is not production)**
 
-| Area | State on main | What is missing |
-|---|---|---|
-| Rakhsh integration | Analysis and licence boundary (ADR-0038, ADR-0043 code-copy policy) | No code copied; owner decision B-1 recorded |
-| Multi-link failover | `backup_remotes` wired into the dial path (#296, ADR-0039) | No LAB run of an actual failover |
-| Transport health | Model (#293, ADR-0041) and status publishing from the unit (#306); quality stays Unknown without samples | No real RTT or probe source, so no "healthy" claim |
-| Stream resume | Pure core only (#309, ADR-0040) | Not wired into the protocol or the tunnel path |
-| Doctor | Offline read-only config and host checks (#298, ADR-0042) | LAB use not recorded |
-| Policy Pack (0.4.0) | TP-0.1 research (#301), engine-agnostic interface behind the `policy-pack` feature (#305, ADR-0044), status contract proposed (ADR-0047), baseline harness on the real relay path (#310, simulated) | The relay does not call the policy yet; the baseline is one simulated run, not LAB |
-| Fleet | Design (ADR-0045) and an honest Fleet section on the Servers page (#307) | No control plane |
-| UDP carrier | Design only (ADR-0046, Proposed, #244) | No carrier code |
-| Competitive benchmark | Advisor assessment (#302); E2 netns/netem harness against Rathole and FRP in draft (PR #308, controlled CI runner, not LAB) | E2 result |
+| Area | State on main | Evidence | What is missing |
+|---|---|---|---|
+| Rakhsh integration | Independent rewrite (ADR-0038, ADR-0043); health feed #334, rotation/link-switch counts #335, backup peers in setup #336 | CI | No code copied; Rakhsh stays a separate AGPL project |
+| Multi-link failover | `backup_remotes` in the dial path (#296, ADR-0039); link switches logged (#370) | LAB PASS, one run: 44298974821 (primary relay stopped, backup link carried the data) | Failback is not LAB-tested; one run only |
+| Transport health | Model (#293), publishing (#306), kernel TCP_INFO feed (#334, ADR-0041) | LAB PASS, one run: 44304026997 (real RTT both nodes, healthy under load, unavailable after carrier cut) | Quality fields other than RTT stay Unknown without samples; single path |
+| Stream resume | Protocol v3 wired into serve/forward loops (#365, ADR-0040), tcp-tls Direct only, default-off Preview | LAB PASS, one run: 44283746412 (16 MiB, relay cut twice, payload hash equal) | Stays default-off Preview; Reverse has no resume |
+| Session rotation | Opt-in `session_rotate_secs` (#315, ADR-0049) | LAB PASS: 44121043530 (Noise-TCP Direct) and rotation probe harness #333 | Off by default; Iran path throttles flows older than about 15-20 s |
+| Automatic pairing | One pairing code, no manual cert moving (#338, ADR-0050), Reverse and Iran/abroad questions (#348, #353), helper fixes #356-#360 | CI; two-host LAB workflow exists | Result of the pairing LAB is tracked in the pairing thread, not recorded here |
+| Fleet and add server | Pure node status report (#347), ADR-0045 accepted with conditions; ADR-0051, ADR-0052, ADR-0053 all Proposed; server health card on the Servers page (#372, consent default off), probe_api and Globalping probe (#371, #374) | CI | SSH enrollment and remote update stay disabled until the independent reviews; nothing LAB-verified |
+| Panel | React preview, no fake data | CI | Physical phone check is not a blocker |
+| Doctor | Offline read-only config and host checks (#298, ADR-0042) | CI | LAB use not recorded |
+| Policy Pack (0.4.0) | Interface behind `policy-pack` (#305, ADR-0044), status contract proposed (ADR-0047), simulated baseline (#310) | CI, simulated | Relay does not call the policy yet |
+| UDP carrier | Design only (ADR-0046, Proposed) | none | No carrier code |
+| Competitive benchmark | Advisor assessment (#302); E2 harness (PR #308); E3 LAB harness (#332) | CI | E3 result (run 44124112450) |
 
-**Documentation:** this addendum and the 0.3.0 evidence draft bring the roadmap to 2026-11-17; HQ Issue #2 gets a matching append-only entry. Firewall status stays Unknown (ADR-0030); no component takes `CAP_NET_ADMIN`.
+**Documentation:** this table brings the roadmap to 2026-11-18. Firewall status stays Unknown (ADR-0030); no component takes `CAP_NET_ADMIN`; Reverse stays Preview.
