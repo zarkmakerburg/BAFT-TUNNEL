@@ -222,6 +222,30 @@ impl Hub {
     }
 }
 
+/// Build the `node.status.v1` body a member sends (member side of F1). Pure: it only reshapes the
+/// local `/v1/status` view. Missing evidence stays `unknown` (never a healthy-looking default),
+/// tunnel state, Integrity and Health stay separate, and no secret, path or address is copied.
+pub fn build_report(instance: &str, version: &str, status: &Value, seq: u64) -> Value {
+    let tunnel = status.get("tunnel").filter(|t| t.is_object());
+    let field = |v: Option<&Value>| -> String {
+        v.and_then(Value::as_str)
+            .map(|s| sanitize(s, MAX_NAME_CHARS))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "unknown".to_owned())
+    };
+    serde_json::json!({
+        "schema": "node.status.v1",
+        "seq": seq,
+        "version": sanitize(version, MAX_NAME_CHARS),
+        "instances": [{
+            "name": sanitize(instance, MAX_NAME_CHARS),
+            "tunnel": field(tunnel.and_then(|t| t.get("state"))),
+            "integrity": field(tunnel.and_then(|t| t.pointer("/tiers/integrity/result"))),
+            "health": field(tunnel.and_then(|t| t.pointer("/health/state"))),
+        }],
+    })
+}
+
 /// A job may only be acted on while the CRL is current (F-8); reports merely warn.
 pub fn crl_allows_jobs(crl_next_update_unix: Option<u64>, now: u64) -> bool {
     matches!(crl_next_update_unix, Some(n) if n > now)
@@ -377,5 +401,40 @@ mod tests {
         assert!(crl_allows_jobs(Some(200), 100));
         assert!(!crl_allows_jobs(Some(100), 100));
         assert!(!crl_allows_jobs(None, 100));
+    }
+
+    #[test]
+    fn report_builder_keeps_unknown_and_separates_tiers() {
+        let none = build_report("t1", "0.3.0", &serde_json::json!({"tunnel": null}), 1);
+        let i = &none["instances"][0];
+        assert_eq!(
+            (
+                i["tunnel"].as_str(),
+                i["integrity"].as_str(),
+                i["health"].as_str()
+            ),
+            (Some("unknown"), Some("unknown"), Some("unknown"))
+        );
+        let st = serde_json::json!({"tunnel": {"state": "carrying_traffic", "tiers": {"integrity": {"result": "pass"}}, "health": {"state": "degraded"}, "secret": "x"}});
+        let r = build_report("t1", "0.3.0", &st, 7);
+        let i = &r["instances"][0];
+        assert_eq!(
+            (
+                i["tunnel"].as_str(),
+                i["integrity"].as_str(),
+                i["health"].as_str()
+            ),
+            (Some("carrying_traffic"), Some("pass"), Some("degraded"))
+        );
+        assert!(!r.to_string().contains("secret"));
+        // A report the builder makes is accepted by the hub, and is within the size bound.
+        let mut h = Hub::default();
+        let body = serde_json::to_vec(&r).unwrap();
+        assert!(body.len() < MAX_REPORT_BYTES);
+        h.accept(&peer("n", "1", NODE), &body, 100).unwrap();
+        assert_eq!(
+            h.nodes().next().unwrap().instances[0].health.as_deref(),
+            Some("degraded")
+        );
     }
 }
