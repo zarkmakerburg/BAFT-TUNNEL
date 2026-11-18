@@ -1,0 +1,24 @@
+{
+  "name": "baft-tunnel-panel-react",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc -b --noEmit",
+    "build": "tsc -b && vite build",
+    "check:dist": "node scripts/check-dist.mjs"
+  },
+  "dependencies": {
+    "react": "19.2.9",
+    "react-dom": "19.2.9"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.0",
+    "@types/react-dom": "19.2.0",
+    "@vitejs/plugin-react": "5.0.0",
+    "typescript": "5.9.2",
+    "vite": "7.3.8"
+  }
+}

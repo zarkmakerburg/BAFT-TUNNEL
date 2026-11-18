@@ -578,6 +578,23 @@ const PANEL_ASSETS: &[(&str, &str, &str)] = &[
         "text/javascript; charset=utf-8",
         include_str!("../panel/boot.js"),
     ),
+    // React panel (panel-react/, committed build output). Served beside the classic panel, which stays
+    // the default at "/" until the React panel is accepted; same API, same token, same CSP.
+    (
+        "/next/index.html",
+        "text/html; charset=utf-8",
+        include_str!("../panel-react/dist/index.html"),
+    ),
+    (
+        "/next/assets/app.js",
+        "text/javascript; charset=utf-8",
+        include_str!("../panel-react/dist/assets/app.js"),
+    ),
+    (
+        "/next/assets/app.css",
+        "text/css; charset=utf-8",
+        include_str!("../panel-react/dist/assets/app.css"),
+    ),
 ];
 
 /// Self-hosted Persian font (Vazirmatn, SIL OFL 1.1; licence text in panel/fonts/OFL.txt).
@@ -603,6 +620,7 @@ fn static_asset(head: &str) -> Option<(&'static str, &'static [u8])> {
     }
     let path = match parts.next()? {
         "/" => "/index.html",
+        "/next" | "/next/" => "/next/index.html",
         other => other,
     };
     if let Some((_, bytes)) = FONT_ASSETS.iter().find(|(name, _)| *name == path) {
@@ -4234,12 +4252,46 @@ mod tests {
         for (name, _, _) in PANEL_ASSETS {
             let (code, out) = call(None, "GET", name, None, "").await;
             assert_eq!(code, 200, "{name}");
-            assert!(
-                !out.contains("innerHTML") && !out.contains("eval("),
-                "{name}: panel must only use textContent"
-            );
+            if name.starts_with("/next/") {
+                // The React bundle contains react-dom, which mentions innerHTML internally. Our own
+                // sources never use it (checked below); the bundle must still never eval.
+                assert!(
+                    !out.contains("eval(") && !out.contains("new Function("),
+                    "{name}: panel must not evaluate strings"
+                );
+            } else {
+                assert!(
+                    !out.contains("innerHTML") && !out.contains("eval("),
+                    "{name}: panel must only use textContent"
+                );
+            }
         }
         assert_eq!(call(None, "POST", "/", None, "").await.0, 404);
+        // The React panel is served beside the classic one, under the same CSP, and "/" stays classic.
+        for path in ["/next", "/next/"] {
+            let (code, out) = call(None, "GET", path, None, "").await;
+            assert_eq!(code, 200, "{path}");
+            assert!(out.contains("script-src 'self'") && out.contains("/next/assets/app.js"));
+        }
+        let (_, classic) = call(None, "GET", "/", None, "").await;
+        assert!(classic.contains("/app.js") && !classic.contains("/next/assets/app.js"));
+    }
+
+    #[test]
+    fn react_panel_sources_never_inject_html() {
+        for (name, src) in [
+            ("main", include_str!("../panel-react/src/main.tsx")),
+            ("app", include_str!("../panel-react/src/app.tsx")),
+            ("ui", include_str!("../panel-react/src/components/ui.tsx")),
+            ("shell", include_str!("../panel-react/src/shell/Shell.tsx")),
+            ("setup", include_str!("../panel-react/src/pages/Setup.tsx")),
+            ("parts", include_str!("../panel-react/src/pages/parts.tsx")),
+        ] {
+            assert!(
+                !src.contains("dangerouslySetInnerHTML") && !src.contains("innerHTML"),
+                "{name}"
+            );
+        }
     }
 
     #[tokio::test]
