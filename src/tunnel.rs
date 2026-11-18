@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
-use crate::authorization::PROTOCOL_V1;
+use crate::authorization::{PROTOCOL_V1, PROTOCOL_V3};
 use crate::session_status::Stage;
 
 use crate::{
@@ -464,6 +464,19 @@ pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> R
     let pending = Arc::new(Semaphore::new(MAX_PENDING_HANDSHAKES));
     let pending_per_ip = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let streams = Arc::new(Semaphore::new(options.max_streams));
+    // ADR-0040 Preview: protocol v3 serves resumable streams (Direct, in memory, default off).
+    let resume_server = if protocol_version == PROTOCOL_V3 {
+        if ingress_addr.is_some() {
+            bail!("protocol v3 (stream resume) supports Direct tunnels only");
+        }
+        Some(crate::resume_tunnel::ServerResume::new(
+            target,
+            crate::resume_tunnel::new_budget(),
+            &crate::resume_tunnel::Limits::preview(),
+        ))
+    } else {
+        None
+    };
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let control_task = control_server.map(|server| {
         tokio::spawn(server.run(
@@ -542,6 +555,7 @@ pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> R
                 let ingress_side = ingress.clone();
                 let session_probe_control = probe_control.clone();
                 let session_probe_limiter = probe_limiter.clone();
+                let resume_server = resume_server.clone();
                 tasks.spawn(async move {
                     let result: Result<()> = async {
                         // A bare TCP connect that closes without sending anything is a reachability
@@ -551,19 +565,44 @@ pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> R
                             return Ok(());
                         }
                         let mut secure = engine.accept(socket).await?;
-                        timeout(
-                            HANDSHAKE_TIMEOUT,
-                            handshake::server_handshake_versioned(&mut secure, &local, &peer, &tunnel, direction, protocol_version),
-                        )
-                        .await
-                        .context("protocol handshake timeout")
-                        .context(Stage::Authorization)?
-                        .context(Stage::Authorization)?;
+                        let grant = if resume_server.is_some() {
+                            Some(
+                                timeout(
+                                    HANDSHAKE_TIMEOUT,
+                                    handshake::server_handshake_grant(&mut secure, &local, &peer, &tunnel, direction),
+                                )
+                                .await
+                                .context("protocol handshake timeout")
+                                .context(Stage::Authorization)?
+                                .context(Stage::Authorization)?,
+                            )
+                        } else {
+                            timeout(
+                                HANDSHAKE_TIMEOUT,
+                                handshake::server_handshake_versioned(&mut secure, &local, &peer, &tunnel, direction, protocol_version),
+                            )
+                            .await
+                            .context("protocol handshake timeout")
+                            .context(Stage::Authorization)?
+                            .context(Stage::Authorization)?;
+                            None
+                        };
                         // Authenticated: release the pre-auth slot, then take an established-session slot.
                         drop(pending_guard);
                         let _session_permit = sessions
                             .try_acquire_owned()
                             .map_err(|_| anyhow::anyhow!("session capacity reached"))?;
+                        if let (Some(resume), Some(grant)) = (resume_server, grant) {
+                            let _mark = crate::session_status::SessionMark::open(&tunnel, &peer, direction);
+                            let who = crate::resume_tunnel::Who {
+                                client_id: peer.clone(),
+                                server_id: local.clone(),
+                                tunnel_id: tunnel.clone(),
+                            };
+                            let session = Session::new_server(secure, yamux_config(max));
+                            resume.serve_session(session, grant, who, session_shutdown).await;
+                            return Ok(());
+                        }
                         match ingress_side {
                             None => {
                                 server_session_versioned(secure, target, max, stream_slots, tunnel, peer, direction, protocol_version, session_probe_control, session_probe_limiter.clone(), session_shutdown).await;
@@ -834,10 +873,7 @@ async fn connect_peer_versioned(
     result
 }
 
-async fn connect_peer_staged(
-    options: &ForwardOptions,
-    protocol_version: u16,
-) -> Result<Session<BoxedSecureStream>> {
+async fn dial_secure(options: &ForwardOptions) -> Result<BoxedSecureStream> {
     let remote = socket(&options.remote, "--remote")?;
     // Rebuilt on every (re)connect so a refreshed CRL on disk is picked up.
     let engine: Box<dyn StreamEngine> = match &options.noise {
@@ -860,7 +896,25 @@ async fn connect_peer_staged(
             options.peer_fingerprint.clone(),
         )),
     };
-    let mut secure = engine.dial(remote).await?;
+    engine.dial(remote).await
+}
+
+/// TLS 1.3 completes on the client before the server has checked the client certificate, so a
+/// refusal (revoked, untrusted) arrives as an alert during the protocol handshake.
+fn handshake_stage(e: anyhow::Error) -> anyhow::Error {
+    let stage = if tls_alert(&e) {
+        Stage::SecureChannel
+    } else {
+        Stage::Authorization
+    };
+    e.context(stage)
+}
+
+async fn connect_peer_staged(
+    options: &ForwardOptions,
+    protocol_version: u16,
+) -> Result<Session<BoxedSecureStream>> {
+    let mut secure = dial_secure(options).await?;
     timeout(
         HANDSHAKE_TIMEOUT,
         handshake::client_handshake_versioned(
@@ -875,21 +929,44 @@ async fn connect_peer_staged(
     .await
     .context("protocol handshake timeout")
     .and_then(|r| r)
-    .map_err(|e| {
-        // TLS 1.3 completes on the client before the server has checked the client certificate,
-        // so a refusal (revoked, untrusted) arrives as an alert during the protocol handshake.
-        let stage = if tls_alert(&e) {
-            Stage::SecureChannel
-        } else {
-            Stage::Authorization
-        };
-        e.context(stage)
-    })?;
+    .map_err(handshake_stage)?;
 
     Ok(Session::new_client(
         secure,
         yamux_config(options.max_streams),
     ))
+}
+
+/// Protocol v3 (ADR-0040): like [`connect_peer_staged`] but also returns the resume grant.
+pub(crate) async fn connect_peer_grant(
+    options: &ForwardOptions,
+) -> Result<(Session<BoxedSecureStream>, handshake::ResumeGrant)> {
+    let result: Result<_> = async {
+        let mut secure = dial_secure(options).await?;
+        let grant = timeout(
+            HANDSHAKE_TIMEOUT,
+            handshake::client_handshake_grant(
+                &mut secure,
+                &options.local_id,
+                &options.peer_id,
+                &options.tunnel_id,
+                options.direction,
+            ),
+        )
+        .await
+        .context("protocol handshake timeout")
+        .and_then(|r| r)
+        .map_err(handshake_stage)?;
+        Ok((
+            Session::new_client(secure, yamux_config(options.max_streams)),
+            grant,
+        ))
+    }
+    .await;
+    if let Err(error) = &result {
+        crate::session_status::record_failure(error);
+    }
+    result
 }
 
 /// True when the error came from the TLS layer (for example an alert from the peer).
@@ -1179,6 +1256,114 @@ async fn run_forward_session_core(
                 control.close().await;
                 drain_stream_tasks(&mut stream_tasks, "forwarder").await;
                 return outcome;
+            }
+        }
+    }
+}
+
+/// ADR-0040 Preview forwarder: local connections become resumable streams that survive a session
+/// cut. After a cut it redials, authenticates again (fresh v3 grant) and resumes every live
+/// stream within the grace window.
+async fn supervise_forward_resume(
+    options: ForwardOptions,
+    mut receiver: Receiver<TcpStream>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    use crate::resume_tunnel::{ClientResume, Limits, new_budget};
+    let limits = Limits::preview();
+    let resume = ClientResume::new(&options.tunnel_id, new_budget(), &limits);
+    let mut first = true;
+    let mut backoff = INITIAL_BACKOFF;
+    'outer: loop {
+        if receiver.is_closed() || *shutdown.borrow() {
+            break;
+        }
+        let connected = tokio::select! {
+            result = connect_peer_grant(&options) => result,
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() { break; }
+                continue;
+            }
+        };
+        let (mut session, grant) = match connected {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("tunnel connect failed: {error:#}; retrying in {backoff:?}");
+                tokio::select! {
+                    _ = sleep(backoff) => {},
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() { break; }
+                    }
+                }
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+                continue;
+            }
+        };
+        let mut control = session.control();
+        // Drive the session (keepalive, incoming frames); it ending means the link is gone.
+        let mut driver = tokio::spawn(async move {
+            while let Some(item) = session.next().await {
+                if item.is_err() {
+                    break;
+                }
+            }
+        });
+        let _mark = crate::session_status::SessionMark::open(
+            &options.tunnel_id,
+            &options.peer_id,
+            options.direction,
+        );
+        if first {
+            resume.set_grant(grant);
+            first = false;
+        } else {
+            match resume.resume(&mut control, grant).await {
+                Ok(done) => eprintln!(
+                    "session resumed: {} streams continued, {} gone",
+                    done.resumed.len(),
+                    done.gone.len()
+                ),
+                Err(error) => {
+                    eprintln!("resume failed: {error:#}");
+                    driver.abort();
+                    tokio::select! {
+                        _ = sleep(backoff) => {},
+                        changed = shutdown.changed() => {
+                            if changed.is_err() || *shutdown.borrow() { break 'outer; }
+                        }
+                    }
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                    continue;
+                }
+            }
+        }
+        eprintln!("authenticated tunnel session established (resumable)");
+        backoff = INITIAL_BACKOFF;
+        loop {
+            tokio::select! {
+                _ = &mut driver => {
+                    eprintln!("tunnel session lost; reconnecting");
+                    break;
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        driver.abort();
+                        break 'outer;
+                    }
+                }
+                local = receiver.recv() => {
+                    let Some(local) = local else {
+                        driver.abort();
+                        break 'outer;
+                    };
+                    if resume.live_streams() >= options.max_streams {
+                        eprintln!("local connection rejected: stream limit reached");
+                        continue;
+                    }
+                    if let Err(error) = resume.open_stream(&mut control, local).await {
+                        eprintln!("open resumable stream failed: {error:#}");
+                    }
+                }
             }
         }
     }
@@ -1549,15 +1734,22 @@ pub async fn forward_versioned(options: ForwardOptions, protocol_version: u16) -
             shutdown_rx.clone(),
         ))
     });
-    let supervisor = tokio::spawn(supervise_forward(
-        options,
-        receiver,
-        slots,
-        protocol_version,
-        probe_control,
-        probe_limiter,
-        shutdown_rx,
-    ));
+    let supervisor = if protocol_version == PROTOCOL_V3 {
+        if options.session_rotate.is_some() || !options.backup_remotes.is_empty() {
+            bail!("protocol v3 (stream resume) does not support rotation or backup links yet");
+        }
+        tokio::spawn(supervise_forward_resume(options, receiver, shutdown_rx))
+    } else {
+        tokio::spawn(supervise_forward(
+            options,
+            receiver,
+            slots,
+            protocol_version,
+            probe_control,
+            probe_limiter,
+            shutdown_rx,
+        ))
+    };
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
 
@@ -2171,6 +2363,166 @@ mod tests {
     async fn authenticated_tcp_tls_forwarding_works_with_each_side_as_dialer() {
         authenticated_forwarding_case("iran", "abroad").await;
         authenticated_forwarding_case("abroad", "iran").await;
+    }
+
+    /// ADR-0040 end to end through the real serve/forward loops: the TCP link between the two
+    /// nodes is cut twice mid-transfer and the echoed bytes still match exactly.
+    #[tokio::test]
+    async fn v3_stream_survives_two_link_cuts_through_the_real_loops() {
+        let directory = std::env::temp_dir().join(format!(
+            "baft-resume-e2e-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let server_key = directory.join("server.noise");
+        let client_key = directory.join("client.noise");
+        let server_public = crate::engine::write_noise_keypair(&server_key).unwrap();
+        let client_public = crate::engine::write_noise_keypair(&client_key).unwrap();
+        let echo_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let echo_address = echo_listener.local_addr().unwrap();
+        let echo_task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = echo_listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buffer = [0_u8; 4096];
+                    while let Ok(count) = stream.read(&mut buffer).await {
+                        if count == 0 || stream.write_all(&buffer[..count]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_address = reservation.local_addr().unwrap();
+        drop(reservation);
+        let server_task = tokio::spawn(serve_versioned(
+            ServerOptions {
+                listen: server_address.to_string(),
+                target: echo_address.to_string(),
+                ingress: None,
+                local_id: "abroad".to_owned(),
+                peer_id: "iran".to_owned(),
+                tunnel_id: "resume-e2e".to_owned(),
+                direction: ConnectionDirection::Direct,
+                peer_fingerprint: String::new(),
+                ca: PathBuf::new(),
+                crl: PathBuf::new(),
+                cert: PathBuf::new(),
+                key: server_key.clone(),
+                noise: Some(NoiseSettings {
+                    private_key: server_key,
+                    peer_public: client_public,
+                }),
+                max_streams: 8,
+            },
+            PROTOCOL_V3,
+        ));
+        for _ in 0..100 {
+            if TcpStream::connect(server_address).await.is_ok() {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        // A TCP relay between the nodes that the test can sever.
+        let relay = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_address = relay.local_addr().unwrap();
+        let links: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> = Arc::default();
+        let relay_links = links.clone();
+        let relay_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let relay_count = relay_connections.clone();
+        let relay_task = tokio::spawn(async move {
+            loop {
+                let Ok((mut inbound, _)) = relay.accept().await else {
+                    break;
+                };
+                let Ok(mut outbound) = TcpStream::connect(server_address).await else {
+                    continue;
+                };
+                let task = tokio::spawn(async move {
+                    let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                });
+                relay_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                relay_links.lock().unwrap().push(task);
+            }
+        });
+        let options = ForwardOptions {
+            listen: "127.0.0.1:0".to_owned(),
+            target: None,
+            remote: relay_address.to_string(),
+            server_name: String::new(),
+            local_id: "iran".to_owned(),
+            peer_id: "abroad".to_owned(),
+            tunnel_id: "resume-e2e".to_owned(),
+            direction: ConnectionDirection::Direct,
+            peer_fingerprint: String::new(),
+            ca: PathBuf::new(),
+            crl: PathBuf::new(),
+            cert: PathBuf::new(),
+            key: client_key.clone(),
+            noise: Some(NoiseSettings {
+                private_key: client_key,
+                peer_public: server_public,
+            }),
+            max_streams: 8,
+            backup_remotes: vec![],
+            session_rotate: None,
+        };
+        let (sender, receiver) = mpsc::channel(8);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let supervisor = tokio::spawn(supervise_forward_resume(options, receiver, shutdown_rx));
+        let local_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_address = local_listener.local_addr().unwrap();
+        let client = TcpStream::connect(local_address).await.unwrap();
+        let (accepted, _) = local_listener.accept().await.unwrap();
+        sender.send(accepted).await.unwrap();
+
+        let total = 3 * 1024 * 1024;
+        let payload: Vec<u8> = (0..total)
+            .map(|i| ((i * 7 + i / 251) % 256) as u8)
+            .collect();
+        let (mut read_half, mut write_half) = client.into_split();
+        let to_send = payload.clone();
+        let writer = tokio::spawn(async move {
+            for chunk in to_send.chunks(16 * 1024) {
+                write_half.write_all(chunk).await.unwrap();
+                sleep(Duration::from_millis(20)).await;
+            }
+            write_half
+        });
+        let reader = tokio::spawn(async move {
+            let mut received = vec![0_u8; total];
+            read_half.read_exact(&mut received).await.unwrap();
+            received
+        });
+        for _ in 0..2 {
+            sleep(Duration::from_millis(1000)).await;
+            assert!(!writer.is_finished(), "transfer ended before the cut");
+            for task in links.lock().unwrap().drain(..) {
+                task.abort();
+            }
+        }
+        let received = timeout(Duration::from_secs(60), reader)
+            .await
+            .expect("echo did not finish after two cuts")
+            .unwrap();
+        assert!(received == payload, "echoed bytes differ after resume");
+        assert!(
+            relay_connections.load(std::sync::atomic::Ordering::SeqCst) >= 3,
+            "the link was not re-established after each cut"
+        );
+        let _ = writer.await;
+        supervisor.abort();
+        server_task.abort();
+        relay_task.abort();
+        echo_task.abort();
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[tokio::test]

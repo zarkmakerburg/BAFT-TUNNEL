@@ -88,6 +88,24 @@ pub struct Limits {
     pub max_sessions: usize,
 }
 
+impl Limits {
+    /// ADR-0040 defaults: 1 MiB per stream, 60 s grace, a handful of live sessions per tunnel.
+    pub fn preview() -> Self {
+        Self {
+            window: crate::resume_core::DEFAULT_STREAM_WINDOW,
+            grace: crate::resume_core::DEFAULT_RESUME_GRACE,
+            max_sessions: 16,
+        }
+    }
+}
+
+/// A fresh per-tunnel memory budget (ADR-0040: 64 MiB).
+pub fn new_budget() -> SharedBudget {
+    Arc::new(Mutex::new(crate::resume_core::TunnelBudget::new(
+        crate::resume_core::DEFAULT_TUNNEL_BUDGET,
+    )))
+}
+
 // ---------------------------------------------------------------- acceptor (service side)
 
 pub struct ServerResume {
@@ -146,6 +164,7 @@ impl ServerResume {
         mut session: Session<S>,
         grant: ResumeGrant,
         who: Who,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
@@ -157,7 +176,17 @@ impl ServerResume {
             }
         };
         let who = Arc::new(who);
-        while let Some(item) = futures::StreamExt::next(&mut session).await {
+        loop {
+            let item = tokio::select! {
+                item = futures::StreamExt::next(&mut session) => item,
+                _ = async {
+                    // A dropped sender is not a shutdown request.
+                    if shutdown.changed().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                } => break,
+            };
+            let Some(item) = item else { break };
             match item {
                 Ok(io) => {
                     let this = self.clone();
@@ -526,6 +555,7 @@ mod tests {
             server_session,
             server_grant,
             who.clone(),
+            tokio::sync::watch::channel(false).1,
         ));
         (control, client_grant, task, cut_tx)
     }
