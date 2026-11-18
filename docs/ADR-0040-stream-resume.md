@@ -94,3 +94,6 @@ and resumes every live stream. Limits of this Preview: no rotation, no backup li
 probes on v3 sessions, Reverse unsupported (rejected by config validation and at start-up).
 Evidence: CI + a local end-to-end test through the real `serve_versioned` / forwarder loops with
 two link cuts and byte-for-byte equality. **No LAB evidence yet** (step 5).
+
+## Evidence (2026-11-18)
+LAB run 44283746412 (orchestration from `1685248`, candidate `04c3e0b`): tcp-tls Direct, protocol v3, throwaway PKI, 16 MiB echoed while a loopback relay on the Iran host was cut twice; payload sha256 equal, two resumed sessions logged, no service restart, descriptor counts flat. Evidence level: two-host LAB, one run. Resume stays default-off Preview (Direct, tcp-tls only, no rotation, backup links or probes on v3).
