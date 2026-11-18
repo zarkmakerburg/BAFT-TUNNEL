@@ -194,6 +194,19 @@ pub async fn run(state_dir: Option<&Path>, body: &[u8]) -> (u16, Value) {
     } else {
         None
     };
+    let gp = if consent.globalping {
+        let mut gate = match shared().lock() {
+            Ok(mut s) => std::mem::replace(&mut s.gate, LookupGate::new(600, 3, 10)),
+            Err(_) => LookupGate::new(600, 3, 10),
+        };
+        let rep = probe_http::run_globalping(ip, consent, &mut gate, now_s()).await;
+        if let Ok(mut s) = shared().lock() {
+            s.gate = gate;
+        }
+        Some(rep)
+    } else {
+        None
+    };
     let out = json!({
         "target": ip.to_string(), "port": port,
         "country": {"value": null, "source": "none", "reason": "no offline GeoIP database installed"},
@@ -201,12 +214,13 @@ pub async fn run(state_dir: Option<&Path>, body: &[u8]) -> (u16, Value) {
         "from_here": here,
         "providers": [
             provider_json("check-host", consent.checkhost, ch.as_ref(), "disabled"),
-            provider_json("globalping", consent.globalping, None, if consent.globalping { "not available yet" } else { "disabled" }),
+            provider_json("globalping", consent.globalping, gp.as_ref(), "disabled"),
         ],
         "cached_s": 0,
     });
     // Only cache runs that actually measured something outside this server.
-    let measured = ch.as_ref().is_some_and(|r| !r.rows.is_empty());
+    let measured = ch.as_ref().is_some_and(|r| !r.rows.is_empty())
+        || gp.as_ref().is_some_and(|r| !r.rows.is_empty());
     if let Ok(mut s) = shared().lock() {
         if measured {
             s.cache.insert((ip, port), (Instant::now(), out.clone()));
