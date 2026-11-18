@@ -15,6 +15,10 @@ export const LANGS: Record<Lang, { label: string; dir: 'rtl' | 'ltr' }> = {
 
 const EXTRA: Record<Lang, Record<string, string>> = {
   fa: {
+    'viz.geo.view': 'نما',
+    'viz.geo.view.globe': 'کره سه‌بعدی',
+    'viz.geo.view.flat': 'نقشه تخت',
+    'viz.geo.recentre': 'برگشت به مسیر',
     'viz.geo.style': 'سبک نقشه',
     'viz.geo.style.dots': 'نقطه‌ای',
     'viz.geo.style.solid': 'ساده',
@@ -88,6 +92,10 @@ const EXTRA: Record<Lang, Record<string, string>> = {
     'rx.settings.logout.body': 'توکن از این مرورگر حذف می‌شود و باید دوباره وارد شوید.',
   },
   en: {
+    'viz.geo.view': 'View',
+    'viz.geo.view.globe': '3D globe',
+    'viz.geo.view.flat': 'Flat map',
+    'viz.geo.recentre': 'Recentre',
     'viz.geo.style': 'Map style',
     'viz.geo.style.dots': 'Dotted',
     'viz.geo.style.solid': 'Solid',

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { useApp } from '../app';
 import { ago, conf, fmtBytes, fmtNum, stats, tunnelState, listenState, type Kind } from '../derive';
 import type { Loaded } from '../api';
 import { Card, Ltr, Pill } from './ui';
 import { LAND, MAP_H, MAP_S, MAP_TOP, MAP_W } from '../worldmap';
+import { Globe, type GlobePin } from './globe';
 
 /* ---------- operator-declared location (no GeoIP yet: ADR-0052 offline database is not built) ---------- */
 
@@ -43,6 +44,22 @@ const proj = (lat: number, lon: number): [number, number] => [(lon + 180) * MAP_
 
 /* ---------- small pieces ---------- */
 
+/** Gentle 3D parallax: the node cards tilt toward the pointer. Fine pointers only, never with reduced motion. */
+function useTilt(ref: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || matchMedia('(prefers-reduced-motion: reduce)').matches || !matchMedia('(pointer: fine)').matches) return;
+    const move = (e: PointerEvent) => {
+      const r = el.getBoundingClientRect();
+      el.style.setProperty('--ry', `${(((e.clientX - r.left) / r.width) - 0.5) * 10}deg`);
+      el.style.setProperty('--rx', `${(0.5 - ((e.clientY - r.top) / r.height)) * 8}deg`);
+    };
+    const leave = () => { el.style.setProperty('--ry', '0deg'); el.style.setProperty('--rx', '0deg'); };
+    el.addEventListener('pointermove', move); el.addEventListener('pointerleave', leave);
+    return () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerleave', leave); };
+  }, [ref]);
+}
+
 export function Spark({ pts, label, cls = '' }: { pts: (number | null)[]; label: string; cls?: string }) {
   const real = pts.filter((v): v is number => v != null);
   if (real.length < 2) return <span className="spark-none sub">—</span>;
@@ -55,7 +72,7 @@ export function Spark({ pts, label, cls = '' }: { pts: (number | null)[]; label:
     d += `${pen ? 'L' : 'M'}${(P + (i / n) * (W - 2 * P)).toFixed(1)} ${(H - P - ((v - lo) / (hi - lo || 1)) * (H - 2 * P)).toFixed(1)} `;
     pen = true;
   });
-  return <svg className={`spark ${cls}`} viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label} preserveAspectRatio="none"><path d={d} /></svg>;
+  return <svg className={`spark ${cls}`} viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label} preserveAspectRatio="none"><path d={d} pathLength="1" /></svg>;
 }
 
 type LinkKind = 'flow' | 'steady' | 'wait' | 'down' | 'none';
@@ -80,6 +97,8 @@ function NodeBox({ role, id, sub, kind }: { role: string; id?: string | null; su
 
 export function Topology({ d }: { d: Loaded }) {
   const { t, lang } = useApp();
+  const topo = useRef<HTMLDivElement>(null);
+  useTilt(topo);
   const c = conf(d);
   const s = d.status;
   const lk = linkOf(d);
@@ -95,11 +114,12 @@ export function Topology({ d }: { d: Loaded }) {
   const aria = `${c.local_identity ?? t('unknown')} → ${c.peer_identity ?? t('unknown')}: ${state.l}`;
   return (
     <Card title={t('viz.topo.title')} action={<Pill kind={state.k}>{state.l}</Pill>}>
-      <div className={`topo link-${lk}`} role="group" aria-label={aria}>
+      <div ref={topo} className={`topo link-${lk}`} role="group" aria-label={aria}>
         <NodeBox role={t('viz.this')} id={c.local_identity} sub={c.mode ? t((c.direction === 'reverse' ? 'role.rev.' : 'role.') + c.mode) : undefined} kind={s ? 'ok' : 'unknown'} />
         <div className="wire" aria-hidden="true">
           <span className="wire-tag">{t('dir.' + dirKey + '.t')}{dirKey === 'reverse' ? ` · ${t('dir.preview')}` : ''}</span>
           <svg viewBox="0 0 200 24" preserveAspectRatio="none"><line x1="0" y1="12" x2="200" y2="12" className="wire-line" /></svg>
+          {lk === 'flow' && <span className="packets"><i /><i /><i /></span>}
           <span className="wire-state">{state.l}</span>
         </div>
         <NodeBox role={t('viz.peer')} id={c.peer_identity} sub={t('viz.peer.note')} kind="unknown" />
@@ -143,6 +163,8 @@ export function GeoMap({ d }: { d: Loaded }) {
   const [mine, setMine] = useDeclared(c.local_identity);
   const [theirs, setTheirs] = useDeclared(c.peer_identity);
   const [dots, setDots] = useState(() => { try { return localStorage.getItem('baft.map.style') === 'dots'; } catch { return false; } });
+  const [globe, setGlobe] = useState(() => { try { return localStorage.getItem('baft.map.view') === 'globe'; } catch { return false; } });
+  const toggleView = () => { setGlobe((v) => { const n = !v; try { localStorage.setItem('baft.map.view', n ? 'globe' : 'flat'); } catch { /* optional */ } return n; }); };
   const toggleStyle = () => { setDots((v) => { const n = !v; try { localStorage.setItem('baft.map.style', n ? 'dots' : 'solid'); } catch { /* optional */ } return n; }); };
   // Detected values come from the Agent's offline database (GET /v1/geo); a user choice always wins.
   const det = (k: 'local' | 'peer'): string | null => {
@@ -157,6 +179,9 @@ export function GeoMap({ d }: { d: Loaded }) {
   const b: [number, number] | null = b0 && same && a ? [a[0] + 10, a[1] + 6] : b0;
   const dn = (() => { try { return new Intl.DisplayNames([lang], { type: 'region' }); } catch { return null; } })();
   const nm = (k: string) => dn?.of(k) ?? k;
+  const gp: GlobePin[] = [];
+  if (effMine && CENTROID[effMine]) gp.push({ lon: CENTROID[effMine]![1], lat: CENTROID[effMine]![0], label: `${flagOf(effMine)} ${nm(effMine)}`.trim(), kind: 'me' });
+  if (effTheirs && CENTROID[effTheirs]) gp.push({ lon: CENTROID[effTheirs]![1] + (same ? 2 : 0), lat: CENTROID[effTheirs]![0] + (same ? 1.5 : 0), label: `${flagOf(effTheirs)} ${nm(effTheirs)}`.trim(), kind: 'peer' });
   let arc = '';
   if (a && b) {
     const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2 - Math.max(18, Math.hypot(a[0] - b[0], a[1] - b[1]) * 0.28);
@@ -182,6 +207,9 @@ export function GeoMap({ d }: { d: Loaded }) {
   );
   return (
     <Card title={t('viz.geo.title')} action={<Pill kind={mine || theirs ? 'info' : dMine || dTheirs ? 'ok' : 'unknown'}>{mine || theirs ? t('viz.geo.declared.pill') : dMine || dTheirs ? t('viz.geo.detected.pill') : t('viz.geo.none.pill')}</Pill>}>
+      {globe ? (
+        <Globe pins={gp} link={lk} label={gp.length === 2 ? t('viz.geo.aria', { a: nm(effMine), b: nm(effTheirs) }) : t('viz.geo.aria.none')} reset={t('viz.geo.recentre')} />
+      ) : (
       <figure className={`geomap link-${lk}`}>
         <svg viewBox={view} role="img" aria-label={a && b ? t('viz.geo.aria', { a: nm(effMine), b: nm(effTheirs) }) : t('viz.geo.aria.none')} preserveAspectRatio="xMidYMid meet">
           <defs>
@@ -196,7 +224,9 @@ export function GeoMap({ d }: { d: Loaded }) {
         </svg>
         {!(a && b) && <figcaption className="geo-hint sub">{t('viz.geo.unset.hint')}</figcaption>}
       </figure>
-      <div className="row"><button type="button" className="ghost" aria-pressed={dots} onClick={toggleStyle}>{t('viz.geo.style')}: {dots ? t('viz.geo.style.dots') : t('viz.geo.style.solid')}</button></div>
+      )}
+      {globe && !(a && b) && <p className="geo-hint sub">{t('viz.geo.unset.hint')}</p>}
+      <div className="row"><button type="button" className="ghost" aria-pressed={globe} onClick={toggleView}>{t('viz.geo.view')}: {globe ? t('viz.geo.view.globe') : t('viz.geo.view.flat')}</button>{!globe && <button type="button" className="ghost" aria-pressed={dots} onClick={toggleStyle}>{t('viz.geo.style')}: {dots ? t('viz.geo.style.dots') : t('viz.geo.style.solid')}</button>}</div>
       <div className="geo-form">
         <CountrySelect label={`${t('viz.geo.me')}${c.local_identity ? ' · ' + c.local_identity : ''}`} value={mine} onChange={setMine} detected={dMine} />
         <CountrySelect label={`${t('viz.geo.peer')}${c.peer_identity ? ' · ' + c.peer_identity : ''}`} value={theirs} onChange={setTheirs} detected={dTheirs} />

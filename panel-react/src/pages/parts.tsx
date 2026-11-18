@@ -28,9 +28,9 @@ export const NotificationList = WarnList;
 
 export function TierPill({ result }: { result: string | undefined }) {
   const { t } = useApp();
-  const key = 'tier.r.' + result;
+  const key = 'tier.r.' + (result ?? 'unknown');
   const l = t(key);
-  return <Pill kind={tierKind(result)}>{l === key ? String(result ?? 'unknown') : l}</Pill>;
+  return <Pill kind={tierKind(result)}>{l === key ? String(result) : l}</Pill>;
 }
 
 export function Flag({ v, bad }: { v: boolean | null | undefined; bad: 'warn' | 'bad' }) {

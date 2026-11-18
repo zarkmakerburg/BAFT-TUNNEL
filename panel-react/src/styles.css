@@ -403,11 +403,17 @@ td .ltr,td code{overflow-wrap:anywhere;display:inline-block;max-inline-size:26ch
 .geo-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--s3);margin-block:var(--s3)}
 .geo-sel{display:grid;gap:var(--s1)}
 @media (max-width:560px){
-  .topo{grid-template-columns:1fr}
-  .wire{grid-template-columns:auto 1fr auto;gap:var(--s2);justify-items:stretch;align-items:center}
-  .wire svg{transform:none}
-  .wire-tag,.wire-state{text-align:start}
+  .topo{grid-template-columns:1fr;gap:0}
+  /* vertical link on phones: the line and packets run between the two stacked nodes */
+  .wire{min-block-size:76px;display:block}
+  .wire svg{display:none}
+  .wire::before{content:"";position:absolute;inset-block:4px;inset-inline-start:calc(50% - 1.5px);inline-size:3px;border-radius:2px;background:repeating-linear-gradient(var(--unknown) 0 3px,transparent 3px 9px)}
+  .link-steady .wire::before{background:var(--ok)}.link-flow .wire::before{background:repeating-linear-gradient(var(--ok) 0 8px,transparent 8px 14px)}
+  .link-wait .wire::before{background:repeating-linear-gradient(var(--warn) 0 6px,transparent 6px 12px)}.link-down .wire::before{background:repeating-linear-gradient(var(--bad) 0 3px,transparent 3px 13px)}
+  .wire-tag,.wire-state{position:absolute;inset-inline-start:calc(50% + 14px);text-align:start}
+  .wire-tag{inset-block-start:14px}.wire-state{inset-block-start:36px}
 }
+@keyframes packet-v{0%{inset-block-start:0;opacity:0}12%{opacity:1}88%{opacity:1}100%{inset-block-start:calc(100% - 8px);opacity:0}}
 .vitals+.sub{margin-block-start:var(--s3)}
 .geomap .land-dots{fill:none;stroke:color-mix(in srgb,var(--muted) 70%,transparent);stroke-width:1.1;stroke-dasharray:.1 2.4;stroke-linecap:round;vector-effect:non-scaling-stroke}
 .pin-label{fill:var(--fg);paint-order:stroke;stroke:var(--bg,#0b1220);stroke-width:.35em;stroke-linejoin:round;font-weight:600;pointer-events:none}
@@ -415,3 +421,34 @@ td .ltr,td code{overflow-wrap:anywhere;display:inline-block;max-inline-size:26ch
 .geomap .grat{fill:none;stroke:color-mix(in srgb,var(--muted) 22%,transparent);stroke-width:.5;vector-effect:non-scaling-stroke}
 .pulse{fill:var(--ok)}
 @media (prefers-reduced-motion:reduce){.pulse{display:none}}
+.globe-wrap{position:relative;border:1px solid var(--glass-edge);border-radius:var(--r-lg);background:radial-gradient(120% 90% at 50% 40%,color-mix(in srgb,var(--accent) 10%,var(--surface-2)),var(--surface));overflow:hidden}
+.globe{display:block;inline-size:100%;block-size:clamp(240px,46vw,380px);touch-action:none;cursor:grab}
+.globe:active{cursor:grabbing}
+.globe-reset{position:absolute;inset-block-end:var(--s2);inset-inline-end:var(--s2);min-block-size:32px;padding-inline:var(--s3);font-size:var(--fs-0)}
+
+/* ---- network motion: packets, node glow, radar ping, sparkline draw-in, 3D tilt (all off under reduced motion) ---- */
+.topo{perspective:900px}
+.vnode{transform:rotateX(var(--rx,0deg)) rotateY(var(--ry,0deg));transition:transform .25s ease-out;transform-style:preserve-3d;position:relative}
+.vn-ok::after{content:"";position:absolute;inset:-1px;border-radius:inherit;border:1px solid var(--ok);opacity:0;pointer-events:none}
+.packets{position:absolute;inset-inline:0;inset-block-start:50%;block-size:0;pointer-events:none}
+.wire{position:relative}
+.packets i{position:absolute;inset-block-start:-4px;inline-size:8px;block-size:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 10px 2px var(--ok);inset-inline-start:0;opacity:0}
+@keyframes packet{0%{inset-inline-start:0;opacity:0}12%{opacity:1}88%{opacity:1}100%{inset-inline-start:calc(100% - 8px);opacity:0}}
+@keyframes ping{0%{transform:scale(1);opacity:.55}100%{transform:scale(1.14);opacity:0}}
+@keyframes drawin{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
+@keyframes sheen{from{background-position:-200% 0}to{background-position:200% 0}}
+@media (prefers-reduced-motion:no-preference){
+  .link-flow .packets i{animation:packet 2.2s cubic-bezier(.4,0,.6,1) infinite}
+  @media (max-width:560px){.link-flow .packets i{animation-name:packet-v}}
+  .link-flow .packets i:nth-child(2){animation-delay:.73s}.link-flow .packets i:nth-child(3){animation-delay:1.46s}
+  .link-flow .vn-ok::after,.link-steady .vn-ok::after{animation:ping 2.4s ease-out infinite}
+  .spark path{stroke-dasharray:1;stroke-dashoffset:0;animation:drawin 1.1s ease-out}
+  .hero-ok{background-image:linear-gradient(100deg,transparent 30%,color-mix(in srgb,var(--ok) 10%,transparent) 50%,transparent 70%);background-size:200% 100%;animation:sheen 7s linear infinite}
+  .card{transition:transform .2s ease,border-color .2s ease}
+  .card:hover{border-color:var(--accent-line)}
+}
+[dir=rtl] .packets i{animation-direction:normal}
+@media (max-width:560px){
+  .wire .packets{inset-block:4px;inset-inline:auto;inset-inline-start:calc(50% - 4px);inline-size:8px;block-size:auto}
+  .wire .packets i{inset-inline-start:0;inset-block-start:0}
+}
