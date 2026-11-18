@@ -117,6 +117,9 @@ pub struct Ctx {
     /// ADR-0045 F1: reports received from enrolled nodes. Memory only; empty until the hub
     /// listener exists, so every node is Never (unknown, not zero).
     pub fleet: std::sync::Mutex<crate::fleet::Hub>,
+    /// Address the Fleet hub listener is bound to; `Some` only after `--fleet-config` bound it.
+    #[allow(dead_code)] // read by GET /v1/fleet/nodes once that route reports the hub listener
+    pub fleet_hub_listen: std::sync::Mutex<Option<SocketAddr>>,
     /// systemd access for the bound instance: state reads, and start/stop/enable/disable requests
     /// through the root control helper (ADR-0023). Tests substitute a fake.
     units: Arc<dyn crate::apply::Units + Send + Sync>,
@@ -138,6 +141,12 @@ struct Sample {
     ts: u64,
     up: bool,
     rtt_ms: Option<f64>,
+}
+
+impl crate::fleet_hub::HubStore for Ctx {
+    fn hub(&self) -> &std::sync::Mutex<crate::fleet::Hub> {
+        &self.fleet
+    }
 }
 
 impl Ctx {
@@ -163,6 +172,7 @@ impl Ctx {
             traffic: std::sync::Mutex::new(std::collections::VecDeque::new()),
             long: std::sync::Mutex::new(long),
             fleet: std::sync::Mutex::new(crate::fleet::Hub::default()),
+            fleet_hub_listen: std::sync::Mutex::new(None),
             units: Arc::new(crate::apply::SystemUnits::default()),
             config_dir: PathBuf::from("/etc/baft-tunnel"),
             setup: Arc::new(crate::setup_helper::SystemSetupHelper::default()),
@@ -337,6 +347,7 @@ pub async fn run(
     token: String,
     state_dir: Option<PathBuf>,
     instance: Option<String>,
+    fleet: Option<crate::fleet_run::FleetConfig>,
 ) -> Result<()> {
     if let Some(name) = &instance {
         if !crate::apply::valid_instance(name) {
@@ -356,8 +367,14 @@ pub async fn run(
     if let (Some(name), Some(dir)) = (&instance, &state_dir) {
         publish_agent_address(dir, name, listen);
     }
-    let ctx = Arc::new(Ctx::with_config(config, token, state_dir).with_unit(instance, runtime_dir));
+    let ctx = Arc::new(
+        Ctx::with_config(config, token, state_dir).with_unit(instance.clone(), runtime_dir),
+    );
     tokio::spawn(sampler(ctx.clone()));
+    // ADR-0045 F1: only when `--fleet-config` is given; nothing listens or reports otherwise.
+    if let Some(fleet) = fleet {
+        crate::fleet_run::start(ctx.clone(), fleet, instance.as_deref()).await?;
+    }
     serve(listener, ctx).await
 }
 
@@ -3116,7 +3133,7 @@ async fn listener_accepting(config: &RuntimeConfig) -> bool {
     }
 }
 
-async fn status(ctx: &Ctx, config: &RuntimeConfig) -> Value {
+pub(crate) async fn status(ctx: &Ctx, config: &RuntimeConfig) -> Value {
     let listening = listener_accepting(config).await;
     json!({
         "agent": "baft-tunnel",

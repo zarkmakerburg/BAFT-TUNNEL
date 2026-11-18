@@ -23,6 +23,18 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_HEAD_BYTES: usize = 4096;
 
+/// Where accepted reports go. Implemented for a bare `Mutex<Hub>` (tests) and for the agent's
+/// shared context, so the listener never needs to know about the rest of the agent.
+pub trait HubStore: Send + Sync + 'static {
+    fn hub(&self) -> &Mutex<Hub>;
+}
+
+impl HubStore for Mutex<Hub> {
+    fn hub(&self) -> &Mutex<Hub> {
+        self
+    }
+}
+
 /// What the verified client certificate says about the caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
@@ -214,10 +226,10 @@ fn unix_now() -> u64 {
 
 /// Accept loop. Every connection must complete a TLS 1.3 handshake with a client certificate
 /// that chains to the pinned CA and is not revoked; the profile check happens in the rules.
-pub async fn serve(
+pub async fn serve<S: HubStore>(
     listener: TcpListener,
     acceptor: Arc<crate::tls::ReloadingAcceptor>,
-    hub: Arc<Mutex<Hub>>,
+    hub: Arc<S>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
@@ -241,7 +253,7 @@ pub async fn serve(
                         .and_then(|c| c.first())
                         .and_then(|leaf| peer_identity(leaf.as_ref()).ok());
                     let Some(id) = id else { return };
-                    let _ = timeout(REQUEST_TIMEOUT, handle(&mut tls, &id, &hub, unix_now())).await;
+                    let _ = timeout(REQUEST_TIMEOUT, handle(&mut tls, &id, hub.hub(), unix_now())).await;
                 });
             }
         }

@@ -13,6 +13,7 @@ mod fleet;
 mod fleet_ca;
 mod fleet_hub;
 mod fleet_report;
+mod fleet_run;
 mod geoip;
 mod handshake;
 mod history_store;
@@ -207,6 +208,10 @@ enum Command {
         /// the unprivileged `baft-tunnel` user (see docs/SECURITY_ASSESSMENT.md, SA-01).
         #[arg(long)]
         allow_root: bool,
+        /// Fleet (ADR-0045 F1, read-only, Preview): JSON file naming the certificate files for a
+        /// hub listener and/or a member reporter. Off unless given; see docs/ADR-0045.
+        #[arg(long)]
+        fleet_config: Option<PathBuf>,
     },
 }
 
@@ -859,6 +864,7 @@ async fn run() -> Result<()> {
             state_dir,
             instance,
             allow_root,
+            fleet_config,
         } => {
             // SAFETY: geteuid has no preconditions and cannot fail.
             if unsafe { libc::geteuid() } == 0 && !allow_root {
@@ -882,12 +888,17 @@ async fn run() -> Result<()> {
                 Some(config)
             };
             let token = agent::read_token(&token_file)?;
+            let fleet = fleet_config
+                .as_deref()
+                .map(fleet_run::FleetConfig::load)
+                .transpose()?;
             agent::run(
                 config,
                 agent::parse_listen(&listen)?,
                 token,
                 state_dir,
                 instance,
+                fleet,
             )
             .await
         }

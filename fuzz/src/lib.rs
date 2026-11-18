@@ -37,6 +37,15 @@ pub mod observe;
 #[path = "../../src/fleet.rs"]
 #[allow(dead_code)]
 pub mod fleet;
+#[path = "../../src/fleet_hub.rs"]
+#[allow(dead_code)]
+pub mod fleet_hub;
+#[path = "../../src/fleet_report.rs"]
+#[allow(dead_code)]
+pub mod fleet_report;
+#[path = "../../src/fleet_run.rs"]
+#[allow(dead_code)]
+pub mod fleet_run;
 #[path = "../../src/probe_adapters.rs"]
 #[allow(dead_code)]
 pub mod probe_adapters;
