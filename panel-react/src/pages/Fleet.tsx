@@ -3,7 +3,7 @@ import { useData } from '../feed-context';
 import { Banner, Card, Empty, Kpi, Ltr, Pill } from '../components/ui';
 import type { Kind } from '../derive';
 import { fmtNum } from '../derive';
-import { AutoPair } from './AutoPair';
+import { AddServer } from './AddServer';
 
 const FRESH: Record<string, Kind> = { live: 'ok', stale: 'warn', never: 'unknown' };
 const UPD: Record<string, Kind> = { current: 'ok', update_available: 'info' };
@@ -70,7 +70,7 @@ export function Fleet() {
       )}
       <Card title={t('fleet.add.title')}>
         <p className="muted">{t('fleet.add.intro')}</p>
-        <AutoPair />
+        <AddServer />
       </Card>
     </div>
   );
