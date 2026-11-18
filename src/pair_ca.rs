@@ -51,7 +51,7 @@ fn valid_node_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
-fn validate_san(san: &str) -> Result<()> {
+pub(crate) fn validate_san(san: &str) -> Result<()> {
     if let Some(ip) = san.strip_prefix("IP:") {
         ip.parse::<std::net::IpAddr>().context("invalid IP SAN")?;
     } else if let Some(dns) = san.strip_prefix("DNS:") {

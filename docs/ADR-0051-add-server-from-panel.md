@@ -89,6 +89,6 @@ The concrete need D1 asked for: the per-tunnel CA (ADR-0050) signs exactly two n
 - Name constrained to URI names under `.fleet.baft.invalid`; a fleet-node certificate carries `baft-fleet://<node-id>.fleet.baft.invalid` and the hub reads the node id from it (F-5). Node ids are lowercase letters, digits and hyphens, at most 63 characters.
 - One BAFT EKU only (`fleet::EKU_FLEET_NODE`) plus standard `clientAuth` (F-4); no `serverAuth`.
 - Leaf validity 30 days, CRL validity 30 days, revocation supported. Same CSR gate as the tunnel CA (shared `pair_ca::check_csr`: one PEM request, valid signature, CN equals node id, EC P-256).
-- Not wired yet: the root helper operation, enrollment flow (F-7) and the `fleet-hub` server profile (F-2) come in later slices. Nothing in the agent calls this module today.
+- `fleet_ca::sign_hub` issues the `fleet-hub` server certificate (F-2): `serverAuth` plus the fleet-hub EKU only, URI `baft-fleet-hub://<name>.fleet.baft.invalid` and the DNS or IP the members dial. Not wired yet: the root helper operation and the enrollment flow (F-7) come in later slices. Nothing in the agent calls this module today.
 
 Evidence: container-free unit tests with the real `openssl` (profile, EKU exclusivity, name, 30-day bound, chain verify, bad CN, wrong curve, invalid ids, revocation). Not LAB-verified.
