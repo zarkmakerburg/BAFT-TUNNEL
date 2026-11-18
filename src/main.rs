@@ -27,6 +27,7 @@ mod policy;
 #[cfg(test)]
 mod policy_baseline;
 mod probe_adapters;
+mod probe_http;
 mod resumable;
 mod resume_core;
 mod resume_registry;
