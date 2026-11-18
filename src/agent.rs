@@ -117,6 +117,9 @@ pub struct Ctx {
     /// ADR-0045 F1: reports received from enrolled nodes. Memory only; empty until the hub
     /// listener exists, so every node is Never (unknown, not zero).
     pub fleet: std::sync::Mutex<crate::fleet::Hub>,
+    /// Address the Fleet hub listener is bound to; `Some` only after `--fleet-config` bound it.
+    #[allow(dead_code)] // read by GET /v1/fleet/nodes once that route reports the hub listener
+    pub fleet_hub_listen: std::sync::Mutex<Option<SocketAddr>>,
     /// systemd access for the bound instance: state reads, and start/stop/enable/disable requests
     /// through the root control helper (ADR-0023). Tests substitute a fake.
     units: Arc<dyn crate::apply::Units + Send + Sync>,
@@ -169,6 +172,7 @@ impl Ctx {
             traffic: std::sync::Mutex::new(std::collections::VecDeque::new()),
             long: std::sync::Mutex::new(long),
             fleet: std::sync::Mutex::new(crate::fleet::Hub::default()),
+            fleet_hub_listen: std::sync::Mutex::new(None),
             units: Arc::new(crate::apply::SystemUnits::default()),
             config_dir: PathBuf::from("/etc/baft-tunnel"),
             setup: Arc::new(crate::setup_helper::SystemSetupHelper::default()),
