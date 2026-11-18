@@ -3559,15 +3559,30 @@ fn update_notice(ctx: &Ctx) -> Value {
     })
 }
 
-/// Fleet enrollment operator routes (ADR-0051 Path A). No signer is configured yet: the Fleet CA
-/// key belongs to the root helper (M5), so `confirm` answers 503 until that operation exists.
+/// Fleet enrollment operator routes (ADR-0051 Path A). Signing goes through the root Fleet helper
+/// (the CA key never reaches the agent, M5); without an instance or helper `confirm` answers 503.
 fn fleet_enroll_route(ctx: &Ctx, op: &str, body: &[u8]) -> (u16, Value) {
     let now = unix_now();
     let mut e = ctx.fleet_enroll.lock().unwrap_or_else(|e| e.into_inner());
     match op {
         "list" => crate::fleet_api::list(&mut e, now),
         "offer" => crate::fleet_api::offer(&mut e, body, now),
-        "confirm" => crate::fleet_api::confirm(&mut e, body, now, None),
+        "confirm" => match ctx.instance.as_deref() {
+            Some(name) => {
+                let signer = |node_id: &str, csr: &str| {
+                    crate::fleet_helper::sign(
+                        &ctx.pair_dir,
+                        name,
+                        node_id,
+                        csr,
+                        std::time::Duration::from_secs(8),
+                    )
+                    .map_err(|_| crate::fleet_enroll::Error::Sign)
+                };
+                crate::fleet_api::confirm(&mut e, body, now, Some(&signer))
+            }
+            None => crate::fleet_api::confirm(&mut e, body, now, None),
+        },
         _ => crate::fleet_api::deny(&mut e, body),
     }
 }

@@ -1,0 +1,34 @@
+[Unit]
+Description=Sign one fleet-node certificate for baft-tunnel@%i (root Fleet helper, ADR-0051)
+StartLimitIntervalSec=10s
+StartLimitBurst=60
+
+[Service]
+Type=oneshot
+# Fixed command, one operation: sign one fleet-node certificate from a bounded CSR with the Fleet
+# CA in /etc/baft-tunnel/fleet-ca (root only). No network. Only the public certificate is returned.
+ExecStart=/usr/local/bin/baft-tunnel fleet helper --instance %i
+ExecStopPost=/usr/bin/rm -f /run/baft-tunnel/control/%i.fleet
+TimeoutStartSec=60s
+UMask=0022
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE

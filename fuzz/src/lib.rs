@@ -46,6 +46,9 @@ pub mod fleet_ca;
 #[path = "../../src/fleet_enroll.rs"]
 #[allow(dead_code)]
 pub mod fleet_enroll;
+#[path = "../../src/fleet_helper.rs"]
+#[allow(dead_code)]
+pub mod fleet_helper;
 #[path = "../../src/fleet_hub.rs"]
 #[allow(dead_code)]
 pub mod fleet_hub;

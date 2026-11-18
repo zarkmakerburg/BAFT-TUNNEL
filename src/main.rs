@@ -13,6 +13,7 @@ mod fleet;
 mod fleet_api;
 mod fleet_ca;
 mod fleet_enroll;
+mod fleet_helper;
 mod fleet_hub;
 mod fleet_report;
 mod fleet_run;
@@ -163,6 +164,11 @@ enum Command {
         #[command(subcommand)]
         command: PairCommand,
     },
+    /// Fleet (ADR-0051): root helper that signs fleet-node certificates for the panel.
+    Fleet {
+        #[command(subcommand)]
+        command: FleetCommand,
+    },
     /// Install, verify, upgrade and roll back pinned engine binaries (nothing is downloaded).
     Engine {
         #[command(subcommand)]
@@ -214,6 +220,15 @@ enum Command {
         /// hub listener and/or a member reporter. Off unless given; see docs/ADR-0045.
         #[arg(long)]
         fleet_config: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum FleetCommand {
+    /// Run by `baft-tunnel-control-fleet@NAME.service` as root: sign one requested certificate.
+    Helper {
+        #[arg(long)]
+        instance: String,
     },
 }
 
@@ -808,6 +823,21 @@ async fn run() -> Result<()> {
                 },
             )
             .await
+        }
+        Command::Fleet {
+            command: FleetCommand::Helper { instance },
+        } => {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if unsafe { libc::geteuid() } != 0 {
+                bail!("the Fleet helper runs as root from its systemd unit only");
+            }
+            let status = fleet_helper::run(
+                &instance,
+                std::path::Path::new(apply::CONTROL_DIR),
+                std::path::Path::new(fleet_helper::CA_DIR),
+            )?;
+            println!("fleet helper for {instance}: state={}", status["state"].as_str().unwrap_or("-"));
+            Ok(())
         }
         Command::Pair {
             command: PairCommand::Helper { instance },

@@ -48,7 +48,7 @@ fi
 UNIT_DIR="$ROOT_PREFIX/etc/systemd/system"
 TMPF="$ROOT_PREFIX/etc/tmpfiles.d/baft-tunnel-control.conf"
 STATE="$ROOT_PREFIX/var/lib/baft-tunnel-agent"
-VERBS=(start stop enable disable setup pki pair)
+VERBS=(start stop enable disable setup pki pair fleet)
 FILES=(); for v in "${VERBS[@]}"; do FILES+=("baft-tunnel-control-$v@.path" "baft-tunnel-control-$v@.service"); done
 CTL_PATHS=(); for v in "${VERBS[@]}"; do CTL_PATHS+=("baft-tunnel-control-$v@$INSTANCE.path"); done
 AGENT_UNITS=("baft-tunnel-agent@$INSTANCE.path" "baft-tunnel-agent@$INSTANCE.service")
