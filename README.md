@@ -86,7 +86,7 @@ curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --channel prerelease -
 curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --channel prerelease --pair 'BAFT1-...'
 ```
 
-Both servers show the same short key fingerprint; approve only if they match. The code is single-use and expires in 15 minutes. Open the tunnel port (default TCP 8443) on the first server's firewall yourself; BAFT-TUNNEL never changes firewall rules. Without a terminal `--offer` refuses to run unless you add `--auto-approve`. Direct `tcp-tls` only for now; the Iran/abroad question and Reverse are designed in ADR-0050 Addendum 2 and not implemented yet. Evidence: CI and local tests; no LAB run yet.
+Both servers show the same short key fingerprint; approve only if they match. The code is single-use and expires in 15 minutes. Open the tunnel port (default TCP 8443) on the first server's firewall yourself; BAFT-TUNNEL never changes firewall rules. Without a terminal `--offer` refuses to run unless you add `--auto-approve`. Direct `tcp-tls` only for now; the panel asks whether each server is in Iran or abroad (`--location iran|abroad` on the shell); an Iran server that dials out gets a 10 s session rotation default. Reverse is designed in ADR-0050 Addendum 2 and not implemented yet. Evidence: CI and local tests; no LAB run yet.
 
 ### HTTPS panel (domain or IP)
 

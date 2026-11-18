@@ -69,6 +69,7 @@ function serve() {
         const tag = lang + '/' + role;
         ok(tag + ' simple flow is the default in setup mode (no wizard stepper)', await page.locator('.stepper').count() === 0 && await page.locator('input[name="autorole"]').count() === 2);
         await page.locator('input[name="autorole"][value="' + role + '"]').check();
+        await page.locator('input[name="autoloc"][value="' + (role === 'first' ? 'abroad' : 'iran') + '"]').check();
         if (role === 'first') {
           const inputs = page.locator('.form-grid input');
           await inputs.nth(0).fill('demo'); await inputs.nth(1).fill('9000');
@@ -85,7 +86,7 @@ function serve() {
           await page.locator('textarea').fill('sudo baft-tunnel pair accept ' + CODE);
           await page.locator('button.primary').click();
           const accept = posts.find(p => p.path === '/v1/pair/accept');
-          ok(tag + ' accept sends the bare code with confirm', accept && JSON.parse(accept.body).code === CODE && JSON.parse(accept.body).confirm === true);
+          ok(tag + ' accept sends the bare code with confirm', accept && JSON.parse(accept.body).code === CODE && JSON.parse(accept.body).confirm === true && JSON.parse(accept.body).location === 'iran');
         }
         await page.waitForSelector('.banner.info[role="status"]', { timeout: 20000 });
         ok(tag + ' tunnel is started automatically after pairing', posts.some(p => p.path === '/v1/tunnel/lifecycle' && JSON.parse(p.body).action === 'start'));

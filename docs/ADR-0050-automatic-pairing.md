@@ -83,7 +83,7 @@ Evidence labels: stages 1-5 are CI/local only; no LAB claim until the two-host r
 - **Installer.** `--offer` without a terminal is refused unless `--auto-approve` is given (with a warning); the code is
   passed to `pair accept -` on standard input. Pairing exists only on demand and is never on by default.
 
-## Addendum 2 (2026-11-17): location question and Reverse (design, not yet implemented)
+## Addendum 2 (2026-11-17): location question and Reverse (design; stage (a) implemented, Reverse not yet)
 
 Owner input: ask "is this server in Iran or abroad?" and derive the rest.
 
@@ -111,3 +111,11 @@ Owner input: ask "is this server in Iran or abroad?" and derive the rest.
    read from `GET /v1/engines`, so the flow offers Reverse only while that contract does.
 7. **Stages.** (a) location question and Direct defaults in the panel/CLI; (b) Reverse pairing core + tests; (c) panel and
    installer wording; (d) two-host LAB run requested from the coordinator, queued after the pairing LAB run.
+
+### Stage (a) as built (2026-11-18)
+
+The panel asks "Where is this server? Inside Iran / Abroad" on both steps (CLI `--location`, installer `--location`). Only
+the joiner's answer changes configuration: an Iran-side Direct dialer gets `session_rotate_secs = 10` (validated through the
+normal config loader; failure rolls the pairing back). The first server's answer is a hint: choosing Iran shows the advice to
+do step one on the abroad server and states that reachability is checked when the other server connects. Nothing else is
+inferred from the answer, no listener or direction is switched silently, and Reverse is still not offered by pairing.

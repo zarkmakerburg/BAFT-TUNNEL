@@ -772,7 +772,7 @@
       return t('auto.fail.other') + ' ' + r;
     }
     function autoFlow() {
-      var a = w.auto = w.auto || { role: null, name: '', port: '', host: '', code: '', ps: null, err: null, busy: false, phase: 'form', t0: 0 };
+      var a = w.auto = w.auto || { role: null, loc: null, name: '', port: '', host: '', code: '', ps: null, err: null, busy: false, phase: 'form', t0: 0 };
       var key = function () { return newKey('ui-auto-'); };
       function setErr(r) { a.err = (r && r.body && (r.body.detail || r.body.error)) || t('fail'); }
       function afterDone() {
@@ -819,11 +819,19 @@
         kids.push(h('h3', { text: t('auto.role.q') }), h('div', { class: 'choices', role: 'radiogroup', 'aria-label': t('auto.role.q') },
           choice('autorole', 'first', a.role === 'first', t('auto.role.first'), t('auto.role.first.d'), function (v) { a.role = v; a.err = null; draw(); }),
           choice('autorole', 'second', a.role === 'second', t('auto.role.second'), t('auto.role.second.d'), function (v) { a.role = v; a.err = null; draw(); })));
+        if (a.role) {
+          kids.push(h('h3', { text: t('auto.loc.q') }), h('div', { class: 'choices', role: 'radiogroup', 'aria-label': t('auto.loc.q') },
+            choice('autoloc', 'iran', a.loc === 'iran', t('auto.loc.iran'), t('auto.loc.iran.d'), function (v) { a.loc = v; a.err = null; draw(); }),
+            choice('autoloc', 'abroad', a.loc === 'abroad', t('auto.loc.abroad'), t('auto.loc.abroad.d'), function (v) { a.loc = v; a.err = null; draw(); })));
+          if (a.role === 'first' && a.loc === 'iran') { kids.push(h('div', { class: 'banner', role: 'note' }, h('p', { text: t('auto.loc.first.iran') }))); }
+          if (a.role === 'second' && a.loc === 'iran') { kids.push(h('p', { class: 'sub', text: t('auto.loc.second.iran') })); }
+        }
         if (a.role === 'first') {
           kids.push(h('div', { class: 'form-grid' }, fieldA('name', t('auto.f.name'), true), fieldA('port', t('auto.f.port'), true, 'numeric')),
             h('details', null, h('summary', { text: t('adv') }), h('div', { class: 'form-grid' }, fieldA('host', t('auto.f.host'), true))),
             h('button', { type: 'button', class: 'primary', disabled: a.busy ? true : null, text: t('auto.create'), onclick: function () {
               var port = Number(a.port);
+              if (!a.loc) { a.err = t('auto.err.loc'); draw(); return; }
               if (!/^[A-Za-z0-9 -]{1,32}$/.test(a.name.trim()) || !(port >= 1024 && port <= 65535)) { a.err = t('auto.err.input'); draw(); return; }
               var b = { name: a.name.trim(), service_port: port, confirm: true };
               if (a.host.trim()) { b.host = a.host.trim(); }
@@ -835,8 +843,9 @@
           kids.push(h('label', { class: 'field' }, h('span', { text: t('auto.f.code') }), ta),
             h('button', { type: 'button', class: 'primary', disabled: a.busy ? true : null, text: t('auto.connect'), onclick: function () {
               var c = (a.code || '').trim().replace(/^sudo baft-tunnel pair accept\s+/, '');
+              if (!a.loc) { a.err = t('auto.err.loc'); draw(); return; }
               if (c.indexOf('BAFT1-') !== 0) { a.err = t('auto.err.code'); draw(); return; }
-              submit('/v1/pair/accept', { code: c, confirm: true });
+              submit('/v1/pair/accept', { code: c, confirm: true, location: a.loc });
             } }));
         }
         if (a.err) { kids.push(h('p', { class: 'error', role: 'alert', text: a.err })); }

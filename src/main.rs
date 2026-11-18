@@ -241,6 +241,10 @@ enum PairCommand {
         dir: PathBuf,
         #[arg(long)]
         instance: Option<String>,
+        /// Where this server is: `iran` or `abroad`. An Iran server that dials out gets a 10 s
+        /// session rotation default; nothing else changes.
+        #[arg(long)]
+        location: Option<pair_flow::Location>,
     },
 }
 
@@ -804,6 +808,7 @@ async fn run() -> Result<()> {
                     code,
                     dir,
                     instance,
+                    location,
                 },
         } => {
             let code = if code == "-" {
@@ -813,7 +818,7 @@ async fn run() -> Result<()> {
             } else {
                 code
             };
-            pair_flow::accept(&code, &dir, instance, |v| {
+            pair_flow::accept(&code, &dir, instance, location, |v| {
                 eprintln!("Key fingerprint: {v} (the other server asks you to compare it)");
             })
             .await
