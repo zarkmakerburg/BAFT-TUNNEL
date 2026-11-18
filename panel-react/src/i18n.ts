@@ -15,6 +15,8 @@ export const LANGS: Record<Lang, { label: string; dir: 'rtl' | 'ltr' }> = {
 
 const EXTRA: Record<Lang, Record<string, string>> = {
   fa: {
+    'rx.role.auto': 'نقش این سرور خودکار تنظیم شد: {r}. معمولاً نیازی به تغییر نیست؛ هر تونل یک سمت «باز‌کننده» (معمولاً ایران) و یک سمت «پذیرنده» (معمولاً خارج) دارد.',
+    'rx.role.change': 'تغییر نقش (پیشرفته)',
     'rx.loc.q': 'این سرور ایرانی است یا خارج؟',
     'rx.loc.iran': 'ایران',
     'rx.loc.iran.d': 'پیش‌فرض: این سرور تونل را باز می‌کند و کاربران محلی به آن وصل می‌شوند.',
@@ -59,6 +61,8 @@ const EXTRA: Record<Lang, Record<string, string>> = {
     'rx.settings.logout.body': 'توکن از این مرورگر حذف می‌شود و باید دوباره وارد شوید.',
   },
   en: {
+    'rx.role.auto': 'Role set automatically: {r}. You rarely need to change it; every tunnel has one opening side (usually Iran) and one accepting side (usually abroad).',
+    'rx.role.change': 'Change role (advanced)',
     'rx.loc.q': 'Is this server in Iran or abroad?',
     'rx.loc.iran': 'Iran',
     'rx.loc.iran.d': 'Default: this server opens the tunnel and local users connect to it.',

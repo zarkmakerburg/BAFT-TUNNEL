@@ -163,6 +163,9 @@ export function Setup() {
               {errors.direction && <p className="fielderr" role="alert">{errors.direction}</p>}
             </fieldset>
             {!offered.reverse && <p className="sub">{t('rx.reverse.hidden')}</p>}
+            <div className="role-auto">
+              <p className="sub">{t('rx.role.auto', { r: f.role === 'forward' ? t(f.direction === 'reverse' ? 'srv.rev.forward' : 'srv.forward') : t(f.direction === 'reverse' ? 'srv.rev.serve' : 'srv.serve') })}</p>
+              <details><summary>{t('rx.role.change')}</summary>
             <fieldset className="choices">
               <legend>{t('srv.q')}</legend>
               {(['forward', 'serve'] as const).map((k) => {
@@ -177,6 +180,8 @@ export function Setup() {
                 );
               })}
             </fieldset>
+              </details>
+            </div>
             <div className="form-grid">
               {txt('node', t('f.node'))}
               {peerField()}

@@ -349,7 +349,8 @@ dialog.ov::backdrop{background:var(--scrim)}
 .heading h1{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .crumb{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media (max-width:900px){.topbar .lang-btn span{display:none}.topbar .lang-btn{padding:0;inline-size:var(--ctl)}.topbar .pill{max-inline-size:34vw;overflow:hidden;text-overflow:ellipsis}}
-@media (max-width:640px){.theme-btn,.topbar .lang-btn{display:none}.heading h1{font-size:var(--fs-3)}}
+@media (max-width:640px){.heading h1{font-size:var(--fs-3)}.topbar{gap:var(--s1)}.topbar .icon-btn,.topbar .lang-btn{inline-size:36px;min-inline-size:36px}}
+.role-auto summary{cursor:pointer;color:var(--accent,inherit);margin-block:var(--s2)}
 /* tables: real tables from 701px up (long values wrap instead of widening the page), labelled cards below */
 td,th{overflow-wrap:break-word}
 td .ltr,td code{overflow-wrap:anywhere;display:inline-block;max-inline-size:26ch}
