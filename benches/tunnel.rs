@@ -22,6 +22,9 @@ mod control_socket;
 mod engine;
 #[path = "../src/engine_store.rs"]
 mod engine_store;
+#[path = "../src/fleet.rs"]
+#[allow(dead_code)]
+mod fleet;
 #[path = "../src/handshake.rs"]
 mod handshake;
 #[path = "../src/history_store.rs"]
@@ -46,6 +49,15 @@ mod pair_helper;
 mod pair_proto;
 #[path = "../src/pki_helper.rs"]
 mod pki_helper;
+#[path = "../src/probe_adapters.rs"]
+#[allow(dead_code)]
+mod probe_adapters;
+#[path = "../src/probe_api.rs"]
+#[allow(dead_code)]
+mod probe_api;
+#[path = "../src/probe_http.rs"]
+#[allow(dead_code)]
+mod probe_http;
 #[path = "../src/resumable.rs"]
 mod resumable;
 #[path = "../src/resume_core.rs"]
@@ -66,6 +78,9 @@ mod session_status;
 mod setup;
 #[path = "../src/setup_helper.rs"]
 mod setup_helper;
+#[path = "../src/target_guard.rs"]
+#[allow(dead_code)]
+mod target_guard;
 #[path = "../src/tls.rs"]
 mod tls;
 #[path = "../src/transport_health.rs"]
