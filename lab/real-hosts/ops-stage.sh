@@ -11,6 +11,9 @@ stop_role iran serve; stop_role abroad serve; stop_role iran forward; stop_role 
 MSVC=18094; MTP=18330; MAG=18096
 EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGD=/var/lib/baft-tunnel-agent/lab-agent; PKG="$REMOTE_DIR/pkg"
 CLI=opscli; SRV=opssrv          # instance names on iran (forward) / abroad (serve)
+# Optional ADR-0049 session rotation on the forward (iran) node after the upgrade: LAB_ROTATE_SECS 0 = off (default), else 5..60.
+ROTATE_SECS="${LAB_ROTATE_SECS:-0}"
+[[ "$ROTATE_SECS" =~ ^[0-9]+$ ]] && (( ROTATE_SECS == 0 || (ROTATE_SECS >= 5 && ROTATE_SECS <= 60) )) || { echo "LAB_ROTATE_SECS must be 0 or 5-60" >&2; exit 2; }
 MVP_SHA="$(sha256sum "$MVP_BINARY_PATH" | awk '{print $1}')"
 MVP_INITIAL_BINARY_PATH="${MVP_INITIAL_BINARY:-$MVP_BINARY_PATH}"
 [[ -f "$MVP_INITIAL_BINARY_PATH" && ! -L "$MVP_INITIAL_BINARY_PATH" && -x "$MVP_INITIAL_BINARY_PATH" ]] || { echo "MVP_INITIAL_BINARY must be an executable regular file" >&2; exit 2; }
@@ -240,6 +243,22 @@ done
 [[ "$(op_apply iran $CLI forward op-cli-0001 | jf replayed)" == True ]] || { echo "idempotent replay failed" >&2; exit 1; }
 [[ "$(op_apply iran $CLI forward op-cli-0002 | jf result)" == refused ]] || { echo "Apply start on a running forward node was not refused" >&2; exit 1; }
 
+ops_rotation_on() { # forward node only: set session_rotate_secs in its config and restart the unit; the serve node needs no change
+  (( ROTATE_SECS > 0 )) || return 0
+  [[ -z "${OPS_ROTATION_DONE:-}" ]] || return 0
+  ssh_host iran "set -e; python3 - '$EB/$CLI.json' '$ROTATE_SECS' <<'PYR'
+import json, sys
+path, secs = sys.argv[1], int(sys.argv[2])
+c = json.load(open(path))
+assert c.get('mode') == 'forward' and c.get('direction') == 'direct', c
+c['session_rotate_secs'] = secs
+with open(path, 'w') as f:
+    json.dump(c, f, indent=2)
+print('OPS_ROTATE_CONFIG session_rotate_secs=%d' % secs)
+PYR
+    systemctl restart baft-tunnel@$CLI.service"
+  OPS_ROTATION_DONE=1
+}
 ops_030_checks() { # runs once, on the first agent generation that serves GET /v1/update
   [[ -n "${OPS_030_DONE:-}" ]] && return 0
 if [[ "$(p1_api iran GET /v1/update | python3 -c 'import json,sys
@@ -313,6 +332,8 @@ if [[ "$OP_INITIAL_SHA" != "$MVP_SHA" ]]; then
       nohup setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent --config $EB/$cfg.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$MAG --instance $cfg > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
       for n in \$(seq 1 40); do python3 -c 'import urllib.request;urllib.request.urlopen(\"http://127.0.0.1:$MAG/v1/health\",timeout=1)' 2>/dev/null && exit 0; sleep 0.25; done; tail -20 '$REMOTE_DIR/agent.log'; exit 1"
   done
+  # Rotation (LAB_ROTATE_SECS>0) goes on right after the upgrade, before any aged-flow probe.
+  ops_rotation_on
   # Feature checks on the target agents first, so a data-path failure below cannot hide them.
   ops_030_checks
   sleep 12
@@ -321,6 +342,8 @@ if [[ "$OP_INITIAL_SHA" != "$MVP_SHA" ]]; then
   op_evidence cross_version 65536
   OP_CROSS_VERSION=1
 fi
+
+ops_rotation_on   # no-op unless LAB_ROTATE_SECS>0 (also covers runs without a version change)
 
 # 0.3.0 operator features, checked on the target binary before the soak so a path outage during
 # the soak cannot hide them: host tunnel list (ADR-0036), update notice (ADR-0035), certificate
@@ -363,6 +386,14 @@ probe_host iran 2097289
 read -r pf1 pr1 pn1 <<<"$(unit_stats iran $CLI)"; read -r sf1 sr1 sn1 <<<"$(unit_stats abroad $SRV)"
 OP_SOAK_LINE="soak_s=$OPS_SOAK rounds=$OP_ROUNDS failed_probes=$OP_FAILS max_probe_s=$OP_MAXLAT public_fd=$pf0->$pf1 public_rss_kb=$pr0->$pr1 service_fd=$sf0->$sf1 service_rss_kb=$sr0->$sr1 restarts=$pn0->$pn1/$sn0->$sn1"
 echo "OPS_SOAK $OP_SOAK_LINE"
+OP_ROTATE_LINE="rotate_secs=0"
+if (( ROTATE_SECS > 0 )); then
+  OP_ROTATE_EVENTS="$(ssh_host iran "journalctl -u baft-tunnel@$CLI.service --no-pager -o cat | grep -c '^session rotated: draining the previous session\$' || true")"
+  [[ "$OP_ROTATE_EVENTS" =~ ^[0-9]+$ ]] || OP_ROTATE_EVENTS=0
+  OP_ROTATE_LINE="rotate_secs=$ROTATE_SECS rotation_events=$OP_ROTATE_EVENTS"
+  echo "OPS_ROTATE $OP_ROTATE_LINE"
+  (( OP_ROTATE_EVENTS >= 2 )) || { echo "rotation was enabled but fewer than 2 completed rotations were observed" >&2; exit 1; }
+fi
 if (( OP_FAILS != 0 )); then
   for pair in "iran $CLI" "abroad $SRV"; do
     read -r dside dinst <<<"$pair"
@@ -542,4 +573,4 @@ for side in iran abroad; do
     OP_FW_DRIFT+=("$side")
   fi
 done
-echo "OPS_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} update_sha256=${OP_NEW_SHA} setup_direction_direct=1 apply_start_serve=applied apply_start_forward=applied non_root=1 receipt_session=${OP_SESSION} receipt_ready=${OP_READY} integrity_64k_2m=1 evidence_diag_status_traffic=1 replay=1 running_refused=1 ${OP_SOAK_LINE} serve_sigkill_s=${OP_SRV_KILL_S} forward_sigkill_s=${OP_CLI_KILL_S} serve_apply_restart_s=${OP_SRV_APPLY_S} forward_apply_restart_s=${OP_CLI_APPLY_S} backup_restore=1 restore_owners_modes_identical=1 restore_recovery_s=${OP_RESTORE_S} update_ok=1 update_recovery_s=${OP_UPDATE_S} bad_update_rolled_back=1 rollback_recovery_s=${OP_ROLLBACK_S} ${OP_CRL_LINE} revoked_refused=1 uninstalled=1 listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=${OP_FW_DRIFT[*]:-none} cross_version_update=${OP_CROSS_VERSION} ${OPS_030}"
+echo "OPS_RESULT source=${MVP_SOURCE} binary_sha256=${MVP_SHA} update_sha256=${OP_NEW_SHA} setup_direction_direct=1 apply_start_serve=applied apply_start_forward=applied non_root=1 receipt_session=${OP_SESSION} receipt_ready=${OP_READY} integrity_64k_2m=1 evidence_diag_status_traffic=1 replay=1 running_refused=1 ${OP_SOAK_LINE} serve_sigkill_s=${OP_SRV_KILL_S} forward_sigkill_s=${OP_CLI_KILL_S} serve_apply_restart_s=${OP_SRV_APPLY_S} forward_apply_restart_s=${OP_CLI_APPLY_S} backup_restore=1 restore_owners_modes_identical=1 restore_recovery_s=${OP_RESTORE_S} update_ok=1 update_recovery_s=${OP_UPDATE_S} bad_update_rolled_back=1 rollback_recovery_s=${OP_ROLLBACK_S} ${OP_CRL_LINE} revoked_refused=1 uninstalled=1 listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=${OP_FW_DRIFT[*]:-none} cross_version_update=${OP_CROSS_VERSION} ${OP_ROTATE_LINE} ${OPS_030}"
