@@ -182,6 +182,7 @@ export function GeoMap({ d }: { d: Loaded }) {
         <CountrySelect label={`${t('viz.geo.peer')}${c.peer_identity ? ' · ' + c.peer_identity : ''}`} value={theirs} onChange={setTheirs} detected={dTheirs} />
       </div>
       <p className="sub">{d.meta.geo === 'ok' ? t('viz.geo.note.auto') : t('viz.geo.note')}</p>
+      {(dMine || dTheirs) && typeof d.geo?.attribution === 'string' && <p className="sub" dir="ltr">{d.geo.attribution}</p>}
       {(d.geo?.local?.reason || d.geo?.peer?.reason) && <p className="sub">{[d.geo?.local?.reason, d.geo?.peer?.reason].filter(Boolean).join(' · ')}</p>}
     </Card>
   );
