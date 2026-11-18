@@ -179,8 +179,8 @@ ap_round() { # name direction listener_side joiner_side joiner_location
   ssh_host "$ls" "test -s $EB/pair-ca/ca.key" || { echo "listener has no pair CA key" >&2; return 1; }
   ssh_host "$js" "! test -e $EB/pair-ca && ! find $EB -name 'ca.key' | grep -q ." || { echo "the joiner holds CA key material" >&2; return 1; }
   ssh_host "$ls" "! ls /run/baft-tunnel/control/ 2>/dev/null | grep -q '\\.pair\$'" || { echo "request file was not consumed" >&2; return 1; }
-  # no worker process is left behind
-  for side in "$ls" "$js"; do ssh_host "$side" "! pgrep -f 'baft-tunnel pair worker' >/dev/null" || { echo "pair worker still running on $side" >&2; return 1; }; done
+  # no worker process is left behind (the [b] keeps pgrep from matching its own ssh command line)
+  for side in "$ls" "$js"; do ssh_host "$side" "! pgrep -f '[b]aft-tunnel pair worker' >/dev/null" || { echo "pair worker still running on $side" >&2; return 1; }; done
 
   for side in "$ls" "$js"; do
     for n in $(seq 1 30); do [[ "$(ap_api "$side" GET /v1/status </dev/null | apjf setup_pending)" != True ]] && break; sleep 1; done
