@@ -80,3 +80,15 @@ Review: PR #341 comment 6960083527 (no Critical, 4 High, 6 Medium, 4 Low). D2 (p
 **Low:** render remote banner/stderr as capped plain text, control and ANSI stripped, not verbatim in the audit (L1); Path A prefers `--pair -` with a hidden prompt over a code in shell history, and the Iran claim is corrected: the one-line installer downloads from GitHub, so it works on a host without internet only when the panel serves the bundle (L2); Remove server also deletes the pinned host key and aborts an open code, and only the hub enforces the CRL (L3); one global active run, showing who holds the slot, plus a per-operator budget (L4).
 
 **Gates.** Path A ships as Preview once the ADR-0050 review fixes (listener holding the CA key, deadline, approval binding) are merged; Path B never opens the pairing listener implicitly. Path B ships only default-off, as Preview, after stage 4 implements H1 to H4 and M1 to M3 with container tests for: secret absent from argv, env, files, journal and audit (canary-password grep); host-key mismatch and downgrade rejected; injection inputs rejected; private-range target refused by `IPAddressAllow`; rollback after injected failure, timeout and cancel; existing install untouched. No LAB run and no UI switch before that.
+
+## Addendum 2026-11-18: D1 resolved, Fleet CA for `fleet-node` certificates
+
+The concrete need D1 asked for: the per-tunnel CA (ADR-0050) signs exactly two node ids fixed at creation and is name constrained to their two addresses, so it cannot enroll a third, panel-added server. Reusing it would mean widening its constraints, which weakens the tunnel trust. A separate Fleet CA is therefore added, under the M5 conditions:
+
+- `src/fleet_ca.rs` (openssl through the existing `pair_ca` helpers, no new dependency). The key is created 0600 in a 0700 directory and is meant to live only in the root helper, separate from any per-pair CA.
+- Name constrained to URI names under `.fleet.baft.invalid`; a fleet-node certificate carries `baft-fleet://<node-id>.fleet.baft.invalid` and the hub reads the node id from it (F-5). Node ids are lowercase letters, digits and hyphens, at most 63 characters.
+- One BAFT EKU only (`fleet::EKU_FLEET_NODE`) plus standard `clientAuth` (F-4); no `serverAuth`.
+- Leaf validity 30 days, CRL validity 30 days, revocation supported. Same CSR gate as the tunnel CA (shared `pair_ca::check_csr`: one PEM request, valid signature, CN equals node id, EC P-256).
+- Not wired yet: the root helper operation, enrollment flow (F-7) and the `fleet-hub` server profile (F-2) come in later slices. Nothing in the agent calls this module today.
+
+Evidence: container-free unit tests with the real `openssl` (profile, EKU exclusivity, name, 30-day bound, chain verify, bad CN, wrong curve, invalid ids, revocation). Not LAB-verified.
