@@ -49,10 +49,17 @@ const RESUME_TOKEN_BYTES: usize = 16;
 /// Material both sides hold after a v3 handshake. The token is the bearer secret; the binding is
 /// `resume_binding` over the original handshake, kept so a later resume can prove it belongs to
 /// the same identities, tunnel and direction (ADR-0040).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ResumeGrant {
     pub token: [u8; RESUME_TOKEN_BYTES],
     pub binding: [u8; 32],
+}
+
+// The token is a bearer secret: never print it (security review M2).
+impl std::fmt::Debug for ResumeGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ResumeGrant(<redacted>)")
+    }
 }
 
 /// `SHA-256("baft-resume-v1" || len-prefixed client_id, server_id, tunnel_id, direction, client_nonce,
@@ -1207,5 +1214,16 @@ mod tests {
             client_handshake_grant(&mut c, "iran", "abroad", "t", ConnectionDirection::Reverse)
                 .await;
         assert!(server.await.unwrap().is_err() && client.is_err());
+    }
+
+    #[test]
+    fn resume_grant_debug_never_prints_the_token() {
+        let g = ResumeGrant {
+            token: [0xAB; 16],
+            binding: [0xCD; 32],
+        };
+        let shown = format!("{g:?}");
+        assert!(!shown.contains("171") && !shown.to_lowercase().contains("ab"));
+        assert!(shown.contains("redacted"));
     }
 }

@@ -6,7 +6,7 @@
 //! Scope per ADR-0040: TCP-like byte streams, in-memory only (no restart-resume).
 #![allow(dead_code)]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::time::Duration;
 
 pub const DEFAULT_STREAM_WINDOW: usize = 1024 * 1024;
@@ -169,80 +169,6 @@ impl RecvState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TokenError {
-    Unknown,
-    Expired,
-    /// Token exists but was issued for different identities/tunnel/handshake.
-    BindingMismatch,
-}
-
-#[derive(Debug)]
-struct Issued {
-    binding: [u8; 32],
-    issued_at: Duration,
-}
-
-/// Single-use resume tokens (ADR-0040 clause 4). The token itself is random bytes supplied by
-/// the caller; `binding` is a hash over node identities, tunnel id and the original handshake
-/// transcript, computed by the caller. A redeem consumes the token on every outcome except
-/// `Unknown`, so a failed guess cannot be retried against the same token.
-#[derive(Debug)]
-pub struct TokenBook {
-    grace: Duration,
-    tokens: HashMap<[u8; 16], Issued>,
-}
-
-impl TokenBook {
-    pub fn new(grace: Duration) -> Self {
-        Self {
-            grace,
-            tokens: HashMap::new(),
-        }
-    }
-
-    pub fn issue(&mut self, token: [u8; 16], binding: [u8; 32], now: Duration) {
-        self.tokens.insert(
-            token,
-            Issued {
-                binding,
-                issued_at: now,
-            },
-        );
-    }
-
-    pub fn redeem(
-        &mut self,
-        token: &[u8; 16],
-        binding: &[u8; 32],
-        now: Duration,
-    ) -> Result<(), TokenError> {
-        let Some(t) = self.tokens.remove(token) else {
-            return Err(TokenError::Unknown);
-        };
-        if now.saturating_sub(t.issued_at) > self.grace {
-            return Err(TokenError::Expired);
-        }
-        if &t.binding != binding {
-            return Err(TokenError::BindingMismatch);
-        }
-        Ok(())
-    }
-
-    /// Drop tokens past their grace. Returns how many were removed.
-    pub fn sweep(&mut self, now: Duration) -> usize {
-        let before = self.tokens.len();
-        let grace = self.grace;
-        self.tokens
-            .retain(|_, t| now.saturating_sub(t.issued_at) <= grace);
-        before - self.tokens.len()
-    }
-
-    pub fn len(&self) -> usize {
-        self.tokens.len()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,36 +276,5 @@ mod tests {
             }
             assert_eq!(out, source, "seed {seed}");
         }
-    }
-
-    #[test]
-    fn tokens_are_single_use_bound_and_expire() {
-        let mut book = TokenBook::new(Duration::from_secs(60));
-        let (t, bind, other) = ([1u8; 16], [9u8; 32], [8u8; 32]);
-        let t0 = Duration::from_secs(100);
-        book.issue(t, bind, t0);
-        assert_eq!(book.redeem(&t, &bind, t0 + Duration::from_secs(5)), Ok(()));
-        // Replay of a used token.
-        assert_eq!(
-            book.redeem(&t, &bind, t0 + Duration::from_secs(6)),
-            Err(TokenError::Unknown)
-        );
-        // Wrong binding consumes the token (no retry).
-        book.issue(t, bind, t0);
-        assert_eq!(
-            book.redeem(&t, &other, t0),
-            Err(TokenError::BindingMismatch)
-        );
-        assert_eq!(book.redeem(&t, &bind, t0), Err(TokenError::Unknown));
-        // Expired.
-        book.issue(t, bind, t0);
-        assert_eq!(
-            book.redeem(&t, &bind, t0 + Duration::from_secs(61)),
-            Err(TokenError::Expired)
-        );
-        // Sweep.
-        book.issue([2; 16], bind, t0);
-        assert_eq!(book.sweep(t0 + Duration::from_secs(61)), 1);
-        assert_eq!(book.len(), 0);
     }
 }
