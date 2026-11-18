@@ -361,3 +361,51 @@ td .ltr,td code{overflow-wrap:anywhere;display:inline-block;max-inline-size:26ch
   table.cards td{display:flex;justify-content:space-between;gap:var(--s3);border:0;padding:var(--s1) var(--s2)}
   table.cards td::before{content:attr(data-label);color:var(--muted);flex:none}
 }
+
+/* ---- connection map, vitals and geographic view (liquid glass) ---- */
+.topo{display:grid;grid-template-columns:minmax(0,1fr) minmax(90px,1.2fr) minmax(0,1fr);align-items:center;gap:var(--s3);padding-block:var(--s2)}
+.vnode{display:grid;justify-items:center;gap:2px;text-align:center;padding:var(--s3);border:1px solid var(--glass-edge);border-radius:var(--r-lg);background:var(--glass-lo);backdrop-filter:blur(10px) saturate(1.2);-webkit-backdrop-filter:blur(10px) saturate(1.2);min-inline-size:0}
+.vnode-ic svg{inline-size:30px;block-size:30px;fill:none;stroke:var(--accent);stroke-width:1.6}
+.vnode-ic svg circle{fill:var(--accent);stroke:none}
+.vnode-role{font-size:var(--fs-0);color:var(--muted)}
+.vnode-id{overflow-wrap:anywhere;font-size:var(--fs-2)}
+.vn-ok{border-color:color-mix(in srgb,var(--ok) 55%,var(--glass-edge))}
+.vn-unknown .vnode-ic svg{stroke:var(--unknown)}.vn-unknown .vnode-ic svg circle{fill:var(--unknown)}
+.wire{display:grid;justify-items:center;gap:2px;min-inline-size:0}
+.wire svg{inline-size:100%;block-size:24px;overflow:visible}
+.wire-line{stroke:var(--unknown);stroke-width:3;stroke-linecap:round;stroke-dasharray:2 7;vector-effect:non-scaling-stroke}
+.wire-tag{font-size:var(--fs-0);color:var(--muted);text-align:center}
+.wire-state{font-size:var(--fs-0);font-weight:600;text-align:center}
+.link-steady .wire-line{stroke:var(--ok);stroke-dasharray:none}
+.link-flow .wire-line{stroke:var(--ok);stroke-dasharray:10 8;animation:wire-flow 1.1s linear infinite}
+.link-wait .wire-line{stroke:var(--warn);stroke-dasharray:6 8}
+.link-down .wire-line{stroke:var(--bad);stroke-dasharray:3 14}
+.link-flow .wire-state,.link-steady .wire-state{color:var(--ok)}.link-wait .wire-state{color:var(--warn)}.link-down .wire-state{color:var(--bad)}
+@keyframes wire-flow{to{stroke-dashoffset:-36}}
+[dir=rtl] .link-flow .wire-line{animation-name:wire-flow-rtl}
+@keyframes wire-flow-rtl{to{stroke-dashoffset:36}}
+@media (prefers-reduced-motion:reduce){.link-flow .wire-line{animation:none}}
+.vitals{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:var(--s2);margin-block-start:var(--s3)}
+.vital{display:grid;gap:2px;padding:var(--s2) var(--s3);border:1px solid var(--glass-edge);border-radius:var(--r);background:var(--glass-lo);min-inline-size:0}
+.vital strong{font-size:var(--fs-3);overflow-wrap:anywhere}
+.spark{inline-size:100%;block-size:28px}.spark path{fill:none;stroke:var(--accent);stroke-width:1.6;vector-effect:non-scaling-stroke;stroke-linejoin:round}
+.spark.alt path{stroke:var(--info)}
+.geomap{margin:0;border:1px solid var(--glass-edge);border-radius:var(--r-lg);background:var(--glass-lo);overflow:hidden;position:relative}
+.geomap svg{display:block;inline-size:100%;block-size:auto;max-block-size:340px}
+.geomap .land{fill:color-mix(in srgb,var(--muted) 38%,transparent);stroke:color-mix(in srgb,var(--muted) 55%,transparent);stroke-width:.4}
+.geomap .arc{fill:none;stroke:var(--unknown);stroke-width:2;stroke-dasharray:4 5;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.geomap.link-steady .arc,.geomap.link-flow .arc{stroke:var(--ok);stroke-dasharray:none}
+.geomap.link-flow .arc{stroke-dasharray:8 7;animation:wire-flow 1.4s linear infinite}
+.geomap.link-wait .arc{stroke:var(--warn)}.geomap.link-down .arc{stroke:var(--bad)}
+.pin-dot{fill:var(--accent)}.pin-halo{fill:color-mix(in srgb,var(--accent) 28%,transparent)}
+.pin-peer .pin-dot{fill:var(--info)}.pin-peer .pin-halo{fill:color-mix(in srgb,var(--info) 28%,transparent)}
+.geo-hint{padding:var(--s2) var(--s3);text-align:center}
+.geo-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--s3);margin-block:var(--s3)}
+.geo-sel{display:grid;gap:var(--s1)}
+@media (max-width:560px){
+  .topo{grid-template-columns:1fr}
+  .wire{grid-template-columns:auto 1fr auto;gap:var(--s2);justify-items:stretch;align-items:center}
+  .wire svg{transform:none}
+  .wire-tag,.wire-state{text-align:start}
+}
+.vitals+.sub{margin-block-start:var(--s3)}

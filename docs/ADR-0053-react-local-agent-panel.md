@@ -1,4 +1,4 @@
-# ADR-0052 — React architecture for the local Agent panel
+# ADR-0053 — React architecture for the local Agent panel
 
 - **Status:** Accepted by product owner
 - **Date:** 2026-11-18

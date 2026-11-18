@@ -3,6 +3,7 @@ import { useData } from '../feed-context';
 import { ago, conf, fmtBytes, fmtNum, fmtTime, listenState, stats, tunnelState, warnings } from '../derive';
 import { Banner, Card, Empty, Kpi, Ltr, Pill } from '../components/ui';
 import { LineChart, StatusStrip } from '../components/charts';
+import { GeoMap, Topology } from '../components/viz';
 import { RecentOps, TrafficBody, WarnList, nv } from './parts';
 
 export function Overview() {
@@ -28,6 +29,7 @@ export function Overview() {
         <p className="hero-text">{s.tunnel ? t('ts.why') : t('state.why.local')}</p>
         {n > 0 && <a className="more-link" href="#/diagnostics">{t('ui.needs.action')}: {fmtNum(lang, n, 0)}</a>}
       </div>
+      {!fresh && <Topology d={d} />}
       <div className="grid kpis">
         <Kpi label={t('kpi.tunnels')} value={c.tunnel_id ? <Ltr>{c.tunnel_id}</Ltr> : '—'} hint={s.tunnel ? t('ts.why') : ''} state={ts} />
         <Kpi label={t('ov.avail')} value={st.avail == null ? t('unknown') : <Ltr>{fmtNum(lang, st.avail, 1)}%</Ltr>}
@@ -57,6 +59,7 @@ export function Overview() {
           <Card title={t('ov.traffic.title')}><TrafficBody d={d} /></Card>
         </div>
         <div className="stack">
+          {!fresh && <GeoMap d={d} />}
           <Card title={t('ov.warnings')}><WarnList ws={ws} /></Card>
           <Card title={t('ov.recent')} action={<a className="more-link" href="#/activity">{t('nav.activity')}</a>}><RecentOps d={d} n={5} /></Card>
         </div>
