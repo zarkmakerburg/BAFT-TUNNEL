@@ -259,6 +259,56 @@ pub async fn run_checkhost(
     }
 }
 
+/// Run the Globalping ICMP check from Iran probes. ICMP only (no TCP type), so a failure
+/// is not proof the service is down. Every failure is Unknown, never zero.
+pub async fn run_globalping(
+    ip: IpAddr,
+    consent: Consent,
+    gate: &mut LookupGate,
+    now: u64,
+) -> Report {
+    let p = Provider::Globalping;
+    if !consent.allows(p) {
+        return unknown(p, "disabled");
+    }
+    let Ok(ip) = target_guard::check_public(ip) else {
+        return unknown(p, "target not public");
+    };
+    if gate.ask(ip, now) == Gate::Limited {
+        return unknown(p, "rate limited here");
+    }
+    let body = probe_adapters::globalping_ping_body(ip, 8).to_string();
+    let Ok((code, start)) = https(GLOBALPING, "POST", "/v1/measurements", Some(&body)).await else {
+        return unknown(p, "provider unreachable");
+    };
+    if code != 200 && code != 201 && code != 202 {
+        return unknown(p, "provider rate limit");
+    }
+    let Some(id) = start.get("id").and_then(Value::as_str) else {
+        return unknown(p, "unexpected reply");
+    };
+    if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return unknown(p, "unexpected reply");
+    }
+    let mut rows = Vec::new();
+    for _ in 0..5 {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let Ok((200, m)) = https(GLOBALPING, "GET", &format!("/v1/measurements/{id}"), None).await
+        else {
+            continue;
+        };
+        rows = probe_adapters::parse_globalping_ping(&m);
+        if m.get("status").and_then(Value::as_str) == Some("finished") {
+            break;
+        }
+    }
+    Report {
+        provider: p,
+        rows,
+        note: "icmp only",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
