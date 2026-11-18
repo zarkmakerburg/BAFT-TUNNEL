@@ -118,8 +118,8 @@ jobs:
             "${cb[@]}" "cat > $d/baft-tunnel; chmod 700 $d/baft-tunnel" < baft-tunnel
             "${cb[@]}" "cat > $d/harness.py" < "$GITHUB_WORKSPACE/bench/harness.py"
           done
-          st "start serve (abroad)"; "${ab[@]}" "cd $d && nohup bash serve.cmd > serve.log 2>&1 < /dev/null &"; sleep 2
-          st "start forward (iran)"; "${ir[@]}" "cd $d && nohup bash forward.cmd > forward.log 2>&1 < /dev/null &"; sleep 4
+          st "start serve (abroad)"; "${ab[@]}" "{ cd $d && setsid nohup bash serve.cmd > serve.log 2>&1 < /dev/null; } > /dev/null 2>&1 < /dev/null &"; sleep 2
+          st "start forward (iran)"; "${ir[@]}" "{ cd $d && setsid nohup bash forward.cmd > forward.log 2>&1 < /dev/null; } > /dev/null 2>&1 < /dev/null &"; sleep 4
           : > "$W/rounds.jsonl"
           for r in $(seq 1 "$ROUNDS"); do
             st "round $r/$ROUNDS begin"
