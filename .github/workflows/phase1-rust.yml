@@ -163,6 +163,7 @@ jobs:
           node --check panel/i18n.js
           node --check scripts/panel-qa/lab-panel-live.js
           node --check scripts/panel-qa/auto-pairing.js
+          node --check scripts/panel-qa/probe-card.js
           node --check scripts/panel-qa/pki-real-agent.js
           node --check scripts/panel-qa/lab-panel-pairing.js
           node scripts/panel-qa/evidence-localization.js
