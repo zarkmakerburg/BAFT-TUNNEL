@@ -124,7 +124,7 @@ jobs:
           for r in $(seq 1 "$ROUNDS"); do
             st "round $r/$ROUNDS begin"
             km=0; (( KILL_EVERY > 0 && r % KILL_EVERY == 0 )) && km=1
-            "${ab[@]}" "rm -f $d/sink.json; cd $d && nohup python3 harness.py --role sink --size-mib $SIZE --idle 60 --json $d/sink.json > /dev/null 2>&1 < /dev/null &"
+            "${ab[@]}" "rm -f $d/sink.json; { cd $d && setsid nohup python3 harness.py --role sink --size-mib $SIZE --idle 60 --json $d/sink.json > /dev/null 2>&1 < /dev/null; } > /dev/null 2>&1 < /dev/null &"
             sleep 2
             if (( km )); then
               "${ir[@]}" "nohup bash -c 'sleep 3; pkill -KILL -f \"$d/[b]aft-tunnel forward\"; sleep 1; cd $d; bash forward.cmd > forward-r$r.log 2>&1' > /dev/null 2>&1 < /dev/null &"
