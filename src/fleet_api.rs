@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::fleet_enroll::{Enroller, Error, State};
 
-pub type Signer = dyn Fn(&str, &str) -> Result<String, Error>;
+pub type Signer<'a> = dyn Fn(&str, &str) -> Result<String, Error> + 'a;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
