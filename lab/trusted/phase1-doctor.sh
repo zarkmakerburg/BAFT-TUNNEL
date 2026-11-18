@@ -346,7 +346,7 @@ assert_pass() {  # side json ids...
     [[ "$st" == PASS ]] || { echo "doctor check $id on $side is $st, expected PASS" >&2; exit 1; }
   done
 }
-split_rc() { out="$1"; rc="${out##*DOCTOR_RC=}"; json="${out%DOCTOR_RC=*}"; }
+split_rc() { rc="${out##*DOCTOR_RC=}"; json="${out%DOCTOR_RC=*}"; }
 
 for side in iran abroad; do
   out="$(run_doctor "$side")"; split_rc
