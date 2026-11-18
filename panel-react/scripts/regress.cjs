@@ -25,7 +25,9 @@ const ok = (c, m) => { if (!c) fails.push(m); };
     await p.click(`.nav a[href="#/${r}"]`); await p.waitForTimeout(700);
     ok(await p.evaluate(() => document.querySelector('.content')?.innerText.length > 50), `rail: ${r} is not blank`);
   }
-  await p.goto(base + '/next/#/setup'); await p.waitForSelector('.stepper');
+  await p.goto(base + '/next/#/setup'); await p.waitForSelector('.stepper', { state: 'attached' });
+  ok(await p.locator('input[name=autoloc]').count() === 2, 'automatic pairing asks Iran or abroad first');
+  await p.locator('details.manual > summary').click();
   await p.click('text=/بعدی|Next/'); await p.waitForTimeout(300);
   ok(await p.locator('input[name=loc]').count() === 2, 'location question present');
   ok(await p.locator('input[name=direction]').count() === 0, 'nothing else before location is chosen');

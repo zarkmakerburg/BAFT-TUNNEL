@@ -41,7 +41,7 @@ Runtime in the bundle: `react` 19.2.9, `react-dom` 19.2.9 (MIT; `scheduler` MIT)
 | Tunnels | full | state tiers, Direct/Reverse badge (Reverse always labelled Preview), lifecycle start/stop/restart via `/v1/tunnel/lifecycle` with confirm + receipt, sibling instances |
 | Servers | full | this node, peer (never observed remotely), capabilities, trust, Fleet note |
 | Monitoring | full | 1 h / 24 h real samples only |
-| Setup | partial | 3-step wizard (Install node, Connect, Create tunnel): real `/v1/setup/preflight` and `/v1/setup/plan` (read-only). **Apply and panel pairing are not ported**; the wizard hands off to the classic panel |
+| Setup | full (except bundle pairing) | Automatic pairing (ADR-0050): Iran/abroad first, one-time code, `/v1/pair/{offer,accept,status,approve}`, approval with key fingerprint, auto-start via `/v1/tunnel/lifecycle`. Manual/advanced wizard: real `/v1/setup/preflight`, `/v1/setup/plan` and confirmed `/v1/setup/apply` (stage `init`) with receipt. The older file/bundle pairing (`/v1/setup/bundle*`) stays classic-only. |
 | Diagnostics | full | run diagnostics, integrity probe, copy technical details |
 | Activity | full | result filter + text search |
 | Agent | full | health check, runtime, config summary, capabilities |
@@ -74,6 +74,6 @@ Style: "liquid glass" cards, buttons, bars and dialogs (translucent, blurred, ed
 - No LAB, no two-host run, no real tunnel traffic: Tunnels/Monitoring were checked only against an idle local agent (state Unknown, no samples), so populated charts and the Reverse path are untested here.
 - Lifecycle actions and the integrity probe were not executed (they act on a service unit).
 - Manual screen reader and real-phone checks not done; no automated axe run.
-- Setup Apply/pairing, Fleet panel, update/rollback UI remain classic-only.
+- Bundle (file) pairing and the Fleet panel remain classic/not yet built: Fleet has no Agent API yet (ADR-0051 F1 transport). Update/rollback is guidance only in both panels (the Agent is unprivileged; `scripts/update.sh` and `scripts/rollback.sh` run as root). Apply and automatic pairing were exercised only against the layout/regression suite here; a real two-host run is still LAB work.
 - Committed `dist/` must be rebuilt by hand; a CI freshness check is a follow-up.
 - #344 still carries the old ADR-0051 file name; this PR supersedes it.

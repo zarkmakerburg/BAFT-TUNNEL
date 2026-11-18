@@ -3,6 +3,8 @@ import { useApp } from '../app';
 import { useData } from '../feed-context';
 import { conf, directionsOffered, type Kind } from '../derive';
 import { Banner, Card, Field, KV, Ltr, Pill } from '../components/ui';
+import { newKey } from '../api';
+import { AutoPair } from './AutoPair';
 
 type Dir = 'direct' | 'reverse';
 interface Form { loc: 'iran' | 'abroad' | null; peerManual: boolean; direction: Dir | null; role: 'forward' | 'serve'; engine: string; node: string; peerId: string; peerHost: string; serverName: string; tunnel: string; port: string; tport: string; dir: string; inst: string }
@@ -31,6 +33,16 @@ const ORDER: Record<string, number> = { blocked: 0, warning: 1, unknown: 2, pass
 
 /** Guided three-step wizard: Install node, Connect, Create tunnel. Preflight and plan are read-only calls. */
 export function Setup() {
+  const { t } = useApp();
+  return (
+    <div className="stack">
+      <AutoPair />
+      <details className="manual"><summary>{t('auto.manual')}</summary><Manual /></details>
+    </div>
+  );
+}
+
+function Manual() {
   const { t, call, hold } = useApp();
   const { data: d } = useData();
   const c = d ? conf(d) : {};
@@ -41,6 +53,9 @@ export function Setup() {
   const [pf, setPf] = useState<any>(null);
   const [plan, setPlan] = useState<any>(null);
   const [fail, setFail] = useState('');
+  const [confirmed, setConfirmed] = useState(false);
+  const [receipt, setReceipt] = useState<any>(null);
+  const [applyKey] = useState(() => newKey('ui-'));
   const set = <K extends keyof Form>(k: K, v: Form[K]) => { setF((x) => ({ ...x, [k]: v })); setPf(null); setPlan(null); setFail(''); };
 
   const offered = d ? directionsOffered(d) : { direct: false, reverse: false };
@@ -243,7 +258,29 @@ export function Setup() {
                 {unknown.length ? <ul>{unknown.map((u) => <li key={u}><Ltr>{u}</Ltr></li>)}</ul> : <p className="muted">{t('pv.nounknown')}</p>}
                 <h3>{t('pv.rollback')}</h3><p>{t('pv.rollbackbody')}</p>
                 <h3>{t('pv.secrets')}</h3><p>{t('pv.secretsbody')}</p>
-                <Banner kind="warn"><p>{t('rx.wiz.apply.note')}</p><a className="btn primary" href="/#/setup">{t('rx.wiz.apply')}</a></Banner>
+                <label className="inline"><input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} /> {t('ap.confirm')}</label>
+                <button type="button" className="primary" disabled={!confirmed || busy || pf?.overall === 'blocked' || receipt?.result === 'applied'} onClick={async () => {
+                  setBusy(true); hold(true); setFail('');
+                  try {
+                    const r = await call('POST', '/v1/setup/apply', { stage: 'init', confirm: true, idempotency_key: applyKey, plan: planBody(f) });
+                    if (r.body?.result) setReceipt(r.body); else setFail(r.body?.detail ?? r.body?.error ?? t('fail'));
+                  } catch (e) { setFail(e instanceof Error ? e.message : t('fail')); } finally { setBusy(false); hold(false); }
+                }}>{t('ap.go')}</button>
+                {receipt && (
+                  <div className="stack" aria-live="polite">
+                    <h3>{t('rc.title')}</h3>
+                    <p><Pill kind={receipt.result === 'applied' ? 'ok' : 'warn'}>{t('rc.' + receipt.result)}</Pill> <Ltr>{receipt.id ?? ''}</Ltr></p>
+                    {receipt.reason && <p>{receipt.reason}</p>}
+                    <h3>{t('rc.verify')}</h3>
+                    <ul>{((receipt.verification ?? []) as any[]).map((v) => <li key={v.id}><Pill kind={v.result === 'pass' ? 'ok' : 'warn'}>{v.result}</Pill> <Ltr>{v.id}</Ltr> <span className="muted">· {v.evidence}</span></li>)}</ul>
+                    <h3>{t('rc.changes')}</h3>
+                    <pre dir="ltr">{((receipt.changes ?? []) as any[]).map((c) => `${c.action} ${c.path} [${c.mode}]`).join('\n') || '—'}</pre>
+                    {receipt.rollback?.performed && <Banner kind="bad"><p>{t('rc.rolled')} {(receipt.rollback.removed ?? []).join(', ')}</p></Banner>}
+                    {receipt.next_commands && <><h3>{t('rc.next')}</h3><pre dir="ltr">{(receipt.next_commands as string[]).join('\n')}</pre></>}
+                    <p className="sub">{t('rx.wiz.apply.note')} <a href="/#/setup">{t('rx.wiz.apply')}</a></p>
+                  </div>
+                )}
+                {fail && <p className="fielderr" role="alert">{fail}</p>}
               </div>
             )}
           </div>
