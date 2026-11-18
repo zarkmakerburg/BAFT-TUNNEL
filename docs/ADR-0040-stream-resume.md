@@ -77,3 +77,5 @@ No Critical. Step 3 may merge as unwired code; resume stays off until these are 
 - **M4** The opener checks that the reply matches its request (same stream ids, no extra answers).
 - **M5** A resume message reader with its own size bound, independent of the 2 KiB handshake reader.
 The step 5 chaos test must pass before any default-off Preview flag.
+
+Step 4a (2026-11-17): `src/resume_registry.rs` fixes review items H1, H2, M1, M2 and M4 as pure, tested code (not wired): the grace starts at the session *drop*; a token cannot be redeemed while its session is alive (kept, since that is a race) and a redeem moves the streams atomically to the new session; every stream has exactly one owner; the registry is bounded and evicts only dropped sessions; `Debug` never prints tokens or bindings; `ResumeReply::check_matches` makes the opener verify the reply. M3 (certificate-verified identities, via `Identity`) and M5 (resume message reader) land with the tunnel wiring in 4b.
