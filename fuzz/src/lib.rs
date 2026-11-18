@@ -34,6 +34,32 @@ pub mod link_policy;
 pub mod noise;
 #[path = "../../src/observe.rs"]
 pub mod observe;
+#[path = "../../src/fleet.rs"]
+#[allow(dead_code)]
+pub mod fleet;
+#[path = "../../src/fleet_hub.rs"]
+#[allow(dead_code)]
+pub mod fleet_hub;
+#[path = "../../src/fleet_report.rs"]
+#[allow(dead_code)]
+pub mod fleet_report;
+#[path = "../../src/fleet_run.rs"]
+#[allow(dead_code)]
+pub mod fleet_run;
+#[path = "../../src/probe_adapters.rs"]
+#[allow(dead_code)]
+pub mod probe_adapters;
+#[path = "../../src/probe_api.rs"]
+#[allow(dead_code)]
+pub mod probe_api;
+#[path = "../../src/probe_http.rs"]
+#[allow(dead_code)]
+pub mod probe_http;
+#[path = "../../src/geoip.rs"]
+pub mod geoip;
+#[path = "../../src/target_guard.rs"]
+#[allow(dead_code)]
+pub mod target_guard;
 #[path = "../../src/pair_ca.rs"]
 pub mod pair_ca;
 #[path = "../../src/pair_flow.rs"]
@@ -44,6 +70,18 @@ pub mod pair_helper;
 pub mod pair_proto;
 #[path = "../../src/pki_helper.rs"]
 pub mod pki_helper;
+#[path = "../../src/resumable.rs"]
+pub mod resumable;
+#[path = "../../src/resume_core.rs"]
+pub mod resume_core;
+#[path = "../../src/resume_registry.rs"]
+pub mod resume_registry;
+#[path = "../../src/resume_stream.rs"]
+pub mod resume_stream;
+#[path = "../../src/resume_tunnel.rs"]
+pub mod resume_tunnel;
+#[path = "../../src/resume_wire.rs"]
+pub mod resume_wire;
 #[path = "../../src/runtime_host.rs"]
 pub mod runtime_host;
 #[path = "../../src/transport_health.rs"]

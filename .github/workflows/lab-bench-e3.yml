@@ -100,37 +100,38 @@ jobs:
           key="$RUNNER_TEMP/e3-id"; kh="$RUNNER_TEMP/e3-kh"
           printf '%s\n' "$LAB_SSH_PRIVATE_KEY" > "$key"; printf '%s\n' "$LAB_SSH_KNOWN_HOSTS" > "$kh"
           chmod 0600 "$key" "$kh"; unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS
-          opts=(-i "$key" -o UserKnownHostsFile="$kh" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15)
-          ir=(ssh "${opts[@]}" -p "${LAB_IRAN_SSH_PORT:-22}" "$LAB_IRAN_SSH_USER@$LAB_IRAN_HOST")
-          ab=(ssh "${opts[@]}" -p "${LAB_ABROAD_SSH_PORT:-22}" "$LAB_ABROAD_SSH_USER@$LAB_ABROAD_HOST")
-          cleanup() {
-            "${ir[@]}" "pkill -f '$d/[b]aft-tunnel'; pkill -f '$d/[h]arness.py'; rm -rf $d" >/dev/null 2>&1 || true
-            "${ab[@]}" "pkill -f '$d/[b]aft-tunnel'; pkill -f '$d/[h]arness.py'; rm -rf $d" >/dev/null 2>&1 || true
-            rm -f "$key" "$kh"
-            echo "cleanup done $(date -u +%H:%M:%SZ)"
-          }
-          trap cleanup EXIT
+          opts=(-i "$key" -o UserKnownHostsFile="$kh" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
+          irt=(ssh "${opts[@]}" -p "${LAB_IRAN_SSH_PORT:-22}" "$LAB_IRAN_SSH_USER@$LAB_IRAN_HOST")
+          abt=(ssh "${opts[@]}" -p "${LAB_ABROAD_SSH_PORT:-22}" "$LAB_ABROAD_SSH_USER@$LAB_ABROAD_HOST")
+          # every ssh call is bounded: a silent connection drop can no longer hang the run (E3 run 1 hung 5 h 45 min)
+          ir=(timeout 120 "${irt[@]}"); ab=(timeout 120 "${abt[@]}")
+          irsend=(timeout 1700 "${irt[@]}"); irbig=(timeout 900 "${irt[@]}"); abbig=(timeout 900 "${abt[@]}")
+          st() { echo "[$(date -u +%H:%M:%SZ)] $*"; }
+          printf '%s\n' "$d" > "$RUNNER_TEMP/e3-dir"   # read by the always() cleanup step below
           echo "E3 start $(date -u +%H:%M:%SZ) version=$VERSION sha256=$SHA size=${SIZE}MiB rounds=$ROUNDS interval=${INTERVAL}s kill_every=$KILL_EVERY"
           [[ "$("${ab[@]}" "ss -ltn 'sport = :$PORT' | tail -n +2 | wc -l")" == 0 ]] || { echo "abroad port $PORT already in use; abort" >&2; exit 4; }
           for h in ab ir; do
-            if [[ $h == ab ]]; then c=("${ab[@]}"); n=exit; f=serve.cmd; else c=("${ir[@]}"); n=entry; f=forward.cmd; fi
+            if [[ $h == ab ]]; then c=("${ab[@]}"); cb=("${abbig[@]}"); n=exit; f=serve.cmd; else c=("${ir[@]}"); cb=("${irbig[@]}"); n=entry; f=forward.cmd; fi
+            st "copy to $h"
             "${c[@]}" "mkdir -m 700 $d"
-            tar -C "$W/pki" -cf - $n.key $n.crt ca.crt ca.crl $f | "${c[@]}" "tar -C $d -xf -"
-            "${c[@]}" "cat > $d/baft-tunnel; chmod 700 $d/baft-tunnel" < baft-tunnel
-            "${c[@]}" "cat > $d/harness.py" < "$GITHUB_WORKSPACE/bench/harness.py"
+            tar -C "$W/pki" -cf - $n.key $n.crt ca.crt ca.crl $f | "${cb[@]}" "tar -C $d -xf -"
+            "${cb[@]}" "cat > $d/baft-tunnel; chmod 700 $d/baft-tunnel" < baft-tunnel
+            "${cb[@]}" "cat > $d/harness.py" < "$GITHUB_WORKSPACE/bench/harness.py"
           done
-          "${ab[@]}" "cd $d && nohup bash serve.cmd > serve.log 2>&1 < /dev/null &"; sleep 2
-          "${ir[@]}" "cd $d && nohup bash forward.cmd > forward.log 2>&1 < /dev/null &"; sleep 4
+          st "start serve (abroad)"; "${ab[@]}" "{ cd $d && setsid nohup bash serve.cmd > serve.log 2>&1 < /dev/null; } > /dev/null 2>&1 < /dev/null &"; sleep 2
+          st "start forward (iran)"; "${ir[@]}" "{ cd $d && setsid nohup bash forward.cmd > forward.log 2>&1 < /dev/null; } > /dev/null 2>&1 < /dev/null &"; sleep 4
           : > "$W/rounds.jsonl"
           for r in $(seq 1 "$ROUNDS"); do
+            st "round $r/$ROUNDS begin"
             km=0; (( KILL_EVERY > 0 && r % KILL_EVERY == 0 )) && km=1
-            "${ab[@]}" "rm -f $d/sink.json; cd $d && nohup python3 harness.py --role sink --size-mib $SIZE --idle 60 --json $d/sink.json > /dev/null 2>&1 < /dev/null &"
+            "${ab[@]}" "rm -f $d/sink.json; { cd $d && setsid nohup python3 harness.py --role sink --size-mib $SIZE --idle 60 --json $d/sink.json > /dev/null 2>&1 < /dev/null; } > /dev/null 2>&1 < /dev/null &"
             sleep 2
             if (( km )); then
               "${ir[@]}" "nohup bash -c 'sleep 3; pkill -KILL -f \"$d/[b]aft-tunnel forward\"; sleep 1; cd $d; bash forward.cmd > forward-r$r.log 2>&1' > /dev/null 2>&1 < /dev/null &"
             fi
             t0=$(date -u +%H:%M:%SZ)
-            "${ir[@]}" "cd $d && timeout 1500 python3 harness.py --role send --size-mib $SIZE --target 127.0.0.1:5204 --json $d/send.json > /dev/null 2>&1; cat $d/send.json 2>/dev/null || echo '{}'" > "$W/send.json" || echo '{}' > "$W/send.json"
+            st "round $r send"; "${irsend[@]}" "cd $d && timeout 1500 python3 harness.py --role send --size-mib $SIZE --target 127.0.0.1:5204 --json $d/send.json > /dev/null 2>&1; cat $d/send.json 2>/dev/null || echo '{}'" > "$W/send.json" || echo '{}' > "$W/send.json"
+            st "round $r wait sink"
             for i in $(seq 1 40); do "${ab[@]}" "test -s $d/sink.json" && break; sleep 3; done
             "${ab[@]}" "cat $d/sink.json 2>/dev/null || echo '{}'" > "$W/sink.json" || echo '{}' > "$W/sink.json"
             alive_ab=$("${ab[@]}" "pgrep -fc '$d/[b]aft-tunnel serve'" || true); alive_ir=$("${ir[@]}" "pgrep -fc '$d/[b]aft-tunnel forward'" || true)
@@ -148,8 +149,13 @@ jobs:
           mibs = round(s.get("received",0)/1048576/dur,1) if dur else None
           print(json.dumps({"round":int(r),"start_utc":t0,"killed_forward":km=="1","verdict":v,"received_MiB":round(s.get("received",0)/1048576,1),"send_s":dur,"MiB_per_s":mibs,"retries":d.get("retries"),"serve_alive":aab,"forward_alive":air,"serve_rss_KiB":rab,"forward_rss_KiB":rir}))
           P
-            tail -n 1 "$W/rounds.jsonl"
-            (( r < ROUNDS )) && sleep "$INTERVAL"
+            st "round $r done: $(tail -n 1 "$W/rounds.jsonl")"
+          if ! tail -n 1 "$W/rounds.jsonl" | grep -q '"verdict": "correct"'; then   # diagnostics for a non-correct round (logs hold no secrets; hosts masked)
+            for h in ab ir; do if [[ $h == ab ]]; then c=("${ab[@]}"); f=serve.log; else c=("${ir[@]}"); f=forward.log; fi
+              st "diag $f (last 12 lines)"; "${c[@]}" "tail -n 12 $d/$f 2>&1; ss -tn 2>/dev/null | grep -c ':${PORT}' || true" 2>&1 | sed "s/$LAB_IRAN_HOST/<iran>/g;s/$LAB_ABROAD_HOST/<abroad>/g"
+            done
+          fi
+            if (( r < ROUNDS )); then st "sleep ${INTERVAL}s"; sleep "$INTERVAL"; fi
           done
           {
             echo "## E3 LAB: BAFT-TUNNEL $VERSION tcp-tls Direct (real path, one window; LAB-level evidence only)"
@@ -161,3 +167,25 @@ jobs:
               x=json.loads(l); print(f"| {x['round']} | {x['start_utc']} | {x['killed_forward']} | {x['verdict']} | {x['received_MiB']} | {x['send_s']} | {x['MiB_per_s']} | {x['retries']} | {x['serve_alive']}/{x['forward_alive']} | {x['serve_rss_KiB']}/{x['forward_rss_KiB']} |")
           P
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Cleanup (always)
+        if: ${{ always() }}
+        timeout-minutes: 8
+        env:
+          LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+          LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
+          LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+          LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+          LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+          LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+        run: |
+          set +e
+          key="$RUNNER_TEMP/e3-id"; kh="$RUNNER_TEMP/e3-kh"
+          [[ -s "$key" && -s "$RUNNER_TEMP/e3-dir" ]] || { echo "nothing to clean (setup never reached the hosts)"; exit 0; }
+          d=$(cat "$RUNNER_TEMP/e3-dir"); pat="[/]tmp/baft-e3-${d#/tmp/baft-e3-}/"
+          opts=(-i "$key" -o UserKnownHostsFile="$kh" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
+          for h in abroad iran; do   # abroad first: it holds the listener
+            if [[ $h == iran ]]; then host="$LAB_IRAN_HOST"; user="$LAB_IRAN_SSH_USER"; p="${LAB_IRAN_SSH_PORT:-22}"; else host="$LAB_ABROAD_HOST"; user="$LAB_ABROAD_SSH_USER"; p="${LAB_ABROAD_SSH_PORT:-22}"; fi
+            timeout 90 ssh "${opts[@]}" -p "$p" "$user@$host" "pkill -f '$pat'; sleep 2; pkill -KILL -f '$pat'; rm -rf $d; (pgrep -af '$pat' | wc -l); (test -e $d && echo dir-still-present || echo dir-gone)" 2>&1 | sed "s/$host/<host>/g"
+            echo "cleanup $h finished $(date -u +%H:%M:%SZ)"
+          done
+          rm -f "$key" "$kh" "$RUNNER_TEMP/e3-dir"

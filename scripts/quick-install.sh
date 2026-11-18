@@ -71,7 +71,7 @@ TAG=""
 CHANNEL="stable"
 VERIFY_ONLY=0
 HTTPS_HOST=""; HTTPS_KIND=""; HTTPS_EMAIL=""; HTTPS_SELF=0; NO_HTTPS=0; NO_MENU=0
-PAIR_CODE=""; OFFER_NAME=""; AUTO_APPROVE=0; OFFER_PORT=""; OFFER_TPORT=8443; OFFER_HOST=""
+PAIR_CODE=""; OFFER_NAME=""; AUTO_APPROVE=0; LOCATION=""; DIRECTION=direct; OFFER_PORT=""; OFFER_TPORT=8443; OFFER_HOST=""
 PAIR_CODE=""
 OFFER_NAME=""
 OFFER_PORT=""
@@ -93,6 +93,8 @@ Options:
   --offer NAME          Automatic tunnel, first server (the one that accepts the connection): after
                         install, prints a one-time code, waits for the second server, then starts.
   --auto-approve        With --offer and no terminal: accept the first server that presents the code (off by default).
+  --direction direct|reverse  With --offer: reverse = the service runs on the other server, which dials out (Preview).
+  --location iran|abroad  With --pair: where this server is. An Iran server that dials out gets a 10 s session rotation default.
   --pair CODE           Automatic tunnel, second server: enroll with the code from --offer, then start.
   --channel CHANNEL     stable (default): latest stable release only.
                         prerelease: latest release including Preview/prerelease.
@@ -145,6 +147,8 @@ while (($#)); do
     --no-menu) NO_MENU=1; shift ;;
     --pair) (($# >= 2)) || die "--pair needs the code printed by the other server"; PAIR_CODE="$2"; shift 2 ;;
     --auto-approve) AUTO_APPROVE=1; shift ;;
+    --direction) (($# >= 2)) || die "--direction needs direct or reverse"; DIRECTION="$2"; [[ "$DIRECTION" == direct || "$DIRECTION" == reverse ]] || die "--direction must be direct or reverse"; shift 2 ;;
+    --location) (($# >= 2)) || die "--location needs iran or abroad"; LOCATION="$2"; [[ "$LOCATION" == iran || "$LOCATION" == abroad ]] || die "--location must be iran or abroad"; shift 2 ;;
     --offer) (($# >= 2)) || die "--offer needs a tunnel name"; OFFER_NAME="$2"; shift 2 ;;
     --service-port) (($# >= 2)) || die "--service-port needs a port"; OFFER_PORT="$2"; shift 2 ;;
     --tunnel-port) (($# >= 2)) || die "--tunnel-port needs a port"; OFFER_TPORT="$2"; shift 2 ;;
@@ -384,10 +388,12 @@ if [[ -n "$PAIR_CODE" || -n "$OFFER_NAME" ]]; then
   PBIN=/usr/local/bin/baft-tunnel
   "$PBIN" pair --help >/dev/null 2>&1 || die "release $TAG has no automatic pairing yet; use a newer --tag/--channel prerelease"
   if [[ -n "$PAIR_CODE" ]]; then
-    printf '%s\n' "$PAIR_CODE" | "$PBIN" pair accept - --instance "$INSTANCE"
+    LOC_ARGS=(); [[ -z "$LOCATION" ]] || LOC_ARGS=(--location "$LOCATION")
+    printf '%s\n' "$PAIR_CODE" | "$PBIN" pair accept - --instance "$INSTANCE" "${LOC_ARGS[@]}"
   else
     OARGS=(--name "$OFFER_NAME" --service-port "$OFFER_PORT" --tunnel-port "$OFFER_TPORT" --instance "$INSTANCE")
     [[ -z "$OFFER_HOST" ]] || OARGS+=(--host "$OFFER_HOST")
+    OARGS+=(--direction "$DIRECTION")
     if [[ -r /dev/tty ]]; then
       "$PBIN" pair offer "${OARGS[@]}" </dev/tty
     elif (( AUTO_APPROVE == 1 )); then

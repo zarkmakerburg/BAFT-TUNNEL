@@ -12,6 +12,11 @@ on:
         description: Signed prerelease tag under acceptance (N)
         required: true
         type: string
+      rotate_secs:
+        description: Optional ADR-0049 session rotation on the forward node after the upgrade (0 = off, else 5-60 seconds)
+        required: false
+        type: string
+        default: '0'
       confirm:
         description: Type RUN_TRUSTED_PHASE1_LAB to authorize the bounded two-host acceptance run
         required: true
@@ -171,6 +176,7 @@ jobs:
           MVP_INITIAL_BINARY: ${{ runner.temp }}/u7-inputs/rc5/baft-tunnel-prev
           MVP_SOURCE: signed-release:${{ inputs.previous_tag }}-to-${{ inputs.target_tag }}
           LAB_OPS: '3600'
+          LAB_ROTATE_SECS: ${{ inputs.rotate_secs }}
           LAB_CRL_PUSH: '0'
         run: |
           set -euo pipefail

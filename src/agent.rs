@@ -114,6 +114,12 @@ pub struct Ctx {
     traffic: std::sync::Mutex<std::collections::VecDeque<crate::observe::TrafficSample>>,
     /// 24 h of one-minute buckets persisted in `state_dir` (B5).
     long: std::sync::Mutex<crate::history_store::LongHistory>,
+    /// ADR-0045 F1: reports received from enrolled nodes. Memory only; empty until the hub
+    /// listener exists, so every node is Never (unknown, not zero).
+    pub fleet: std::sync::Mutex<crate::fleet::Hub>,
+    /// Address the Fleet hub listener is bound to; `Some` only after `--fleet-config` bound it.
+    #[allow(dead_code)] // read by GET /v1/fleet/nodes once that route reports the hub listener
+    pub fleet_hub_listen: std::sync::Mutex<Option<SocketAddr>>,
     /// systemd access for the bound instance: state reads, and start/stop/enable/disable requests
     /// through the root control helper (ADR-0023). Tests substitute a fake.
     units: Arc<dyn crate::apply::Units + Send + Sync>,
@@ -135,6 +141,12 @@ struct Sample {
     ts: u64,
     up: bool,
     rtt_ms: Option<f64>,
+}
+
+impl crate::fleet_hub::HubStore for Ctx {
+    fn hub(&self) -> &std::sync::Mutex<crate::fleet::Hub> {
+        &self.fleet
+    }
 }
 
 impl Ctx {
@@ -159,6 +171,8 @@ impl Ctx {
             runtime_dir: None,
             traffic: std::sync::Mutex::new(std::collections::VecDeque::new()),
             long: std::sync::Mutex::new(long),
+            fleet: std::sync::Mutex::new(crate::fleet::Hub::default()),
+            fleet_hub_listen: std::sync::Mutex::new(None),
             units: Arc::new(crate::apply::SystemUnits::default()),
             config_dir: PathBuf::from("/etc/baft-tunnel"),
             setup: Arc::new(crate::setup_helper::SystemSetupHelper::default()),
@@ -333,6 +347,7 @@ pub async fn run(
     token: String,
     state_dir: Option<PathBuf>,
     instance: Option<String>,
+    fleet: Option<crate::fleet_run::FleetConfig>,
 ) -> Result<()> {
     if let Some(name) = &instance {
         if !crate::apply::valid_instance(name) {
@@ -352,8 +367,14 @@ pub async fn run(
     if let (Some(name), Some(dir)) = (&instance, &state_dir) {
         publish_agent_address(dir, name, listen);
     }
-    let ctx = Arc::new(Ctx::with_config(config, token, state_dir).with_unit(instance, runtime_dir));
+    let ctx = Arc::new(
+        Ctx::with_config(config, token, state_dir).with_unit(instance.clone(), runtime_dir),
+    );
     tokio::spawn(sampler(ctx.clone()));
+    // ADR-0045 F1: only when `--fleet-config` is given; nothing listens or reports otherwise.
+    if let Some(fleet) = fleet {
+        crate::fleet_run::start(ctx.clone(), fleet, instance.as_deref()).await?;
+    }
     serve(listener, ctx).await
 }
 
@@ -692,6 +713,10 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/pair/accept"
             | "/v1/pair/status"
             | "/v1/pair/approve"
+            | "/v1/probe/consent"
+            | "/v1/probe/run"
+            | "/v1/geo"
+            | "/v1/fleet/nodes"
     ) {
         return (404, json!({"error": "not found"}));
     }
@@ -705,6 +730,21 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         return setup_mode_route(method, path, body, ctx).await;
     };
     match (method, path) {
+        ("GET", "/v1/probe/consent") => (
+            200,
+            crate::probe_api::consent_json(crate::probe_api::read_consent(
+                ctx.state_dir.as_deref(),
+            )),
+        ),
+        ("POST", "/v1/probe/consent") => {
+            crate::probe_api::consent_set(ctx.state_dir.as_deref(), body)
+        }
+        ("POST", "/v1/probe/run") => crate::probe_api::run(ctx.state_dir.as_deref(), body).await,
+        ("GET", "/v1/geo") => (
+            200,
+            crate::geoip::geo_json(ctx.state_dir.as_deref(), config.remote()),
+        ),
+        ("GET", "/v1/fleet/nodes") => (200, fleet_nodes(ctx)),
         ("GET", "/v1/status") => (200, status(ctx, config).await),
         ("GET", "/v1/traffic") => (200, traffic(ctx)),
         ("GET", "/v1/update") => (200, update_notice(ctx)),
@@ -749,6 +789,8 @@ struct PairOfferBody {
     tunnel_port: Option<u16>,
     #[serde(default)]
     host: Option<String>,
+    #[serde(default)]
+    direction: Option<crate::pair_flow::Direction>,
     confirm: bool,
 }
 
@@ -757,6 +799,8 @@ struct PairOfferBody {
 struct PairAcceptBody {
     code: String,
     confirm: bool,
+    #[serde(default)]
+    location: Option<crate::pair_flow::Location>,
 }
 
 #[derive(serde::Deserialize)]
@@ -805,7 +849,8 @@ fn pair_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) 
                 }
                 submit(
                     json!({"op": "offer", "name": b.name, "service_port": b.service_port,
-                    "tunnel_port": b.tunnel_port.unwrap_or(8443), "host": b.host}),
+                    "tunnel_port": b.tunnel_port.unwrap_or(8443), "host": b.host,
+                    "direction": b.direction.unwrap_or_default()}),
                 )
             }
         },
@@ -818,7 +863,9 @@ fn pair_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) 
                     422,
                     json!({"error": "this pairing code has expired; create a new one"}),
                 ),
-                Ok(_) => submit(json!({"op": "accept", "code": b.code.trim()})),
+                Ok(_) => {
+                    submit(json!({"op": "accept", "code": b.code.trim(), "location": b.location}))
+                }
             },
         },
         ("POST", "/v1/pair/approve") => match serde_json::from_slice::<PairApproveBody>(body) {
@@ -838,6 +885,18 @@ async fn setup_mode_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (
         (_, "/v1/pair/offer" | "/v1/pair/accept" | "/v1/pair/status" | "/v1/pair/approve") => {
             pair_route(method, path, body, ctx)
         }
+        ("GET", "/v1/probe/consent") => (
+            200,
+            crate::probe_api::consent_json(crate::probe_api::read_consent(
+                ctx.state_dir.as_deref(),
+            )),
+        ),
+        ("POST", "/v1/probe/consent") => {
+            crate::probe_api::consent_set(ctx.state_dir.as_deref(), body)
+        }
+        ("POST", "/v1/probe/run") => crate::probe_api::run(ctx.state_dir.as_deref(), body).await,
+        ("GET", "/v1/geo") => (200, crate::geoip::geo_json(ctx.state_dir.as_deref(), None)),
+        ("GET", "/v1/fleet/nodes") => (200, fleet_nodes(ctx)),
         ("GET", "/v1/status") => (200, setup_status(ctx)),
         ("GET", "/v1/engines") => (200, engines()),
         ("GET", "/v1/host/tunnels") => (200, host_tunnels(ctx)),
@@ -3093,7 +3152,7 @@ async fn listener_accepting(config: &RuntimeConfig) -> bool {
     }
 }
 
-async fn status(ctx: &Ctx, config: &RuntimeConfig) -> Value {
+pub(crate) async fn status(ctx: &Ctx, config: &RuntimeConfig) -> Value {
     let listening = listener_accepting(config).await;
     json!({
         "agent": "baft-tunnel",
@@ -3482,6 +3541,60 @@ fn update_notice(ctx: &Ctx) -> Value {
         "command": latest.filter(|_| shown).map(|t| format!(
             "curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/{t}/scripts/quick-install.sh | sudo bash -s -- --register NAME"
         )),
+    })
+}
+
+/// `GET /v1/fleet/nodes` (ADR-0045/0053): enrolled nodes with version, update state and
+/// freshness. A node that is Stale or Never shows every measured field as `unknown`, never
+/// its last value. Tunnel state, Integrity and Health stay separate. The hub's own verified
+/// release notice is the only source of "latest" (ADR-0053 section 2).
+fn fleet_nodes(ctx: &Ctx) -> Value {
+    use crate::fleet::Freshness;
+    let now = unix_now();
+    let notice = update_notice(ctx);
+    let latest = notice["latest_tag"].as_str();
+    let unknown = || json!("unknown");
+    let hub = ctx.fleet.lock().unwrap_or_else(|e| e.into_inner());
+    let nodes: Vec<Value> = hub
+        .nodes()
+        .map(|n| {
+            let (fresh, age) = match hub.freshness(&n.node_id, now) {
+                Freshness::Live => ("live", Some(now.saturating_sub(n.last_report_unix))),
+                Freshness::Stale { age_s } => ("stale", Some(age_s)),
+                Freshness::Never => ("never", None),
+            };
+            let live = fresh == "live";
+            let version = n.version.as_deref().filter(|_| live);
+            let update = match version {
+                Some(v) => update_state(v, latest),
+                None => "unknown",
+            };
+            let instances: Vec<Value> = n
+                .instances
+                .iter()
+                .map(|i| {
+                    json!({
+                        "name": i.name,
+                        "tunnel": if live { i.tunnel.as_deref().map_or_else(unknown, |s| json!(s)) } else { unknown() },
+                        "integrity": if live { i.integrity.as_deref().map_or_else(unknown, |s| json!(s)) } else { unknown() },
+                        "health": if live { i.health.as_deref().map_or_else(unknown, |s| json!(s)) } else { unknown() },
+                    })
+                })
+                .collect();
+            json!({
+                "node_id": n.node_id,
+                "freshness": fresh,
+                "age_s": age,
+                "version": version,
+                "update": update,
+                "instances": instances,
+            })
+        })
+        .collect();
+    json!({
+        "hub": {"listener": false, "reason": "hub listener not enabled (Preview, ADR-0045)"},
+        "latest_tag": latest,
+        "nodes": nodes,
     })
 }
 
@@ -4784,6 +4897,55 @@ mod tests {
         );
         assert_eq!(body["long"]["totals"]["probes"], 1);
         assert!(body["alerts"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn fleet_nodes_are_unknown_when_stale_and_empty_when_none() {
+        let ctx = Ctx::new(sample(), TOKEN.into(), None);
+        let v = fleet_nodes(&ctx);
+        assert_eq!(v["nodes"].as_array().unwrap().len(), 0);
+        assert_eq!(v["hub"]["listener"], false);
+        let ekus = [crate::fleet::EKU_FLEET_NODE];
+        let peer = crate::fleet::PeerCert {
+            node_id: "n1",
+            serial: "01",
+            ekus: &ekus,
+        };
+        let body = br#"{"schema":"node.status.v1","seq":1,"version":"0.2.2","instances":[{"name":"t1","tunnel":"connected","integrity":"verified","health":"ok"}]}"#;
+        ctx.fleet
+            .lock()
+            .unwrap()
+            .accept(&peer, body, unix_now())
+            .unwrap();
+        let v = fleet_nodes(&ctx);
+        assert_eq!(v["nodes"][0]["freshness"], "live");
+        assert_eq!(v["nodes"][0]["version"], "0.2.2");
+        assert_eq!(v["nodes"][0]["instances"][0]["integrity"], "verified");
+        // an old report: every measured field becomes unknown
+        ctx.fleet
+            .lock()
+            .unwrap()
+            .accept(
+                &crate::fleet::PeerCert {
+                    node_id: "n2",
+                    ..peer
+                },
+                body,
+                unix_now() - 3600,
+            )
+            .unwrap();
+        let v = fleet_nodes(&ctx);
+        let n2 = v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["node_id"] == "n2")
+            .unwrap();
+        assert_eq!(n2["freshness"], "stale");
+        assert!(n2["version"].is_null());
+        assert_eq!(n2["update"], "unknown");
+        assert_eq!(n2["instances"][0]["tunnel"], "unknown");
+        assert_eq!(n2["instances"][0]["health"], "unknown");
     }
 
     #[test]
@@ -6142,6 +6304,15 @@ mod tests {
         )
         .await;
         assert_eq!(bad.0, 422);
+        let bad_loc = route(
+            &post("/v1/pair/accept"),
+            json!({"code": "nonsense", "confirm": true, "location": "mars"})
+                .to_string()
+                .as_bytes(),
+            &ctx,
+        )
+        .await;
+        assert_eq!(bad_loc.0, 422, "location must be iran or abroad");
         // status and approval go through files
         assert_eq!(
             route(&get("/v1/pair/status"), b"", &ctx).await.1["state"],

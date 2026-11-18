@@ -10,6 +10,12 @@ mod doctor;
 mod engine;
 mod engine_store;
 mod fleet;
+mod fleet_ca;
+mod fleet_enroll;
+mod fleet_hub;
+mod fleet_report;
+mod fleet_run;
+mod geoip;
 mod handshake;
 mod history_store;
 mod integrity_probe;
@@ -26,14 +32,21 @@ mod pki_helper;
 mod policy;
 #[cfg(test)]
 mod policy_baseline;
+mod probe_adapters;
+mod probe_api;
+mod probe_http;
 mod resumable;
 mod resume_core;
+mod resume_registry;
+mod resume_stream;
+mod resume_tunnel;
 mod resume_wire;
 #[allow(dead_code)] // manifest API is consumed by packaging and the registry (ADR-0020)
 mod runtime_host;
 mod session_status;
 mod setup;
 mod setup_helper;
+mod target_guard;
 mod tls;
 mod transport_health;
 mod tunnel;
@@ -196,6 +209,10 @@ enum Command {
         /// the unprivileged `baft-tunnel` user (see docs/SECURITY_ASSESSMENT.md, SA-01).
         #[arg(long)]
         allow_root: bool,
+        /// Fleet (ADR-0045 F1, read-only, Preview): JSON file naming the certificate files for a
+        /// hub listener and/or a member reporter. Off unless given; see docs/ADR-0045.
+        #[arg(long)]
+        fleet_config: Option<PathBuf>,
     },
 }
 
@@ -215,6 +232,10 @@ enum PairCommand {
         /// Address the other server dials; detected when omitted.
         #[arg(long)]
         host: Option<String>,
+        /// `direct` (the service runs on this server) or `reverse` (the service runs on the other
+        /// server, which dials out; tcp-tls Preview).
+        #[arg(long, default_value = "direct")]
+        direction: pair_flow::Direction,
         #[arg(long, default_value = "/etc/baft-tunnel")]
         dir: PathBuf,
         /// systemd instance name (`baft-tunnel@NAME`).
@@ -240,6 +261,10 @@ enum PairCommand {
         dir: PathBuf,
         #[arg(long)]
         instance: Option<String>,
+        /// Where this server is: `iran` or `abroad`. An Iran server that dials out gets a 10 s
+        /// session rotation default; nothing else changes.
+        #[arg(long)]
+        location: Option<pair_flow::Location>,
     },
 }
 
@@ -746,6 +771,7 @@ async fn run() -> Result<()> {
                     service_port,
                     tunnel_port,
                     host,
+                    direction,
                     dir,
                     instance,
                     yes,
@@ -759,6 +785,7 @@ async fn run() -> Result<()> {
                     service_port,
                     tunnel_port,
                     host,
+                    direction,
                 },
                 |p: pair_flow::Pending| async move {
                     eprintln!("Server {} connects from {}. Its key fingerprint: {}", p.node_id, p.peer, p.verify);
@@ -803,6 +830,7 @@ async fn run() -> Result<()> {
                     code,
                     dir,
                     instance,
+                    location,
                 },
         } => {
             let code = if code == "-" {
@@ -812,7 +840,7 @@ async fn run() -> Result<()> {
             } else {
                 code
             };
-            pair_flow::accept(&code, &dir, instance, |v| {
+            pair_flow::accept(&code, &dir, instance, location, |v| {
                 eprintln!("Key fingerprint: {v} (the other server asks you to compare it)");
             })
             .await
@@ -837,6 +865,7 @@ async fn run() -> Result<()> {
             state_dir,
             instance,
             allow_root,
+            fleet_config,
         } => {
             // SAFETY: geteuid has no preconditions and cannot fail.
             if unsafe { libc::geteuid() } == 0 && !allow_root {
@@ -860,12 +889,17 @@ async fn run() -> Result<()> {
                 Some(config)
             };
             let token = agent::read_token(&token_file)?;
+            let fleet = fleet_config
+                .as_deref()
+                .map(fleet_run::FleetConfig::load)
+                .transpose()?;
             agent::run(
                 config,
                 agent::parse_listen(&listen)?,
                 token,
                 state_dir,
                 instance,
+                fleet,
             )
             .await
         }

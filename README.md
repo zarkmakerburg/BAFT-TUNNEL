@@ -59,16 +59,16 @@ Project record: [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/
 
 ## Quick install (Ubuntu 22.04, x86_64)
 
-One line installs the latest **signed stable** release (currently `v0.2.2`). The script is pinned to the release tag, not `main`. Before it extracts or runs anything it verifies the release's keyless Sigstore signature and SHA-256 checksums, and it stops if either check fails. It installs the panel agent only; no tunnel is started.
+One line installs the latest **signed stable** release (currently `v0.3.0`). The script is pinned to the release tag, not `main`. Before it extracts or runs anything it verifies the release's keyless Sigstore signature and SHA-256 checksums, and it stops if either check fails. It installs the panel agent only; no tunnel is started.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.2.2/scripts/quick-install.sh | sudo bash -s -- --register t1
+curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.3.0/scripts/quick-install.sh | sudo bash -s -- --register t1
 ```
 
 `t1` is your instance name (letters, digits, `_`, `-`). To inspect the script first, download it, read it, then run it:
 
 ```bash
-curl -fsSL -o quick-install.sh https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.2.2/scripts/quick-install.sh
+curl -fsSL -o quick-install.sh https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.3.0/scripts/quick-install.sh
 less quick-install.sh
 sudo bash quick-install.sh --register t1
 ```
@@ -77,7 +77,7 @@ Add `--verify-only` to check the signed release without installing, `--tag vX.Y.
 
 ### Automatic tunnel (pairing; no files to copy)
 
-Available from the first prerelease that includes ADR-0050 (not in `v0.2.2`): install on both servers with `--channel prerelease`, then create the tunnel from the panel (Create tunnel on the first server, Connect with the code on the second), or from the shell:
+Available from `v0.3.0` (ADR-0050, Preview): install on both servers with the command above, then create the tunnel from the panel (Create tunnel on the first server, Connect with the code on the second), or from the shell:
 
 ```bash
 # first server (accepts the connection): prints a one-time code, then asks you to approve the other server
@@ -86,7 +86,7 @@ curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --channel prerelease -
 curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --channel prerelease --pair 'BAFT1-...'
 ```
 
-Both servers show the same short key fingerprint; approve only if they match. The code is single-use and expires in 15 minutes. Open the tunnel port (default TCP 8443) on the first server's firewall yourself; BAFT-TUNNEL never changes firewall rules. Without a terminal `--offer` refuses to run unless you add `--auto-approve`. Direct `tcp-tls` only for now; the Iran/abroad question and Reverse are designed in ADR-0050 Addendum 2 and not implemented yet. Evidence: CI and local tests; no LAB run yet.
+Both servers show the same short key fingerprint; approve only if they match. The code is single-use and expires in 15 minutes. Open the tunnel port (default TCP 8443) on the first server's firewall yourself; BAFT-TUNNEL never changes firewall rules. Without a terminal `--offer` refuses to run unless you add `--auto-approve`. Direct `tcp-tls` only for now; the panel asks whether each server is in Iran or abroad (`--location iran|abroad` on the shell); an Iran server that dials out gets a 10 s session rotation default. Reverse is designed in ADR-0050 Addendum 2 and not implemented yet. Evidence: CI and local tests; no LAB run yet.
 
 ### HTTPS panel (domain or IP)
 

@@ -22,6 +22,21 @@ mod control_socket;
 mod engine;
 #[path = "../src/engine_store.rs"]
 mod engine_store;
+#[path = "../src/fleet.rs"]
+#[allow(dead_code)]
+mod fleet;
+#[path = "../src/fleet_hub.rs"]
+#[allow(dead_code)]
+mod fleet_hub;
+#[path = "../src/fleet_report.rs"]
+#[allow(dead_code)]
+mod fleet_report;
+#[path = "../src/fleet_run.rs"]
+#[allow(dead_code)]
+mod fleet_run;
+#[path = "../src/geoip.rs"]
+#[allow(dead_code)]
+mod geoip;
 #[path = "../src/handshake.rs"]
 mod handshake;
 #[path = "../src/history_store.rs"]
@@ -46,6 +61,27 @@ mod pair_helper;
 mod pair_proto;
 #[path = "../src/pki_helper.rs"]
 mod pki_helper;
+#[path = "../src/probe_adapters.rs"]
+#[allow(dead_code)]
+mod probe_adapters;
+#[path = "../src/probe_api.rs"]
+#[allow(dead_code)]
+mod probe_api;
+#[path = "../src/probe_http.rs"]
+#[allow(dead_code)]
+mod probe_http;
+#[path = "../src/resumable.rs"]
+mod resumable;
+#[path = "../src/resume_core.rs"]
+mod resume_core;
+#[path = "../src/resume_registry.rs"]
+mod resume_registry;
+#[path = "../src/resume_stream.rs"]
+mod resume_stream;
+#[path = "../src/resume_tunnel.rs"]
+mod resume_tunnel;
+#[path = "../src/resume_wire.rs"]
+mod resume_wire;
 #[path = "../src/runtime_host.rs"]
 mod runtime_host;
 #[path = "../src/session_status.rs"]
@@ -54,6 +90,9 @@ mod session_status;
 mod setup;
 #[path = "../src/setup_helper.rs"]
 mod setup_helper;
+#[path = "../src/target_guard.rs"]
+#[allow(dead_code)]
+mod target_guard;
 #[path = "../src/tls.rs"]
 mod tls;
 #[path = "../src/transport_health.rs"]

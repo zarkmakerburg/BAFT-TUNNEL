@@ -77,3 +77,23 @@ No Critical. Step 3 may merge as unwired code; resume stays off until these are 
 - **M4** The opener checks that the reply matches its request (same stream ids, no extra answers).
 - **M5** A resume message reader with its own size bound, independent of the 2 KiB handshake reader.
 The step 5 chaos test must pass before any default-off Preview flag.
+
+Step 4a (2026-11-17): `src/resume_registry.rs` fixes review items H1, H2, M1, M2 and M4 as pure, tested code (not wired): the grace starts at the session *drop*; a token cannot be redeemed while its session is alive (kept, since that is a race) and a redeem moves the streams atomically to the new session; every stream has exactly one owner; the registry is bounded and evicts only dropped sessions; `Debug` never prints tokens or bindings; `ResumeReply::check_matches` makes the opener verify the reply. M3 (certificate-verified identities, via `Identity`) and M5 (resume message reader) land with the tunnel wiring in 4b.
+
+Step 4b (2026-11-18): `src/resume_stream.rs` is the async pump for one stream: a task owns the local socket and the `Endpoint`, the carrying substream is replaceable with `Handle::attach(io, peer_received)`, the local socket stays open while detached for at most the grace period, backpressure bounds the bytes waiting for a slow local socket (1 MiB), and the tunnel budget returns to zero on every exit. Tests drive two pumps over a link that is cut at random while both directions carry data (byte-exact, Fin/EOF on both sides), grace expiry, an impossible resume offset and garbage frames. It is the in-process chaos test of the data plane; the tunnel wiring (stream ids in the substream header, `ResumeHello` over a control substream with certificate-verified identities, per-tunnel registry across sessions, default-off flag) is step 4c, and the real two-host chaos test is step 5.
+
+Step 4c (2026-11-18): `src/resume_tunnel.rs` is the session glue (acceptor `ServerResume`, opener `ClientResume`) over an authenticated v3 yamux session: each substream passes the normal `TcpForward` authorization, then a kind byte (NEW with stream id, HELLO with `ResumeHello`, ATTACH per stream after the reply). Resume messages use their own bounded reader (M5); the caller supplies the verified identities of the new session (M3); a failed redeem gets no reply (the opener sees a refusal). `ResumeGrant` now also carries the public handshake nonces so the hello can repeat them. The test runs real v3 handshakes, real yamux sessions and a real TCP destination, cuts the link twice mid-transfer and requires the echoed bytes to equal the sent bytes; it also checks that resume is refused while the old session is alive (and the token survives that race) and refused for a different identity. **Not reachable from any config or CLI**: nothing in the running tunnel calls it. Step 4d hooks it into the tunnel loops behind a default-off flag; step 5 is the two-host test.
+
+## Status: step 4d (wired, default-off Preview)
+
+Protocol v3 is now selectable in a hand-written config (`protocol_version: 3`) on the **tcp-tls**
+engine, **Direct** direction only, without session rotation or backup links. `setup` never
+generates it and no default changes. The server uses `ServerResume` per tunnel (64 MiB budget,
+60 s grace); the forwarder (`supervise_forward_resume`) redials after a cut, authenticates again
+and resumes every live stream. Limits of this Preview: no rotation, no backup links, no integrity
+probes on v3 sessions, Reverse unsupported (rejected by config validation and at start-up).
+Evidence: CI + a local end-to-end test through the real `serve_versioned` / forwarder loops with
+two link cuts and byte-for-byte equality. **No LAB evidence yet** (step 5).
+
+## Evidence (2026-11-18)
+LAB run 44283746412 (orchestration from `1685248`, candidate `04c3e0b`): tcp-tls Direct, protocol v3, throwaway PKI, 16 MiB echoed while a loopback relay on the Iran host was cut twice; payload sha256 equal, two resumed sessions logged, no service restart, descriptor counts flat. Evidence level: two-host LAB, one run. Resume stays default-off Preview (Direct, tcp-tls only, no rotation, backup links or probes on v3).

@@ -57,6 +57,12 @@ if (( AGENT_SVC == 1 )); then
   [[ -x "$MVP_BINARY_PATH" ]] || { echo "LAB_AGENT_SVC needs MVP_BINARY" >&2; exit 2; }
   [[ "$MVP" == 0 && "$REVERSE_ACCEPT" == 0 && "$OPS_SOAK" == 0 ]] || { echo "LAB_AGENT_SVC is a separate run from LAB_MVP, LAB_REVERSE_ACCEPT and LAB_OPS" >&2; exit 2; }
 fi
+AUTO_PAIR="${LAB_AUTO_PAIR:-0}"
+[[ "$AUTO_PAIR" == 0 || "$AUTO_PAIR" == 1 ]] || { echo "LAB_AUTO_PAIR must be 0 or 1" >&2; exit 2; }
+if (( AUTO_PAIR == 1 )); then
+  [[ -x "$MVP_BINARY_PATH" ]] || { echo "LAB_AUTO_PAIR needs MVP_BINARY" >&2; exit 2; }
+  [[ "$MVP" == 0 && "$REVERSE_ACCEPT" == 0 && "$OPS_SOAK" == 0 && "$AGENT_SVC" == 0 && "${LAB_PANEL_PAIRING:-0}" == 0 ]] || { echo "LAB_AUTO_PAIR is a separate run from the other installed-path stages" >&2; exit 2; }
+fi
 PANEL_PAIRING="${LAB_PANEL_PAIRING:-0}"
 PANEL_ENGINE="${LAB_PANEL_ENGINE:-noise-tcp}"
 [[ "$PANEL_PAIRING" == 0 || "$PANEL_PAIRING" == 1 ]] || { echo "LAB_PANEL_PAIRING must be 0 or 1" >&2; exit 2; }
@@ -1129,9 +1135,14 @@ if (( AGENT_SVC == 1 )); then
   . "$(dirname "${BASH_SOURCE[0]}")/agent-service-stage.sh"
 fi
 
+if (( AUTO_PAIR == 1 )); then
+  # shellcheck source=lab/real-hosts/auto-pair-stage.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/auto-pair-stage.sh"
+fi
+
 if (( PANEL_PAIRING == 1 )); then
   # shellcheck source=lab/real-hosts/panel-pairing-stage.sh
   . "$(dirname "${BASH_SOURCE[0]}")/panel-pairing-stage.sh"
 fi
 
-echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE reverse_r3=$REVERSE_R3 mvp=$MVP agent_svc=$AGENT_SVC reboot=$AGENT_REBOOT panel_pairing=$PANEL_PAIRING panel_engine=$PANEL_ENGINE (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"
+echo "PHASE1_TWO_HOST_E2E=PASS soak_s=$SOAK_SECONDS impair=$IMPAIR loss=$LOSS noise=$NOISE rollover=$ROLLOVER setup=$SETUP baft=$BAFT reverse=$REVERSE reverse_r3=$REVERSE_R3 mvp=$MVP agent_svc=$AGENT_SVC reboot=$AGENT_REBOOT auto_pair=$AUTO_PAIR panel_pairing=$PANEL_PAIRING panel_engine=$PANEL_ENGINE (Direct, 2 MiB integrity, recovery, server/client certificate revocation; temporary /tmp processes only)"

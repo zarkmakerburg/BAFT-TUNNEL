@@ -49,10 +49,21 @@ const RESUME_TOKEN_BYTES: usize = 16;
 /// Material both sides hold after a v3 handshake. The token is the bearer secret; the binding is
 /// `resume_binding` over the original handshake, kept so a later resume can prove it belongs to
 /// the same identities, tunnel and direction (ADR-0040).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ResumeGrant {
     pub token: [u8; RESUME_TOKEN_BYTES],
     pub binding: [u8; 32],
+    /// The original handshake nonces (public values): a later `ResumeHello` repeats them so the
+    /// acceptor can recompute the binding.
+    pub client_nonce: String,
+    pub server_nonce: String,
+}
+
+// The token is a bearer secret: never print it (security review M2).
+impl std::fmt::Debug for ResumeGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ResumeGrant(<redacted>)")
+    }
 }
 
 /// `SHA-256("baft-resume-v1" || len-prefixed client_id, server_id, tunnel_id, direction, client_nonce,
@@ -271,7 +282,12 @@ async fn client_handshake_inner<S: AsyncRead + AsyncWrite + Unpin>(
             &client_nonce,
             &response.server_nonce,
         );
-        return Ok(Some(ResumeGrant { token, binding }));
+        return Ok(Some(ResumeGrant {
+            token,
+            binding,
+            client_nonce,
+            server_nonce: response.server_nonce,
+        }));
     }
     if response.resume_token.is_some() {
         bail!("peer returned a resume token for a protocol that has none");
@@ -370,6 +386,8 @@ async fn server_handshake_inner<S: AsyncRead + AsyncWrite + Unpin>(
                 &request.nonce,
                 &server_nonce,
             ),
+            client_nonce: request.nonce.clone(),
+            server_nonce: server_nonce.clone(),
         })
     } else {
         None
@@ -1207,5 +1225,18 @@ mod tests {
             client_handshake_grant(&mut c, "iran", "abroad", "t", ConnectionDirection::Reverse)
                 .await;
         assert!(server.await.unwrap().is_err() && client.is_err());
+    }
+
+    #[test]
+    fn resume_grant_debug_never_prints_the_token() {
+        let g = ResumeGrant {
+            token: [0xAB; 16],
+            binding: [0xCD; 32],
+            client_nonce: "n".into(),
+            server_nonce: "m".into(),
+        };
+        let shown = format!("{g:?}");
+        assert!(!shown.contains("171") && !shown.to_lowercase().contains("ab"));
+        assert!(shown.contains("redacted"));
     }
 }

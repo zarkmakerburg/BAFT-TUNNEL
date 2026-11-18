@@ -29,6 +29,71 @@ use crate::{
     setup::{self, Bundle, PlanRequest, Role},
 };
 
+/// Where this server is, as the user answered it. Used for defaults only; reachability is always
+/// checked by the join itself, never assumed from the answer (ADR-0050 Addendum 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Location {
+    Iran,
+    Abroad,
+}
+
+impl std::str::FromStr for Location {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "iran" => Ok(Self::Iran),
+            "abroad" => Ok(Self::Abroad),
+            _ => bail!("location must be iran or abroad"),
+        }
+    }
+}
+
+/// Tunnel direction chosen at offer time. Reverse is the tcp-tls Preview (ADR-0021/0037): the
+/// listener is the public node (user ingress), the joiner is the service node that dials out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    #[default]
+    Direct,
+    Reverse,
+}
+
+impl Direction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Reverse => "reverse",
+        }
+    }
+}
+
+impl std::str::FromStr for Direction {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "direct" => Ok(Self::Direct),
+            "reverse" => Ok(Self::Reverse),
+            _ => bail!("direction must be direct or reverse"),
+        }
+    }
+}
+
+/// Session rotation default for a Direct dialer inside Iran (ADR-0049; aged-flow throttle).
+const IRAN_ROTATE_SECS: u64 = 10;
+
+/// Add `session_rotate_secs` to the generated forward config and prove the runtime accepts it.
+fn set_rotation(cfg: &Path, secs: u64) -> Result<()> {
+    let mut v: serde_json::Value = serde_json::from_slice(&fs::read(cfg)?)?;
+    v.as_object_mut()
+        .context("configuration is not an object")?
+        .insert("session_rotate_secs".into(), secs.into());
+    fs::write(cfg, serde_json::to_vec_pretty(&v)?)?;
+    crate::config::load(cfg)
+        .context("the rotation default is not accepted by this configuration")?;
+    Ok(())
+}
+
 pub struct OfferOptions {
     pub dir: PathBuf,
     pub instance: Option<String>,
@@ -38,6 +103,7 @@ pub struct OfferOptions {
     pub tunnel_port: u16,
     /// Address the other node dials; detected when absent.
     pub host: Option<String>,
+    pub direction: Direction,
 }
 
 fn slug(name: &str) -> Result<String> {
@@ -113,7 +179,11 @@ fn req(
     PlanRequest {
         engine: EngineKind::TcpTls,
         role,
-        direction: ConnectionDirection::Direct,
+        direction: if code.direction == "reverse" {
+            ConnectionDirection::Reverse
+        } else {
+            ConnectionDirection::Direct
+        },
         protocol_version: setup::default_protocol_for(EngineKind::TcpTls),
         node_id: node.into(),
         peer_id: peer.into(),
@@ -517,7 +587,7 @@ where
         pin,
         token,
         tunnel_id: name.to_string(),
-        direction: "direct".into(),
+        direction: opts.direction.label().into(),
         listener_id: listener_id.clone(),
         joiner_id: joiner_id.clone(),
         service_port: opts.service_port,
@@ -639,7 +709,7 @@ fn sign_join(
         version: 1,
         tunnel_id: code.tunnel_id.clone(),
         engine: "tcp-tls".into(),
-        direction: "direct".into(),
+        direction: code.direction.clone(),
         protocol_version: setup::default_protocol_for(EngineKind::TcpTls),
         role: Role::Forward,
         node_id: code.joiner_id.clone(),
@@ -667,12 +737,13 @@ pub async fn accept(
     code_text: &str,
     dir: &Path,
     instance: Option<String>,
+    location: Option<Location>,
     on_verify: impl FnOnce(&str),
 ) -> Result<()> {
     let code = PairCode::decode(code_text)?;
     ensure_dir(dir)?;
     precheck(dir, &instance)?;
-    let r = accept_inner(&code, dir, &instance, on_verify).await;
+    let r = accept_inner(&code, dir, &instance, location, on_verify).await;
     if r.is_err() {
         cleanup(dir, &instance);
     }
@@ -683,6 +754,7 @@ async fn accept_inner(
     code: &PairCode,
     dir: &Path,
     instance: &Option<String>,
+    location: Option<Location>,
     on_verify: impl FnOnce(&str),
 ) -> Result<()> {
     let csr = gen_key_and_csr(dir, &code.joiner_id)?;
@@ -726,6 +798,12 @@ async fn accept_inner(
         let cfg = setup::join(dir, &path, &bundle.checksum())?;
         let _ = fs::remove_file(&path);
         println!("Configuration written: {}", cfg.display());
+        if location == Some(Location::Iran) && code.direction == "direct" {
+            set_rotation(&cfg, IRAN_ROTATE_SECS)?;
+            println!(
+                "Session rotation set to {IRAN_ROTATE_SECS} s (this server is in Iran and dials out)."
+            );
+        }
         adopt(dir, instance)
     })();
     // The listener commits only after this acknowledgement.
@@ -770,6 +848,7 @@ mod tests {
                         service_port: 9000,
                         tunnel_port: port,
                         host: Some("127.0.0.1".into()),
+                        direction: Direction::Direct,
                     },
                     |_p| async { true },
                     |code| {
@@ -783,7 +862,7 @@ mod tests {
         assert!(code.starts_with("BAFT1-"));
         let shown = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let s2 = shown.clone();
-        accept(&code, &db, None, move |v| {
+        accept(&code, &db, None, None, move |v| {
             *s2.lock().unwrap() = v.to_string()
         })
         .await
@@ -827,6 +906,7 @@ mod tests {
                         service_port: 9000,
                         tunnel_port: port,
                         host: Some("127.0.0.1".into()),
+                        direction: Direction::Direct,
                     },
                     |_p| async { false },
                     |code| {
@@ -837,7 +917,7 @@ mod tests {
             }
         });
         let code = rx.await.unwrap();
-        assert!(accept(&code, &db, None, |_| {}).await.is_err());
+        assert!(accept(&code, &db, None, None, |_| {}).await.is_err());
         for f in ["node.key", "node.crt", "config.json"] {
             assert!(!db.join(f).exists(), "{f}");
         }
@@ -859,6 +939,7 @@ mod tests {
                 service_port: 9000,
                 tunnel_port: 18443,
                 host: Some("127.0.0.1".into()),
+                direction: Direction::Direct,
             },
             |_p| async { true },
             |_| {},
@@ -868,5 +949,111 @@ mod tests {
         assert!(format!("{err:#}").contains("already holds"));
         assert_eq!(fs::read(d.join("config.json")).unwrap(), b"{}", "untouched");
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn an_iran_dialer_gets_session_rotation_and_others_do_not() {
+        // As root the worker needs the service user, which exists only on installed hosts.
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        for (loc, want) in [
+            (Some(Location::Iran), Some(10)),
+            (Some(Location::Abroad), None),
+        ] {
+            let (da, db) = (tmp("la"), tmp("lb"));
+            let port = free_port();
+            let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+            let t = tokio::spawn({
+                let da = da.clone();
+                async move {
+                    offer(
+                        OfferOptions {
+                            dir: da,
+                            instance: None,
+                            name: "loc".into(),
+                            service_port: 9000,
+                            tunnel_port: port,
+                            host: Some("127.0.0.1".into()),
+                            direction: Direction::Direct,
+                        },
+                        |_p| async { true },
+                        |code| {
+                            let _ = tx.send(code.to_string());
+                        },
+                    )
+                    .await
+                }
+            });
+            let code = rx.await.unwrap();
+            accept(&code, &db, None, loc, |_| {}).await.unwrap();
+            t.await.unwrap().unwrap();
+            let cb: serde_json::Value =
+                serde_json::from_slice(&fs::read(db.join("config.json")).unwrap()).unwrap();
+            assert_eq!(cb["session_rotate_secs"].as_u64(), want, "{loc:?}");
+            let ca: serde_json::Value =
+                serde_json::from_slice(&fs::read(da.join("config.json")).unwrap()).unwrap();
+            assert!(
+                ca.get("session_rotate_secs").is_none(),
+                "listener never rotates"
+            );
+            let _ = fs::remove_dir_all(&da);
+            let _ = fs::remove_dir_all(&db);
+        }
+    }
+
+    #[tokio::test]
+    async fn reverse_pairing_puts_the_ingress_on_the_listener_and_the_target_on_the_dialer() {
+        // As root the worker needs the service user, which exists only on installed hosts.
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let (da, db) = (tmp("ra"), tmp("rb"));
+        let port = free_port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        let t = tokio::spawn({
+            let da = da.clone();
+            async move {
+                offer(
+                    OfferOptions {
+                        dir: da,
+                        instance: None,
+                        name: "rev".into(),
+                        service_port: 9000,
+                        tunnel_port: port,
+                        host: Some("127.0.0.1".into()),
+                        direction: Direction::Reverse,
+                    },
+                    |_p| async { true },
+                    |code| {
+                        let _ = tx.send(code.to_string());
+                    },
+                )
+                .await
+            }
+        });
+        let code = rx.await.unwrap();
+        assert_eq!(PairCode::decode(&code).unwrap().direction, "reverse");
+        // an Iran answer must not add rotation, which Reverse cannot use
+        accept(&code, &db, None, Some(Location::Iran), |_| {})
+            .await
+            .unwrap();
+        t.await.unwrap().unwrap();
+        let read = |d: &Path| -> serde_json::Value {
+            serde_json::from_slice(&fs::read(d.join("config.json")).unwrap()).unwrap()
+        };
+        let (ca, cb) = (read(&da), read(&db));
+        assert_eq!(ca["mode"], "serve");
+        assert_eq!(ca["ingress"], "127.0.0.1:9000");
+        assert!(ca.get("target").is_none());
+        assert_eq!(cb["mode"], "forward");
+        assert_eq!(cb["target"], "127.0.0.1:9000");
+        assert!(cb.get("listen").is_none());
+        assert!(cb.get("session_rotate_secs").is_none());
+        assert_eq!(cb["remote"], format!("127.0.0.1:{port}"));
+        let _ = fs::remove_dir_all(&da);
+        let _ = fs::remove_dir_all(&db);
     }
 }

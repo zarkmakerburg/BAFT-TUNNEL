@@ -105,6 +105,19 @@ pub struct Instance {
     pub tunnel: Option<String>,
     pub integrity: Option<String>,
     pub health: Option<String>,
+    /// Measured round-trip time and jitter in ms, only when the node reported a real sample
+    /// (finite, 0..=`MAX_RTT_MS`). Absent means unknown, never zero.
+    pub rtt_ms: Option<f64>,
+    pub jitter_ms: Option<f64>,
+}
+
+/// Upper bound accepted for a reported RTT or jitter value (one minute).
+pub const MAX_RTT_MS: f64 = 60_000.0;
+
+fn millis(v: &Value, key: &str) -> Option<f64> {
+    v.get(key)
+        .and_then(Value::as_f64)
+        .filter(|x| x.is_finite() && (0.0..=MAX_RTT_MS).contains(x))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +190,8 @@ impl Hub {
                         tunnel: text(i, "tunnel", MAX_NAME_CHARS),
                         integrity: text(i, "integrity", MAX_NAME_CHARS),
                         health: text(i, "health", MAX_NAME_CHARS),
+                        rtt_ms: millis(i, "rtt_ms"),
+                        jitter_ms: millis(i, "jitter_ms"),
                     })
                 })
                 .collect::<Result<Vec<_>, Reject>>()?,
@@ -220,6 +235,45 @@ impl Hub {
             }
         }
     }
+}
+
+/// Build the `node.status.v1` body a member sends (member side of F1). Pure: it only reshapes the
+/// local `/v1/status` view. Missing evidence stays `unknown` (never a healthy-looking default),
+/// tunnel state, Integrity and Health stay separate, and no secret, path or address is copied.
+pub fn build_report(instance: &str, version: &str, status: &Value, seq: u64) -> Value {
+    let tunnel = status.get("tunnel").filter(|t| t.is_object());
+    let field = |v: Option<&Value>| -> String {
+        v.and_then(Value::as_str)
+            .map(|s| sanitize(s, MAX_NAME_CHARS))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "unknown".to_owned())
+    };
+    let mut inst = serde_json::json!({
+        "name": sanitize(instance, MAX_NAME_CHARS),
+        "tunnel": field(tunnel.and_then(|t| t.get("state"))),
+        "integrity": field(tunnel.and_then(|t| t.pointer("/tiers/integrity/result"))),
+        "health": field(tunnel.and_then(|t| t.pointer("/health/state"))),
+    });
+    // Real kernel RTT samples only; the agent already turns stale evidence into `unknown` without
+    // numbers, so a missing or out-of-range value stays absent.
+    for (key, ptr) in [
+        ("rtt_ms", "/health/rtt_ms"),
+        ("jitter_ms", "/health/jitter_ms"),
+    ] {
+        if let Some(x) = tunnel
+            .and_then(|t| t.pointer(ptr))
+            .and_then(Value::as_f64)
+            .filter(|x| x.is_finite() && (0.0..=MAX_RTT_MS).contains(x))
+        {
+            inst[key] = serde_json::json!(x);
+        }
+    }
+    serde_json::json!({
+        "schema": "node.status.v1",
+        "seq": seq,
+        "version": sanitize(version, MAX_NAME_CHARS),
+        "instances": [inst],
+    })
 }
 
 /// A job may only be acted on while the CRL is current (F-8); reports merely warn.
@@ -377,5 +431,65 @@ mod tests {
         assert!(crl_allows_jobs(Some(200), 100));
         assert!(!crl_allows_jobs(Some(100), 100));
         assert!(!crl_allows_jobs(None, 100));
+    }
+
+    #[test]
+    fn report_builder_keeps_unknown_and_separates_tiers() {
+        let none = build_report("t1", "0.3.0", &serde_json::json!({"tunnel": null}), 1);
+        let i = &none["instances"][0];
+        assert_eq!(
+            (
+                i["tunnel"].as_str(),
+                i["integrity"].as_str(),
+                i["health"].as_str()
+            ),
+            (Some("unknown"), Some("unknown"), Some("unknown"))
+        );
+        let st = serde_json::json!({"tunnel": {"state": "carrying_traffic", "tiers": {"integrity": {"result": "pass"}}, "health": {"state": "degraded"}, "secret": "x"}});
+        let r = build_report("t1", "0.3.0", &st, 7);
+        let i = &r["instances"][0];
+        assert_eq!(
+            (
+                i["tunnel"].as_str(),
+                i["integrity"].as_str(),
+                i["health"].as_str()
+            ),
+            (Some("carrying_traffic"), Some("pass"), Some("degraded"))
+        );
+        assert!(!r.to_string().contains("secret"));
+        // No sample: no rtt keys at all (unknown is not zero).
+        assert!(i.get("rtt_ms").is_none() && i.get("jitter_ms").is_none());
+        // A report the builder makes is accepted by the hub, and is within the size bound.
+        let mut h = Hub::default();
+        let body = serde_json::to_vec(&r).unwrap();
+        assert!(body.len() < MAX_REPORT_BYTES);
+        h.accept(&peer("n", "1", NODE), &body, 100).unwrap();
+        assert_eq!(
+            h.nodes().next().unwrap().instances[0].health.as_deref(),
+            Some("degraded")
+        );
+    }
+
+    #[test]
+    fn rtt_is_carried_only_when_real_and_in_range() {
+        let st = serde_json::json!({"tunnel": {"state": "carrying_traffic", "health": {"state": "healthy", "rtt_ms": 12.5, "jitter_ms": 3.0}}});
+        let r = build_report("t1", "0.3.0", &st, 1);
+        let mut h = Hub::default();
+        h.accept(&peer("n", "1", NODE), &serde_json::to_vec(&r).unwrap(), 100)
+            .unwrap();
+        let i = &h.nodes().next().unwrap().instances[0];
+        assert_eq!((i.rtt_ms, i.jitter_ms), (Some(12.5), Some(3.0)));
+        // Out-of-range or negative values from a hostile node are dropped, not clamped.
+        let body = br#"{"schema":"node.status.v1","seq":2,"instances":[{"name":"a","rtt_ms":-1,"jitter_ms":1e9}]}"#;
+        h.accept(&peer("n", "1", NODE), body, 200).unwrap();
+        let i = &h.nodes().next().unwrap().instances[0];
+        assert_eq!((i.rtt_ms, i.jitter_ms), (None, None));
+        // The builder also refuses an out-of-range local value.
+        let bad = serde_json::json!({"tunnel": {"health": {"rtt_ms": 1e12}}});
+        assert!(
+            build_report("t1", "0.3.0", &bad, 1)["instances"][0]
+                .get("rtt_ms")
+                .is_none()
+        );
     }
 }
