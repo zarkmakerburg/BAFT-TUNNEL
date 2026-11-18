@@ -1,193 +1,121 @@
-<div align="center">
+# ADR-0050: automatic pairing and per-tunnel CA (one code, no file transfer)
 
-# BAFT-TUNNEL
+Status: Proposed (2026-11-17). Needs the independent security review required for new trust flows before the
+pairing listener is enabled by default. Supersedes nothing; adds an *auto* mode beside ADR-0012/0014 offline mode.
 
-### Secure server-to-server connectivity. Direct or Reverse.
+## Problem
 
-A security-first, Linux-native tunnel platform built around authenticated connections, explicit authorization, and predictable operations.
+See `AUTO_TUNNEL_FLOW_AUDIT.md`: an offline CA ceremony, two hand-synchronised wizards and a manual bundle exchange
+make a first tunnel unreachable for ordinary users. Owner requirement: the user makes a few choices; the system
+does the rest.
 
-<br />
+## Decision
 
-**Public repository, all rights reserved · Rust core · TCP + TLS 1.3 · Direct / Reverse**
+Add **auto mode**. The offline-CA mode stays available as "Advanced / my own CA" and is unchanged.
 
-<a href="https://app.codspeed.io/zarkmakerburg/BAFT-TUNNEL?utm_source=badge"><img src="https://img.shields.io/endpoint?url=https://codspeed.io/badge.json" alt="CodSpeed"/></a>
+1. **Listener generates the pairing.** The node that accepts the tunnel connection (serve in Direct; the reachable
+   side in Reverse) asks for a tunnel. The user chooses only: name, direction, service port. The system generates
+   node ids, tunnel id, tunnel port (default 8443, checked free), server name (detected address, overridable),
+   protocol v2, `tcp-tls`.
+2. **Pairing code** (one string, `BAFT1-...`, also usable as one-line command `... --join CODE`): listener
+   address:port, SHA-256 pin of a short-lived pairing certificate, a 128-bit one-time token, the generated
+   tunnel parameters and the peer node id. Expires in 15 min, single use, max 3 token attempts then the
+   listener closes. The code is a bearer secret for that window and is never logged.
+3. **Per-tunnel CA.** At pairing creation the root helper creates a P-384 CA *for this tunnel only* with X.509
+   name constraints limited to the two DNS/IP server names (URI constraints are not usable for `urn:` node ids; the node-id allowlist stays enforced by the data plane and by the helper, which signs only the two fixed ids), `pathlen:0`. The CA key stays in a
+   root-only directory on the listener host and never leaves it; it never goes to the peer, the agent process,
+   the panel, logs or backups. A one-year CRL (empty) is issued; renewal is automatic by the same helper.
+4. **Join.** The second server runs `join CODE` (installer flag, CLI, or paste in the panel). It generates its
+   key and CSR locally (key never leaves), dials the pairing listener, pins the pairing certificate from the
+   code, proves the token, and sends the CSR. The listener's panel shows the joiner (node id, source address) and
+   the user approves with one click. The helper signs (identity fixed by the CA side, as ADR-0012), returns
+   leaf + CA + CRL. Both sides install through the existing validated install path, write config via the
+   existing `setup` planner and start the unit. Both panels show real preflight/verify results.
+5. **No runtime change.** The data plane still requires CA, CRL, leaf, URI SAN and peer pin (ADR-0011/0012);
+   auto mode only automates how those files are produced and delivered.
+6. **Constraints kept:** no CAP_NET_ADMIN, no firewall/route/sysctl change (user opens the tunnel port; the
+   panel says so in plain words), Reverse stays Preview, no secrets in logs/receipts, idempotent and
+   rollback-safe (a failed join leaves no partial config), strict bounds on every message.
 
-</div>
+## Trust analysis (to be reviewed)
 
----
+- Compromise of the listener host exposes its own pair CA, which can only mint certificates for the two
+  allowed names (name constraints), and the attacker already holds the listener's key. Trade-off versus ADR-0014's
+  offline CA is explicit and limited to two-node pairs. Fleet/multi-node deployments keep the offline CA.
+- A leaked code lets someone race the intended peer within 15 minutes; the user approval on the listener (shows
+  peer node id and source address) and single use bound this. Optional "paired from the panel" display of a short
+  verification string is left for review.
+- The pairing listener is the only new network surface: TLS 1.3, pinned self-signed cert, bounded frame sizes,
+  deadlines, one accepted session, runs only during the 15-minute window, non-root, no CA key access (signing
+  via root helper request, as ADR-0023/0026).
 
-## What is BAFT-TUNNEL?
+## Staged plan
 
-BAFT-TUNNEL connects Linux servers across networks where inbound reachability cannot be assumed. It is designed to support two connection paths:
+1. This ADR + audit (docs).
+2. Pair-local CA + signing in Rust (name constraints, CRL), tests.
+3. Pairing code codec and pair listener/joiner protocol over pinned TLS, two-process tests.
+4. Agent routes + root helper wiring; `baft-tunnel join CODE`; installer `--join`.
+5. Panel: three-choice "Create tunnel" flow (Persian RTL / English), advanced wizard kept.
+6. Automatic CRL renewal, docs, acceptance script; LAB two-host run requested from the coordinator.
 
-- **Direct** — one endpoint establishes a connection to the other endpoint's reachable listener.
-- **Reverse** — an endpoint behind NAT or a restrictive firewall initiates an outbound connection; logical forwarding streams travel back over that authenticated connection.
+Evidence labels: stages 1-5 are CI/local only; no LAB claim until the two-host run.
 
-Both modes share the same security-focused transport foundation. They are connection modes, not separate cryptographic protocols.
+## Addendum 1 (2026-11-17): review fixes
 
-The project is independent: no BAFT source code, Git history, credentials, release keys, or deployment state are imported.
+- **Privilege separation (H1).** The process that touches the network is a worker (`baft-tunnel pair worker`, a child of
+  the root helper) that drops to the service user, clears supplementary groups, sets no-new-privileges and verifies it
+  cannot regain root before it reads anything. It generates the one-time pairing identity itself and receives only the
+  token, joiner id, expiry and port over a pipe; the pair CA and every private key stay in the root parent. The worker
+  forwards the single verified join request; the parent signs only for the joiner id fixed in the code (never the listener
+  id), so a compromised worker cannot obtain another identity. Without root the same worker runs in-process.
+- **Approval (H2/H3).** The joiner waits as long as the approval may take (180 s against a 120 s approval window). The
+  first token-valid request ends the window whatever happens, so a denial ends the pairing and the token cannot be
+  retried. The `approval` status carries a random nonce; the approve request must repeat it, only in the `approval` state.
+  Both servers show a short fingerprint (`ab12-cd34-ef56`) of the joiner's key, so the user can see that the approved key
+  is the one the joiner generated.
+- **Commit and rollback.** The listener reports success only after the joiner acknowledged a complete install; a nack,
+  timeout or any failure removes everything the pairing created on both sides. A pairing refuses to start in a directory
+  that already holds a configuration (one pair per configuration directory).
+- **Limits.** 3 failures per source address, 20 in total (then the window closes), 16 concurrent connections, 5 s
+  handshake deadline; parser details are not echoed to the panel.
+- **Lifetimes.** CA 1825 days, leaves and CRL 1800 days. Revocation is re-pairing; automatic renewal stays a later step.
+  Name constraints cover DNS/IP only; the node-id allowlist is enforced by the fixed ids above and the data plane.
+- **Installer.** `--offer` without a terminal is refused unless `--auto-approve` is given (with a warning); the code is
+  passed to `pair accept -` on standard input. Pairing exists only on demand and is never on by default.
 
-## Project status
+## Addendum 2 (2026-11-17): location question and Reverse (design; stage (a) implemented, Reverse not yet)
 
-<sub>Updated: 12 November 2026 · source baseline: `main` `32bf85f` · roadmap: [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
+Owner input: ask "is this server in Iran or abroad?" and derive the rest.
 
-> **Active development — signed pre-release `v0.1.0-rc.7`; not production-ready.** Trusted U7 acceptance passed on the signed RC.7 package in [run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428): both LAB hosts completed setup, Direct traffic integrity, 3600-second soak, backup/restore, update/rollback, revocation and uninstall. U8 operator documentation was completed and merged in [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165) (merge `52a2825254f8254386f71af7220c7cb244200fc2`). B1 structured localized evidence is merged on `main` (`311b706`, with the duplicate `diag.next.*` key fix in `62d7ee6`). B2 implementation-start prerequisites are satisfied: [ADR-0028](docs/ADR-0028-authenticated-integrity-probe.md), the owner-accepted Option A v1/v2 peer-upgrade policy and the contract vectors in `tests/protocol_v2_contract.rs`. The B2 runtime probe is not implemented yet — the protocol is still v1 and that work is tracked in PR #177.
+1. **Question.** Each server answers once: Iran or abroad. Together with "does the service run on this server?" (the first
+   server already supplies the service port) this fixes everything else; the user still only picks name and ports.
+2. **Who listens.** The listener must be reachable. Inbound from abroad to an Iran server is usually blocked or throttled,
+   so the abroad server listens whenever one server is abroad and one in Iran. Both abroad or both in Iran: either can
+   listen; default is the server that created the code.
+3. **Direct or Reverse.** If the service runs on the abroad server, the tunnel is Direct with the Iran server dialing out
+   (forward). If the service runs on the Iran server, the tunnel is Reverse: the Iran server is the service node that dials
+   out and the abroad server is the public node that accepts users (ADR-0021 Amendment 1, ADR-0037). The choice is a
+   preselected default shown in plain words, never a silent switch, and never a downgrade of an explicit Reverse request to
+   Direct.
+4. **Defaults by location.** `session_rotate_secs` (ADR-0049, 5-3600, Direct dialer only) defaults to 10 on the Iran-side
+   Direct dialer given the aged-flow throttle; Reverse cannot rotate, which the UI states. Backup links and ports are not
+   preselected.
+5. **Preflight, not assumption.** Before creating the code the panel runs a reachability check of the chosen listener port
+   from the other server's side (the join itself is the first proof: a refused connect becomes "the other server cannot
+   reach port N; open it in this server's firewall or hosting panel", plain language, no firewall changes by us). Location is
+   a hint; reachability is evidence.
+6. **Reverse pairing.** Reuses the pair CA, code, worker, approval and rollback unchanged. The code gains a direction
+   (`direct`|`reverse`, already a field) and the roles map: listener = public node (user ingress), joiner = service node
+   (dials out, holds the target). Bundles/config come from the same `setup::init`/`join` Reverse path the guided setup
+   uses. Reverse stays Preview and unadvertised until the two-host acceptance gate of ADR-0037; the capability contract is
+   read from `GET /v1/engines`, so the flow offers Reverse only while that contract does.
+7. **Stages.** (a) location question and Direct defaults in the panel/CLI; (b) Reverse pairing core + tests; (c) panel and
+   installer wording; (d) two-host LAB run requested from the coordinator, queued after the pairing LAB run.
 
-- **`tcp-tls` Direct:** supported pre-release path with real two-host integrity, recovery, revocation, operations, and bounded soak/loss evidence.
-- **`tcp-tls` Reverse:** real outbound-only data path with recovery and impairment evidence; remains **Preview**, not Stable.
-- **`noise-tcp`:** Experimental Direct only. Reverse is not accepted or offered.
-- **BAFT engine:** separate, pinned Go process; **Preview, Direct only**. It is visible in the catalogue but guided setup cannot yet configure it.
-- **Panel PKI (D2):** panel → local Agent → root helper → isolated offline CA → certificate/CA/CRL import → pairing → Start passed the trusted two-host repeat ([run 42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181)). This is Direct evidence and does not imply Stable readiness.
-- **CRL renewal/push (U1):** a 30-day CRL was renewed offline, pushed and activated on both LAB nodes, and tunnel recovery/integrity passed ([run 42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521), product-code SHA `8be7437`, an ancestor of current main).
-- Apply receipts report observed effects; `ready` remains **Unknown** by design. The panel and Agent are local to each host; there is no central Fleet or online enrollment service.
-- U7 scope is Direct only; `ready` and ordinary diagnostics `integrity` remain Unknown. An unrelated six-line firewall/address-set drift on the abroad LAB host remains open as S10; no BAFT-TUNNEL firewall rules were present. Stable release and production deployment have not occurred. The owner paused the independent pre-stable security review; it must not be restarted without a new instruction. LAB soak is capped at one hour.
+### Stage (a) as built (2026-11-18)
 
-| Area | Current state |
-|---|---|
-| Runtime | Rust, Tokio, rustls TLS 1.3, Yamux; fixed destinations and bounded sessions/streams |
-| Supported baseline | Ubuntu 22.04 LTS / systemd 249 |
-| Direct `tcp-tls` | Supported pre-release; real two-host evidence |
-| Reverse `tcp-tls` | Preview; outbound-only data path, not Stable |
-| `noise-tcp` | Experimental Direct only |
-| BAFT engine | Separate pinned process; Preview Direct only; not configurable in Wizard |
-| PKI | Offline CA, certificate issuance/revocation, multi-CA/CRL overlap, operator CRL renewal and SSH push |
-| Agent / panel | Per-host loopback Agent and dependency-free static JavaScript panel; Persian RTL and English LTR |
-| Control plane / Fleet | Not implemented; online enrollment is deferred |
-| Release | Signed prereleases only; no stable release |
-
-Project record: [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
-
-## Quick install (Ubuntu 22.04, x86_64)
-
-One line installs the latest **signed stable** release (currently `v0.2.2`). The script is pinned to the release tag, not `main`. Before it extracts or runs anything it verifies the release's keyless Sigstore signature and SHA-256 checksums, and it stops if either check fails. It installs the panel agent only; no tunnel is started.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.2.2/scripts/quick-install.sh | sudo bash -s -- --register t1
-```
-
-`t1` is your instance name (letters, digits, `_`, `-`). To inspect the script first, download it, read it, then run it:
-
-```bash
-curl -fsSL -o quick-install.sh https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.2.2/scripts/quick-install.sh
-less quick-install.sh
-sudo bash quick-install.sh --register t1
-```
-
-Add `--verify-only` to check the signed release without installing, `--tag vX.Y.Z` to pin another release, or `--channel prerelease` for Preview builds (Reverse and the BAFT engine are Preview). This is a CI/sandbox-verified install path; it is not a production-readiness claim.
-
-### Automatic tunnel (pairing; no files to copy)
-
-Available from the first prerelease that includes ADR-0050 (not in `v0.2.2`): install on both servers with `--channel prerelease`, then create the tunnel from the panel (Create tunnel on the first server, Connect with the code on the second), or from the shell:
-
-```bash
-# first server (accepts the connection): prints a one-time code, then asks you to approve the other server
-curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --channel prerelease --offer mytunnel --service-port 8080
-# second server: paste the code
-curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --channel prerelease --pair 'BAFT1-...'
-```
-
-Both servers show the same short key fingerprint; approve only if they match. The code is single-use and expires in 15 minutes. Open the tunnel port (default TCP 8443) on the first server's firewall yourself; BAFT-TUNNEL never changes firewall rules. Without a terminal `--offer` refuses to run unless you add `--auto-approve`. Direct `tcp-tls` only for now; the Iran/abroad question and Reverse are designed in ADR-0050 Addendum 2 and not implemented yet. Evidence: CI and local tests; no LAB run yet.
-
-### HTTPS panel (domain or IP)
-
-Add `--domain` or `--ip` and the installer sets up an HTTPS front end (nginx) on the host and prints the link and the login token in a framed block at the end. Without either flag it asks on the terminal (empty answer = SSH tunnel only; `--no-https` skips the question). The panel itself stays non-root and loopback-only (ADR-0033).
-
-```bash
-# domain: Let's Encrypt certificate, auto-renewed (ports 80 and 443 must be reachable)
-curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --register t1 --domain panel.example.com --email you@example.com
-# IP: certificate from a CA generated on the host; the browser warns until you trust/pin the CA fingerprint that is printed
-curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --register t1 --ip 203.0.113.10
-```
-
-If HTTPS setup fails it is rolled back and the panel stays loopback-only; it never falls back to plain HTTP. After installation the interactive menu opens on a terminal (`--no-menu` to skip, or run `sudo baft-tunnel menu` later). HTTPS is available from the first release that ships `scripts/panel-https.sh`.
-
-**نصب یک‌خطی (فارسی):** دستور بالا آخرین نسخه پایدار امضاشده را نصب می‌کند. اسکریپت به تگ نسخه قفل شده (نه `main`) و پیش از هر اجرا امضای Sigstore و SHA-256 را بررسی می‌کند. برای بررسی قبل از اجرا، اسکریپت را دانلود کنید و بخوانید (دستورهای بالا)، یا با `--verify-only` فقط راستی‌آزمایی کنید. `t1` نام دلخواه نمونه است.
-
-## Security model
-
-Security is part of the transport design, not an optional add-on.
-
-- TLS 1.3 mutual authentication for the current TCP data plane.
-- Explicit peer identity, tunnel identity, direction, and capability authorization.
-- No plaintext fallback or silent downgrade.
-- Revocation-aware certificate validation using CA-signed CRLs.
-- Bounded frames, sessions, streams, queues, and connection deadlines.
-- Fixed forwarding destinations; a remote peer cannot select arbitrary targets.
-- No forwarded-payload logging.
-- Least-privilege service execution and hardened systemd defaults.
-
-On the Ubuntu 22.04 / systemd 249 baseline, the node key source is a root-only PEM file delivered to the service with `LoadCredential=`; this is service-scoped access, not encryption at rest. `LoadCredentialEncrypted=` is an opt-in path for systemd 250+ and is not required by the baseline. Offline CA issuance, 30-day CRL renewal and operator-initiated SSH push/activation are implemented and have two-host evidence; distribution is not centrally automated. Online enrollment and central control-plane work remain deferred. A P0+P1 security assessment found no Critical or High issue; the full independent pre-stable security review is paused by the owner and has not been performed. This project does not claim to be undetectable or to provide censorship-proof connectivity.
-
-## Technology
-
-| Layer | Technology |
-|---|---|
-| Core, agent, API, CLI | Rust |
-| Async runtime | Tokio |
-| Secure transport | rustls · TLS 1.3 |
-| Multiplexing | Yamux |
-| Alternative engine | Noise IK over TCP (`noise-tcp`, Experimental) |
-| HTTP/API | Small loopback HTTP server on Tokio (no framework) |
-| Web interface | Plain JavaScript, no build step; Persian-first RTL with English |
-| Persistence | JSON files in the state directory |
-
-QUIC is a planned optional transport, not part of the current data plane.
-
-## Verified LAB evidence
-
-All runs used the configured Iran and abroad LAB hosts with temporary files and processes only; cleanup passed. Each result is tied to one commit and one workflow run.
-
-| Run | Commit | Result |
-|---|---|---|
-| [42506805986](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42506805986) (Reverse, `tcp-tls`) | `2d8cd5e` | PASS: outbound-only service node, 64 KiB and 2 MiB integrity (SHA-256 matched), reconnect after restarting either node, busy port refused, wrong identity refused, wrong pin refused, revoked certificate refused, recovery after refusals; Direct and revocation checks also passed |
-| [42504156305](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42504156305) (BAFT engine) | `2d8cd5e` | PASS: Direct and BAFT's own reverse path with 2 MiB integrity, unauthorized identity, wrong pin, revoked client and revoked listener refused, bad binary hash refused to start, hardened systemd 249 units (`NoNewPrivileges`, `MemoryDenyWriteExecute`), listener-unit recovery and engine SIGKILL recovery |
-| [42996224181](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42996224181) (trusted D2 PKI repeat) | immutable signed RC.7 candidate | PASS: installed Agent + panel, offline CA ceremony, CSR/certificate/CA/CRL import, pairing, Start and tunnel checks; `host_drift=none` |
-| [42656507521](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/42656507521) (U1 CRL renewal/push) | `8be7437` (ancestor of current main) | PASS: offline 30-day CRL renewal, SSH push and activation on both nodes, CRL number `0x1002→0x1003`, 2 MiB recovery/integrity, short and replayed CRLs refused |
-| [43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428) (trusted U7 integrated MVP acceptance) | `1219f547` | **PASS:** release-tag, signed-asset verification and real two-host acceptance all completed successfully. See the U7 acceptance record in the roadmap and HQ Issue #2. |
-
-Earlier "Reverse" LAB results (before 8 November 2026) tested a label only, not a reverse data path, and are **not** evidence for the current Reverse implementation (see [ADR-0021](docs/ADR-0021-connection-topology-and-reverse.md)).
-
-These are bounded LAB results, not a production-readiness certification or a long-duration reliability claim. The project does not require a multi-hour soak; any soak is capped at 60 minutes. `noise-tcp` Reverse is untested and unavailable.
-
-## Engineering principles
-
-1. **Verify before declaring healthy.** Missing or stale telemetry is unknown, never healthy.
-2. **Plan before applying.** Mutations should be previewed, authorized, recorded, and recoverable.
-3. **Authenticate, then authorize.** A valid certificate alone does not grant tunnel access.
-4. **Fail closed.** Invalid identity, policy, revocation data, or protocol framing must not silently weaken security.
-5. **Keep operations understandable.** Safe defaults and guided workflows should make routine setup approachable without hiding risk.
-6. **Prove the environment.** Simulation, mock tests, and real-host LAB results are reported separately.
-
-## Roadmap
-
-The authoritative phase model and delivery order are maintained in [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md). U7 signed-RC.7 MVP acceptance passed; U8 operator guides are merged. B1 is merged (`311b706`, `62d7ee6`). B2 implementation-start prerequisites are satisfied, but the runtime integrity probe is not implemented yet (the protocol remains v1) and is tracked in PR #177; B3–B6 follow in roadmap order. Later Fleet/control-plane and additional transport work remains gated; do not infer that a planned item is shipped from this README.
-
-## Repository guide
-
-- [Architecture and component boundaries](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/ARCHITECTURE.md)
-- [Threat model](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/THREAT_MODEL.md)
-- [Security guide](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/SECURITY_GUIDE.md)
-- [Phase 1 implementation status and acceptance gaps](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/PHASE1_IMPLEMENTATION_STATUS.md)
-- [Operator guide](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/OPERATOR_GUIDE.md) (interactive install menu: `sudo scripts/install.sh` or `sudo baft-tunnel menu`, Persian/English)
-- [Real-host LAB setup](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/REAL_HOSTS_LAB.md)
-- [Connection topology and Reverse (ADR-0021)](docs/ADR-0021-connection-topology-and-reverse.md)
-- [Product roadmap](docs/PRODUCT_ROADMAP.md)
-- [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2)
-- [Engineering guardrails](docs/ENGINEERING_GUARDRAILS.md)
-- [Product UX and installer acceptance](docs/PRODUCT_UX_ACCEPTANCE.md)
-- [Phase 0 two-host LAB instructions](docs/PHASE0_TWO_HOST_LAB.md)
-- [Phase 0 evidence history](docs/PHASE0_EXIT_EVIDENCE.md)
-
-## Repository access and use
-
-The source is publicly viewable on GitHub, but this is an owner-controlled project and **no open-source license is granted**: all rights are reserved. Do not redistribute, sublicense, or reuse this code without the owner's explicit written permission.
-
----
-
-<div align="center">
-
-**BAFT-TUNNEL** · Built for secure, verifiable connectivity.
-
-<sub>Development status is documented honestly: implemented, tested, planned, and production-ready are different states.</sub>
-
-</div>
+The panel asks "Where is this server? Inside Iran / Abroad" on both steps (CLI `--location`, installer `--location`). Only
+the joiner's answer changes configuration: an Iran-side Direct dialer gets `session_rotate_secs = 10` (validated through the
+normal config loader; failure rolls the pairing back). The first server's answer is a hint: choosing Iran shows the advice to
+do step one on the abroad server and states that reachability is checked when the other server connects. Nothing else is
+inferred from the answer, no listener or direction is switched silently, and Reverse is still not offered by pairing.

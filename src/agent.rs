@@ -738,6 +738,8 @@ struct PairOfferBody {
 struct PairAcceptBody {
     code: String,
     confirm: bool,
+    #[serde(default)]
+    location: Option<crate::pair_flow::Location>,
 }
 
 #[derive(serde::Deserialize)]
@@ -799,7 +801,9 @@ fn pair_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) 
                     422,
                     json!({"error": "this pairing code has expired; create a new one"}),
                 ),
-                Ok(_) => submit(json!({"op": "accept", "code": b.code.trim()})),
+                Ok(_) => {
+                    submit(json!({"op": "accept", "code": b.code.trim(), "location": b.location}))
+                }
             },
         },
         ("POST", "/v1/pair/approve") => match serde_json::from_slice::<PairApproveBody>(body) {
@@ -6088,6 +6092,15 @@ mod tests {
         )
         .await;
         assert_eq!(bad.0, 422);
+        let bad_loc = route(
+            &post("/v1/pair/accept"),
+            json!({"code": "nonsense", "confirm": true, "location": "mars"})
+                .to_string()
+                .as_bytes(),
+            &ctx,
+        )
+        .await;
+        assert_eq!(bad_loc.0, 422, "location must be iran or abroad");
         // status and approval go through files
         assert_eq!(
             route(&get("/v1/pair/status"), b"", &ctx).await.1["state"],

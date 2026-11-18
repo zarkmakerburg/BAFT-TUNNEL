@@ -38,6 +38,8 @@ pub enum PairRequest {
     },
     Accept {
         code: String,
+        #[serde(default)]
+        location: Option<crate::pair_flow::Location>,
     },
 }
 
@@ -151,9 +153,9 @@ pub async fn run(name: &str, control_dir: &Path, config_dir: &Path) -> Result<Va
             )
             .await
         }
-        PairRequest::Accept { code } => {
+        PairRequest::Accept { code, location } => {
             let _ = write_status(control_dir, name, &json!({"state": "working"}));
-            crate::pair_flow::accept(&code, config_dir, instance, |v| {
+            crate::pair_flow::accept(&code, config_dir, instance, location, |v| {
                 let _ = write_status(control_dir, name, &json!({"state": "working", "verify": v}));
             })
             .await
