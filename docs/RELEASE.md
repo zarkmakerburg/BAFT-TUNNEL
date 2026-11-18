@@ -64,6 +64,11 @@ installer and verifier; publish a new tag after this change is merged.
 - Reverse `tcp-tls` and the BAFT engine remain Preview; `ready` and ordinary `integrity`
   remain Unknown by design.
 
+### v0.3.0 (Stable, released 18 November 2026)
+
+- The same aged-flow limit as rc.4 applies to default configurations (session rotation off). Enable `session_rotate_secs` for Iran-to-abroad Direct sessions; see rc.4 below.
+- Reverse, BAFT engine and stream resume remain Preview.
+
 ### v0.3.0-rc.4 (prerelease)
 
 - **Aged Direct flows without rotation (LAB evidence).** The v0.2.2 to rc.4 upgrade LAB without
