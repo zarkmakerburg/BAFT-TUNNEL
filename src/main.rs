@@ -10,6 +10,7 @@ mod doctor;
 mod engine;
 mod engine_store;
 mod fleet;
+mod fleet_ca;
 mod fleet_hub;
 mod fleet_report;
 mod geoip;

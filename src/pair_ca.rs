@@ -51,7 +51,7 @@ fn valid_node_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
-fn validate_san(san: &str) -> Result<()> {
+pub(crate) fn validate_san(san: &str) -> Result<()> {
     if let Some(ip) = san.strip_prefix("IP:") {
         ip.parse::<std::net::IpAddr>().context("invalid IP SAN")?;
     } else if let Some(dns) = san.strip_prefix("DNS:") {
@@ -246,8 +246,9 @@ pub fn csr_fingerprint(csr_pem: &str) -> Result<String> {
     Ok(format!("{}-{}-{}", &h[0..4], &h[4..8], &h[8..12]))
 }
 
-/// Sign `csr_pem` for `node_id`. Refuses unknown ids, wrong CN, non-P-256 keys, bad CSR signature.
-pub fn sign(dir: &Path, node_id: &str, csr_pem: &str) -> Result<String> {
+/// Shared CSR gate for every profile: one PEM request, valid self-signature, CN equal to the
+/// node id, EC P-256 key. CSR extensions are never copied (ADR-0012).
+pub(crate) fn check_csr(csr_pem: &str, node_id: &str) -> Result<()> {
     ensure!(csr_pem.len() <= MAX_CSR_BYTES, "CSR too large");
     ensure!(
         csr_pem
@@ -262,12 +263,6 @@ pub fn sign(dir: &Path, node_id: &str, csr_pem: &str) -> Result<String> {
                 .starts_with("-----BEGIN CERTIFICATE REQUEST-----"),
         "CSR must be exactly one PEM request"
     );
-    let members: Members = serde_json::from_slice(&fs::read(dir.join("members.json"))?)?;
-    let member = members
-        .members
-        .iter()
-        .find(|m| m.node_id == node_id)
-        .context("node id is not part of this pairing")?;
     let verify = run(&["req", "-verify", "-noout"], Some(csr_pem.as_bytes()));
     ensure!(verify.is_ok(), "CSR signature is invalid");
     let subject = String::from_utf8(run(
@@ -284,6 +279,18 @@ pub fn sign(dir: &Path, node_id: &str, csr_pem: &str) -> Result<String> {
         info.contains("prime256v1"),
         "CSR public key must be EC P-256"
     );
+    Ok(())
+}
+
+/// Sign `csr_pem` for `node_id`. Refuses unknown ids, wrong CN, non-P-256 keys, bad CSR signature.
+pub fn sign(dir: &Path, node_id: &str, csr_pem: &str) -> Result<String> {
+    let members: Members = serde_json::from_slice(&fs::read(dir.join("members.json"))?)?;
+    let member = members
+        .members
+        .iter()
+        .find(|m| m.node_id == node_id)
+        .context("node id is not part of this pairing")?;
+    check_csr(csr_pem, node_id)?;
     let tmp = dir.join(format!("sign-{}.tmp", rand::random::<u64>()));
     (|| -> Result<String> {
         let ext = format!(
