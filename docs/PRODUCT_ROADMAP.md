@@ -318,7 +318,7 @@ The README one-line install still pins `v0.2.1`. It moves to the next Stable tag
 | v0.3.0 upgrade | Stable v0.3.0 released | LAB PASS, one run: 44271619864 (upgrade LAB) | Production evidence not claimed |
 | Fleet and add server | Pure node status report (#347), hub listener (#381), member reporter (#382), `--fleet-config` wiring (#383, default off), two-host LAB harness (#385); ADR-0045 accepted with conditions; ADR-0051, ADR-0052, ADR-0053 all Proposed; server health card on the Servers page (#372, consent default off), probe_api and Globalping probe (#371, #374) | Report transport: LAB PASS, one run: 44338843969 (hub abroad, member Iran, mutual TLS; throwaway openssl PKI mirroring the fleet_ca profile, not fleet_ca-minted). Rest: CI | Enrollment (F-7, #384) is not wired; SSH enrollment and remote update stay disabled until the independent reviews |
 | Panel | React panel default at `/`, classic at `/classic` (ADR-0054, [#350](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/350), merged `124c08c`); no fake data | CI | Physical phone check is not a blocker; classic removal is a later decision |
-| Doctor | Offline read-only config and host checks (#298, ADR-0042) | CI | LAB use not recorded |
+| Doctor | Offline read-only config and host checks (#298, ADR-0042) | CI; LAB PASS, one run: 44351670022 (`v0.3.1-rc.1` prerelease) | Broader LAB use not recorded |
 | Policy Pack (0.4.0) | Interface behind `policy-pack` (#305, ADR-0044), status contract proposed (ADR-0047), simulated baseline (#310) | CI, simulated | Relay does not call the policy yet |
 | Multi-link failback | `link_policy` supports it; `LinkSet` keeps it off | none | Backlog by coordinator decision 2026-11-18: failback closes a healthy session, low value against risk; no LAB planned |
 | UDP carrier | Design only (ADR-0046, Proposed) | none | No carrier code |
@@ -343,3 +343,12 @@ The README one-line install still pins `v0.2.1`. It moves to the next Stable tag
 
 **Current state (2026-11-18):** architecture decision recorded. Three-variant visual prototype source for all nine local routes is prepared in draft PR [#345](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/345) (Weave, Clarity, Command); build/render/browser/RTL/accessibility verification is **NOT RUN / UNKNOWN**. Owner design selection is pending. Product migration **NOT STARTED**; packaging acceptance **UNKNOWN / NOT VERIFIED**. This track does not change release status or imply a deployment. Exact work and evidence follow the normal PR and exact-head CI process.
 **Documentation:** this table brings the roadmap to 2026-11-18. Firewall status stays Unknown (ADR-0030); no component takes `CAP_NET_ADMIN`; Reverse stays Preview.
+
+## 9.9 Documentation addendum (2026-11-18)
+
+- **Prerelease `v0.3.1-rc.1`** exists as a tag (`4c2a5bc`). It is a prerelease, not Stable. Upgrade and pairing LAB results for this tag are pending; no claim is made until they are recorded.
+- **Doctor:** LAB PASS, one run: [44351670022](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44351670022).
+- **Fleet:** the two-host report transport is LAB PASS on one run ([44338843969](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44338843969)). That run used throwaway openssl certificates, not `fleet_ca`-minted ones.
+- **Enrollment and Add server:** enrollment ([#384](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/384)) and the operator API ([#388](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/388)) are on `main`. The Add-server UI ([#393](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/393)) has its confirm/sign path untested. The root signer helper is in draft [#394](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/394) and is not on `main`. Evidence for these is CI only.
+- **Panel:** the React panel is the default at `/`; the classic panel stays at `/classic` for one release ([ADR-0054](docs/ADR-0054-react-local-agent-panel.md)).
+- SSH enrollment and remote update remain disabled. Reverse stays Preview. Firewall status stays Unknown (ADR-0030).

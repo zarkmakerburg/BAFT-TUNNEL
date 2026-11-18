@@ -83,6 +83,13 @@ installer and verifier; publish a new tag after this change is merged.
 - Evidence is LAB on the Iran path for Direct only. Reverse, BAFT and stream resume (protocol v3,
   default off, Preview; chaos LAB run 44283746412) are not covered by these results.
 
+### v0.3.1-rc.1 (prerelease, not Stable)
+
+- Tag `v0.3.1-rc.1` (`4c2a5bc`). Prerelease channel only; the README one-line install still pins `v0.3.0`.
+- Doctor: LAB PASS, one run ([44351670022](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44351670022)).
+- Upgrade and pairing LAB for this tag are pending. Do not claim them until recorded.
+- Fleet is not enabled for remote management; enrollment confirm/sign is not yet tested end-to-end (see roadmap §9.9).
+
 ## Notes
 
 - Keyless signing records the repo/workflow identity in the public Sigstore
