@@ -80,6 +80,7 @@ export function AddServer() {
               {o.state === 'needs-confirmation' && (
                 <>
                   <p className="muted">{t('fleet.enr.type')}</p>
+                  <Pill kind="info">{t('fleet.enr.preview')}</Pill>
                   <Field label={t('fleet.enr.fp')}>
                     {(p) => <input {...p} dir="ltr" value={typed[o.id] ?? ''} autoComplete="off" onChange={(e) => setTyped({ ...typed, [o.id]: e.target.value })} />}
                   </Field>
