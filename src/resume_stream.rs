@@ -57,6 +57,26 @@ struct Attach {
     peer_received: u64,
 }
 
+/// A cheap clone of the attach side, so callers can attach without holding a lock on the handle.
+#[derive(Clone)]
+pub struct Attacher {
+    attach: mpsc::Sender<Attach>,
+    received: Arc<AtomicU64>,
+}
+
+impl Attacher {
+    pub fn received(&self) -> u64 {
+        self.received.load(Ordering::Acquire)
+    }
+
+    pub async fn attach(&self, io: BoxIo, peer_received: u64) -> Result<(), StreamError> {
+        self.attach
+            .send(Attach { io, peer_received })
+            .await
+            .map_err(|_| StreamError::Closed)
+    }
+}
+
 pub struct Handle {
     attach: mpsc::Sender<Attach>,
     received: Arc<AtomicU64>,
@@ -76,6 +96,13 @@ impl Handle {
             .send(Attach { io, peer_received })
             .await
             .map_err(|_| StreamError::Closed)
+    }
+
+    pub fn attacher(&self) -> Attacher {
+        Attacher {
+            attach: self.attach.clone(),
+            received: self.received.clone(),
+        }
     }
 
     pub fn is_finished(&self) -> bool {
