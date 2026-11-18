@@ -120,6 +120,8 @@ pub struct Ctx {
     /// Address the Fleet hub listener is bound to; `Some` only after `--fleet-config` bound it.
     #[allow(dead_code)] // read by GET /v1/fleet/nodes once that route reports the hub listener
     pub fleet_hub_listen: std::sync::Mutex<Option<SocketAddr>>,
+    /// ADR-0051 Path A enrollment offers (in memory only; nothing persists a token).
+    pub fleet_enroll: std::sync::Mutex<crate::fleet_enroll::Enroller>,
     /// systemd access for the bound instance: state reads, and start/stop/enable/disable requests
     /// through the root control helper (ADR-0023). Tests substitute a fake.
     units: Arc<dyn crate::apply::Units + Send + Sync>,
@@ -173,6 +175,7 @@ impl Ctx {
             long: std::sync::Mutex::new(long),
             fleet: std::sync::Mutex::new(crate::fleet::Hub::default()),
             fleet_hub_listen: std::sync::Mutex::new(None),
+            fleet_enroll: std::sync::Mutex::new(crate::fleet_enroll::Enroller::default()),
             units: Arc::new(crate::apply::SystemUnits::default()),
             config_dir: PathBuf::from("/etc/baft-tunnel"),
             setup: Arc::new(crate::setup_helper::SystemSetupHelper::default()),
@@ -717,6 +720,10 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/probe/run"
             | "/v1/geo"
             | "/v1/fleet/nodes"
+            | "/v1/fleet/enroll"
+            | "/v1/fleet/enroll/offer"
+            | "/v1/fleet/enroll/confirm"
+            | "/v1/fleet/enroll/deny"
     ) {
         return (404, json!({"error": "not found"}));
     }
@@ -745,6 +752,10 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             crate::geoip::geo_json(ctx.state_dir.as_deref(), config.remote()),
         ),
         ("GET", "/v1/fleet/nodes") => (200, fleet_nodes(ctx)),
+        ("GET", "/v1/fleet/enroll") => fleet_enroll_route(ctx, "list", body),
+        ("POST", "/v1/fleet/enroll/offer") => fleet_enroll_route(ctx, "offer", body),
+        ("POST", "/v1/fleet/enroll/confirm") => fleet_enroll_route(ctx, "confirm", body),
+        ("POST", "/v1/fleet/enroll/deny") => fleet_enroll_route(ctx, "deny", body),
         ("GET", "/v1/status") => (200, status(ctx, config).await),
         ("GET", "/v1/traffic") => (200, traffic(ctx)),
         ("GET", "/v1/update") => (200, update_notice(ctx)),
@@ -897,6 +908,10 @@ async fn setup_mode_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (
         ("POST", "/v1/probe/run") => crate::probe_api::run(ctx.state_dir.as_deref(), body).await,
         ("GET", "/v1/geo") => (200, crate::geoip::geo_json(ctx.state_dir.as_deref(), None)),
         ("GET", "/v1/fleet/nodes") => (200, fleet_nodes(ctx)),
+        ("GET", "/v1/fleet/enroll") => fleet_enroll_route(ctx, "list", body),
+        ("POST", "/v1/fleet/enroll/offer") => fleet_enroll_route(ctx, "offer", body),
+        ("POST", "/v1/fleet/enroll/confirm") => fleet_enroll_route(ctx, "confirm", body),
+        ("POST", "/v1/fleet/enroll/deny") => fleet_enroll_route(ctx, "deny", body),
         ("GET", "/v1/status") => (200, setup_status(ctx)),
         ("GET", "/v1/engines") => (200, engines()),
         ("GET", "/v1/host/tunnels") => (200, host_tunnels(ctx)),
@@ -3542,6 +3557,19 @@ fn update_notice(ctx: &Ctx) -> Value {
             "curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/{t}/scripts/quick-install.sh | sudo bash -s -- --register NAME"
         )),
     })
+}
+
+/// Fleet enrollment operator routes (ADR-0051 Path A). No signer is configured yet: the Fleet CA
+/// key belongs to the root helper (M5), so `confirm` answers 503 until that operation exists.
+fn fleet_enroll_route(ctx: &Ctx, op: &str, body: &[u8]) -> (u16, Value) {
+    let now = unix_now();
+    let mut e = ctx.fleet_enroll.lock().unwrap_or_else(|e| e.into_inner());
+    match op {
+        "list" => crate::fleet_api::list(&mut e, now),
+        "offer" => crate::fleet_api::offer(&mut e, body, now),
+        "confirm" => crate::fleet_api::confirm(&mut e, body, now, None),
+        _ => crate::fleet_api::deny(&mut e, body),
+    }
 }
 
 /// `GET /v1/fleet/nodes` (ADR-0045/0053): enrolled nodes with version, update state and

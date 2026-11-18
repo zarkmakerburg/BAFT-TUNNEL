@@ -37,6 +37,15 @@ pub mod observe;
 #[path = "../../src/fleet.rs"]
 #[allow(dead_code)]
 pub mod fleet;
+#[path = "../../src/fleet_api.rs"]
+#[allow(dead_code)]
+pub mod fleet_api;
+#[path = "../../src/fleet_ca.rs"]
+#[allow(dead_code)]
+pub mod fleet_ca;
+#[path = "../../src/fleet_enroll.rs"]
+#[allow(dead_code)]
+pub mod fleet_enroll;
 #[path = "../../src/fleet_hub.rs"]
 #[allow(dead_code)]
 pub mod fleet_hub;

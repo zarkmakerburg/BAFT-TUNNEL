@@ -10,6 +10,7 @@ mod doctor;
 mod engine;
 mod engine_store;
 mod fleet;
+mod fleet_api;
 mod fleet_ca;
 mod fleet_enroll;
 mod fleet_hub;

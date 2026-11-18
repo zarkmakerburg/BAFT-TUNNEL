@@ -25,6 +25,15 @@ mod engine_store;
 #[path = "../src/fleet.rs"]
 #[allow(dead_code)]
 mod fleet;
+#[path = "../src/fleet_api.rs"]
+#[allow(dead_code)]
+mod fleet_api;
+#[path = "../src/fleet_ca.rs"]
+#[allow(dead_code)]
+mod fleet_ca;
+#[path = "../src/fleet_enroll.rs"]
+#[allow(dead_code)]
+mod fleet_enroll;
 #[path = "../src/fleet_hub.rs"]
 #[allow(dead_code)]
 mod fleet_hub;
