@@ -150,9 +150,10 @@ pub async fn post_once(cfg: &ReporterConfig, body: &[u8]) -> Result<u16> {
 /// Report loop: every `fleet::REPORT_INTERVAL_S` seconds read the local status (`status` returns
 /// the same JSON as the local `/v1/status`) and post it. Failures are logged without any secret
 /// and retried at the next interval; nothing here ever blocks a tunnel.
-pub async fn run<F>(cfg: ReporterConfig, status: F, mut shutdown: watch::Receiver<bool>)
+pub async fn run<F, Fut>(cfg: ReporterConfig, status: F, mut shutdown: watch::Receiver<bool>)
 where
-    F: Fn() -> Value,
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Value>,
 {
     let mut last_seq = 0u64;
     let mut tick = tokio::time::interval(Duration::from_secs(fleet::REPORT_INTERVAL_S));
@@ -163,7 +164,7 @@ where
             _ = tick.tick() => {}
         }
         last_seq = next_seq(last_seq, unix_now());
-        let report = fleet::build_report(&cfg.instance, &cfg.version, &status(), last_seq);
+        let report = fleet::build_report(&cfg.instance, &cfg.version, &status().await, last_seq);
         let Ok(body) = serde_json::to_vec(&report) else {
             continue;
         };

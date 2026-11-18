@@ -140,6 +140,12 @@ struct Sample {
     rtt_ms: Option<f64>,
 }
 
+impl crate::fleet_hub::HubStore for Ctx {
+    fn hub(&self) -> &std::sync::Mutex<crate::fleet::Hub> {
+        &self.fleet
+    }
+}
+
 impl Ctx {
     pub fn new(config: RuntimeConfig, token: String, state_dir: Option<PathBuf>) -> Self {
         Self::with_config(Some(config), token, state_dir)
@@ -337,6 +343,7 @@ pub async fn run(
     token: String,
     state_dir: Option<PathBuf>,
     instance: Option<String>,
+    fleet: Option<crate::fleet_run::FleetConfig>,
 ) -> Result<()> {
     if let Some(name) = &instance {
         if !crate::apply::valid_instance(name) {
@@ -356,8 +363,14 @@ pub async fn run(
     if let (Some(name), Some(dir)) = (&instance, &state_dir) {
         publish_agent_address(dir, name, listen);
     }
-    let ctx = Arc::new(Ctx::with_config(config, token, state_dir).with_unit(instance, runtime_dir));
+    let ctx = Arc::new(
+        Ctx::with_config(config, token, state_dir).with_unit(instance.clone(), runtime_dir),
+    );
     tokio::spawn(sampler(ctx.clone()));
+    // ADR-0045 F1: only when `--fleet-config` is given; nothing listens or reports otherwise.
+    if let Some(fleet) = fleet {
+        crate::fleet_run::start(ctx.clone(), fleet, instance.as_deref()).await?;
+    }
     serve(listener, ctx).await
 }
 
@@ -3116,7 +3129,7 @@ async fn listener_accepting(config: &RuntimeConfig) -> bool {
     }
 }
 
-async fn status(ctx: &Ctx, config: &RuntimeConfig) -> Value {
+pub(crate) async fn status(ctx: &Ctx, config: &RuntimeConfig) -> Value {
     let listening = listener_accepting(config).await;
     json!({
         "agent": "baft-tunnel",

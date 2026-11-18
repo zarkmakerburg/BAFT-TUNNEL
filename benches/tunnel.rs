@@ -25,6 +25,15 @@ mod engine_store;
 #[path = "../src/fleet.rs"]
 #[allow(dead_code)]
 mod fleet;
+#[path = "../src/fleet_hub.rs"]
+#[allow(dead_code)]
+mod fleet_hub;
+#[path = "../src/fleet_report.rs"]
+#[allow(dead_code)]
+mod fleet_report;
+#[path = "../src/fleet_run.rs"]
+#[allow(dead_code)]
+mod fleet_run;
 #[path = "../src/geoip.rs"]
 #[allow(dead_code)]
 mod geoip;
