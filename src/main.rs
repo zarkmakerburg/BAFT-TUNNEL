@@ -26,16 +26,20 @@ mod pki_helper;
 mod policy;
 #[cfg(test)]
 mod policy_baseline;
+mod probe_adapters;
+mod probe_http;
 mod resumable;
 mod resume_core;
 mod resume_registry;
 mod resume_stream;
+mod resume_tunnel;
 mod resume_wire;
 #[allow(dead_code)] // manifest API is consumed by packaging and the registry (ADR-0020)
 mod runtime_host;
 mod session_status;
 mod setup;
 mod setup_helper;
+mod target_guard;
 mod tls;
 mod transport_health;
 mod tunnel;

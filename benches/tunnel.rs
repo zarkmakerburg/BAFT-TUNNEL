@@ -46,6 +46,18 @@ mod pair_helper;
 mod pair_proto;
 #[path = "../src/pki_helper.rs"]
 mod pki_helper;
+#[path = "../src/resumable.rs"]
+mod resumable;
+#[path = "../src/resume_core.rs"]
+mod resume_core;
+#[path = "../src/resume_registry.rs"]
+mod resume_registry;
+#[path = "../src/resume_stream.rs"]
+mod resume_stream;
+#[path = "../src/resume_tunnel.rs"]
+mod resume_tunnel;
+#[path = "../src/resume_wire.rs"]
+mod resume_wire;
 #[path = "../src/runtime_host.rs"]
 mod runtime_host;
 #[path = "../src/session_status.rs"]

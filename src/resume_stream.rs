@@ -57,6 +57,26 @@ struct Attach {
     peer_received: u64,
 }
 
+/// A cheap clone of the attach side, so callers can attach without holding a lock on the handle.
+#[derive(Clone)]
+pub struct Attacher {
+    attach: mpsc::Sender<Attach>,
+    received: Arc<AtomicU64>,
+}
+
+impl Attacher {
+    pub fn received(&self) -> u64 {
+        self.received.load(Ordering::Acquire)
+    }
+
+    pub async fn attach(&self, io: BoxIo, peer_received: u64) -> Result<(), StreamError> {
+        self.attach
+            .send(Attach { io, peer_received })
+            .await
+            .map_err(|_| StreamError::Closed)
+    }
+}
+
 pub struct Handle {
     attach: mpsc::Sender<Attach>,
     received: Arc<AtomicU64>,
@@ -76,6 +96,13 @@ impl Handle {
             .send(Attach { io, peer_received })
             .await
             .map_err(|_| StreamError::Closed)
+    }
+
+    pub fn attacher(&self) -> Attacher {
+        Attacher {
+            attach: self.attach.clone(),
+            received: self.received.clone(),
+        }
     }
 
     pub fn is_finished(&self) -> bool {
@@ -340,11 +367,16 @@ mod tests {
             let (mut ar, mut aw) = tokio::io::split(app_a);
             let (mut br, mut bw) = tokio::io::split(app_b);
             let (sa, sb) = (src_a.clone(), src_b.clone());
+            // The writers may only half-close once every planned cut has happened, so a fast
+            // machine can never finish the transfer before the cuts (no timing dependence).
+            let (close_tx, close_rx) = tokio::sync::watch::channel(false);
+            let (mut close_a, mut close_b) = (close_rx.clone(), close_rx);
             let wa = tokio::spawn(async move {
                 for chunk in sa.chunks(4096) {
                     aw.write_all(chunk).await.unwrap();
                     tokio::time::sleep(Duration::from_micros(300)).await;
                 }
+                close_a.wait_for(|v| *v).await.unwrap();
                 aw.shutdown().await.unwrap();
             });
             let wb = tokio::spawn(async move {
@@ -352,6 +384,7 @@ mod tests {
                     bw.write_all(chunk).await.unwrap();
                     tokio::time::sleep(Duration::from_micros(300)).await;
                 }
+                close_b.wait_for(|v| *v).await.unwrap();
                 bw.shutdown().await.unwrap();
             });
             let ra = tokio::spawn(async move {
@@ -376,15 +409,20 @@ mod tests {
                 cut_tx = Some(tx);
                 let wait = Duration::from_millis(3 + rng.next() % 20);
                 tokio::time::sleep(wait).await;
-                if !(a.is_finished() && b.is_finished()) && cuts < 8 {
+                if cuts < 4 {
                     drop(cut_tx.take());
                     cuts += 1;
                     tokio::time::sleep(Duration::from_millis(rng.next() % 5)).await;
                 } else {
                     // Let it finish on the last link.
-                    while !(a.is_finished() && b.is_finished()) {
-                        tokio::time::sleep(Duration::from_millis(5)).await;
-                    }
+                    close_tx.send(true).unwrap();
+                    tokio::time::timeout(Duration::from_secs(60), async {
+                        while !(a.is_finished() && b.is_finished()) {
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                        }
+                    })
+                    .await
+                    .expect("transfer did not finish on the last link");
                 }
             }
             drop(cut_tx);
