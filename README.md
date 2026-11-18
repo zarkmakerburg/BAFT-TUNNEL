@@ -51,8 +51,8 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 | `noise-tcp` | Experimental Direct only |
 | BAFT engine | Separate pinned process; Preview Direct only; not configurable in Wizard |
 | PKI | Offline CA, certificate issuance/revocation, multi-CA/CRL overlap, operator CRL renewal and SSH push |
-| Agent / panel | Per-host loopback Agent and dependency-free static JavaScript panel (default on `main`); Persian RTL and English LTR. React panel decision accepted; implementation is draft [PR #350](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/350), not yet default |
-| Control plane / Fleet | Report transport LAB PASS (one run); enrollment (F-7) and SSH enrollment not wired or enabled; remote update disabled |
+| Agent / panel | Per-host loopback Agent. React panel is the default at `/` (decision [ADR-0054](docs/ADR-0054-react-local-agent-panel.md), merged in [PR #350](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/350)); the classic static JavaScript panel stays at `/classic` for one release. Persian RTL and English LTR |
+| Control plane / Fleet | Report transport LAB PASS (one run); Add server Path A operator API merged, signer not wired; SSH enrollment and remote update not enabled |
 | Release | Stable `v0.3.0` (signed); Reverse, BAFT engine and stream resume remain Preview |
 
 Project record: [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
@@ -171,6 +171,7 @@ The authoritative phase model and delivery order are maintained in [docs/PRODUCT
 - [Operator guide](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/OPERATOR_GUIDE.md) (interactive install menu: `sudo scripts/install.sh` or `sudo baft-tunnel menu`, Persian/English)
 - [Real-host LAB setup](https://github.com/zarkmakerburg/BAFT-TUNNEL/blob/main/docs/REAL_HOSTS_LAB.md)
 - [Connection topology and Reverse (ADR-0021)](docs/ADR-0021-connection-topology-and-reverse.md)
+- [React local Agent panel (ADR-0054)](docs/ADR-0054-react-local-agent-panel.md)
 - [Product roadmap](docs/PRODUCT_ROADMAP.md)
 - [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2)
 - [Engineering guardrails](docs/ENGINEERING_GUARDRAILS.md)
