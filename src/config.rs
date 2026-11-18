@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::{
-    authorization::{ConnectionDirection, PROTOCOL_V1, PROTOCOL_V2},
+    authorization::{ConnectionDirection, PROTOCOL_V1, PROTOCOL_V2, PROTOCOL_V3},
     engine::NoiseSettings,
     handshake::{validate_fingerprint, validate_identity},
     tls, tunnel,
@@ -205,6 +205,9 @@ impl RuntimeConfig {
             } => {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
                 validate_protocol_version(*protocol_version, *engine)?;
+                if *protocol_version == PROTOCOL_V3 && *direction == ConnectionDirection::Reverse {
+                    bail!("protocol v3 (stream resume Preview) supports Direct tunnels only");
+                }
                 parse_socket(listen, "listen")?;
                 // The baft engine keeps its previous behaviour (direction is a label there; it
                 // is not part of the Rust Reverse mode, ADR-0021 Amendment 1).
@@ -292,6 +295,15 @@ impl RuntimeConfig {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
                 validate_session_rotate(*session_rotate_secs, *direction, *engine)?;
                 validate_protocol_version(*protocol_version, *engine)?;
+                if *protocol_version == PROTOCOL_V3
+                    && (*direction == ConnectionDirection::Reverse
+                        || *session_rotate_secs > 0
+                        || !backup_remotes.is_empty())
+                {
+                    bail!(
+                        "protocol v3 (stream resume Preview) supports Direct tunnels without session rotation or backup links"
+                    );
+                }
                 validate_backup_remotes(remote, backup_remotes, *engine)?;
                 let reverse =
                     *direction == ConnectionDirection::Reverse && *engine != EngineKind::Baft;
@@ -963,8 +975,12 @@ fn validate_noise(
 }
 
 fn validate_protocol_version(version: u16, engine: EngineKind) -> Result<()> {
-    if ![PROTOCOL_V1, PROTOCOL_V2].contains(&version) {
-        bail!("protocol_version must be 1 or 2");
+    if ![PROTOCOL_V1, PROTOCOL_V2, PROTOCOL_V3].contains(&version) {
+        bail!("protocol_version must be 1, 2 or 3");
+    }
+    // ADR-0040 Preview: stream resume runs on the Rust tcp-tls engine only.
+    if version == PROTOCOL_V3 && engine != EngineKind::TcpTls {
+        bail!("protocol v3 (stream resume Preview) requires the tcp-tls engine");
     }
     if version == PROTOCOL_V2 && engine == EngineKind::Baft {
         bail!("protocol v2 is not supported by the external BAFT engine");
@@ -1038,13 +1054,12 @@ mod tests {
         );
         let v2: RuntimeConfig = serde_json::from_str(&v2_json).unwrap();
         assert_eq!(v2.protocol_version(), PROTOCOL_V2);
-        assert!(validate_protocol_version(3, EngineKind::TcpTls).is_err());
+        assert!(validate_protocol_version(4, EngineKind::TcpTls).is_err());
         assert!(validate_protocol_version(PROTOCOL_V2, EngineKind::Baft).is_err());
-        // v3 exists in the protocol layer but is not selectable until resume is implemented.
-        assert!(
-            validate_protocol_version(crate::authorization::PROTOCOL_V3, EngineKind::TcpTls)
-                .is_err()
-        );
+        // v3 (resume Preview) is selectable on tcp-tls only, never by default.
+        assert!(validate_protocol_version(PROTOCOL_V3, EngineKind::TcpTls).is_ok());
+        assert!(validate_protocol_version(PROTOCOL_V3, EngineKind::NoiseTcp).is_err());
+        assert!(validate_protocol_version(PROTOCOL_V3, EngineKind::Baft).is_err());
     }
 
     #[test]
