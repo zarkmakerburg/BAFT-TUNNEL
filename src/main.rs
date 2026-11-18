@@ -36,6 +36,7 @@ mod runtime_host;
 mod session_status;
 mod setup;
 mod setup_helper;
+mod target_guard;
 mod tls;
 mod transport_health;
 mod tunnel;
