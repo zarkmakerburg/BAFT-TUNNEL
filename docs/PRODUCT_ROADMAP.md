@@ -314,11 +314,13 @@ The README one-line install still pins `v0.2.1`. It moves to the next Stable tag
 | Transport health | Model (#293), publishing (#306), kernel TCP_INFO feed (#334, ADR-0041) | LAB PASS, one run: 44304026997 (real RTT both nodes, healthy under load, unavailable after carrier cut) | Quality fields other than RTT stay Unknown without samples; single path |
 | Stream resume | Protocol v3 wired into serve/forward loops (#365, ADR-0040), tcp-tls Direct only, default-off Preview | LAB PASS, one run: 44283746412 (16 MiB, relay cut twice, payload hash equal) | Stays default-off Preview; Reverse has no resume |
 | Session rotation | Opt-in `session_rotate_secs` (#315, ADR-0049) | LAB PASS: 44121043530 (Noise-TCP Direct) and rotation probe harness #333 | Off by default; Iran path throttles flows older than about 15-20 s |
-| Automatic pairing | One pairing code, no manual cert moving (#338, ADR-0050), Reverse and Iran/abroad questions (#348, #353), helper fixes #356-#360 | CI; two-host LAB workflow exists | Result of the pairing LAB is tracked in the pairing thread, not recorded here |
+| Automatic pairing | One pairing code, no manual cert moving (#338, ADR-0050), Reverse and Iran/abroad questions (#348, #353), helper fixes #356-#360 | LAB PASS, one run: 44224936582 (Direct and Reverse, Reverse stays Preview) | Fleet and SSH enrollment are separate and still Proposed |
+| v0.3.0 upgrade | Stable v0.3.0 released | LAB PASS, one run: 44271619864 (upgrade LAB) | Production evidence not claimed |
 | Fleet and add server | Pure node status report (#347), ADR-0045 accepted with conditions; ADR-0051, ADR-0052, ADR-0053 all Proposed; server health card on the Servers page (#372, consent default off), probe_api and Globalping probe (#371, #374) | CI | SSH enrollment and remote update stay disabled until the independent reviews; nothing LAB-verified |
 | Panel | React preview, no fake data | CI | Physical phone check is not a blocker |
 | Doctor | Offline read-only config and host checks (#298, ADR-0042) | CI | LAB use not recorded |
 | Policy Pack (0.4.0) | Interface behind `policy-pack` (#305, ADR-0044), status contract proposed (ADR-0047), simulated baseline (#310) | CI, simulated | Relay does not call the policy yet |
+| Multi-link failback | `link_policy` supports it; `LinkSet` keeps it off | none | Backlog by coordinator decision 2026-11-18: failback closes a healthy session, low value against risk; no LAB planned |
 | UDP carrier | Design only (ADR-0046, Proposed) | none | No carrier code |
 | Competitive benchmark | Advisor assessment (#302); E2 harness (PR #308); E3 LAB harness (#332) | CI | E3 result (run 44124112450) |
 
