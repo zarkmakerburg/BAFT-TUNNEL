@@ -29,8 +29,10 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 
 ## Project status
 
-<sub>Updated: 18 November 2026 · source baseline: `main` `faef660` (at time of writing) · roadmap: [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
+<sub>Updated: 18 November 2026 · source baseline: `main` `e2f3328` (at time of writing) · roadmap: [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md)</sub>
 
+> **Prerelease `v0.3.1-rc.1` (not Stable).** Doctor has LAB PASS on one run; upgrade and pairing LAB for this prerelease are pending and not claimed. Fleet two-host report transport has LAB PASS on one run. Enrollment and the Add-server UI are on `main` but enrollment confirm/sign is not yet tested end-to-end.
+>
 > **Stable `v0.3.0` released 18 November 2026 (signed); not production-ready.** Earlier milestone: trusted U7 acceptance passed on the signed RC.7 package in [run 43063199428](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43063199428): both LAB hosts completed setup, Direct traffic integrity, 3600-second soak, backup/restore, update/rollback, revocation and uninstall. U8 operator documentation was completed and merged in [PR #165](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/165) (merge `52a2825254f8254386f71af7220c7cb244200fc2`). B1 structured localized evidence is merged on `main` (`311b706`, with the duplicate `diag.next.*` key fix in `62d7ee6`). B2 integrity probe ("Test tunnel") is implemented under [ADR-0028](docs/ADR-0028-authenticated-integrity-probe.md) and accepted for Direct on trusted two-host run [43407066796](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/43407066796). Protocol v2 is the default (O1, #268).
 
 - **`tcp-tls` Direct:** supported pre-release path with real two-host integrity, recovery, revocation, operations, and bounded soak/loss evidence.
@@ -52,8 +54,8 @@ The project is independent: no BAFT source code, Git history, credentials, relea
 | BAFT engine | Separate pinned process; Preview Direct only; not configurable in Wizard |
 | PKI | Offline CA, certificate issuance/revocation, multi-CA/CRL overlap, operator CRL renewal and SSH push |
 | Agent / panel | Per-host loopback Agent. React panel is the default at `/` (decision [ADR-0054](docs/ADR-0054-react-local-agent-panel.md), merged in [PR #350](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/350)); the classic static JavaScript panel stays at `/classic` for one release. Persian RTL and English LTR |
-| Control plane / Fleet | Report transport LAB PASS (one run); Add server Path A operator API merged, signer not wired; SSH enrollment and remote update not enabled |
-| Release | Stable `v0.3.0` (signed); Reverse, BAFT engine and stream resume remain Preview |
+| Control plane / Fleet | Report transport LAB PASS (one run, [44338843969](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44338843969), throwaway openssl PKI). Enrollment ([#384](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/384)) and operator API ([#388](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/388)) on `main`; Add-server UI ([#393](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/393)) confirm/sign untested; root signer helper is in draft [#394](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/394), not on `main`. SSH enrollment and remote update not enabled |
+| Release | Stable `v0.3.0` (signed); prerelease `v0.3.1-rc.1` (not Stable); Reverse, BAFT engine and stream resume remain Preview |
 
 Project record: [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 

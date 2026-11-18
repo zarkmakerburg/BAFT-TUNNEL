@@ -96,3 +96,7 @@ Evidence: container-free unit tests with the real `openssl` (profile, EKU exclus
 ## Addendum: enrollment state machine (F-7)
 
 `src/fleet_enroll.rs` holds the hub-side enrollment rules, pure and unwired: one live offer per node id (max 16), 15 minute TTL, one-time token stored only as a SHA-256 hash, three wrong-token attempts close the offer, a valid token is consumed by the first submit, the CSR must carry a proof bound to the offer nonce and its fingerprint, and a certificate is signed only after the operator types the CSR fingerprint the new server printed. Signing is injected (`fleet_ca::sign` through the root helper), so the module holds no keys. The join listener, the Add-server API and the helper operation are the next slices.
+
+## Addendum: root Fleet helper (M5)
+
+`src/fleet_helper.rs` plus `baft-tunnel-control-fleet@.path/.service` follow the pairing-helper pattern (ADR-0050): the agent drops `NAME.fleet` (node id and CSR only), the root unit runs `baft-tunnel fleet helper --instance NAME` with no network and the usual hardening, signs with `fleet_ca::sign` from `/etc/baft-tunnel/fleet-ca` and writes `NAME.fleet-result` (public certificate only). The helper never creates the CA; a missing CA fails closed. `POST /v1/fleet/enroll/confirm` now signs through this helper (8 s wait) and answers 503 when there is no instance or helper. Creating the Fleet CA (an operator command) and the node join over the hub listener are the next slices.
