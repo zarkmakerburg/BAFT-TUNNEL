@@ -31,6 +31,7 @@ function useDeclared(id: string | undefined): [string, (c: string) => void] {
   return [v, set];
 }
 
+const flagOf = (c: string): string => (/^[A-Z]{2}$/.test(c) ? String.fromCodePoint(...[...c].map((x) => 0x1f1a5 + x.charCodeAt(0))) : '');
 const proj = (lat: number, lon: number): [number, number] => [(lon + 180) * MAP_S, (MAP_TOP - lat) * MAP_S];
 
 /* ---------- small pieces ---------- */
@@ -134,6 +135,8 @@ export function GeoMap({ d }: { d: Loaded }) {
   const lk = linkOf(d);
   const [mine, setMine] = useDeclared(c.local_identity);
   const [theirs, setTheirs] = useDeclared(c.peer_identity);
+  const [dots, setDots] = useState(() => { try { return localStorage.getItem('baft.map.style') === 'dots'; } catch { return false; } });
+  const toggleStyle = () => { setDots((v) => { const n = !v; try { localStorage.setItem('baft.map.style', n ? 'dots' : 'solid'); } catch { /* optional */ } return n; }); };
   // Detected values come from the Agent's offline database (GET /v1/geo); a user choice always wins.
   const det = (k: 'local' | 'peer'): string | null => {
     const v = d.geo?.[k]?.country;
@@ -153,17 +156,20 @@ export function GeoMap({ d }: { d: Loaded }) {
     arc = `M${a[0].toFixed(1)} ${a[1].toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${b[0].toFixed(1)} ${b[1].toFixed(1)}`;
   }
   // Frame the map around the declared endpoints when both are placed.
+  let viewW = MAP_W;
   const view = (() => {
     if (!a || !b) return `0 0 ${MAP_W} ${MAP_H}`;
     const pad = 70, x0 = Math.min(a[0], b[0]) - pad, x1 = Math.max(a[0], b[0]) + pad, y0 = Math.min(a[1], b[1]) - pad * 1.2, y1 = Math.max(a[1], b[1]) + pad * 0.8;
     const w = Math.max(x1 - x0, 260), h = w * (MAP_H / MAP_W) * 1.15;
     const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
     const vx = Math.max(0, Math.min(MAP_W - w, cx - w / 2)), vy = Math.max(0, Math.min(MAP_H - h, cy - h / 2));
+    viewW = w;
     return `${vx.toFixed(0)} ${vy.toFixed(0)} ${w.toFixed(0)} ${Math.min(h, MAP_H).toFixed(0)}`;
   })();
   const pin = (p: [number, number] | null, kind: 'me' | 'peer', code: string) => p && (
     <g className={`pin pin-${kind}`}>
-      <circle cx={p[0]} cy={p[1]} r="9" className="pin-halo" /><circle cx={p[0]} cy={p[1]} r="3.6" className="pin-dot" />
+      <circle cx={p[0]} cy={p[1]} r={viewW / 80} className="pin-halo" /><circle cx={p[0]} cy={p[1]} r={viewW / 190} className="pin-dot" />
+      <text x={p[0]} y={p[1] - viewW / 55} className="pin-label" fontSize={viewW / 46} textAnchor="middle">{`${flagOf(code)} ${nm(code)}`.trim()}</text>
       <title>{`${kind === 'me' ? t('viz.this') : t('viz.peer')}: ${nm(code)}`}</title>
     </g>
   );
@@ -171,12 +177,13 @@ export function GeoMap({ d }: { d: Loaded }) {
     <Card title={t('viz.geo.title')} action={<Pill kind={mine || theirs ? 'info' : dMine || dTheirs ? 'ok' : 'unknown'}>{mine || theirs ? t('viz.geo.declared.pill') : dMine || dTheirs ? t('viz.geo.detected.pill') : t('viz.geo.none.pill')}</Pill>}>
       <figure className={`geomap link-${lk}`}>
         <svg viewBox={view} role="img" aria-label={a && b ? t('viz.geo.aria', { a: nm(effMine), b: nm(effTheirs) }) : t('viz.geo.aria.none')} preserveAspectRatio="xMidYMid meet">
-          <path d={LAND} className="land" />
+          <path d={LAND} className={dots ? 'land land-dots' : 'land'} />
           {arc && <path d={arc} className="arc" />}
           {pin(a, 'me', effMine)}{pin(b, 'peer', effTheirs)}
         </svg>
         {!(a && b) && <figcaption className="geo-hint sub">{t('viz.geo.unset.hint')}</figcaption>}
       </figure>
+      <div className="row"><button type="button" className="ghost" aria-pressed={dots} onClick={toggleStyle}>{t('viz.geo.style')}: {dots ? t('viz.geo.style.dots') : t('viz.geo.style.solid')}</button></div>
       <div className="geo-form">
         <CountrySelect label={`${t('viz.geo.me')}${c.local_identity ? ' · ' + c.local_identity : ''}`} value={mine} onChange={setMine} detected={dMine} />
         <CountrySelect label={`${t('viz.geo.peer')}${c.peer_identity ? ' · ' + c.peer_identity : ''}`} value={theirs} onChange={setTheirs} detected={dTheirs} />
