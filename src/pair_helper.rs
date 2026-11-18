@@ -115,6 +115,9 @@ pub async fn run(name: &str, control_dir: &Path, config_dir: &Path) -> Result<Va
     let bytes = read_bounded(&req_path);
     let _ = std::fs::remove_file(&req_path);
     let _ = std::fs::remove_file(control_dir.join(format!("{name}.{APPROVE_SUFFIX}")));
+    // the request file is gone now, so mark the run active at once: a second request must be refused
+    // for the whole run, not only until the helper picked the first one up
+    let _ = write_status(control_dir, name, &json!({"state": "working"}));
     let request: PairRequest = match bytes.and_then(|b| Ok(serde_json::from_slice(&b)?)) {
         Ok(r) => r,
         Err(e) => {
@@ -185,7 +188,24 @@ pub fn submit(control_dir: &Path, name: &str, request: &Value) -> Result<(), Str
             "the root pairing helper is not installed; run sudo scripts/install-agent-control.sh --instance {name}"
         ));
     }
-    let _ = std::fs::remove_file(control_dir.join(format!("{name}.{STATUS_SUFFIX}")));
+    let status_path = control_dir.join(format!("{name}.{STATUS_SUFFIX}"));
+    if let Ok(v) = serde_json::from_slice::<Value>(&read_bounded(&status_path).unwrap_or_default())
+    {
+        let active = matches!(
+            v["state"].as_str(),
+            Some("working" | "waiting" | "approval")
+        );
+        // a crashed helper must not block pairing forever: the unit's own limit is 20 minutes
+        let fresh = std::fs::metadata(&status_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|d| d < Duration::from_secs(21 * 60));
+        if active && fresh {
+            return Err("another pairing request is still pending".to_string());
+        }
+    }
+    let _ = std::fs::remove_file(&status_path);
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -242,6 +262,20 @@ mod tests {
         let p = std::env::temp_dir().join(format!("pair-helper-{tag}-{:x}", rand::random::<u64>()));
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[test]
+    fn second_request_is_refused_while_a_run_is_active() {
+        let ctl = tmp("active");
+        let req = json!({"op": "accept", "code": "x"});
+        for state in ["working", "waiting", "approval"] {
+            write_status(&ctl, "t1", &json!({"state": state})).unwrap();
+            let e = submit(&ctl, "t1", &req).unwrap_err();
+            assert!(e.contains("pending"), "{state}: {e}");
+        }
+        // finished runs do not block a new request
+        write_status(&ctl, "t1", &json!({"state": "done"})).unwrap();
+        submit(&ctl, "t1", &req).unwrap();
     }
 
     #[tokio::test]
