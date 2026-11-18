@@ -98,6 +98,76 @@
           card(t('ov.recent'), recentOps(d, 5), '', h('a', { class: 'more-link', href: '#/activity' }, t('nav.activity'), BAFT.icon('chevron', 'flip'))))));
   } });
 
+
+  /* ---- Server health check (ADR-0052): from this server, plus Iran probes only after explicit consent ---- */
+  // The page redraws on every refresh, so the form state lives outside the card.
+  var probeBox = null;
+  var probeSt = { ip: '', port: '443', busy: false, err: null, res: null, consent: null, consentErr: null, loaded: false };
+  function probeCard() {
+    var st = probeSt;
+    var box = probeBox = h('div', null);
+    function load() {
+      BAFT.api('GET', '/v1/probe/consent').then(function (r) { st.consent = r.status === 200 ? r.body : null; }, function () { st.consent = null; }).then(draw);
+    }
+    function setConsent(provider, on) {
+      st.consentErr = null; st.busy = true; draw();
+      BAFT.api('POST', '/v1/probe/consent', { provider: provider, enabled: on, confirm: on }).then(function (r) {
+        if (r.status === 200) { st.consent = r.body; } else { st.consentErr = (r.body && r.body.error) || t('fail'); }
+      }, function (e) { st.consentErr = e.message; }).then(function () { st.busy = false; draw(); });
+    }
+    function run() {
+      st.err = null; st.res = null;
+      var port = Number(st.port);
+      if (!st.ip.trim() || !(port >= 1 && port <= 65535)) { st.err = t('probe.err.input'); draw(); return; }
+      st.busy = true; draw();
+      BAFT.api('POST', '/v1/probe/run', { ip: st.ip.trim(), port: port }).then(function (r) {
+        if (r.status === 200) { st.res = r.body; } else { st.err = (r.body && r.body.error) || t('fail'); }
+      }, function (e) { st.err = e.message; }).then(function () { st.busy = false; draw(); });
+    }
+    function stateCell(r) {
+      if (r.state === 'reached') { return pill('ok', t('probe.reached') + (r.ms != null ? ' · ' + BAFT.fmtNum(r.ms, 1) + ' ms' : '')); }
+      if (r.state === 'failed') { return pill('bad', t('probe.failed') + (r.reason ? ' · ' + r.reason : '')); }
+      return pill('unknown', t('state.unknown'));
+    }
+    function draw() {
+      var c = st.consent, kids = [h('p', { class: 'sub', text: t('probe.intro') })];
+      var ip = h('input', { value: st.ip, dir: 'ltr', autocomplete: 'off', inputmode: 'decimal', placeholder: '203.0.113.10', oninput: function () { st.ip = ip.value; } });
+      var port = h('input', { value: st.port, dir: 'ltr', inputmode: 'numeric', oninput: function () { st.port = port.value; } });
+      kids.push(h('div', { class: 'form-grid' }, h('label', { class: 'field' }, h('span', { text: t('probe.ip') }), ip), h('label', { class: 'field' }, h('span', { text: t('probe.port') }), port)),
+        h('button', { type: 'button', class: 'primary', disabled: st.busy ? true : null, text: t('probe.run'), onclick: run }));
+      if (st.err) { kids.push(h('p', { class: 'error', role: 'alert', text: st.err })); }
+      kids.push(h('hr', { class: 'sep' }), h('h3', { text: t('probe.consent.t') }), h('p', { class: 'sub', text: t('probe.consent.b') }));
+      if (!c) { kids.push(h('p', { class: 'muted', text: t('unknown') })); }
+      else {
+        var chk = h('label', null, h('input', { type: 'checkbox', checked: c.checkhost ? 'checked' : null, disabled: st.busy ? true : null, onchange: function (e) { setConsent('checkhost', e.target.checked); } }), ' ', t('probe.consent.check'));
+        kids.push(chk);
+      }
+      if (st.consentErr) { kids.push(h('p', { class: 'error', role: 'alert', text: st.consentErr })); }
+      if (st.res) {
+        var r = st.res, rows = [];
+        rows.push([t('probe.country'), r.country && r.country.value ? BAFT.ltr(r.country.value) : t('unknown') + ' · ' + t('probe.nogeo')]);
+        rows.push([t('probe.role'), r.suggested_role ? t(r.suggested_role === 'iran' ? 'probe.role.iran' : 'probe.role.abroad') : t('unknown')]);
+        rows.push([t('probe.here'), stateCell(r.from_here || {})]);
+        kids.push(h('hr', { class: 'sep' }), h('h3', { text: t('probe.result') }), kv(rows));
+        (r.providers || []).forEach(function (p) {
+          var body;
+          if (!p.enabled) { body = h('p', { class: 'muted', text: t('probe.off') }); }
+          else if (!p.rows || !p.rows.length) { body = h('p', { class: 'muted', text: t('unknown') + ' · ' + (p.note || '') }); }
+          else {
+            body = h('table', { class: 'tbl' }, h('thead', null, h('tr', null, h('th', { text: t('probe.city') }), h('th', { text: 'ASN' }), h('th', { text: t('probe.state') }))),
+              h('tbody', null, p.rows.map(function (x) { return h('tr', null, h('td', { dir: 'ltr', text: x.city }), h('td', { dir: 'ltr', text: x.asn }), h('td', null, stateCell(x))); })));
+          }
+          kids.push(h('h4', { text: t('probe.from.iran', { p: p.provider }) }), body);
+        });
+        if (r.cached_s) { kids.push(h('p', { class: 'sub', text: t('probe.cached', { s: String(r.cached_s) }) })); }
+      }
+      if (probeBox) { probeBox.replaceChildren.apply(probeBox, kids); }
+    }
+    if (!st.loaded) { st.loaded = true; load(); }
+    draw();
+    return card(t('probe.title'), box);
+  }
+
   /* ---- Servers: this node, plus the configured peer (never observed remotely) ---- */
   BAFT.register({ id: 'servers', icon: 'servers', group: 'operate', order: 3, needs: ['engines', 'host'], render: function (ctx) {
     var d = ctx.data, s = d.status, c = conf(d), sec = d.security || {}, st = stats(d);
@@ -129,7 +199,7 @@
       h('p', { class: 'sub', text: t('fleet.note') }),
       kv([[t('fleet.hub'), pill('unknown', t('fleet.hub.none'))], [t('fleet.nodes'), t('fleet.nodes.none')]]),
       h('p', { class: 'sub', text: t('fleet.add') })));
-    return h('div', { class: 'stack' }, h('p', { class: 'muted', text: t('servers.note') }), h('div', { class: 'grid cols-2' }, thisNode, peer), hostTunnels(d.host, d.meta.host), fleet);
+    return h('div', { class: 'stack' }, h('p', { class: 'muted', text: t('servers.note') }), h('div', { class: 'grid cols-2' }, thisNode, peer), hostTunnels(d.host, d.meta.host), probeCard(), fleet);
   } });
 
   /* ---- Monitoring: only ranges the backend really keeps (last hour at 5 s, 24 h at 1 min) ---- */
