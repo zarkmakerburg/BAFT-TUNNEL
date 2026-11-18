@@ -316,6 +316,10 @@ impl LinkSet {
                 self.policy.dial_started(link, probe, now);
                 if link != self.current {
                     crate::session_status::link_switched();
+                    eprintln!(
+                        "tunnel link switched to link {link} of {}",
+                        self.remotes.len()
+                    );
                 }
                 self.current = link;
                 Ok(link)

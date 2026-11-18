@@ -63,6 +63,8 @@ jobs:
         run: bash lab/trusted/test-phase1-rotation-probe-tls.sh
       - name: Check the stream-resume chaos LAB harness contract
         run: bash lab/trusted/test-phase1-resume-chaos.sh
+      - name: Check the multi-link failover LAB harness contract
+        run: bash lab/trusted/test-phase1-multilink-failover.sh
       - name: Test offline PKI lifecycle (temporary CA only)
         run: bash scripts/pki/test.sh
       - name: Test guarded CRL update validation (temporary CAs only)
