@@ -1,6 +1,6 @@
 # Reference projects review (consolidated)
 
-> Historical reference review dated 2026-11-17, copied from Draft PR #331 and preserved for reconciliation. This is advisory material, not a decision record. Current BAFT-TUNNEL implementation, acceptance and priority status is governed by [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md) §9.10 and canonical [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
+> Historical reference review dated 2026-11-17, copied from Draft PR #331 and preserved in PR #397 after #331 was closed as superseded. This is advisory material, not a decision record. Current BAFT-TUNNEL implementation, acceptance and priority status is governed by [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md) §9.10 and canonical [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
 Status: consolidated review, 2026-11-17, first written at `main` `b7172bc`; Rakhsh and BackPack sections refreshed against `main` `cc61dea` (PR #340) the same evening. **Documentation only. Not a decision record, not permission to change code, tag, release or deploy.**
 This file consolidates, and does not replace: [RAKHSH_INTEGRATION_ANALYSIS.md](RAKHSH_INTEGRATION_ANALYSIS.md), [ADVISOR_ASSESSMENT.md](ADVISOR_ASSESSMENT.md), [research/ENGINE_ECOSYSTEM_COMPARISON.md](research/ENGINE_ECOSYSTEM_COMPARISON.md) (and its siblings), [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md), ADR-0019, ADR-0038 to ADR-0049. Where a source document has the detail, this file links to it instead of repeating it.
