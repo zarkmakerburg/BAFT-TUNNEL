@@ -51,6 +51,7 @@ export const ENDPOINTS = {
   diagnostics: '/v1/diagnostics',
   update: '/v1/update',
   host: '/v1/host/tunnels',
+  geo: '/v1/geo',
 } as const;
 export type EndpointKey = keyof typeof ENDPOINTS;
 export type SourceState = 'ok' | 'unavailable' | 'error';
@@ -66,6 +67,7 @@ export interface Loaded {
   diagnostics: any | null;
   update: any | null;
   host: any | null;
+  geo: any | null;
   meta: Partial<Record<EndpointKey, SourceState>>;
 }
 
@@ -77,7 +79,7 @@ export const BASE: EndpointKey[] = ['security', 'history', 'traffic', 'audit', '
  * null + 'error' (anything else). Status goes first: an agent in setup mode has nothing else.
  */
 export async function load(token: string, needs: EndpointKey[]): Promise<Loaded> {
-  const out: Loaded = { status: null, history: null, security: null, engines: null, desired: null, audit: null, traffic: null, diagnostics: null, update: null, host: null, meta: {} };
+  const out: Loaded = { status: null, history: null, security: null, engines: null, desired: null, audit: null, traffic: null, diagnostics: null, update: null, host: null, geo: null, meta: {} };
   const get = async (k: EndpointKey): Promise<void> => {
     try {
       const r = await api('GET', ENDPOINTS[k], token);

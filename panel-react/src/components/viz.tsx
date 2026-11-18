@@ -110,17 +110,18 @@ export function Topology({ d }: { d: Loaded }) {
 
 /* ---------- geographic view ---------- */
 
-function CountrySelect({ label, value, onChange }: { label: string; value: string; onChange: (c: string) => void }) {
+function CountrySelect({ label, value, onChange, detected }: { label: string; value: string; onChange: (c: string) => void; detected: string | null }) {
   const { lang, t } = useApp();
   const names = useMemo(() => {
     let dn: Intl.DisplayNames | null = null;
     try { dn = new Intl.DisplayNames([lang], { type: 'region' }); } catch { /* fall back to codes */ }
     return CODES.map((k) => ({ k, n: dn?.of(k) ?? k })).sort((a, b) => a.n.localeCompare(b.n, lang));
   }, [lang]);
+  const nm = (k: string) => names.find((x) => x.k === k)?.n ?? k;
   return (
     <label className="geo-sel"><span className="sub">{label}</span>
       <select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">{t('viz.geo.unset')}</option>
+        <option value="">{detected ? t('viz.geo.auto', { c: nm(detected) }) : t('viz.geo.auto.none')}</option>
         {names.map((x) => <option key={x.k} value={x.k}>{x.n}</option>)}
       </select>
     </label>
@@ -133,9 +134,16 @@ export function GeoMap({ d }: { d: Loaded }) {
   const lk = linkOf(d);
   const [mine, setMine] = useDeclared(c.local_identity);
   const [theirs, setTheirs] = useDeclared(c.peer_identity);
-  const a = mine && CENTROID[mine] ? proj(...CENTROID[mine]) : null;
-  const b0 = theirs && CENTROID[theirs] ? proj(...CENTROID[theirs]) : null;
-  const same = !!a && !!b0 && mine === theirs;
+  // Detected values come from the Agent's offline database (GET /v1/geo); a user choice always wins.
+  const det = (k: 'local' | 'peer'): string | null => {
+    const v = d.geo?.[k]?.country;
+    return typeof v === 'string' && /^[A-Za-z]{2}$/.test(v) ? v.toUpperCase() : null;
+  };
+  const dMine = det('local'), dTheirs = det('peer');
+  const effMine = mine || dMine || '', effTheirs = theirs || dTheirs || '';
+  const a = effMine && CENTROID[effMine] ? proj(...CENTROID[effMine]) : null;
+  const b0 = effTheirs && CENTROID[effTheirs] ? proj(...CENTROID[effTheirs]) : null;
+  const same = !!a && !!b0 && effMine === effTheirs;
   const b: [number, number] | null = b0 && same && a ? [a[0] + 10, a[1] + 6] : b0;
   const dn = (() => { try { return new Intl.DisplayNames([lang], { type: 'region' }); } catch { return null; } })();
   const nm = (k: string) => dn?.of(k) ?? k;
@@ -160,20 +168,21 @@ export function GeoMap({ d }: { d: Loaded }) {
     </g>
   );
   return (
-    <Card title={t('viz.geo.title')} action={<Pill kind="unknown">{t('viz.geo.declared.pill')}</Pill>}>
+    <Card title={t('viz.geo.title')} action={<Pill kind={mine || theirs ? 'info' : dMine || dTheirs ? 'ok' : 'unknown'}>{mine || theirs ? t('viz.geo.declared.pill') : dMine || dTheirs ? t('viz.geo.detected.pill') : t('viz.geo.none.pill')}</Pill>}>
       <figure className={`geomap link-${lk}`}>
-        <svg viewBox={view} role="img" aria-label={a && b ? t('viz.geo.aria', { a: nm(mine), b: nm(theirs) }) : t('viz.geo.aria.none')} preserveAspectRatio="xMidYMid meet">
+        <svg viewBox={view} role="img" aria-label={a && b ? t('viz.geo.aria', { a: nm(effMine), b: nm(effTheirs) }) : t('viz.geo.aria.none')} preserveAspectRatio="xMidYMid meet">
           <path d={LAND} className="land" />
           {arc && <path d={arc} className="arc" />}
-          {pin(a, 'me', mine)}{pin(b, 'peer', theirs)}
+          {pin(a, 'me', effMine)}{pin(b, 'peer', effTheirs)}
         </svg>
         {!(a && b) && <figcaption className="geo-hint sub">{t('viz.geo.unset.hint')}</figcaption>}
       </figure>
       <div className="geo-form">
-        <CountrySelect label={`${t('viz.geo.me')}${c.local_identity ? ' · ' + c.local_identity : ''}`} value={mine} onChange={setMine} />
-        <CountrySelect label={`${t('viz.geo.peer')}${c.peer_identity ? ' · ' + c.peer_identity : ''}`} value={theirs} onChange={setTheirs} />
+        <CountrySelect label={`${t('viz.geo.me')}${c.local_identity ? ' · ' + c.local_identity : ''}`} value={mine} onChange={setMine} detected={dMine} />
+        <CountrySelect label={`${t('viz.geo.peer')}${c.peer_identity ? ' · ' + c.peer_identity : ''}`} value={theirs} onChange={setTheirs} detected={dTheirs} />
       </div>
-      <p className="sub">{t('viz.geo.note')}</p>
+      <p className="sub">{d.meta.geo === 'ok' ? t('viz.geo.note.auto') : t('viz.geo.note')}</p>
+      {(d.geo?.local?.reason || d.geo?.peer?.reason) && <p className="sub">{[d.geo?.local?.reason, d.geo?.peer?.reason].filter(Boolean).join(' · ')}</p>}
     </Card>
   );
 }

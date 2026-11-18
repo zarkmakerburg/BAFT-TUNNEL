@@ -7,7 +7,7 @@ export interface Route { id: RouteId; group: Group; icon: string; tab?: boolean;
 
 // Same nine routes, groups and order as the classic panel (ADR-0032 information architecture).
 export const ROUTES: Route[] = [
-  { id: 'overview', group: 'operate', icon: 'overview', tab: true, needs: ['desired'] },
+  { id: 'overview', group: 'operate', icon: 'overview', tab: true, needs: ['desired', 'geo'] },
   { id: 'tunnels', group: 'operate', icon: 'tunnels', tab: true, needs: ['host'] },
   { id: 'servers', group: 'operate', icon: 'servers', needs: ['engines', 'host'] },
   { id: 'monitoring', group: 'operate', icon: 'monitoring', needs: [] },

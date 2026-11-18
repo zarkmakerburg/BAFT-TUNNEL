@@ -15,6 +15,11 @@ export const LANGS: Record<Lang, { label: string; dir: 'rtl' | 'ltr' }> = {
 
 const EXTRA: Record<Lang, Record<string, string>> = {
   fa: {
+    'viz.geo.auto': 'خودکار ({c})',
+    'viz.geo.auto.none': 'خودکار (تشخیص داده نشد)',
+    'viz.geo.detected.pill': 'تشخیص خودکار',
+    'viz.geo.none.pill': 'ناشناخته',
+    'viz.geo.note.auto': 'کشور با پایگاه GeoIP آفلاین روی همین سرور تشخیص داده می‌شود و آدرسی به بیرون فرستاده نمی‌شود. اگر درست نیست کشور را خودتان انتخاب کنید؛ انتخاب شما فقط در همین مرورگر ذخیره می‌شود و با «خودکار» برمی‌گردد. IPهای ابری و VPN ممکن است اشتباه تشخیص داده شوند.',
     'viz.topo.title': 'نقشهٔ اتصال',
     'viz.this': 'این سرور',
     'viz.peer': 'سرور مقابل',
@@ -80,6 +85,11 @@ const EXTRA: Record<Lang, Record<string, string>> = {
     'rx.settings.logout.body': 'توکن از این مرورگر حذف می‌شود و باید دوباره وارد شوید.',
   },
   en: {
+    'viz.geo.auto': 'Automatic ({c})',
+    'viz.geo.auto.none': 'Automatic (not detected)',
+    'viz.geo.detected.pill': 'Detected automatically',
+    'viz.geo.none.pill': 'Unknown',
+    'viz.geo.note.auto': 'The country is detected from an offline GeoIP database on this server; no address is sent anywhere. If it is wrong, choose the country yourself; your choice is stored only in this browser and Automatic restores detection. Cloud and VPN addresses can be mislocated.',
     'viz.topo.title': 'Connection map',
     'viz.this': 'This server',
     'viz.peer': 'Peer server',
