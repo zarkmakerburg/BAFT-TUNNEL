@@ -217,6 +217,10 @@ enum PairCommand {
         /// Address the other server dials; detected when omitted.
         #[arg(long)]
         host: Option<String>,
+        /// `direct` (the service runs on this server) or `reverse` (the service runs on the other
+        /// server, which dials out; tcp-tls Preview).
+        #[arg(long, default_value = "direct")]
+        direction: pair_flow::Direction,
         #[arg(long, default_value = "/etc/baft-tunnel")]
         dir: PathBuf,
         /// systemd instance name (`baft-tunnel@NAME`).
@@ -752,6 +756,7 @@ async fn run() -> Result<()> {
                     service_port,
                     tunnel_port,
                     host,
+                    direction,
                     dir,
                     instance,
                     yes,
@@ -765,6 +770,7 @@ async fn run() -> Result<()> {
                     service_port,
                     tunnel_port,
                     host,
+                    direction,
                 },
                 |p: pair_flow::Pending| async move {
                     eprintln!("Server {} connects from {}. Its key fingerprint: {}", p.node_id, p.peer, p.verify);

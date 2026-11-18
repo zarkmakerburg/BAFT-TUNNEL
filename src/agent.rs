@@ -730,6 +730,8 @@ struct PairOfferBody {
     tunnel_port: Option<u16>,
     #[serde(default)]
     host: Option<String>,
+    #[serde(default)]
+    direction: Option<crate::pair_flow::Direction>,
     confirm: bool,
 }
 
@@ -788,7 +790,8 @@ fn pair_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) 
                 }
                 submit(
                     json!({"op": "offer", "name": b.name, "service_port": b.service_port,
-                    "tunnel_port": b.tunnel_port.unwrap_or(8443), "host": b.host}),
+                    "tunnel_port": b.tunnel_port.unwrap_or(8443), "host": b.host,
+                    "direction": b.direction.unwrap_or_default()}),
                 )
             }
         },

@@ -119,3 +119,13 @@ the joiner's answer changes configuration: an Iran-side Direct dialer gets `sess
 normal config loader; failure rolls the pairing back). The first server's answer is a hint: choosing Iran shows the advice to
 do step one on the abroad server and states that reachability is checked when the other server connects. Nothing else is
 inferred from the answer, no listener or direction is switched silently, and Reverse is still not offered by pairing.
+
+### Stage (b)/(c) as built (2026-11-18): Reverse pairing
+
+`pair offer --direction reverse` (panel: "which server runs your service?" = the second server; installer `--direction`)
+creates a Reverse tcp-tls Preview tunnel with the same code, CA, worker, approval and rollback. The listener is the public
+node (`ingress` on `127.0.0.1:PORT`), the joiner is the service node that dials out (`target` `127.0.0.1:PORT`); `setup`
+requires the same service port number on both nodes, so one number is used. An Iran answer does not add session rotation to
+a Reverse joiner (ADR-0049 refuses it) and the CLI says so. Evidence: unit/e2e tests assert the generated configs and that
+they load; panel QA covers the question. Not yet shown: a Reverse data path through a pairing-generated config, which needs
+two hosts (LAB), and Reverse stays Preview and unadvertised outside this flow.

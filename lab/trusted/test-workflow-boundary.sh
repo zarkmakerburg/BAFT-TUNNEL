@@ -46,6 +46,20 @@ if awk '/^  build-candidate:/{inside=1} /^  d2-two-host-lab:/{inside=0} inside &
   exit 1
 fi
 test "$(grep -c 'secrets\.' "$d2")" = 4
+# Automatic pairing LAB (ADR-0050): same trusted-main boundary, stage selected by LAB_AUTO_PAIR only.
+pl="$root/.github/workflows/phase1-trusted-pairing-lab.yml"
+grep -F "if: \${{ github.ref == 'refs/heads/main' }}" "$pl" >/dev/null
+grep -F 'ref: ${{ github.sha }}' "$pl" >/dev/null
+grep -F 'git merge-base --is-ancestor "$actual" "$GITHUB_SHA"' "$pl" >/dev/null
+grep -F '[[ "$CONFIRM" == RUN_TRUSTED_PHASE1_LAB ]]' "$pl" >/dev/null
+grep -F 'LAB_AUTO_PAIR=1' "$pl" >/dev/null
+grep -F 'unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS' "$pl" >/dev/null
+grep -F 'environment: baft-tunnel-lab' "$pl" >/dev/null
+if awk '/^  build-candidate:/{inside=1} /^  auto-pair-two-host-lab:/{inside=0} inside && /secrets\./{found=1} END{exit !found}' "$pl"; then
+  echo 'pairing candidate build job has access to LAB secrets' >&2
+  exit 1
+fi
+test "$(grep -c 'secrets\.' "$pl")" = 4
 # B4 (baft through the Wizard) uses the same trusted-main boundary; the engine is a verified signed asset.
 b4="$root/.github/workflows/phase1-trusted-b4-baft-lab.yml"
 grep -F "if: \${{ github.ref == 'refs/heads/main' }}" "$b4" >/dev/null

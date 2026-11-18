@@ -772,7 +772,7 @@
       return t('auto.fail.other') + ' ' + r;
     }
     function autoFlow() {
-      var a = w.auto = w.auto || { role: null, loc: null, name: '', port: '', host: '', code: '', ps: null, err: null, busy: false, phase: 'form', t0: 0 };
+      var a = w.auto = w.auto || { role: null, loc: null, svc: null, name: '', port: '', host: '', code: '', ps: null, err: null, busy: false, phase: 'form', t0: 0 };
       var key = function () { return newKey('ui-auto-'); };
       function setErr(r) { a.err = (r && r.body && (r.body.detail || r.body.error)) || t('fail'); }
       function afterDone() {
@@ -827,13 +827,18 @@
           if (a.role === 'second' && a.loc === 'iran') { kids.push(h('p', { class: 'sub', text: t('auto.loc.second.iran') })); }
         }
         if (a.role === 'first') {
+          kids.push(h('h3', { text: t('auto.svc.q') }), h('div', { class: 'choices', role: 'radiogroup', 'aria-label': t('auto.svc.q') },
+            choice('autosvc', 'here', a.svc === 'here', t('auto.svc.here'), t('auto.svc.here.d'), function (v) { a.svc = v; a.err = null; draw(); }),
+            choice('autosvc', 'other', a.svc === 'other', t('auto.svc.other'), t('auto.svc.other.d'), function (v) { a.svc = v; a.err = null; draw(); })));
+          if (a.svc === 'other') { kids.push(h('div', { class: 'banner', role: 'note' }, h('strong', { text: t('auto.rev.t') }), h('p', { text: t('auto.rev.b') }))); }
           kids.push(h('div', { class: 'form-grid' }, fieldA('name', t('auto.f.name'), true), fieldA('port', t('auto.f.port'), true, 'numeric')),
             h('details', null, h('summary', { text: t('adv') }), h('div', { class: 'form-grid' }, fieldA('host', t('auto.f.host'), true))),
             h('button', { type: 'button', class: 'primary', disabled: a.busy ? true : null, text: t('auto.create'), onclick: function () {
               var port = Number(a.port);
-              if (!a.loc) { a.err = t('auto.err.loc'); draw(); return; }
+              if (!a.loc || !a.svc) { a.err = t('auto.err.loc'); draw(); return; }
               if (!/^[A-Za-z0-9 -]{1,32}$/.test(a.name.trim()) || !(port >= 1024 && port <= 65535)) { a.err = t('auto.err.input'); draw(); return; }
               var b = { name: a.name.trim(), service_port: port, confirm: true };
+              if (a.svc === 'other') { b.direction = 'reverse'; }
               if (a.host.trim()) { b.host = a.host.trim(); }
               submit('/v1/pair/offer', b);
             } }));
