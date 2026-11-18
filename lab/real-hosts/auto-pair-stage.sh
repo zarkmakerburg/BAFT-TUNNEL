@@ -76,7 +76,9 @@ ap_wait_state() { # side want_state timeout -> prints the status JSON; fails on 
   echo "timed out waiting for state $want on $side (last state: ${st:-none})" >&2; return 1
 }
 ap_cfg_check() { # side instance expected_python_assertion
-  ssh_host "$1" "python3 -c 'import json;c=json.load(open(\"$EB/$2.json\"));$3' && [ \"\$(stat -c %U $EB/node.key)\" = baft-tunnel ]" ||
+  # the assertion travels on stdin: it contains single quotes that would break a quoted ssh command
+  { printf 'import json\nc=json.load(open("%s"))\n' "$EB/$2.json"; printf '%s\n' "${3//;/$'\n'}"; } | ssh_host "$1" "python3 -" &&
+    ssh_host "$1" "[ \"\$(stat -c %U $EB/node.key)\" = baft-tunnel ]" </dev/null ||
     { echo "generated configuration on $1 did not match expectations ($3)" >&2; ssh_host "$1" "cat $EB/$2.json | sed -E 's/[0-9]{1,3}(\\.[0-9]{1,3}){3}/<ip>/g'" >&2 || true; return 1; }
 }
 ap_diag() { # side label : tiers must show a verified, authorized, data-carrying session
