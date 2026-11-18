@@ -17,7 +17,8 @@ export function Fleet() {
   const nodes: any[] = Array.isArray(f?.nodes) ? f.nodes : [];
   const hub = f?.hub ?? {};
   const live = nodes.filter((n) => n.freshness === 'live').length;
-  const upd = nodes.filter((n) => n.update === 'update_available').length;
+  const stale = nodes.filter((n) => n.freshness === 'stale' || n.freshness === 'never').length;
+  const upd = nodes.filter((n) => n.freshness === 'live' && n.update === 'update_available').length;
   const ageText = (s: number | null | undefined): string => {
     if (s == null) return t('fleet.age.none');
     const m = Math.round(s / 60);
@@ -32,11 +33,11 @@ export function Fleet() {
           <div className="grid kpis">
             <Kpi label={t('fleet.k.nodes')} value={nodes.length ? fmtNum(lang, nodes.length, 0) : t('unknown')} />
             <Kpi label={t('fleet.k.live')} value={nodes.length ? fmtNum(lang, live, 0) : '—'} />
-            <Kpi label={t('fleet.k.stale')} value={nodes.length ? fmtNum(lang, nodes.length - live, 0) : '—'} />
+            <Kpi label={t('fleet.k.stale')} value={nodes.length ? fmtNum(lang, stale, 0) : '—'} />
             <Kpi label={t('fleet.k.upd')} value={nodes.length ? fmtNum(lang, upd, 0) : '—'} hint={f.latest_tag ? <>{t('fleet.latest')}: <Ltr>{f.latest_tag}</Ltr></> : undefined} />
           </div>
           <Card title={t('fleet.hub.title')} action={<Pill kind={hub.listener ? 'ok' : 'unknown'}>{hub.listener ? t('fleet.hub.on') : t('fleet.hub.off')}</Pill>}>
-            {hub.reason && <p className="muted">{String(hub.reason)}</p>}
+            {hub.reason && <p className="muted" dir="auto">{String(hub.reason)}</p>}
           </Card>
           {nodes.length === 0 ? (
             <Empty>{t('fleet.none')}</Empty>

@@ -6,7 +6,7 @@ import { Card, Ltr, Pill } from './ui';
 import { LAND, MAP_H, MAP_S, MAP_TOP, MAP_W } from '../worldmap';
 import { Globe, type GlobePin } from './globe';
 
-/* ---------- operator-declared location (no GeoIP yet: ADR-0052 offline database is not built) ---------- */
+/* ---------- location: automatic country from /v1/geo (ADR-0052), operator correction stored in the browser ---------- */
 
 // Country centroids (lat, lon). Names come from Intl.DisplayNames, so nothing is hard-coded per language.
 const CENTROID: Record<string, [number, number]> = {

@@ -329,7 +329,7 @@ The README one-line install still pins `v0.2.1`. It moves to the next Stable tag
 
 ## 9.8 Local Agent panel React modernization (2026-11-18)
 
-**Decision accepted:** [ADR-0053 — React architecture for the local Agent panel](ADR-0053-react-local-agent-panel.md). The owner approved React + TypeScript, with Vite as the initial build-tool choice, for the existing local Agent panel. This supersedes ADR-0032's vanilla-only frontend technology constraint for this panel only; the Rust core, Agent API trust boundary, static deployment model and all non-conflicting guardrails remain binding.
+**Decision accepted:** [ADR-0054 — React architecture for the local Agent panel](ADR-0054-react-local-agent-panel.md). The owner approved React + TypeScript, with Vite as the initial build-tool choice, for the existing local Agent panel. This supersedes ADR-0032's vanilla-only frontend technology constraint for this panel only; the Rust core, Agent API trust boundary, static deployment model and all non-conflicting guardrails remain binding.
 
 **Scope:** the nine existing local routes only — Overview, Tunnels, Servers, Monitoring, Setup, Diagnostics, Activity, Agent and Settings. Central Fleet/control-plane work remains separate and is not authorized by this decision.
 

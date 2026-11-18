@@ -2,7 +2,7 @@
 
 Status: **Draft, preview beside the classic panel.** Classic panel stays the default at `/`; the React panel is served at `/next/`. Same API, same bearer token (shared `sessionStorage`), same CSP. No Rust engine, API or auth change.
 
-Decision context: React for the local panel is recorded in `docs/ADR-0053-react-local-agent-panel.md` (added here; supersedes the ADR-0051-numbered file in #344, because ADR-0051 is the merged Fleet add-server design).
+Decision context: React for the local panel is recorded in `docs/ADR-0054-react-local-agent-panel.md` (added here; supersedes the ADR-0051-numbered file in #344, because ADR-0051 is the merged Fleet add-server design).
 
 ## Layout
 

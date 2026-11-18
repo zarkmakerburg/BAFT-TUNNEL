@@ -78,7 +78,7 @@ export function AutoPair() {
     if (!c.startsWith('BAFT1-')) { setErr(t('auto.err.code')); return; }
     void submit('/v1/pair/accept', { code: c, confirm: true });
   };
-  const decide = (approve: boolean) => { void call('POST', '/v1/pair/approve', { approve, nonce: ps?.nonce }); };
+  const decide = (approve: boolean) => { void call('POST', '/v1/pair/approve', { approve, nonce: ps?.nonce }).then((r) => { if (r.status >= 300) setErr(t('fail')); }, () => setErr(t('fail'))); };
   const cmd = (c: string) => `sudo baft-tunnel pair accept ${c}`;
 
   return (
