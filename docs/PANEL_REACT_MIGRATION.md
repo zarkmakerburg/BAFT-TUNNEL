@@ -2,7 +2,7 @@
 
 Status: **Draft, preview beside the classic panel.** Classic panel stays the default at `/`; the React panel is served at `/next/`. Same API, same bearer token (shared `sessionStorage`), same CSP. No Rust engine, API or auth change.
 
-Decision context: React for the local panel is recorded in the ADR on PR #344 (file name `ADR-0051-react-local-agent-panel.md`). PR #341 also uses number 0051 for the Fleet add-server design, so one of the two must be renumbered before merge; this change does not touch either.
+Decision context: React for the local panel is recorded in the ADR on PR #344. ADR-0051 is now the merged Fleet add-server design, so that ADR is renumbered to **ADR-0052** (`docs/ADR-0052-react-local-agent-panel.md`) in #344.
 
 ## Layout
 
@@ -65,4 +65,4 @@ Honest-state rules kept: unknown/unavailable/error are distinct; no value withou
 - Manual screen reader and real-phone checks not done; no automated axe run.
 - Setup Apply/pairing, Fleet panel, update/rollback UI remain classic-only.
 - Committed `dist/` must be rebuilt by hand; a CI freshness check is a follow-up.
-- Existing ADR-0051 number clash (above).
+- #344's branch still carries the file as ADR-0051 until it is renumbered to 0052 there.
