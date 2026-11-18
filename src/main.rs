@@ -26,6 +26,7 @@ mod pki_helper;
 mod policy;
 #[cfg(test)]
 mod policy_baseline;
+mod probe_adapters;
 mod resumable;
 mod resume_core;
 mod resume_registry;

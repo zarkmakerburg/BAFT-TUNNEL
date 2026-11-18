@@ -21,7 +21,16 @@ The default source is an **offline GeoIP country database** read from a local fi
 ### 3. Health and reachability, by source (best first)
 1. **From this panel host** (always available, no third party): TCP connect to the service port and, after enrollment, the existing Integrity/Health tiers. Labelled "measured from this server".
 2. **From our own enrolled Iran nodes** (preferred for Iran views, no third party): after Fleet F3, a node may run a typed read-only job `probe.tcp` against exactly the target IP and port the operator entered (same public-target guard on the member, bounded timeout, one attempt). The city comes from an operator-set label on the node and is shown as such, never inferred. Until F3 this source shows "No Iran node enrolled" (Unknown).
-3. **External probe networks with Iran vantage points** (opt-in, Preview): a public probe service that offers nodes in several Iranian cities. Candidates to verify before any code: check-host.net, Globalping, RIPE Atlas (needs account and credits). Each candidate must be checked for current Iran coverage, terms, rate limits and data retention in a review; none is chosen here. Results are shown per city and per source, with the probe's own timestamp. A provider that cannot be reached shows Unknown, not zero.
+3. **External probe networks with Iran vantage points** (owner decision 2026-11-18: use them; consent-gated, Preview). Providers checked against live responses on 2026-11-18:
+
+   | Provider | Iran vantage | Check type for a service port | Limits and notes |
+   |---|---|---|---|
+   | check-host.net | 8 nodes: Tehran x4, Shiraz x2, Isfahan, Qom (`GET /nodes/hosts`) | `check-tcp` host:port, `check-ping` | Public JSON API, no key. Returns `{"error":"limit_exceeded"}` when one client IP asks too often (hit during testing), so every call must tolerate it and show Unknown. Results are polled with `check-result/<id>`; a node still working returns null. |
+   | Globalping (globalping.io) | 8 probes, all Tehran (several ASNs) | `ping` (ICMP), `http`, `dns`, `traceroute`, `mtr`; **no TCP type** | Public JSON API, anonymous limit 250 credits/hour (3 probes cost 3). ICMP failure is not proof a TCP service is down; the panel says so. |
+   | ipcheck.ing | not verified | not verified | Returned HTTP 403 to automated requests and no documented API was found; not used until its API and terms are confirmed. Listed as a candidate only. |
+   | RIPE Atlas | not verified | | Needs an account and credits; deferred. |
+
+   Design consequences: check-host is the only verified source with several Iranian cities and TCP-port reachability, Globalping adds independent ICMP rows from Tehran networks, and both are per-source tables. A source that errors, is rate limited or times out contributes Unknown rows (never zero, never a copied value). Cities shown are the provider's own labels. Each provider is a separate adapter behind the same consent gate; the user sees the provider names and that the target IP (and port for TCP) is sent to them. Provider terms of service must be read and linked in the privacy text before the switch is enabled by default anywhere (it stays default-off). Request builders restrict node ids to `ir<digits>.node.check-host.net`, and every response field is sanitised and bounded before display.
 
 Probe results show reachability and latency only. They say nothing about tunnel readiness (ADR-0045: connection freshness is not readiness).
 
@@ -33,7 +42,7 @@ In "Add server": after the address is entered, the card shows Country (with sour
 2. `src/target_guard.rs`: pure public-target check, role suggestion from country code, result cache with TTL and budget; unit tests (done with this PR).
 3. Panel card using offline DB and the host-side TCP check; Unknown states.
 4. Iran-node probe job with Fleet F3; per-city table.
-5. External provider adapter, default off, after provider review.
+5. Pure adapters (`src/probe_adapters.rs`: request builders and response parsers, tests on real response shapes), done with this PR; then the HTTP client behind the consent gate (timeouts, size caps, cache, budget), default off, Preview until verified against live responses from a real run.
 
 ## Out of scope
 No scanning of ports or ranges, no probing of addresses the operator did not type, no storing of probe history beyond the cache, no firewall or route change.
