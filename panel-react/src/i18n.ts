@@ -15,6 +15,15 @@ export const LANGS: Record<Lang, { label: string; dir: 'rtl' | 'ltr' }> = {
 
 const EXTRA: Record<Lang, Record<string, string>> = {
   fa: {
+    'rx.loc.q': 'این سرور ایرانی است یا خارج؟',
+    'rx.loc.iran': 'ایران',
+    'rx.loc.iran.d': 'پیش‌فرض: این سرور تونل را باز می‌کند و کاربران محلی به آن وصل می‌شوند.',
+    'rx.loc.abroad': 'خارج از ایران',
+    'rx.loc.abroad.d': 'پیش‌فرض: این سرور ترافیک را می‌پذیرد و به مقصد می‌رساند.',
+    'rx.peer.pick': 'شناسهٔ همتا (از سرورهای شناخته‌شده یا دستی)',
+    'rx.peer.manual': 'ورود دستی…',
+    'rx.peer.none': 'فهرستی از سرورهای ثبت‌شده هنوز وجود ندارد؛ شناسهٔ همتا را دستی وارد کنید.',
+    'rx.peer.known': 'سرورِ شناخته‌شده (پیکربندی همین نود)',
     'rx.classic': 'پنل کلاسیک',
     'rx.classic.note': 'پنل کلاسیک تا تأیید نهایی در دسترس می‌ماند.',
     'rx.wiz.n1': 'نصب نود',
@@ -50,6 +59,15 @@ const EXTRA: Record<Lang, Record<string, string>> = {
     'rx.settings.logout.body': 'توکن از این مرورگر حذف می‌شود و باید دوباره وارد شوید.',
   },
   en: {
+    'rx.loc.q': 'Is this server in Iran or abroad?',
+    'rx.loc.iran': 'Iran',
+    'rx.loc.iran.d': 'Default: this server opens the tunnel and local users connect to it.',
+    'rx.loc.abroad': 'Abroad',
+    'rx.loc.abroad.d': 'Default: this server accepts traffic and delivers it to the destination.',
+    'rx.peer.pick': 'Peer ID (pick a known server or enter manually)',
+    'rx.peer.manual': 'Enter manually…',
+    'rx.peer.none': 'There is no enrolled-server inventory yet; enter the peer ID manually.',
+    'rx.peer.known': 'Known server (this node\'s configuration)',
     'rx.classic': 'Classic panel',
     'rx.classic.note': 'The classic panel stays available until the new one is accepted.',
     'rx.wiz.n1': 'Install node',

@@ -197,7 +197,6 @@ dialog.ov{color:var(--fg);background:var(--surface);border:1px solid var(--line-
 dialog.ov::backdrop{background:var(--scrim)}
 dialog.ov[open]{animation:enter var(--t-base) var(--ease)}
 dialog.ov-drawer{margin:0;inset-block:0;inset-inline-start:0;block-size:100dvh;max-block-size:100dvh;border-radius:0;inline-size:min(320px,86vw);padding:var(--s4);animation:slide var(--t-base) var(--ease)}
-[dir=rtl] dialog.ov-drawer{inset-inline-start:auto;inset-inline-end:0}
 dialog.ov-palette{margin-block-start:12vh}
 @keyframes slide{from{transform:translateX(-24px);opacity:0}to{transform:none;opacity:1}}
 [dir=rtl] dialog.ov-drawer[open]{animation-name:slide-rtl}

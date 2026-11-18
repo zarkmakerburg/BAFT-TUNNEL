@@ -5,8 +5,8 @@ import { conf, directionsOffered, type Kind } from '../derive';
 import { Banner, Card, Field, KV, Ltr, Pill } from '../components/ui';
 
 type Dir = 'direct' | 'reverse';
-interface Form { direction: Dir | null; role: 'forward' | 'serve'; engine: string; node: string; peerId: string; peerHost: string; serverName: string; tunnel: string; port: string; tport: string; dir: string; inst: string }
-const BLANK: Form = { direction: null, role: 'forward', engine: '', node: '', peerId: '', peerHost: '', serverName: '', tunnel: '', port: '', tport: '8443', dir: '/etc/baft-tunnel', inst: '' };
+interface Form { loc: 'iran' | 'abroad' | null; peerManual: boolean; direction: Dir | null; role: 'forward' | 'serve'; engine: string; node: string; peerId: string; peerHost: string; serverName: string; tunnel: string; port: string; tport: string; dir: string; inst: string }
+const BLANK: Form = { loc: null, peerManual: false, direction: null, role: 'forward', engine: '', node: '', peerId: '', peerHost: '', serverName: '', tunnel: '', port: '', tport: '8443', dir: '/etc/baft-tunnel', inst: '' };
 
 const x509 = (engine: string) => engine === 'tcp-tls' || engine === 'baft';
 const portOk = (v: string) => /^\d+$/.test(v.trim()) && Number(v) >= 1 && Number(v) <= 65535;
@@ -52,6 +52,7 @@ export function Setup() {
     const e: Record<string, string> = {};
     const req = (k: keyof Form) => { if (!String(f[k] ?? '').trim()) e[k] = t('rx.wiz.err.required'); };
     if (n === 1) {
+      if (!f.loc) e.loc = t('rx.wiz.err.required');
       if (!f.direction) e.direction = t('rx.wiz.err.required');
       req('node'); req('peerId');
       if (f.role === 'forward') { req('peerHost'); if (x509(f.engine || 'tcp-tls')) req('serverName'); }
@@ -82,9 +83,30 @@ export function Setup() {
   const steps: [string, string][] = [['rx.wiz.n1', 'rx.wiz.n1.d'], ['rx.wiz.n2', 'rx.wiz.n2.d'], ['rx.wiz.n3', 'rx.wiz.n3.d']];
   const txt = (k: keyof Form, label: string, o?: { ltr?: boolean; hint?: string; type?: string }) => (
     <Field label={label} error={errors[k]} hint={o?.hint}>
-      {(p) => <input {...p} type={o?.type ?? 'text'} value={f[k] ?? ''} dir={o?.ltr === false ? undefined : 'ltr'} inputMode={o?.type === 'number' ? 'numeric' : undefined} autoComplete="off" onChange={(e) => set(k, e.target.value as never)} />}
+      {(p) => <input {...p} type={o?.type ?? 'text'} value={String(f[k] ?? '')} dir={o?.ltr === false ? undefined : 'ltr'} inputMode={o?.type === 'number' ? 'numeric' : undefined} autoComplete="off" onChange={(e) => set(k, e.target.value as never)} />}
     </Field>
   );
+
+  // The only server this Agent can name is its own configured peer; there is no fleet inventory API yet.
+  const knownPeers = [c.peer_identity].filter((x): x is string => !!x);
+  const peerField = () => {
+    if (knownPeers.length === 0) return <>{txt('peerId', t('f.peerid'), { hint: t('rx.peer.none') })}</>;
+    const manual = f.peerManual || (!!f.peerId && !knownPeers.includes(f.peerId));
+    return (
+      <>
+        <Field label={t('rx.peer.pick')} error={manual ? undefined : errors.peerId}>
+          {(p) => (
+            <select {...p} dir="ltr" value={manual ? '__manual' : f.peerId} onChange={(e) => { const v = e.target.value; setF((x) => ({ ...x, peerManual: v === '__manual', peerId: v === '__manual' ? '' : v })); setPf(null); setPlan(null); }}>
+              <option value="">—</option>
+              {knownPeers.map((k) => <option key={k} value={k}>{k} · {t('rx.peer.known')}</option>)}
+              <option value="__manual">{t('rx.peer.manual')}</option>
+            </select>
+          )}
+        </Field>
+        {manual && txt('peerId', t('f.peerid'))}
+      </>
+    );
+  };
 
   const sorted = pf ? [...(pf.checks as any[])].sort((a, b) => (ORDER[a.result] ?? 2) - (ORDER[b.result] ?? 2)) : [];
   const unknown: string[] = pf ? sorted.filter((x) => x.result === 'unknown').map((x) => x.id) : [];
@@ -113,6 +135,17 @@ export function Setup() {
 
         {step === 1 && (
           <div className="form">
+            <fieldset className="choices">
+              <legend>{t('rx.loc.q')}</legend>
+              {(['iran', 'abroad'] as const).map((k) => (
+                <label key={k} className={`choice ${f.loc === k ? 'on' : ''}`}>
+                  <input type="radio" name="loc" value={k} checked={f.loc === k} onChange={() => { setF((x) => ({ ...x, loc: k, role: k === 'iran' ? 'forward' : 'serve' })); setPf(null); setPlan(null); }} />
+                  <span className="choice-t">{t('rx.loc.' + k)}</span><span className="sub">{t('rx.loc.' + k + '.d')}</span>
+                </label>
+              ))}
+              {errors.loc && <p className="fielderr" role="alert">{errors.loc}</p>}
+            </fieldset>
+            {f.loc && <>
             <fieldset className="choices">
               <legend>{t('dir.q')}</legend>
               {(['direct', 'reverse'] as Dir[]).map((k) => {
@@ -146,10 +179,11 @@ export function Setup() {
             </fieldset>
             <div className="form-grid">
               {txt('node', t('f.node'))}
-              {txt('peerId', t('f.peerid'))}
+              {peerField()}
               {f.role === 'forward' && txt('peerHost', t('f.peerhost'))}
               {f.role === 'forward' && x509(f.engine || 'tcp-tls') && txt('serverName', t('f.servername'))}
             </div>
+            </>}
           </div>
         )}
 

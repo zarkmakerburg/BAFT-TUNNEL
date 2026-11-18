@@ -53,7 +53,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     document.documentElement.setAttribute('data-theme', theme);
     store('theme', theme);
   }, [theme]);
-  useEffect(() => store('nav', nav) as unknown as void, [nav]);
+  useEffect(() => { store('nav', nav); }, [nav]);
 
   const signOut = useCallback(() => {
     saveToken(null);
