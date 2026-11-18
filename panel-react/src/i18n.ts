@@ -16,6 +16,7 @@ export const LANGS: Record<Lang, { label: string; dir: 'rtl' | 'ltr' }> = {
 const EXTRA: Record<Lang, Record<string, string>> = {
   fa: {
     'nav.fleet': 'ناوگان',
+    'life.editdel': 'ویرایش و حذف تونل هنوز در Agent وجود ندارد (نیاز به دسترسی ریشه و طراحی امنیتی دارد). فعلاً می‌توانید تونل را متوقف کنید یا از «ساخت تونل» دوباره بسازید.',
     'fleet.hub.title': 'مرکز ناوگان',
     'fleet.hub.off': 'فعال نیست',
     'fleet.hub.on': 'فعال',
@@ -144,6 +145,7 @@ const EXTRA: Record<Lang, Record<string, string>> = {
   },
   en: {
     'nav.fleet': 'Fleet',
+    'life.editdel': 'Editing and deleting a tunnel is not in the Agent yet (it needs root access and a security design). For now you can stop it, or recreate it from Create tunnel.',
     'fleet.hub.title': 'Fleet hub',
     'fleet.hub.off': 'Not enabled',
     'fleet.hub.on': 'Enabled',

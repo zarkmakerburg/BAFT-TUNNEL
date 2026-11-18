@@ -62,6 +62,7 @@ function Lifecycle({ tn }: { tn: any }) {
       ]} />
       <div className="row">{btn('start', !up, true)}{btn('restart', up)}{btn('stop', up || !!unit.enabled_at_boot)}</div>
       <p className="sub">{t('life.note')}</p>
+      <p className="sub">{t('life.editdel')}</p>
       <div aria-live="polite">{busy ? t('life.working') : out?.receipt ? <Receipt rc={out.receipt} /> : out?.error ? <p className="fielderr" role="alert">{out.error}</p> : null}</div>
       <Confirm open={pending !== null} title={pending ? t('life.act.' + pending) : ''} body={pending ? t('life.confirm.' + pending) : ''} okLabel={pending ? t('life.act.' + pending) : ''} danger={pending === 'stop' || pending === 'restart'}
         onResult={(ok) => { const a = pending; setPending(null); if (ok && a) void run(a); }} />
