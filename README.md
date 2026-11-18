@@ -59,16 +59,16 @@ Project record: [HQ control board](https://github.com/zarkmakerburg/BAFT-TUNNEL/
 
 ## Quick install (Ubuntu 22.04, x86_64)
 
-One line installs the latest **signed stable** release (currently `v0.2.2`). The script is pinned to the release tag, not `main`. Before it extracts or runs anything it verifies the release's keyless Sigstore signature and SHA-256 checksums, and it stops if either check fails. It installs the panel agent only; no tunnel is started.
+One line installs the latest **signed stable** release (currently `v0.3.0`). The script is pinned to the release tag, not `main`. Before it extracts or runs anything it verifies the release's keyless Sigstore signature and SHA-256 checksums, and it stops if either check fails. It installs the panel agent only; no tunnel is started.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.2.2/scripts/quick-install.sh | sudo bash -s -- --register t1
+curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.3.0/scripts/quick-install.sh | sudo bash -s -- --register t1
 ```
 
 `t1` is your instance name (letters, digits, `_`, `-`). To inspect the script first, download it, read it, then run it:
 
 ```bash
-curl -fsSL -o quick-install.sh https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.2.2/scripts/quick-install.sh
+curl -fsSL -o quick-install.sh https://raw.githubusercontent.com/zarkmakerburg/BAFT-TUNNEL/v0.3.0/scripts/quick-install.sh
 less quick-install.sh
 sudo bash quick-install.sh --register t1
 ```
@@ -77,7 +77,7 @@ Add `--verify-only` to check the signed release without installing, `--tag vX.Y.
 
 ### Automatic tunnel (pairing; no files to copy)
 
-Available from the first prerelease that includes ADR-0050 (not in `v0.2.2`): install on both servers with `--channel prerelease`, then create the tunnel from the panel (Create tunnel on the first server, Connect with the code on the second), or from the shell:
+Available from `v0.3.0` (ADR-0050, Preview): install on both servers with the command above, then create the tunnel from the panel (Create tunnel on the first server, Connect with the code on the second), or from the shell:
 
 ```bash
 # first server (accepts the connection): prints a one-time code, then asks you to approve the other server
