@@ -31,4 +31,5 @@ RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
-CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+# CAP_SETUID/CAP_SETGID: only so the network worker child can drop to the service user (never CAP_NET_ADMIN).
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_SETUID CAP_SETGID
