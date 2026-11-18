@@ -26,6 +26,9 @@ pub struct ReporterConfig {
     pub hub_addr: String,
     /// TLS server name checked against the hub certificate.
     pub hub_name: String,
+    /// Hub identity from the pairing record: the certificate must carry exactly the hub EKU and
+    /// the URI `baft-fleet-hub://<hub_id>.fleet.baft.invalid` (F-2). A CA pin alone is not enough.
+    pub hub_id: String,
     pub ca: PathBuf,
     pub crl: PathBuf,
     pub cert: PathBuf,
@@ -63,6 +66,44 @@ fn parse_status(raw: &[u8]) -> Result<u16> {
         .context("hub response has no status code")
 }
 
+/// F-2: the peer must be the paired hub, not just any certificate from the same CA. The leaf
+/// carries exactly the `fleet-hub` BAFT EKU (no tunnel or node EKU) and the expected hub URI.
+pub fn verify_hub_identity(leaf_der: &[u8], hub_id: &str) -> Result<()> {
+    use x509_parser::extensions::GeneralName;
+    let (rest, cert) = x509_parser::parse_x509_certificate(leaf_der)
+        .map_err(|_| anyhow::anyhow!("hub certificate is not valid X.509 DER"))?;
+    if !rest.is_empty() {
+        bail!("hub certificate has trailing data");
+    }
+    let eku = cert
+        .extended_key_usage()
+        .context("parse hub certificate extended key usage")?
+        .context("hub certificate has no extended key usage")?
+        .value;
+    if eku.any {
+        bail!("anyExtendedKeyUsage is not accepted for the Fleet hub");
+    }
+    let ids: Vec<String> = eku.other.iter().map(|o| o.to_id_string()).collect();
+    let ekus: Vec<&str> = ids.iter().map(String::as_str).collect();
+    if !fleet::profile_allows(&ekus, fleet::Profile::FleetHub) {
+        bail!("certificate is not a Fleet hub certificate");
+    }
+    let want = format!("baft-fleet-hub://{hub_id}.fleet.baft.invalid");
+    let san = cert
+        .subject_alternative_name()
+        .context("parse hub certificate subject alternative name")?
+        .context("hub certificate has no subject alternative name")?;
+    let found = san
+        .value
+        .general_names
+        .iter()
+        .any(|n| matches!(n, GeneralName::URI(u) if *u == want));
+    if !found {
+        bail!("hub certificate does not carry the paired hub identity");
+    }
+    Ok(())
+}
+
 /// One report over a fresh mTLS connection. Returns the HTTP status (204 means accepted).
 pub async fn post_once(cfg: &ReporterConfig, body: &[u8]) -> Result<u16> {
     if body.len() > fleet::MAX_REPORT_BYTES {
@@ -79,6 +120,14 @@ pub async fn post_once(cfg: &ReporterConfig, body: &[u8]) -> Result<u16> {
             .connect(name, tcp)
             .await
             .context("TLS handshake with the hub")?;
+        // Check who answered before any report byte leaves this host.
+        let leaf = tls
+            .get_ref()
+            .1
+            .peer_certificates()
+            .and_then(|c| c.first())
+            .context("the hub presented no certificate")?;
+        verify_hub_identity(leaf.as_ref(), &cfg.hub_id)?;
         let head = format!(
             "POST /v1/fleet/report HTTP/1.1\r\nHost: fleet-hub\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
@@ -190,13 +239,73 @@ mod tests {
         (c, k)
     }
 
+    fn hub_cert(
+        dir: &std::path::Path,
+        hub: &str,
+        ekus: &[&str],
+        issuer: &rcgen::Issuer<'static, KeyPair>,
+    ) -> (PathBuf, PathBuf) {
+        let mut p = CertificateParams::new(Vec::new()).unwrap();
+        p.distinguished_name = DistinguishedName::new();
+        p.distinguished_name.push(DnType::CommonName, hub);
+        p.is_ca = IsCa::ExplicitNoCa;
+        p.key_usages.push(KeyUsagePurpose::DigitalSignature);
+        let mut u = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        u.extend(ekus.iter().map(|e| {
+            ExtendedKeyUsagePurpose::Other(e.split('.').map(|x| x.parse().unwrap()).collect())
+        }));
+        p.extended_key_usages = u;
+        p.use_authority_key_identifier_extension = true;
+        p.subject_alt_names.push(SanType::DnsName(
+            Ia5String::try_from("localhost".to_owned()).unwrap(),
+        ));
+        p.subject_alt_names.push(SanType::URI(
+            Ia5String::try_from(format!("baft-fleet-hub://{hub}.fleet.baft.invalid")).unwrap(),
+        ));
+        let key = KeyPair::generate().unwrap();
+        let cert = p.signed_by(&key, issuer).unwrap();
+        let tag = format!("hub-{hub}-{}", ekus.len());
+        let (c, k) = (
+            dir.join(format!("{tag}.pem")),
+            dir.join(format!("{tag}.key")),
+        );
+        std::fs::write(&c, cert.pem()).unwrap();
+        std::fs::write(&k, key.serialize_pem()).unwrap();
+        (c, k)
+    }
+
+    #[test]
+    fn hub_identity_needs_the_hub_eku_and_the_paired_name() {
+        let dir = std::env::temp_dir().join(format!("baft-fleet-hubid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ca = crate::tls::tests::make_ca(&dir, "ca");
+        let der = |p: &PathBuf| crate::tls::certificates(p).unwrap()[0].as_ref().to_vec();
+        let (ok, _) = hub_cert(&dir, "hub-1", &[fleet::EKU_FLEET_HUB], &ca.issuer);
+        verify_hub_identity(&der(&ok), "hub-1").unwrap();
+        assert!(verify_hub_identity(&der(&ok), "hub-2").is_err());
+        // A node certificate, a tunnel certificate and a two-EKU certificate are never the hub.
+        let (n, _) = hub_cert(&dir, "hub-1", &[EKU_FLEET_NODE], &ca.issuer);
+        assert!(verify_hub_identity(&der(&n), "hub-1").is_err());
+        let (t, _) = hub_cert(&dir, "hub-1", &[fleet::EKU_TUNNEL], &ca.issuer);
+        assert!(verify_hub_identity(&der(&t), "hub-1").is_err());
+        let (m, _) = hub_cert(
+            &dir,
+            "hub-1",
+            &[fleet::EKU_FLEET_HUB, EKU_FLEET_NODE],
+            &ca.issuer,
+        );
+        assert!(verify_hub_identity(&der(&m), "hub-1").is_err());
+        let (leaf, _) = crate::tls::tests::leaf(&dir, "tun", "urn:baft-tunnel:node:x", &ca.issuer);
+        assert!(verify_hub_identity(&der(&leaf), "hub-1").is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn reporter_delivers_a_report_with_rtt_to_the_real_hub_listener() {
         let dir = std::env::temp_dir().join(format!("baft-fleet-report-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let ca = crate::tls::tests::make_ca(&dir, "ca");
-        let (hub_cert, hub_key) =
-            crate::tls::tests::leaf(&dir, "hub", "urn:baft-tunnel:node:hub", &ca.issuer);
+        let (hub_cert, hub_key) = hub_cert(&dir, "hub-1", &[fleet::EKU_FLEET_HUB], &ca.issuer);
         let (cert, key) = node_cert(&dir, "node-a", &ca.issuer);
         let acceptor = Arc::new(
             crate::tls::ReloadingAcceptor::new(&ca.ca_pem, &ca.crl_pem, &hub_cert, &hub_key)
@@ -211,6 +320,7 @@ mod tests {
         let cfg = ReporterConfig {
             hub_addr: addr.to_string(),
             hub_name: "localhost".into(),
+            hub_id: "hub-1".into(),
             ca: ca.ca_pem.clone(),
             crl: ca.crl_pem.clone(),
             cert,
@@ -235,6 +345,11 @@ mod tests {
         // An oversized report is refused before anything is sent.
         let big = vec![b'x'; fleet::MAX_REPORT_BYTES + 1];
         assert!(post_once(&cfg, &big).await.is_err());
+        // A hub whose identity differs from the paired one gets no report.
+        let mut other = cfg.clone();
+        other.hub_id = "hub-2".into();
+        assert!(post_once(&other, &body).await.is_err());
+        assert_eq!(hub.lock().unwrap().nodes().count(), 1);
         // A hub that cannot be reached is an error, not a hang.
         let mut dead = cfg.clone();
         dead.hub_addr = "127.0.0.1:1".into();
