@@ -92,3 +92,7 @@ The concrete need D1 asked for: the per-tunnel CA (ADR-0050) signs exactly two n
 - `fleet_ca::sign_hub` issues the `fleet-hub` server certificate (F-2): `serverAuth` plus the fleet-hub EKU only, URI `baft-fleet-hub://<name>.fleet.baft.invalid` and the DNS or IP the members dial. Not wired yet: the root helper operation and the enrollment flow (F-7) come in later slices. Nothing in the agent calls this module today.
 
 Evidence: container-free unit tests with the real `openssl` (profile, EKU exclusivity, name, 30-day bound, chain verify, bad CN, wrong curve, invalid ids, revocation). Not LAB-verified.
+
+## Addendum: enrollment state machine (F-7)
+
+`src/fleet_enroll.rs` holds the hub-side enrollment rules, pure and unwired: one live offer per node id (max 16), 15 minute TTL, one-time token stored only as a SHA-256 hash, three wrong-token attempts close the offer, a valid token is consumed by the first submit, the CSR must carry a proof bound to the offer nonce and its fingerprint, and a certificate is signed only after the operator types the CSR fingerprint the new server printed. Signing is injected (`fleet_ca::sign` through the root helper), so the module holds no keys. The join listener, the Add-server API and the helper operation are the next slices.
