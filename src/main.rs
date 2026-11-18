@@ -26,6 +26,7 @@ mod pki_helper;
 mod policy;
 #[cfg(test)]
 mod policy_baseline;
+mod probe_adapters;
 mod resumable;
 mod resume_core;
 mod resume_registry;
@@ -37,6 +38,7 @@ mod runtime_host;
 mod session_status;
 mod setup;
 mod setup_helper;
+mod target_guard;
 mod tls;
 mod transport_health;
 mod tunnel;
