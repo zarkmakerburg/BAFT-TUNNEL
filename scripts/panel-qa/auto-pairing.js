@@ -70,6 +70,8 @@ function serve() {
         ok(tag + ' simple flow is the default in setup mode (no wizard stepper)', await page.locator('.stepper').count() === 0 && await page.locator('input[name="autorole"]').count() === 2);
         await page.locator('input[name="autorole"][value="' + role + '"]').check();
         await page.locator('input[name="autoloc"][value="' + (role === 'first' ? 'abroad' : 'iran') + '"]').check();
+        const reverse = role === 'first' && lang === 'fa';
+        if (role === 'first') await page.locator('input[name="autosvc"][value="' + (reverse ? 'other' : 'here') + '"]').check();
         if (role === 'first') {
           const inputs = page.locator('.form-grid input');
           await inputs.nth(0).fill('demo'); await inputs.nth(1).fill('9000');
@@ -81,7 +83,7 @@ function serve() {
           ok(tag + ' approval is sent as approve=true', posts.some(p => p.path === '/v1/pair/approve' && JSON.parse(p.body).approve === true && JSON.parse(p.body).nonce === 'n0nce'));
           ok(tag + ' verification string shown', (await page.content()).includes('ab12-cd34-ef56'));
           const offer = posts.find(p => p.path === '/v1/pair/offer');
-          ok(tag + ' offer payload has only name, port and confirm', offer && JSON.stringify(Object.keys(JSON.parse(offer.body)).sort()) === JSON.stringify(['confirm', 'name', 'service_port']));
+          ok(tag + ' offer payload has only name, port and confirm', offer && JSON.stringify(Object.keys(JSON.parse(offer.body)).sort()) === JSON.stringify(reverse ? ['confirm', 'direction', 'name', 'service_port'] : ['confirm', 'name', 'service_port']) && (!reverse || JSON.parse(offer.body).direction === 'reverse'));
         } else {
           await page.locator('textarea').fill('sudo baft-tunnel pair accept ' + CODE);
           await page.locator('button.primary').click();

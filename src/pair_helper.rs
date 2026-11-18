@@ -35,6 +35,8 @@ pub enum PairRequest {
         tunnel_port: u16,
         #[serde(default)]
         host: Option<String>,
+        #[serde(default)]
+        direction: crate::pair_flow::Direction,
     },
     Accept {
         code: String,
@@ -123,7 +125,7 @@ pub async fn run(name: &str, control_dir: &Path, config_dir: &Path) -> Result<Va
     };
     let instance = Some(name.to_string());
     let result = match request {
-        PairRequest::Offer { name: tunnel, service_port, tunnel_port, host } => {
+        PairRequest::Offer { name: tunnel, service_port, tunnel_port, host, direction } => {
             crate::pair_flow::offer(
                 crate::pair_flow::OfferOptions {
                     dir: config_dir.to_path_buf(),
@@ -132,6 +134,7 @@ pub async fn run(name: &str, control_dir: &Path, config_dir: &Path) -> Result<Va
                     service_port,
                     tunnel_port,
                     host,
+                    direction,
                 },
                 |p: crate::pair_flow::Pending| async move {
                     let nonce = hex::encode(rand::random::<[u8; 8]>());
