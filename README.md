@@ -75,6 +75,19 @@ sudo bash quick-install.sh --register t1
 
 Add `--verify-only` to check the signed release without installing, `--tag vX.Y.Z` to pin another release, or `--channel prerelease` for Preview builds (Reverse and the BAFT engine are Preview). This is a CI/sandbox-verified install path; it is not a production-readiness claim.
 
+### Automatic tunnel (pairing; no files to copy)
+
+Available from the first prerelease that includes ADR-0050 (not in `v0.2.2`): install on both servers with `--channel prerelease`, then create the tunnel from the panel (Create tunnel on the first server, Connect with the code on the second), or from the shell:
+
+```bash
+# first server (accepts the connection): prints a one-time code, then asks you to approve the other server
+curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --channel prerelease --offer mytunnel --service-port 8080
+# second server: paste the code
+curl -fsSL .../scripts/quick-install.sh | sudo bash -s -- --channel prerelease --pair 'BAFT1-...'
+```
+
+Both servers show the same short key fingerprint; approve only if they match. The code is single-use and expires in 15 minutes. Open the tunnel port (default TCP 8443) on the first server's firewall yourself; BAFT-TUNNEL never changes firewall rules. Without a terminal `--offer` refuses to run unless you add `--auto-approve`. Direct `tcp-tls` only for now; the panel asks whether each server is in Iran or abroad (`--location iran|abroad` on the shell); an Iran server that dials out gets a 10 s session rotation default. Reverse is designed in ADR-0050 Addendum 2 and not implemented yet. Evidence: CI and local tests; no LAB run yet.
+
 ### HTTPS panel (domain or IP)
 
 Add `--domain` or `--ip` and the installer sets up an HTTPS front end (nginx) on the host and prints the link and the login token in a framed block at the end. Without either flag it asks on the terminal (empty answer = SSH tunnel only; `--no-https` skips the question). The panel itself stays non-root and loopback-only (ADR-0033).

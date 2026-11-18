@@ -1,6 +1,6 @@
 # ADR-0045: Fleet — multi-node inventory and control (F0 design)
 
-Status: **Proposed, amended after independent design review** (2026-11-17; findings in [ADR-0045-security-review.md](ADR-0045-security-review.md)). Roadmap: Fleet (after 0.4.0 Policy Pack; this ADR is design only). Supersedes the direction text of draft PR #171 (its ADR-0029 number collides with the merged BAFT guided-setup ADR; #171 is left untouched). Builds on ADR-0014 (offline CA), ADR-0023 (agent control helper), ADR-0026/0027 (pairing, enrollment), ADR-0030 (no `CAP_NET_ADMIN`), ADR-0033 (panel HTTPS), ADR-0036 (tunnels per host).
+Status: **Accepted with conditions** (2026-11-17, owner-role decision by the coordinator; amended after independent design review; findings in [ADR-0045-security-review.md](ADR-0045-security-review.md)). Roadmap: Fleet (after 0.4.0 Policy Pack; this ADR is design only). Supersedes the direction text of draft PR #171 (its ADR-0029 number collides with the merged BAFT guided-setup ADR; #171 is left untouched). Builds on ADR-0014 (offline CA), ADR-0023 (agent control helper), ADR-0026/0027 (pairing, enrollment), ADR-0030 (no `CAP_NET_ADMIN`), ADR-0033 (panel HTTPS), ADR-0036 (tunnels per host).
 
 ## Context
 
@@ -82,3 +82,8 @@ Fleet adds a role and a channel, not a service and not a CA. The local panel sta
 13. **Accepted as written:** reusing the tunnel CA with the profiles above (F-14), member-initiated-only connections with the one-direction case documented (F-15), the hub as a single point of failure because tunnels never depend on it, tested in F5 (F-16).
 
 The review is an independent design review, not a pre-stable external review. F1 stays blocked until the owner accepts this amended ADR.
+
+## Decision log
+
+- 2026-11-17: accepted as amended, on the condition that F1 implements every mandatory amendment above (all three High first: F-1, F-2, F-3), each with tests, before any F1 slice is called done. F1 stays gated: no hub listener, no member reporter and no Fleet claim ships until the amendments they depend on are implemented and tested.
+- Implementation state: `src/fleet.rs` (pure rules, unit tests) covers F-2/F-4 (profile and single EKU), F-5 (identity from certificate), F-6 (`seq`), F-8 (CRL fail-closed rule), F-9 (numeric bounds), F-13 (sanitising) and freshness. EKU OIDs are provisional placeholders until the profile document assigns the arc. Not yet implemented: F-1 and F-3 (job signing and binding; F3 scope), F-7 (enrollment CSR binding), F-10, F-11, F-12, and the transport.

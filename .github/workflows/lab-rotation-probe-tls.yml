@@ -1,0 +1,165 @@
+name: LAB tcp-tls Direct session rotation 2 MiB probe (ADR-0049, throwaway PKI, rotation off vs on)
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact code SHA on main that contains the session rotation change (PR #315)
+        required: true
+        type: string
+      rotate_secs:
+        description: session_rotate_secs for the second phase (5-60)
+        required: false
+        type: string
+        default: '10'
+      probes:
+        description: 2 MiB probes per phase (1-4)
+        required: false
+        type: string
+        default: '3'
+      confirm:
+        description: Type RUN_LAB_ROTATION_PROBE_TLS to authorize the isolated two-host test
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+
+concurrency:
+  group: baft-tunnel-trusted-lab-hosts
+  cancel-in-progress: false
+
+jobs:
+  validate-candidate:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      candidate_sha: ${{ steps.candidate.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require explicit approval, on main, and required exact-SHA checks
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONFIRM: ${{ inputs.confirm }}
+          REQUESTED_SHA: ${{ inputs.candidate_sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == RUN_LAB_ROTATION_PROBE_TLS ]] || { echo 'Explicit confirmation is required' >&2; exit 2; }
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate_sha must be a full lowercase 40-character SHA' >&2; exit 2; }
+          # Refuse an older green main commit that predates the merged rotation implementation.
+          gh api "repos/$REPOSITORY/pulls/315" > "$RUNNER_TEMP/rotation-pr.json"
+          jq -e '.merged == true and (.merge_commit_sha | type == "string" and test("^[0-9a-f]{40}$"))' "$RUNNER_TEMP/rotation-pr.json" >/dev/null || {
+            echo 'PR #315 must be merged before the rotation LAB can run' >&2
+            exit 2
+          }
+          ROTATION_MERGE_SHA="$(jq -r '.merge_commit_sha' "$RUNNER_TEMP/rotation-pr.json")"
+          git cat-file -e "$ROTATION_MERGE_SHA^{commit}"
+          git merge-base --is-ancestor "$ROTATION_MERGE_SHA" "$REQUESTED_SHA" || {
+            echo 'candidate SHA does not contain the merged PR #315 rotation implementation' >&2
+            exit 2
+          }
+          gh api "repos/$REPOSITORY/commits/$REQUESTED_SHA/check-runs" > "$RUNNER_TEMP/candidate-checks.json"
+          jq -e '.total_count > 0' "$RUNNER_TEMP/candidate-checks.json" >/dev/null || {
+            echo 'candidate SHA has no check runs' >&2
+            exit 2
+          }
+          # These are the exact required contexts configured by main branch protection.
+          # CodSpeed is advisory and may fail on cross-hardware comparisons without blocking the merge.
+          required_checks=(rust ubuntu-2204-baseline lab-config)
+          for required in "${required_checks[@]}"; do
+            jq -e --arg name "$required" '
+              ([.check_runs[] | select(.name == $name)] | length) > 0 and
+              ([.check_runs[] | select(.name == $name) | select(.status != "completed" or .conclusion != "success")] | length) == 0
+            ' "$RUNNER_TEMP/candidate-checks.json" >/dev/null || {
+              echo "required exact-SHA check did not pass: $required" >&2
+              exit 2
+            }
+          done
+          git cat-file -e "$REQUESTED_SHA^{commit}"
+          git merge-base --is-ancestor "$REQUESTED_SHA" "$GITHUB_SHA" || {
+            echo 'candidate SHA is not contained in current main history' >&2
+            exit 2
+          }
+          echo "sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
+          echo "ROT_CANDIDATE_SHA=$REQUESTED_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  build-candidate:
+    needs: validate-candidate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ needs.validate-candidate.outputs.candidate_sha }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build candidate without LAB credentials
+        run: cargo +1.88.0 build --locked --release
+      - name: Stage candidate executable and checksum
+        run: |
+          set -euo pipefail
+          test -s target/release/baft-tunnel
+          test ! -L target/release/baft-tunnel
+          test "$(wc -c < target/release/baft-tunnel)" -le 104857600
+          mkdir -p "$RUNNER_TEMP/baft-tunnel-rot-tls-artifact"
+          install -m 0755 target/release/baft-tunnel "$RUNNER_TEMP/baft-tunnel-rot-tls-artifact/baft-tunnel"
+          (cd "$RUNNER_TEMP/baft-tunnel-rot-tls-artifact" && sha256sum baft-tunnel > candidate.sha256)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4.6.2
+        with:
+          name: baft-tunnel-rot-tls-candidate-${{ needs.validate-candidate.outputs.candidate_sha }}
+          path: ${{ runner.temp }}/baft-tunnel-rot-tls-artifact/
+          if-no-files-found: error
+          retention-days: 1
+
+  two-host-rotation-tls-lab:
+    needs: [validate-candidate, build-candidate]
+    runs-on: ubuntu-22.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 45
+    steps:
+      # Trusted orchestration is always loaded from the protected main commit that dispatched this run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # actions/download-artifact v4.3.0
+        with:
+          name: baft-tunnel-rot-tls-candidate-${{ needs.validate-candidate.outputs.candidate_sha }}
+          path: ${{ runner.temp }}/baft-tunnel-rot-tls-candidate
+      - name: Verify downloaded candidate artifact
+        env:
+          EXPECTED_SHA: ${{ needs.validate-candidate.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/baft-tunnel-rot-tls-candidate"
+          test -s baft-tunnel
+          test ! -L baft-tunnel
+          sha256sum --check candidate.sha256
+          install -m 0755 baft-tunnel "$RUNNER_TEMP/baft-tunnel-rot-tls-candidate-bin"
+          echo "Candidate source SHA: $EXPECTED_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Run trusted bounded rotation LAB orchestration
+        env:
+          LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+          LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
+          LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          LAB_SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+          LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+          LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+          LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+          LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+          CANDIDATE_SHA: ${{ needs.validate-candidate.outputs.candidate_sha }}
+          CANDIDATE_BINARY: ${{ runner.temp }}/baft-tunnel-rot-tls-candidate-bin
+          ROTATE_SECS: ${{ inputs.rotate_secs }}
+          PROBES: ${{ inputs.probes }}
+        run: bash lab/trusted/phase1-rotation-probe-tls.sh

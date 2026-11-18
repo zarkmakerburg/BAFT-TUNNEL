@@ -1,0 +1,35 @@
+[Unit]
+Description=Run the requested automatic pairing for baft-tunnel@%i (root pairing helper, ADR-0050)
+StartLimitIntervalSec=10s
+StartLimitBurst=60
+
+[Service]
+# Fixed command only (ADR-0050): runs `pair offer` (listens on the tunnel port for at most 15 minutes,
+# one approved joiner) or `pair accept` for instance %i in /etc/baft-tunnel. The one place network is
+# allowed for a control helper. Keys stay under /etc/baft-tunnel; the pair CA key never leaves its 0700 directory.
+Type=oneshot
+ExecStart=/usr/local/bin/baft-tunnel pair helper --instance %i
+ExecStopPost=/usr/bin/rm -f /run/baft-tunnel/control/%i.pair /run/baft-tunnel/control/%i.pair-approve
+TimeoutStartSec=20min
+UMask=0022
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+# CAP_SETUID/CAP_SETGID: only so the network worker child can drop to the service user (never CAP_NET_ADMIN).
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_SETUID CAP_SETGID

@@ -123,6 +123,8 @@ pub struct Ctx {
     setup: Arc<dyn crate::setup_helper::SetupHelper + Send + Sync>,
     /// Root PKI helper (ADR-0027) for host-local CSR create/read before tcp-tls Init.
     pki: Arc<dyn crate::pki_helper::PkiHelperClient + Send + Sync>,
+    /// Request/status directory of the root pairing helper (ADR-0050).
+    pair_dir: PathBuf,
 }
 
 const SAMPLE_SECONDS: u64 = 5;
@@ -161,6 +163,7 @@ impl Ctx {
             config_dir: PathBuf::from("/etc/baft-tunnel"),
             setup: Arc::new(crate::setup_helper::SystemSetupHelper::default()),
             pki: Arc::new(crate::pki_helper::SystemPkiClient::default()),
+            pair_dir: PathBuf::from(crate::apply::CONTROL_DIR),
         }
     }
 
@@ -170,6 +173,12 @@ impl Ctx {
         helper: Arc<dyn crate::setup_helper::SetupHelper + Send + Sync>,
     ) -> Self {
         self.setup = helper;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_pair_dir(mut self, dir: PathBuf) -> Self {
+        self.pair_dir = dir;
         self
     }
 
@@ -660,6 +669,10 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/pki/csr/create"
             | "/v1/pki/csr/read"
             | "/v1/pki/certificate/install"
+            | "/v1/pair/offer"
+            | "/v1/pair/accept"
+            | "/v1/pair/status"
+            | "/v1/pair/approve"
     ) {
         return (404, json!({"error": "not found"}));
     }
@@ -708,9 +721,111 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PairOfferBody {
+    name: String,
+    service_port: u16,
+    #[serde(default)]
+    tunnel_port: Option<u16>,
+    #[serde(default)]
+    host: Option<String>,
+    #[serde(default)]
+    direction: Option<crate::pair_flow::Direction>,
+    confirm: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PairAcceptBody {
+    code: String,
+    confirm: bool,
+    #[serde(default)]
+    location: Option<crate::pair_flow::Location>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PairApproveBody {
+    approve: bool,
+    nonce: String,
+}
+
+/// Automatic pairing (ADR-0050), setup mode only: offer/accept/status/approve through the root helper.
+fn pair_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
+    let Some(name) = ctx.instance.as_deref() else {
+        return (409, json!({"error": "pairing needs an installed instance"}));
+    };
+    // Parser details are not echoed back (nothing about the request's content is reflected).
+    let bad = |_: serde_json::Error| (422, json!({"error": "invalid request"}));
+    let submit = |req: Value| match crate::pair_helper::submit(&ctx.pair_dir, name, &req) {
+        Ok(()) => (202, json!({"state": "starting"})),
+        Err(e) => (409, json!({"error": e})),
+    };
+    match (method, path) {
+        ("GET", "/v1/pair/status") => (200, crate::pair_helper::status(&ctx.pair_dir, name)),
+        ("POST", "/v1/pair/offer") => match serde_json::from_slice::<PairOfferBody>(body) {
+            Err(e) => bad(e),
+            Ok(b) if !b.confirm => (422, json!({"error": "pairing requires \"confirm\": true"})),
+            Ok(b) => {
+                let port_ok = |p: u16| p >= 1024;
+                let name_ok = !b.name.is_empty()
+                    && b.name.len() <= 32
+                    && b.name
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b' ');
+                let host_ok = b.host.as_deref().is_none_or(|h| {
+                    !h.is_empty()
+                        && h.len() <= 253
+                        && h.bytes().all(|c| {
+                            c.is_ascii_alphanumeric() || c == b'.' || c == b'-' || c == b':'
+                        })
+                });
+                if !(port_ok(b.service_port)
+                    && b.tunnel_port.is_none_or(port_ok)
+                    && name_ok
+                    && host_ok)
+                {
+                    return (422, json!({"error": "invalid name, port or host"}));
+                }
+                submit(
+                    json!({"op": "offer", "name": b.name, "service_port": b.service_port,
+                    "tunnel_port": b.tunnel_port.unwrap_or(8443), "host": b.host,
+                    "direction": b.direction.unwrap_or_default()}),
+                )
+            }
+        },
+        ("POST", "/v1/pair/accept") => match serde_json::from_slice::<PairAcceptBody>(body) {
+            Err(e) => bad(e),
+            Ok(b) if !b.confirm => (422, json!({"error": "pairing requires \"confirm\": true"})),
+            Ok(b) => match crate::pair_proto::PairCode::decode(&b.code) {
+                Err(_) => (422, json!({"error": "invalid pairing code"})),
+                Ok(c) if c.expired() => (
+                    422,
+                    json!({"error": "this pairing code has expired; create a new one"}),
+                ),
+                Ok(_) => {
+                    submit(json!({"op": "accept", "code": b.code.trim(), "location": b.location}))
+                }
+            },
+        },
+        ("POST", "/v1/pair/approve") => match serde_json::from_slice::<PairApproveBody>(body) {
+            Err(e) => bad(e),
+            Ok(b) => match crate::pair_helper::approve(&ctx.pair_dir, name, b.approve, &b.nonce) {
+                Ok(()) => (200, json!({"ok": true})),
+                Err(e) => (409, json!({"error": e})),
+            },
+        },
+        _ => (405, json!({"error": "method not allowed"})),
+    }
+}
+
 /// Setup mode: the instance has no configuration yet. Only what pairing needs answers.
 async fn setup_mode_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
     match (method, path) {
+        (_, "/v1/pair/offer" | "/v1/pair/accept" | "/v1/pair/status" | "/v1/pair/approve") => {
+            pair_route(method, path, body, ctx)
+        }
         ("GET", "/v1/status") => (200, setup_status(ctx)),
         ("GET", "/v1/engines") => (200, engines()),
         ("GET", "/v1/host/tunnels") => (200, host_tunnels(ctx)),
@@ -926,6 +1041,8 @@ pub(crate) struct PlanBody {
     service_port: u16,
     tunnel_port: Option<u16>,
     peer_host: Option<String>,
+    #[serde(default)]
+    backup_peer_hosts: Vec<String>,
     server_name: Option<String>,
     dir: Option<PathBuf>,
     instance: Option<String>,
@@ -948,6 +1065,7 @@ impl PlanBody {
                 .tunnel_port
                 .unwrap_or(crate::setup::DEFAULT_TUNNEL_PORT),
             peer_host: self.peer_host.clone(),
+            backup_peer_hosts: self.backup_peer_hosts.clone(),
             server_name: self.server_name.clone(),
             dir: self
                 .dir
@@ -2380,6 +2498,9 @@ fn setup_plan(body: &[u8]) -> (u16, Value) {
         if let Some(h) = &req.peer_host {
             init += &format!(" --peer-host {}", shell_quote(h)?);
         }
+        for h in &req.backup_peer_hosts {
+            init += &format!(" --backup-peer-host {}", shell_quote(h)?);
+        }
         if let Some(n) = &req.server_name {
             init += &format!(" --server-name {}", shell_quote(n)?);
         }
@@ -3249,6 +3370,10 @@ fn health_view(h: Option<&Value>, now: u64) -> Value {
         "rtt_ms": h["rtt_ms"],
         "jitter_ms": h["jitter_ms"],
         "probe_loss": h["probe_loss"],
+        "loss_basis": h["loss_basis"],
+        "rtt_basis": h["rtt_basis"],
+        "throttled_rate_bps": h["throttled_rate_bps"],
+        "events": h["events"],
         "age_s": age,
     })
 }
@@ -5909,6 +6034,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn automatic_pairing_routes_validate_confirm_and_use_the_control_directory() {
+        let base = state_dir("auto-pair");
+        let (ctx, _conf) = setup_mode_ctx(&base);
+        let ctl = base.join("control");
+        let ctx = ctx.with_pair_dir(ctl.clone());
+        let ctx_ref = &ctx;
+        let offer = |v: Value| async move {
+            route(&post("/v1/pair/offer"), v.to_string().as_bytes(), ctx_ref).await
+        };
+        let no_auth = "POST /v1/pair/offer HTTP/1.1\r\nHost: 127.0.0.1";
+        assert_eq!(route(no_auth, b"{}", &ctx).await.0, 401);
+        // confirmation, ports and names are checked before anything reaches root
+        assert_eq!(
+            offer(json!({"name": "demo", "service_port": 9000, "confirm": false}))
+                .await
+                .0,
+            422
+        );
+        assert_eq!(
+            offer(json!({"name": "demo", "service_port": 80, "confirm": true}))
+                .await
+                .0,
+            422
+        );
+        assert_eq!(
+            offer(json!({"name": "../x", "service_port": 9000, "confirm": true}))
+                .await
+                .0,
+            422
+        );
+        assert_eq!(
+            offer(json!({"name": "demo", "service_port": 9000, "confirm": true, "extra": 1}))
+                .await
+                .0,
+            422
+        );
+        assert!(!ctl.join("pair1.pair").exists());
+        let (code, body) =
+            offer(json!({"name": "demo", "service_port": 9000, "confirm": true})).await;
+        assert_eq!(code, 202, "{body}");
+        let req: Value =
+            serde_json::from_slice(&std::fs::read(ctl.join("pair1.pair")).unwrap()).unwrap();
+        assert_eq!(req["op"], "offer");
+        assert_eq!(req["tunnel_port"], 8443);
+        // a second request while one is pending is refused
+        assert_eq!(
+            offer(json!({"name": "demo", "service_port": 9000, "confirm": true}))
+                .await
+                .0,
+            409
+        );
+        // accept needs a well-formed, unexpired code
+        let bad = route(
+            &post("/v1/pair/accept"),
+            json!({"code": "nonsense", "confirm": true})
+                .to_string()
+                .as_bytes(),
+            &ctx,
+        )
+        .await;
+        assert_eq!(bad.0, 422);
+        let bad_loc = route(
+            &post("/v1/pair/accept"),
+            json!({"code": "nonsense", "confirm": true, "location": "mars"})
+                .to_string()
+                .as_bytes(),
+            &ctx,
+        )
+        .await;
+        assert_eq!(bad_loc.0, 422, "location must be iran or abroad");
+        // status and approval go through files
+        assert_eq!(
+            route(&get("/v1/pair/status"), b"", &ctx).await.1["state"],
+            "idle"
+        );
+        std::fs::write(
+            ctl.join("pair1.pair-status"),
+            br#"{"state":"approval","nonce":"abc123","verify":"aaaa-bbbb-cccc","peer":{"node_id":"n","address":"1.2.3.4:5"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            route(&get("/v1/pair/status"), b"", &ctx).await.1["state"],
+            "approval"
+        );
+        assert_eq!(
+            route(&post("/v1/pair/approve"), br#"{"approve":true}"#, &ctx)
+                .await
+                .0,
+            422,
+            "approval needs the nonce"
+        );
+        assert_eq!(
+            route(
+                &post("/v1/pair/approve"),
+                br#"{"approve":true,"nonce":"zzz"}"#,
+                &ctx
+            )
+            .await
+            .0,
+            409,
+            "wrong nonce"
+        );
+        assert_eq!(
+            route(
+                &post("/v1/pair/approve"),
+                br#"{"approve":true,"nonce":"abc123"}"#,
+                &ctx
+            )
+            .await
+            .0,
+            200
+        );
+        let a: Value =
+            serde_json::from_slice(&std::fs::read(ctl.join("pair1.pair-approve")).unwrap())
+                .unwrap();
+        assert_eq!(a["decision"], "approve");
+    }
+
+    #[tokio::test]
     async fn panel_pairing_runs_init_and_join_through_the_root_helper_in_setup_mode() {
         let base = state_dir("pairing");
         let (ctx, conf) = setup_mode_ctx(&base);
@@ -5992,6 +6236,7 @@ mod tests {
                 service_port: 18180,
                 tunnel_port: 18181,
                 peer_host: Some("127.0.0.1".into()),
+                backup_peer_hosts: vec![],
                 server_name: None,
                 dir: peer.clone(),
                 instance: None,

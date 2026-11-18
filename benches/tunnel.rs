@@ -36,6 +36,14 @@ mod link_policy;
 mod noise;
 #[path = "../src/observe.rs"]
 mod observe;
+#[path = "../src/pair_ca.rs"]
+mod pair_ca;
+#[path = "../src/pair_flow.rs"]
+mod pair_flow;
+#[path = "../src/pair_helper.rs"]
+mod pair_helper;
+#[path = "../src/pair_proto.rs"]
+mod pair_proto;
 #[path = "../src/pki_helper.rs"]
 mod pki_helper;
 #[path = "../src/runtime_host.rs"]
@@ -103,6 +111,7 @@ mod setup_bench {
             service_port: 18080,
             tunnel_port: 8443,
             peer_host: Some("203.0.113.10".into()),
+            backup_peer_hosts: vec![],
             server_name: Some("tunnel.example.test".into()),
             dir: PathBuf::from("/etc/baft-tunnel"),
             instance: None,

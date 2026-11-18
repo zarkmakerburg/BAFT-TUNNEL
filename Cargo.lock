@@ -161,6 +161,7 @@ name = "baft-tunnel"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "codspeed-divan-compat",
  "futures",

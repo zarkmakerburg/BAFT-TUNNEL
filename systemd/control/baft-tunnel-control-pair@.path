@@ -1,0 +1,9 @@
+[Unit]
+Description=BAFT-TUNNEL agent automatic-pairing request for instance %i
+
+[Path]
+PathExists=/run/baft-tunnel/control/%i.pair
+Unit=baft-tunnel-control-pair@%i.service
+
+[Install]
+WantedBy=multi-user.target

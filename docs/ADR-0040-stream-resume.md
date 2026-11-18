@@ -22,3 +22,62 @@ Wire frame layout and exact limits beyond the defaults above, to be fixed in the
 
 ## Implementation status (2026-11-17)
 `src/resume_core.rs` holds the pure core: per-stream send window with hard caps and a per-tunnel budget (backpressure, never silent drop), receiver offset logic (duplicate, overlap, gap), `resume_from` (unrecoverable / peer-ahead rejection) and single-use, identity-bound, expiring resume tokens. It includes a seeded random-cut property test (loss, duplication, cuts; output equals input). It is **not wired**: protocol v3 framing, handshake binding, `ResumeHello`/`Gone` and the v2<->v3 rejection tests do not exist yet, so no resume feature is claimed.
+
+## Wire and integration design (2026-11-17, amendment, still no code)
+
+Status of this section: proposed; it fixes the shape so the implementation can land in small reviewed PRs. Nothing here is implemented, and nothing may be advertised as resume until the acceptance list above passes on a real two-host LAB.
+
+### What actually has to change
+Today each proxied TCP connection is one yamux substream and its pump task owns both ends. When the session dies, the substream dies and the local socket is closed. Resume therefore needs a layer **between the local socket and the substream** that owns the replay state (`SendWindow`, `RecvState` from `resume_core.rs`) and survives the substream:
+
+```
+local socket <-> ResumableStream(stream_id, SendWindow, RecvState) <-> current substream (replaceable)
+```
+
+A stream is detached when its substream or session fails and re-attached when a new session proves the same identity. The local socket stays open for at most `resume_grace` (default 60 s); the local application sees a stall, not a reset.
+
+### Protocol v3 (strict, no downgrade)
+- New constant `PROTOCOL_V3`, new capability `ResumeStreams`; v3 capabilities are v2's plus it. v1/v2/v3 peers reject each other with an explicit incompatibility (same Option A as v2). The baft engine stays v1.
+- `ServerHello` gains `resume_token` (16 random bytes, hex). It is issued per authenticated session and is only valid for the session that follows from it. `binding = SHA-256("baft-resume-v1" || client_id || server_id || tunnel_id || direction || client_nonce || server_nonce)` over the *original* handshake; the client recomputes it. A resume attempt carries the old token and the old nonces, so a captured token is useless without the matching identities and tunnel.
+- Substream header for v3 TCP streams adds `stream_id` (u64, chosen by the opener, unique per tunnel lifetime) and a flag `resumable`. Data frames on a resumable stream are `[u8 kind][u64 offset][u32 len][payload]` with kinds `Data`, `Ack` (cumulative offset), `Fin`, and `Reset`. Max payload 64 KiB.
+- On a new session the opener sends, on the first control substream, `ResumeHello { old_token, old_binding_nonces, streams: [(stream_id, recv_offset)] }`, bounded to 256 streams. The acceptor answers per stream `Resume { recv_offset }` or `Gone`. Each side then resends from the other's offset (`SendWindow::resume_from`), which returns `Unrecoverable`/`PeerAhead` for impossible offsets and turns them into `Gone` plus a local close.
+- Authorization is re-run on the new session before any `ResumeHello` is processed (current certificate, CRL, pins), so revocation ends resumable streams. A redeemed token is consumed even on failure (`TokenBook`).
+
+### Memory and abuse bounds
+Per-stream window default 1 MiB (max 16 MiB), per-tunnel budget 64 MiB (`TunnelBudget`), at most 256 resumable streams, token book swept at `resume_grace`. A peer that never ACKs hits the window and the sender stops reading its local socket; it cannot grow memory past the budget.
+
+### Interaction with the rest
+- **Session rotation (ADR-0049):** with resume, a rotation can migrate in-flight streams to the new session instead of letting the old session drain, removing the drain window. Until then rotation keeps its make-before-break drain unchanged.
+- **Failback (ADR-0039):** safe to enable only for resumable tunnels; until then it stays off by default.
+- **Health:** `resume` events (attached, gone, window-full) become counters beside rotations and link switches; they do not change the quality state.
+
+### Implementation plan (separate PRs, each with tests and exact-SHA CI)
+1. `PROTOCOL_V3` and `ResumeStreams` capability with strict mutual rejection tests, off by default and not selectable in setup yet.
+2. `ResumableStream` framing layer over in-memory duplex streams, with the random-cut property test extended to the async path and buffer-full backpressure tests.
+3. Handshake: `resume_token`, binding, `ResumeHello`/`Resume`/`Gone`, replay and wrong-identity rejection tests.
+4. Tunnel integration (detach/re-attach, grace timer) behind a config flag.
+5. Chaos test (session cut twice during a large transfer, sha256 equal) in CI, then a real two-host LAB request.
+
+Decision (coordinator, owner-delegated, 2026-11-17): resume in the first release is **Direct only**. Reverse stays Preview and gets no resume; a v3 Reverse tunnel must not advertise `ResumeStreams`. Security review of the token binding and `ResumeHello` rules is still required before step 3.
+
+### Implementation status
+Step 1 (2026-11-17): `PROTOCOL_V3` and the `ResumeStreams` session capability exist in the authorization layer. v3 sessions are Direct only; v1, v2 and v3 peers reject each other in both directions (tests); `ResumeStreams` is refused as a stream type; integrity probes keep working on v2 and later through `supports_integrity_probe`. v3 is **not selectable** in config or setup and nothing implements resume, so no resume claim exists.
+
+Step 2 (2026-11-17, #340): `src/resumable.rs` is the pure frame codec and per-direction endpoint engine (Data/Ack/Fin/Reset, 64 KiB payload, replay from the peer's received offset, bounded by window and tunnel budget) with a random-cut property test. Not wired.
+
+Step 3 (2026-11-17): the v3 `ServerHello` carries a 16-byte `resume_token` (required and well-formed for v3, rejected for v1/v2). Both sides derive `resume_binding` (length-prefixed SHA-256 over ids, tunnel, direction and both nonces) and agree on it; `src/resume_wire.rs` defines `ResumeHello`/`ResumeReply` (strict, 16 KiB, at most 256 distinct streams) and redeems the old token against the *current* identities, so a different identity, tunnel, direction or nonce fails with `BindingMismatch`, and the token is burned on every outcome but `Unknown` (replay, expiry tests). Authorization of the new session stays a precondition and is enforced by step 4. Not wired into the tunnel: no resume claim exists yet.
+
+### Security review of step 3 (2026-11-17, #342): required in step 4 before any flag
+No Critical. Step 3 may merge as unwired code; resume stays off until these are fixed and tested.
+- **H1** Token expiry starts when the carrying connection *drops*, not at handshake. A long-lived session must not have an expired token the moment it breaks.
+- **H2** A token cannot be redeemed while the issuing session is alive (the acceptor must see it closed first), and resumable streams are bound to the issuing session so a rotation can never place the same stream on two sessions.
+- **M1** The token store is bounded (count and memory); oldest or expired entries are swept.
+- **M2** Tokens never appear in `Debug` or logs (redacting type, no derive).
+- **M3** The identity used for the binding is the verified certificate identity of the new session, not text from the peer.
+- **M4** The opener checks that the reply matches its request (same stream ids, no extra answers).
+- **M5** A resume message reader with its own size bound, independent of the 2 KiB handshake reader.
+The step 5 chaos test must pass before any default-off Preview flag.
+
+Step 4a (2026-11-17): `src/resume_registry.rs` fixes review items H1, H2, M1, M2 and M4 as pure, tested code (not wired): the grace starts at the session *drop*; a token cannot be redeemed while its session is alive (kept, since that is a race) and a redeem moves the streams atomically to the new session; every stream has exactly one owner; the registry is bounded and evicts only dropped sessions; `Debug` never prints tokens or bindings; `ResumeReply::check_matches` makes the opener verify the reply. M3 (certificate-verified identities, via `Identity`) and M5 (resume message reader) land with the tunnel wiring in 4b.
+
+Step 4b (2026-11-18): `src/resume_stream.rs` is the async pump for one stream: a task owns the local socket and the `Endpoint`, the carrying substream is replaceable with `Handle::attach(io, peer_received)`, the local socket stays open while detached for at most the grace period, backpressure bounds the bytes waiting for a slow local socket (1 MiB), and the tunnel budget returns to zero on every exit. Tests drive two pumps over a link that is cut at random while both directions carry data (byte-exact, Fin/EOF on both sides), grace expiry, an impossible resume offset and garbage frames. It is the in-process chaos test of the data plane; the tunnel wiring (stream ids in the substream header, `ResumeHello` over a control substream with certificate-verified identities, per-tunnel registry across sessions, default-off flag) is step 4c, and the real two-host chaos test is step 5.
