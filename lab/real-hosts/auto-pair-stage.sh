@@ -33,7 +33,7 @@ done
 ap_purge() { # side instances... : remove only what this stage created on one host
   local side="$1"; shift
   ssh_host "$side" "for i in $*; do touch /run/baft-tunnel/control/\$i.stop 2>/dev/null; systemctl stop baft-tunnel@\$i.service 2>/dev/null; bash '$PKG/scripts/install-agent-control.sh' --remove --instance \$i >/dev/null 2>&1; done;
-      [ -s '$REMOTE_DIR/agent.pid' ] && kill \$(cat '$REMOTE_DIR/agent.pid') 2>/dev/null; rm -f '$REMOTE_DIR/agent.pid';
+      [ -s '$REMOTE_DIR/agent.pid' ] && { pkill -P \$(cat '$REMOTE_DIR/agent.pid') 2>/dev/null; kill \$(cat '$REMOTE_DIR/agent.pid') 2>/dev/null; }; rm -f '$REMOTE_DIR/agent.pid';
       [ -s '$REMOTE_DIR/echo2.pid' ] && kill \$(cat '$REMOTE_DIR/echo2.pid') 2>/dev/null; rm -f '$REMOTE_DIR/echo2.pid';
       [ -x '$PKG/scripts/uninstall.sh' ] && bash '$PKG/scripts/uninstall.sh' --stop --purge-config --yes >/dev/null 2>&1;
       rm -rf /var/backups/baft-tunnel-backup.* 2>/dev/null;
@@ -109,7 +109,7 @@ ap_round() { # name direction listener_side joiner_side joiner_location
       bash '$PKG/scripts/install-agent-control.sh' --instance $inst --listen 127.0.0.1:18099 >/dev/null;
       install -d -o baft-tunnel-agent -g baft-tunnel-agent -m 0700 $AGD;
       setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent-token --out $AGD/token >/dev/null;
-      nohup setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent --config $EB/$inst.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$AP_AG --instance $inst > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
+      nohup bash -c 'while :; do setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent --config $EB/$inst.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$AP_AG --instance $inst; sleep 1; done' > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
       for n in \$(seq 1 40); do python3 -c 'import urllib.request;urllib.request.urlopen(\"http://127.0.0.1:$AP_AG/v1/health\",timeout=1)' 2>/dev/null && exit 0; sleep 0.25; done; tail -20 '$REMOTE_DIR/agent.log'; exit 1"
   done
   # setup mode: the agent says setup_pending until pairing wrote the configuration
@@ -144,7 +144,24 @@ ap_round() { # name direction listener_side joiner_side joiner_location
   [[ "$(ap_api "$ls" GET /v1/pair/status </dev/null | apjf state)" == approval ]] || { echo "wrong-nonce approval changed the state" >&2; return 1; }
   [[ "$(ap_api "$ls" POST /v1/pair/approve <<<"{\"approve\":true,\"nonce\":\"$nonce\"}" | apjf ok)" == True ]] || { echo "approval was not taken" >&2; return 1; }
   ap_wait_state "$ls" done 150 >/dev/null || return 1
-  ap_wait_state "$js" done 150 >/dev/null || return 1
+  # the joiner agent exits and restarts once the configuration appears (setup mode), so its final state is read
+  # from the helper status file rather than through the agent
+  local t0=$SECONDS jst=""
+  while (( SECONDS - t0 < 150 )); do
+    jst="$(ssh_host "$js" "cat /run/baft-tunnel/control/$ji.pair-status 2>/dev/null" </dev/null | apjf state)"
+    [[ "$jst" == done || "$jst" == failed ]] && break
+    sleep 1
+  done
+  [[ "$jst" == done ]] || { echo "joiner pairing did not finish (state: ${jst:-none})" >&2; return 1; }
+  # both agents reload the new configuration (exit and restart); wait until they answer again as configured
+  for side in "$ls" "$js"; do
+    local sout=""
+    for n in $(seq 1 60); do
+      sout="$(ap_api "$side" GET /v1/status </dev/null 2>/dev/null)"
+      [[ -n "$sout" && "$(apjf setup_pending <<<"$sout" 2>/dev/null)" != True ]] && break
+      sleep 1
+    done
+  done
   # status files never carry key material
   for side in "$ls" "$js"; do
     ssh_host "$side" "! grep -Eq 'PRIVATE|BEGIN' /run/baft-tunnel/control/*.pair-status 2>/dev/null" || { echo "a pair-status file carries key material" >&2; return 1; }
