@@ -182,6 +182,32 @@ jobs:
           NODE_PATH: ${{ runner.temp }}/baft-panel-qa/node_modules
         run: node scripts/panel-qa/a11y-axe.js
 
+  panel-react:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Node version (Vite 7 needs 20.19 or newer)
+        run: |
+          node --version
+          node -e "const [a,b]=process.versions.node.split('.').map(Number); if (a<20||(a===20&&b<19)) { console.error('Node too old for Vite 7'); process.exit(1); }"
+      - name: Install locked dependencies, type-check and build
+        working-directory: panel-react
+        run: |
+          npm ci --no-audit --no-fund
+          npx tsc --noEmit
+          npm run build
+      - name: Committed dist must match the sources (rebuild and rerun npm run build, then commit panel-react/dist)
+        run: git diff --exit-code -- panel-react/dist
+      - name: Dist is self-contained
+        working-directory: panel-react
+        run: node scripts/check-dist.mjs
+      - name: Production dependencies have no known vulnerabilities
+        working-directory: panel-react
+        run: npm audit --omit=dev --audit-level=low
+
   offline-ca-container:
     runs-on: ubuntu-24.04
     timeout-minutes: 8

@@ -324,4 +324,22 @@ The README one-line install still pins `v0.2.1`. It moves to the next Stable tag
 | UDP carrier | Design only (ADR-0046, Proposed) | none | No carrier code |
 | Competitive benchmark | Advisor assessment (#302); E2 harness (PR #308); E3 LAB harness (#332) | CI | E3 result (run 44124112450) |
 
+**Documentation:** this addendum and the 0.3.0 evidence draft bring the roadmap to 2026-11-17; HQ Issue #2 gets a matching append-only entry. Firewall status stays Unknown (ADR-0030); no component takes `CAP_NET_ADMIN`.
+
+
+## 9.8 Local Agent panel React modernization (2026-11-18)
+
+**Decision accepted:** [ADR-0054 — React architecture for the local Agent panel](ADR-0054-react-local-agent-panel.md). The owner approved React + TypeScript, with Vite as the initial build-tool choice, for the existing local Agent panel. This supersedes ADR-0032's vanilla-only frontend technology constraint for this panel only; the Rust core, Agent API trust boundary, static deployment model and all non-conflicting guardrails remain binding.
+
+**Scope:** the nine existing local routes only — Overview, Tunnels, Servers, Monitoring, Setup, Diagnostics, Activity, Agent and Settings. Central Fleet/control-plane work remains separate and is not authorized by this decision.
+
+**Delivery order**
+1. Produce three independent React visual prototypes using free/local tooling and permissively licensed components. Show all nine routes and compare the variants side by side. No paid AI generation, subscription or credit purchase is required or authorized.
+2. Reuse the already-downloaded Datta Able Free React template as a visual reference; evaluate other free components only after license, maintenance, accessibility, RTL and dependency review.
+3. Wait for the owner's selection before implementing a visual direction in the product.
+4. Migrate the selected design route-by-route, retaining the existing authenticated Agent API and keeping the vanilla panel as fallback until parity is accepted.
+5. Integrate a reproducible static build into the Rust Agent package; no Node.js runtime on target hosts.
+6. Close functional/API, auth, fa/en RTL/LTR, responsive, accessibility, CSP, dependency/license, clean-install, upgrade/rollback and uninstall gates before removing the legacy panel.
+
+**Current state (2026-11-18):** architecture decision recorded. Three-variant visual prototype source for all nine local routes is prepared in draft PR [#345](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/345) (Weave, Clarity, Command); build/render/browser/RTL/accessibility verification is **NOT RUN / UNKNOWN**. Owner design selection is pending. Product migration **NOT STARTED**; packaging acceptance **UNKNOWN / NOT VERIFIED**. This track does not change release status or imply a deployment. Exact work and evidence follow the normal PR and exact-head CI process.
 **Documentation:** this table brings the roadmap to 2026-11-18. Firewall status stays Unknown (ADR-0030); no component takes `CAP_NET_ADMIN`; Reverse stays Preview.
