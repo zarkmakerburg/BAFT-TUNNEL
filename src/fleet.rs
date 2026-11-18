@@ -256,7 +256,10 @@ pub fn build_report(instance: &str, version: &str, status: &Value, seq: u64) -> 
     });
     // Real kernel RTT samples only; the agent already turns stale evidence into `unknown` without
     // numbers, so a missing or out-of-range value stays absent.
-    for (key, ptr) in [("rtt_ms", "/health/rtt_ms"), ("jitter_ms", "/health/jitter_ms")] {
+    for (key, ptr) in [
+        ("rtt_ms", "/health/rtt_ms"),
+        ("jitter_ms", "/health/jitter_ms"),
+    ] {
         if let Some(x) = tunnel
             .and_then(|t| t.pointer(ptr))
             .and_then(Value::as_f64)
@@ -483,8 +486,10 @@ mod tests {
         assert_eq!((i.rtt_ms, i.jitter_ms), (None, None));
         // The builder also refuses an out-of-range local value.
         let bad = serde_json::json!({"tunnel": {"health": {"rtt_ms": 1e12}}});
-        assert!(build_report("t1", "0.3.0", &bad, 1)["instances"][0]
-            .get("rtt_ms")
-            .is_none());
+        assert!(
+            build_report("t1", "0.3.0", &bad, 1)["instances"][0]
+                .get("rtt_ms")
+                .is_none()
+        );
     }
 }
