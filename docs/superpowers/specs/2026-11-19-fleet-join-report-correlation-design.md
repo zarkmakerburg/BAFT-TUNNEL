@@ -33,7 +33,7 @@ Complete the Hub-side trust transition that is already modeled by ADR-0051: a Jo
 
 - Never accept node ID, serial, or certificate fingerprint from the report body as identity evidence.
 - Do not call the enrollment callback before the report's profile, schema, sequence, rate and inventory checks pass.
-- A first report arriving after the offer expiry must close, not enroll, the pending offer.
+- A Join persistence ACK or first report arriving after the offer expiry must close, not enroll, the pending offer.
 - Keep Hub mutex and Enroller mutex acquisition non-overlapping to avoid lock-order deadlocks.
 - A wrong node, wrong certificate, duplicate/replayed report, rejected report, or report before delivery ACK must not enroll.
 

@@ -290,10 +290,16 @@ impl Enroller {
 
     /// Called only after the Join transport ACK confirms local persistence of the delivered bundle.
     /// The fingerprint is derived here from the exact issued leaf, never supplied by the caller.
-    pub fn mark_delivered(&mut self, id: &str) -> Result<(), Error> {
+    pub fn mark_delivered(&mut self, id: &str, now: u64) -> Result<(), Error> {
         let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
         if o.state != State::Issued {
             return Err(Error::WrongState);
+        }
+        if now > o.expires {
+            o.state = State::Closed;
+            o.certificate = None;
+            o.delivered_fingerprint = None;
+            return Err(Error::Expired);
         }
         let certificate = o.certificate.as_deref().ok_or(Error::WrongState)?;
         let fingerprint = leaf_fingerprint(certificate)?;
@@ -378,7 +384,7 @@ pub(crate) mod test_support {
         offer.state = State::Issued;
         offer.certificate = Some(certificate_pem());
         let fingerprint = certificate_fingerprint(offer.certificate.as_deref().unwrap());
-        enroller.mark_delivered(&issued.id).unwrap();
+        enroller.mark_delivered(&issued.id, now + 1).unwrap();
         (issued.id, fingerprint)
     }
 }
@@ -540,7 +546,7 @@ mod tests {
         let delivered = test_support::certificate_fingerprint(&certificate);
         assert!(!e.acknowledge_first_report("edge-1", &delivered, 121));
 
-        e.mark_delivered(&i.id).unwrap();
+        e.mark_delivered(&i.id, 122).unwrap();
         assert_eq!(e.certificate_for_delivery(&i.id), Err(Error::WrongState));
         assert_eq!(e.pending(122)[0].state, State::AwaitingReport);
         assert!(!e.acknowledge_first_report("edge-2", &delivered, 122));
@@ -561,7 +567,7 @@ mod tests {
         offer.certificate = Some(certificate.clone());
 
         let delivered = test_support::certificate_fingerprint(&certificate);
-        e.mark_delivered(&i.id).unwrap();
+        e.mark_delivered(&i.id, 101).unwrap();
         assert_eq!(e.pending(121)[0].state, State::AwaitingReport);
         assert!(!e.acknowledge_first_report("edge-1", &"b".repeat(64), 122));
         assert!(!e.acknowledge_first_report("edge-2", &delivered, 122));
@@ -569,6 +575,19 @@ mod tests {
         assert!(e.acknowledge_first_report("edge-1", &delivered, 123));
         assert_eq!(e.pending(123)[0].state, State::Enrolled);
         assert!(!e.acknowledge_first_report("edge-1", &delivered, 123));
+    }
+
+    #[test]
+    fn expired_offer_cannot_be_marked_delivered() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-1", 100).unwrap();
+        let offer = e.offers.get_mut(&issued.id).unwrap();
+        offer.state = State::Issued;
+        offer.certificate = Some(test_support::certificate_pem());
+
+        assert_eq!(e.mark_delivered(&issued.id, 1001), Err(Error::Expired));
+        assert_eq!(e.pending(1001)[0].state, State::Closed);
+        assert!(e.offers[&issued.id].certificate.is_none());
     }
 
     #[test]
@@ -580,7 +599,7 @@ mod tests {
         let certificate = test_support::certificate_pem();
         offer.certificate = Some(certificate.clone());
         let delivered = test_support::certificate_fingerprint(&certificate);
-        e.mark_delivered(&i.id).unwrap();
+        e.mark_delivered(&i.id, 101).unwrap();
 
         assert!(!e.acknowledge_first_report("edge-1", &delivered, 1001));
         assert_eq!(e.pending(1001)[0].state, State::Closed);
@@ -595,7 +614,7 @@ mod tests {
         offer.certificate = Some(test_support::certificate_pem());
         let expected = test_support::certificate_fingerprint(offer.certificate.as_deref().unwrap());
 
-        e.mark_delivered(&issued.id).unwrap();
+        e.mark_delivered(&issued.id, 101).unwrap();
         assert_eq!(
             e.offers[&issued.id].delivered_fingerprint.as_deref(),
             Some(expected.as_str())
@@ -609,7 +628,10 @@ mod tests {
         let offer = e.offers.get_mut(&issued.id).unwrap();
         offer.state = State::Issued;
         offer.certificate = Some("not a certificate".to_owned());
-        assert_eq!(e.mark_delivered(&issued.id), Err(Error::BadCertificate));
+        assert_eq!(
+            e.mark_delivered(&issued.id, 101),
+            Err(Error::BadCertificate)
+        );
         assert_eq!(e.pending(101)[0].state, State::Issued);
     }
 

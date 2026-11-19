@@ -35,10 +35,10 @@
 - Test: `src/fleet_enroll.rs` unit tests
 
 **Interfaces:**
-- Produces: `Enroller::mark_delivered(id: &str) -> Result<(), Error>; derives the fingerprint from the stored issued certificate`
+- Produces: `Enroller::mark_delivered(id: &str, now: u64) -> Result<(), Error>; derives the fingerprint from the stored issued certificate and rejects expired delivery`
 - Produces: `Enroller::acknowledge_first_report(node_id: &str, certificate_fingerprint: &str, now: u64) -> bool`
 
-- [x] Add tests proving a Join delivery ACK stores the fingerprint, wrong node/fingerprint cannot enroll, and an expired offer cannot enroll.
+- [x] Add tests proving a Join delivery ACK stores the fingerprint, wrong node/fingerprint cannot enroll, and an expired offer cannot be delivered or enrolled.
 - [x] Run the focused Enroller test and verify it fails for the expected missing signature/behavior.
 - [x] Add an optional stored fingerprint to each offer; parse the stored issued certificate as exactly one X.509 PEM leaf and derive its SHA-256 digest internally.
 - [x] Change `mark_delivered` to store the fingerprint and enter `AwaitingReport`.
