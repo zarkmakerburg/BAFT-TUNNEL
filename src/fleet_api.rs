@@ -38,7 +38,9 @@ fn state_name(s: State) -> &'static str {
     match s {
         State::Offered => "waiting-for-node",
         State::Submitted => "needs-confirmation",
-        State::Done => "enrolled",
+        State::Issued => "issued-unconfirmed",
+        State::AwaitingReport => "awaiting-first-report",
+        State::Enrolled => "enrolled",
         State::Closed => "closed",
     }
 }
@@ -56,7 +58,8 @@ fn fail(e: Error) -> (u16, Value) {
         Error::WrongState => (409, "offer is not in a state that allows this"),
         Error::FingerprintMismatch => (422, "fingerprint does not match the one the node reported"),
         Error::Sign => (503, "signing is not available on this host"),
-        Error::BadToken | Error::BadProof | Error::BadCsr => (400, "invalid enrollment request"),
+        Error::BadToken | Error::BadCsr => (400, "invalid enrollment request"),
+        Error::WrongNode => (409, "first report identity does not match the offered node"),
     };
     (code, json!({"error": msg}))
 }
@@ -101,8 +104,7 @@ pub fn confirm(e: &mut Enroller, body: &[u8], now: u64, sign: Option<&Signer>) -
         return fail(Error::Sign);
     };
     match e.confirm(&req.id, &req.fingerprint, now, sign) {
-        // The certificate is public; it is returned for the node, not stored here.
-        Ok(cert) => (200, json!({"state": "enrolled", "certificate": cert})),
+        Ok(()) => (202, json!({"state": "issued-unconfirmed"})),
         Err(err) => fail(err),
     }
 }
@@ -120,7 +122,39 @@ pub fn deny(e: &mut Enroller, body: &[u8]) -> (u16, Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleet_enroll::proof;
+
+    fn csr(node_id: &str) -> String {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("fleet-api-csr-{:x}", rand::random::<u64>()));
+        fs::create_dir_all(&dir).unwrap();
+        let key = crate::pair_ca::run(
+            &[
+                "genpkey",
+                "-algorithm",
+                "EC",
+                "-pkeyopt",
+                "ec_paramgen_curve:prime256v1",
+            ],
+            None,
+        )
+        .unwrap();
+        let key_path = dir.join("node.key");
+        crate::pair_ca::write_private(&key_path, &key, 0o600).unwrap();
+        let request = crate::pair_ca::run(
+            &[
+                "req",
+                "-new",
+                "-key",
+                &key_path.to_string_lossy(),
+                "-subj",
+                &format!("/CN={node_id}"),
+            ],
+            None,
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(dir);
+        String::from_utf8(request).unwrap()
+    }
 
     #[test]
     fn offer_list_confirm_flow_never_leaks_secrets_in_the_list() {
@@ -134,8 +168,9 @@ mod tests {
         );
         let listed = list(&mut e, 11).1.to_string();
         assert!(!listed.contains(&token) && !listed.contains(&nonce));
-        let fp = "ab12-cd34-ef56";
-        e.submit(&id, "edge-1", &token, "CSR", fp, &proof(&nonce, fp), 12)
+        let request = csr("edge-1");
+        let fp = crate::fleet_ca::validate_node_csr("edge-1", &request).unwrap();
+        e.submit(&id, "edge-1", &token, &nonce, &request, 12)
             .unwrap();
         assert_eq!(
             list(&mut e, 13).1["offers"][0]["state"],
@@ -145,8 +180,15 @@ mod tests {
         // No signer: refused and nothing consumed.
         assert_eq!(confirm(&mut e, body.as_bytes(), 14, None).0, 503);
         let signer = |_: &str, csr: &str| Ok(format!("CERT({csr})"));
+        let expected_certificate = format!("CERT({request})");
         let (c, v) = confirm(&mut e, body.as_bytes(), 15, Some(&signer));
-        assert_eq!((c, v["certificate"].as_str()), (200, Some("CERT(CSR)")));
+        assert_eq!(c, 202);
+        assert_eq!(v["state"], "issued-unconfirmed");
+        assert!(v.get("certificate").is_none());
+        assert_eq!(
+            e.certificate_for_delivery(&id),
+            Ok(expected_certificate.as_str())
+        );
     }
 
     #[test]
