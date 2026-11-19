@@ -44,12 +44,12 @@
 - `fleet_helper::request_hub_identity(..., join_listen: Option<&str>, ...)` carries the optional bind socket to the root helper.
 - Root helper request accepts optional `join_listen`; the advertised host is derived from the validated `dial_san`.
 
-- [ ] Write `hub_provision_rejects_invalid_join_bind`, `hub_provision_derives_join_host_from_dial_san`, and `hub_provision_preserves_legacy_without_join` tests in `src/fleet_helper.rs`; write `fleet_config_validates_optional_join_section` in `src/fleet_run.rs`.
-- [ ] Run `cargo test hub_provision --bin baft-tunnel` and `cargo test fleet_config_validates_optional_join_section --bin baft-tunnel`; confirm the new assertions fail for missing configuration behavior.
-- [ ] Add strict validation for nonzero bind port and the derived TLS server name.
-- [ ] Persist the optional Join section in the root-generated config using the provisioned Hub ID and TLS dial name.
-- [ ] Preserve compatibility for existing requests that omit `join_listen`.
-- [ ] Run focused provisioning/config tests and `cargo fmt --all -- --check`.
+- [x] Write `hub_provision_rejects_invalid_join_bind`, `hub_provision_derives_join_host_from_dial_san`, and `hub_provision_preserves_legacy_without_join` tests in `src/fleet_helper.rs`; write `fleet_config_validates_optional_join_section` in `src/fleet_run.rs`.
+- [x] RED confirmed on `b02bbd1` (450 passed, 3 expected new failures); GREEN confirmed by `cargo +1.88.0 test --locked --all-targets` on exact SHA `343ba1e` in phase1-rust run `44631710539`.
+- [x] Add strict validation for nonzero bind port and the derived TLS server name.
+- [x] Persist the optional Join section in the root-generated config using the provisioned Hub ID and TLS dial name.
+- [x] Preserve compatibility for existing requests that omit `join_listen`.
+- [x] Full Rust test suite and `cargo fmt --all -- --check` passed on exact SHA `343ba1e` (phase1-rust run `44631710539`).
 
 ### Task 2: Build a shared, bounded Join listener dispatcher
 

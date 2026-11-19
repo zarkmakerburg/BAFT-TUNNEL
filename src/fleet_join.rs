@@ -1187,10 +1187,56 @@ mod tests {
     }
 
     fn member_csr(material: &Material) -> String {
-        let member_dir = material.root.join("member");
+        member_csr_for(material, "node-1")
+    }
+
+    fn member_csr_for(material: &Material, node_id: &str) -> String {
+        let member_dir = material.root.join(format!("member-{node_id}"));
         std::fs::create_dir_all(&member_dir).unwrap();
-        let (_private_key_path, csr) = hub_key_and_csr(&member_dir, "node-1");
+        let (_private_key_path, csr) = hub_key_and_csr(&member_dir, node_id);
         csr
+    }
+
+    #[tokio::test]
+    async fn shared_listener_serves_two_distinct_offers() {
+        let material = material("shared-two-offers", "hub-1", "DNS:localhost");
+        let csr_a = member_csr_for(&material, "node-1");
+        let csr_b = member_csr_for(&material, "node-2");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 30;
+        let offer_a = join_offer(&material, address, expires);
+        let mut offer_b = join_offer(&material, address, expires);
+        offer_b.offer_id = "e".repeat(16);
+        offer_b.node_id = "node-2".into();
+        offer_b.token = "f".repeat(32);
+        offer_b.nonce = "a".repeat(32);
+        let response_a = std::sync::Arc::new(join_response(&material, "node-1", &csr_a));
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let response_for_server = response_a.clone();
+        let server = tokio::spawn(serve(
+            listener,
+            acceptor,
+            offer_a.offer_id.clone(),
+            offer_a.node_id.clone(),
+            expires,
+            move |_request, _peer| {
+                let response = response_for_server.clone();
+                async move { Admission::Deliver((*response).clone()) }
+            },
+        ));
+
+        let session_a = join(&offer_a, &csr_a).await.unwrap();
+        session_a.ack(true).await.unwrap();
+        server.await.unwrap().unwrap();
+
+        let second = join(&offer_b, &csr_b).await;
+        assert!(
+            second.is_ok(),
+            "one acknowledged offer must not close the shared listener"
+        );
+        second.unwrap().ack(true).await.unwrap();
+        let _ = std::fs::remove_dir_all(material.root);
     }
 
     #[tokio::test]
