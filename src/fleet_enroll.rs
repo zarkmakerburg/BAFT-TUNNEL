@@ -1,14 +1,15 @@
 //! ADR-0045 F-7 / ADR-0051 Path A: the hub-side enrollment state machine for a new fleet node.
 //!
 //! The operator creates an offer (node id + one-time token + nonce, 15 minute TTL). The new
-//! server submits a CSR. A validator callback verifies the CSR signature, subject and allowed key
-//! profile, then returns the canonical public-key fingerprint; client-supplied fingerprints and
-//! unkeyed proofs are never trusted. The CSR is not signed until the operator confirms that
-//! fingerprint (F-7). A wrong token or node id counts against a small
+//! server submits a CSR. The hub validates the CSR signature, exact subject and allowed key profile,
+//! then computes the canonical public-key fingerprint; client-supplied fingerprints and unkeyed
+//! proofs are never trusted. The CSR is not signed until the operator confirms that fingerprint
+//! (F-7). A wrong token or node id counts against a small
 //! failure budget and then closes the window; a valid token is consumed by the first submit.
-//! The module is pure: CSR validation/fingerprinting and signing are injected, so it holds no keys
-//! and does no I/O. Delivery and first-report acknowledgement are separate transitions; signing
-//! alone never marks a node Enrolled. Transport and root-helper wiring come in later slices.
+//! The Enroller owns only ephemeral protocol state. CSR validation uses the existing OpenSSL-backed
+//! Fleet CA gate; certificate signing is injected through the root-helper boundary, so this module
+//! never holds a CA private key. Delivery and first-report acknowledgement are separate
+//! transitions; signing alone never marks a node Enrolled. Transport wiring comes in later slices.
 
 #![allow(dead_code)] // wired by the Add-server API and the join listener in later slices
 
@@ -150,17 +151,17 @@ impl Enroller {
         })
     }
 
-    /// Submit a CSR after validating its signature, subject and key profile. The callback returns
-    /// the canonical SHA-256 fingerprint of the CSR public key; no client-asserted fingerprint
-    /// or unkeyed proof is accepted. A valid token is consumed even if CSR validation fails.
+    /// Submit a CSR after validating its signature, subject and key profile. The hub computes the
+    /// canonical SHA-256 fingerprint of the CSR public key; no client-asserted fingerprint or
+    /// unkeyed proof is accepted. A valid token is consumed even if CSR validation fails.
     pub fn submit(
         &mut self,
         id: &str,
         node_id: &str,
         token: &str,
+        nonce: &str,
         csr_pem: &str,
         now: u64,
-        validate_csr: impl FnOnce(&str, &str) -> Result<String, Error>,
     ) -> Result<(), Error> {
         let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
         if o.state != State::Offered {
@@ -170,7 +171,10 @@ impl Enroller {
             o.state = State::Closed;
             return Err(Error::Expired);
         }
-        if !(ct_eq(&hash(token), &o.token_hash) && node_id == o.node_id) {
+        if !(ct_eq(&hash(token), &o.token_hash)
+            && ct_eq(nonce.as_bytes(), o.nonce.as_bytes())
+            && node_id == o.node_id)
+        {
             o.failures += 1;
             if o.failures >= MAX_FAILURES {
                 o.state = State::Closed;
@@ -182,11 +186,9 @@ impl Enroller {
             o.state = State::Closed;
             return Err(Error::BadCsr);
         }
-        let fingerprint = match validate_csr(csr_pem, node_id) {
-            Ok(value) if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) => {
-                value.to_ascii_lowercase()
-            }
-            _ => {
+        let fingerprint = match crate::fleet_ca::validate_node_csr(node_id, csr_pem) {
+            Ok(value) => value,
+            Err(_) => {
                 o.state = State::Closed;
                 return Err(Error::BadCsr);
             }
@@ -304,18 +306,47 @@ impl Enroller {
 mod tests {
     use super::*;
 
-    const FP: &str = "ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34";
-
-    fn submit_ok(e: &mut Enroller, i: &Issued, now: u64) -> Result<(), Error> {
-        e.submit(&i.id, &i.node_id, &i.token, "CSR", now, |csr, node| {
-            assert_eq!(csr, "CSR");
-            assert_eq!(node, i.node_id);
-            Ok(FP.to_owned())
-        })
+    fn csr(node_id: &str) -> String {
+        use std::fs;
+        let dir =
+            std::env::temp_dir().join(format!("fleet-enroll-csr-{:x}", rand::random::<u64>()));
+        fs::create_dir_all(&dir).unwrap();
+        let key = crate::pair_ca::run(
+            &[
+                "genpkey",
+                "-algorithm",
+                "EC",
+                "-pkeyopt",
+                "ec_paramgen_curve:prime256v1",
+            ],
+            None,
+        )
+        .unwrap();
+        let key_path = dir.join("node.key");
+        crate::pair_ca::write_private(&key_path, &key, 0o600).unwrap();
+        let csr = crate::pair_ca::run(
+            &[
+                "req",
+                "-new",
+                "-key",
+                &key_path.to_string_lossy(),
+                "-subj",
+                &format!("/CN={node_id}"),
+            ],
+            None,
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(dir);
+        String::from_utf8(csr).unwrap()
     }
 
-    fn ok_sign(_: &str, csr: &str) -> Result<String, Error> {
-        Ok(format!("CERT({csr})"))
+    fn submit_ok(e: &mut Enroller, i: &Issued, now: u64) -> Result<(), Error> {
+        let csr = csr(&i.node_id);
+        e.submit(&i.id, &i.node_id, &i.token, &i.nonce, &csr, now)
+    }
+
+    fn ok_sign(_: &str, _: &str) -> Result<String, Error> {
+        Ok("CERT".to_owned())
     }
 
     #[test]
@@ -323,32 +354,27 @@ mod tests {
         let mut e = Enroller::default();
         let i = e.offer("edge-1", 100).unwrap();
         submit_ok(&mut e, &i, 110).unwrap();
-        assert_eq!(e.pending(111)[0].fingerprint.as_deref(), Some(FP));
+        let fp = e.pending(111)[0].fingerprint.clone().unwrap();
+        assert_eq!(fp.len(), 64);
         assert_eq!(
             e.confirm(&i.id, "0000-0000-0000", 120, ok_sign),
             Err(Error::FingerprintMismatch)
         );
-        let uppercase_fp = FP.to_ascii_uppercase();
+        let uppercase_fp = fp.to_ascii_uppercase();
         assert_eq!(e.confirm(&i.id, &uppercase_fp, 121, ok_sign), Ok(()));
         assert_eq!(e.pending(121)[0].state, State::Issued);
-        assert_eq!(e.certificate_for_delivery(&i.id), Ok("CERT(CSR)"));
-        assert_eq!(e.confirm(&i.id, FP, 122, ok_sign), Err(Error::WrongState));
+        assert_eq!(e.certificate_for_delivery(&i.id), Ok("CERT"));
+        assert_eq!(e.confirm(&i.id, &fp, 122, ok_sign), Err(Error::WrongState));
     }
 
     #[test]
-    fn submit_uses_fingerprint_from_validated_csr_not_a_client_claim() {
+    fn submit_uses_fingerprint_from_cryptographically_validated_csr() {
         let mut e = Enroller::default();
         let i = e.offer("edge-1", 0).unwrap();
-        let expected = "ab".repeat(32);
-        let mut validator_called = false;
-        e.submit(&i.id, &i.node_id, &i.token, "CSR-PEM", 1, |csr, node| {
-            validator_called = true;
-            assert_eq!(csr, "CSR-PEM");
-            assert_eq!(node, "edge-1");
-            Ok(expected.clone())
-        })
-        .unwrap();
-        assert!(validator_called);
+        let request = csr("edge-1");
+        let expected = crate::fleet_ca::validate_node_csr("edge-1", &request).unwrap();
+        e.submit(&i.id, &i.node_id, &i.token, &i.nonce, &request, 1)
+            .unwrap();
         assert_eq!(
             e.pending(2)[0].fingerprint.as_deref(),
             Some(expected.as_str())
@@ -360,9 +386,7 @@ mod tests {
         let mut e = Enroller::default();
         let i = e.offer("edge-1", 0).unwrap();
         assert_eq!(
-            e.submit(&i.id, &i.node_id, &i.token, "bad-csr", 1, |_, _| Err(
-                Error::BadCsr
-            )),
+            e.submit(&i.id, &i.node_id, &i.token, &i.nonce, "bad-csr", 1),
             Err(Error::BadCsr)
         );
         assert_eq!(e.pending(2)[0].state, State::Closed);
@@ -377,7 +401,7 @@ mod tests {
         let j = e.offer("edge-2", 0).unwrap();
         for _ in 0..3 {
             assert_eq!(
-                e.submit(&j.id, "edge-2", "bad", "CSR", 1, |_, _| Ok(FP.to_owned())),
+                e.submit(&j.id, "edge-2", "bad", &j.nonce, "CSR", 1),
                 Err(Error::BadToken)
             );
         }
@@ -389,20 +413,15 @@ mod tests {
         let mut e = Enroller::default();
         let i = e.offer("edge-1", 0).unwrap();
         assert_eq!(
-            e.submit(
-                &i.id,
-                "edge-9",
-                &i.token,
-                "CSR",
-                1,
-                |_, _| Ok(FP.to_owned())
-            ),
+            e.submit(&i.id, "edge-1", &i.token, "wrong-nonce", "CSR", 1),
             Err(Error::BadToken)
         );
         assert_eq!(
-            e.submit(&i.id, "edge-1", &i.token, "CSR", 1, |_, _| Err(
-                Error::BadCsr
-            )),
+            e.submit(&i.id, "edge-9", &i.token, &i.nonce, "CSR", 1),
+            Err(Error::BadToken)
+        );
+        assert_eq!(
+            e.submit(&i.id, "edge-1", &i.token, &i.nonce, "not a CSR", 1),
             Err(Error::BadCsr)
         );
         let k = e.offer("edge-3", 0).unwrap();
@@ -430,9 +449,10 @@ mod tests {
         let i = e.offer("edge-1", 100).unwrap();
         submit_ok(&mut e, &i, 110).unwrap();
 
-        e.confirm(&i.id, FP, 120, ok_sign).unwrap();
+        let fp = e.pending(111)[0].fingerprint.clone().unwrap();
+        e.confirm(&i.id, &fp, 120, ok_sign).unwrap();
         assert_eq!(e.pending(121)[0].state, State::Issued);
-        assert_eq!(e.certificate_for_delivery(&i.id).unwrap(), "CERT(CSR)");
+        assert_eq!(e.certificate_for_delivery(&i.id).unwrap(), "CERT");
         assert_eq!(e.pending(121)[0].state, State::Issued);
         assert_eq!(
             e.acknowledge_first_report(&i.id, "edge-1"),
@@ -457,12 +477,14 @@ mod tests {
         let mut e = Enroller::default();
         let i = e.offer("edge-1", 0).unwrap();
         submit_ok(&mut e, &i, 1).unwrap();
+        let i_fp = e.pending(1)[0].fingerprint.clone().unwrap();
         e.deny(&i.id).unwrap();
-        assert_eq!(e.confirm(&i.id, FP, 2, ok_sign), Err(Error::WrongState));
+        assert_eq!(e.confirm(&i.id, &i_fp, 2, ok_sign), Err(Error::WrongState));
         let j = e.offer("edge-1", 3).unwrap();
         submit_ok(&mut e, &j, 4).unwrap();
+        let j_fp = e.pending(4)[0].fingerprint.clone().unwrap();
         assert_eq!(
-            e.confirm(&j.id, FP, 5, |_, _| Err(Error::Sign)),
+            e.confirm(&j.id, &j_fp, 5, |_, _| Err(Error::Sign)),
             Err(Error::Sign)
         );
         assert_eq!(

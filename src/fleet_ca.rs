@@ -17,6 +17,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
+use sha2::{Digest, Sha256};
 
 use crate::fleet::{EKU_FLEET_HUB, EKU_FLEET_NODE};
 use crate::pair_ca::{check_csr, run, validate_san, write_private};
@@ -40,6 +41,20 @@ pub fn valid_node_id(id: &str) -> bool {
 /// The URI name a fleet-node certificate carries; the hub takes the node id from here (F-5).
 pub fn node_uri(node_id: &str) -> String {
     format!("baft-fleet://{node_id}.{DOMAIN}")
+}
+
+/// Validate a joining member's CSR and return the canonical SHA-256 fingerprint of its DER
+/// SubjectPublicKeyInfo. The CSR signature, exact node CN and P-256 profile are checked before
+/// the fingerprint is computed; no client-supplied fingerprint is trusted.
+pub fn validate_node_csr(node_id: &str, csr_pem: &str) -> Result<String> {
+    ensure!(valid_node_id(node_id), "invalid fleet node id");
+    check_csr(csr_pem, node_id)?;
+    let public_key_pem = run(&["req", "-pubkey", "-noout"], Some(csr_pem.as_bytes()))?;
+    let public_key_der = run(
+        &["pkey", "-pubin", "-outform", "DER"],
+        Some(&public_key_pem),
+    )?;
+    Ok(hex::encode(Sha256::digest(public_key_der)))
 }
 
 /// Create the Fleet CA in an empty or absent directory (mode 0711). Only public trust files are
@@ -299,6 +314,22 @@ mod tests {
         for bad in ["", "-a", "a-", "A", "a_b", "a.b", "a/b", &"a".repeat(64)] {
             assert!(!valid_node_id(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn validates_join_csr_and_returns_full_canonical_spki_sha256() {
+        let valid = csr("edge-1", "prime256v1");
+        let fingerprint = validate_node_csr("edge-1", &valid).unwrap();
+        assert_eq!(fingerprint.len(), 64);
+        assert!(
+            fingerprint
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
+        assert_eq!(validate_node_csr("edge-1", &valid).unwrap(), fingerprint);
+        assert!(validate_node_csr("edge-2", &valid).is_err());
+        assert!(validate_node_csr("edge-1", &csr("edge-1", "secp384r1")).is_err());
+        assert!(validate_node_csr("edge-1", "not a CSR").is_err());
     }
 
     #[test]

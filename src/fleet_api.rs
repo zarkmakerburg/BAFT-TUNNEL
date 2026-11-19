@@ -123,6 +123,39 @@ pub fn deny(e: &mut Enroller, body: &[u8]) -> (u16, Value) {
 mod tests {
     use super::*;
 
+    fn csr(node_id: &str) -> String {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("fleet-api-csr-{:x}", rand::random::<u64>()));
+        fs::create_dir_all(&dir).unwrap();
+        let key = crate::pair_ca::run(
+            &[
+                "genpkey",
+                "-algorithm",
+                "EC",
+                "-pkeyopt",
+                "ec_paramgen_curve:prime256v1",
+            ],
+            None,
+        )
+        .unwrap();
+        let key_path = dir.join("node.key");
+        crate::pair_ca::write_private(&key_path, &key, 0o600).unwrap();
+        let request = crate::pair_ca::run(
+            &[
+                "req",
+                "-new",
+                "-key",
+                &key_path.to_string_lossy(),
+                "-subj",
+                &format!("/CN={node_id}"),
+            ],
+            None,
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(dir);
+        String::from_utf8(request).unwrap()
+    }
+
     #[test]
     fn offer_list_confirm_flow_never_leaks_secrets_in_the_list() {
         let mut e = Enroller::default();
@@ -135,13 +168,10 @@ mod tests {
         );
         let listed = list(&mut e, 11).1.to_string();
         assert!(!listed.contains(&token) && !listed.contains(&nonce));
-        let fp = "ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34";
-        e.submit(&id, "edge-1", &token, "CSR", 12, |csr, node| {
-            assert_eq!(csr, "CSR");
-            assert_eq!(node, "edge-1");
-            Ok(fp.to_owned())
-        })
-        .unwrap();
+        let request = csr("edge-1");
+        let fp = crate::fleet_ca::validate_node_csr("edge-1", &request).unwrap();
+        e.submit(&id, "edge-1", &token, &nonce, &request, 12)
+            .unwrap();
         assert_eq!(
             list(&mut e, 13).1["offers"][0]["state"],
             "needs-confirmation"
@@ -150,11 +180,15 @@ mod tests {
         // No signer: refused and nothing consumed.
         assert_eq!(confirm(&mut e, body.as_bytes(), 14, None).0, 503);
         let signer = |_: &str, csr: &str| Ok(format!("CERT({csr})"));
+        let expected_certificate = format!("CERT({request})");
         let (c, v) = confirm(&mut e, body.as_bytes(), 15, Some(&signer));
         assert_eq!(c, 202);
         assert_eq!(v["state"], "issued-unconfirmed");
         assert!(v.get("certificate").is_none());
-        assert_eq!(e.certificate_for_delivery(&id), Ok("CERT(CSR)"));
+        assert_eq!(
+            e.certificate_for_delivery(&id),
+            Ok(expected_certificate.as_str())
+        );
     }
 
     #[test]
