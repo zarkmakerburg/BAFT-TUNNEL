@@ -53,7 +53,7 @@
 
 **Interfaces:**
 - Produces: `Identity.fingerprint: String` derived from the peer leaf DER.
-- Produces: `HubStore::report_accepted(&self, identity: &Identity)` with a default no-op.
+- Produces: `HubStore::report_accepted(&self, identity: &Identity)` as a mandatory method; the bare Mutex<Hub> test adapter explicitly no-ops, while runtime Ctx handles the Enroller transition.
 - `handle` accepts a `HubStore` and invokes the callback only after `Hub::accept` succeeds.
 
 - [x] Add tests for fingerprint derivation and callback behavior on accepted versus rejected reports.

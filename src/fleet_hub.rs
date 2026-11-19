@@ -30,14 +30,17 @@ pub trait HubStore: Send + Sync + 'static {
     fn hub(&self) -> &Mutex<Hub>;
 
     /// Called only after the report has passed all Hub acceptance rules. Identity is derived
-    /// from the authenticated TLS leaf, never from report JSON.
-    fn report_accepted(&self, _identity: &Identity) {}
+    /// from the authenticated TLS leaf, never from report JSON. Implementors must handle this
+    /// explicitly; test-only stores may intentionally provide a no-op.
+    fn report_accepted(&self, identity: &Identity);
 }
 
 impl HubStore for Mutex<Hub> {
     fn hub(&self) -> &Mutex<Hub> {
         self
     }
+
+    fn report_accepted(&self, _identity: &Identity) {}
 }
 
 /// What the verified client certificate says about the caller.
