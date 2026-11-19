@@ -529,3 +529,130 @@ mod tests {
         let _ = std::fs::remove_dir_all(wrong_eku.root);
     }
 }
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+    use tokio::io::{AsyncWriteExt, duplex};
+    use tokio::time::{Duration, timeout};
+
+    fn offer() -> JoinOffer {
+        JoinOffer {
+            v: 1,
+            host: "198.51.100.10".into(),
+            port: 7443,
+            hub_name: "hub-1.fleet.baft.invalid".into(),
+            hub_id: "hub-1".into(),
+            hub_pin: "a".repeat(64),
+            offer_id: "b".repeat(16),
+            node_id: "node-1".into(),
+            token: "c".repeat(32),
+            nonce: "d".repeat(32),
+            expires: 1_700_000_900,
+        }
+    }
+
+    fn request() -> JoinRequest {
+        JoinRequest {
+            offer_id: "b".repeat(16),
+            node_id: "node-1".into(),
+            token: "c".repeat(32),
+            nonce: "d".repeat(32),
+            csr_pem: "-----BEGIN CERTIFICATE REQUEST-----\nTEST\n-----END CERTIFICATE REQUEST-----"
+                .into(),
+        }
+    }
+
+    #[test]
+    fn offer_round_trips_with_fleet_only_prefix_and_expiry_validation() {
+        let offer = offer();
+        offer.validate(1_700_000_000).unwrap();
+        let encoded = offer.encode().unwrap();
+        assert!(encoded.starts_with(FLEET_JOIN_PREFIX));
+        assert!(!encoded.contains("BAFTPAIR"));
+        let decoded = JoinOffer::decode(&encoded, 1_700_000_000).unwrap();
+        assert_eq!(decoded, offer);
+        assert!(JoinOffer::decode(&encoded, 1_700_001_000).is_err());
+    }
+
+    #[test]
+    fn offer_rejects_invalid_identity_pin_token_nonce_host_port_and_ttl() {
+        let now = 1_700_000_000;
+        let mut bad = offer();
+        bad.hub_pin = "z".repeat(64);
+        assert!(bad.validate(now).is_err());
+        let mut bad = offer();
+        bad.token = "c".repeat(30);
+        assert!(bad.validate(now).is_err());
+        let mut bad = offer();
+        bad.nonce = "d".repeat(30);
+        assert!(bad.validate(now).is_err());
+        let mut bad = offer();
+        bad.hub_id = "not valid".into();
+        assert!(bad.validate(now).is_err());
+        let mut bad = offer();
+        bad.node_id = "not valid".into();
+        assert!(bad.validate(now).is_err());
+        let mut bad = offer();
+        bad.host = "not a host".into();
+        assert!(bad.validate(now).is_err());
+        let mut bad = offer();
+        bad.port = 0;
+        assert!(bad.validate(now).is_err());
+        let mut bad = offer();
+        bad.expires = now + 901;
+        assert!(bad.validate(now).is_err());
+    }
+
+    #[test]
+    fn fleet_join_messages_reject_unknown_json_fields() {
+        assert!(serde_json::from_str::<JoinRequest>(
+            r#"{"offer_id":"bbbbbbbbbbbbbbbb","node_id":"node-1","token":"cccccccccccccccccccccccccccccccc","nonce":"dddddddddddddddddddddddddddddddd","csr_pem":"x","extra":true}"#
+        ).is_err());
+        assert!(serde_json::from_str::<JoinResponse>(
+            r#"{"ok":false,"member_certificate_pem":null,"ca_certificate_pem":null,"crl_pem":null,"hub_certificate_pem":null,"reason":"denied","extra":true}"#
+        ).is_err());
+        assert!(serde_json::from_str::<JoinAck>(r#"{"ok":true,"extra":true}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn bounded_frame_round_trip_preserves_strict_join_request() {
+        let (mut writer, mut reader) = duplex(4096);
+        let expected = request();
+        write_frame(&mut writer, &expected).await.unwrap();
+        let actual: JoinRequest = read_frame(&mut reader).await.unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn frame_reader_rejects_zero_and_oversized_lengths_before_allocation() {
+        for length in [0_u32, MAX_JOIN_FRAME as u32 + 1] {
+            let (mut writer, mut reader) = duplex(16);
+            writer.write_all(&length.to_be_bytes()).await.unwrap();
+            assert!(read_frame::<_, JoinRequest>(&mut reader).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn frame_reader_rejects_truncated_payload() {
+        let (mut writer, mut reader) = duplex(16);
+        writer.write_all(&5_u32.to_be_bytes()).await.unwrap();
+        writer.write_all(b"{} ").await.unwrap();
+        drop(writer);
+        assert!(read_frame::<_, JoinRequest>(&mut reader).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn frame_reader_has_a_bounded_deadline_when_peer_stalls() {
+        let (_writer, mut reader) = duplex(16);
+        assert!(
+            timeout(
+                Duration::from_secs(3),
+                read_frame::<_, JoinRequest>(&mut reader)
+            )
+            .await
+            .unwrap()
+            .is_err()
+        );
+    }
+}
