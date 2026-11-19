@@ -367,19 +367,6 @@ pub(crate) fn fleet_join_acceptor(cert: &Path, key: &Path) -> Result<TlsAcceptor
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
-/// Fleet Join's member-side verifier uses the same CA and mandatory CRL policy as Report,
-/// while the caller additionally pins the exact Hub leaf certificate.
-pub(crate) fn fleet_join_server_verifier(
-    ca: &Path,
-    crl: &Path,
-) -> Result<Arc<WebPkiServerVerifier>> {
-    WebPkiServerVerifier::builder(Arc::new(roots(ca)?))
-        .with_crls(revocation_lists(crl)?)
-        .enforce_revocation_expiration()
-        .build()
-        .context("build Fleet Join server verifier with mandatory CA and CRL checks")
-}
-
 /// TLS 1.3 server for the one-shot pairing exchange (ADR-0050): no client certificate; the
 /// joiner authenticates with a one-time token and the server by the pin carried in the code.
 pub fn pairing_acceptor(cert: &Path, key: &Path) -> Result<TlsAcceptor> {

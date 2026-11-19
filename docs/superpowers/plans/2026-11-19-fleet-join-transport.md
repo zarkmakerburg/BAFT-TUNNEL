@@ -4,7 +4,7 @@
 
 **Goal:** Add an isolated Fleet-specific TLS 1.3 server-authenticated Join transport and pinned member client, without enabling or advertising enrollment before later Enroller/Report integration and two-host acceptance.
 
-**Architecture:** A temporary, per-offer Hub listener uses TLS 1.3 with no client certificate, separate from the existing persistent mandatory-mTLS Report listener. The member verifies the Hub through the Fleet CA/CRL, exact leaf SHA-256 pin, Hub EKU/URI identity and dial-target DNS/IP SAN before sending a Fleet-specific bounded request. The server keeps the TLS session open through operator approval and certificate/trust delivery; the member acknowledges only after local installation and its caller's first-report step. This transport slice does not mark a node Enrolled.
+**Architecture:** A temporary, per-offer Hub listener uses TLS 1.3 with no client certificate, separate from the existing persistent mandatory-mTLS Report listener. The member authenticates the Hub through the exact leaf SHA-256 pin carried by the operator's trusted offer code, and validates the leaf's validity period, Fleet Hub EKU, URI SAN and dial-target DNS/IP SAN before sending a Fleet-specific bounded request. The joining member does not yet possess the Fleet CA/CRL; those public trust materials are delivered only after the pinned TLS session is established. The server keeps the TLS session open through operator approval and certificate/trust delivery; the member acknowledges only after local installation and its caller's first-report step. This transport slice does not mark a node Enrolled.
 
 **Tech Stack:** Rust 2024, Tokio, rustls 0.23, tokio-rustls 0.26, serde/serde_json, SHA-256, existing x509-parser and OpenSSL helpers. No new dependency.
 
@@ -14,18 +14,18 @@
 
 - TLS 1.3 only; Join is server-authentication-only and Report remains mandatory mTLS.
 - Never reuse tunnel pairing message types, codes, identities, or state.
-- Hub identity pin is the SHA-256 fingerprint of the exact Hub leaf certificate; also validate chain, CRL, validity, Fleet Hub EKU, URI SAN and dial-target DNS/IP SAN.
+- Hub identity pin is the SHA-256 fingerprint of the exact Hub leaf certificate. Validate leaf validity, Fleet Hub EKU, URI SAN and dial-target DNS/IP SAN before sending the CSR. Do not require CA/CRL before Join: the member obtains the public CA certificate and CRL over the already-pinned TLS session.
 - One-time token is 128 bits minimum; token and nonce never appear in URLs, logs, or audit.
 - CSR private key is generated and retained by the member; only the CSR crosses Join.
 - Frames, fields, concurrency, failures, and read/write deadlines are bounded; fail closed on malformed or oversized input.
-- Only public member certificate, CA certificate and CRL may be delivered. No CA or member private key is transmitted.
+- Only public member certificate, CA certificate, CRL and Hub identity certificate/metadata may be delivered. No CA or member private key is transmitted.
 - No firewall, route, sysctl, host-network, or `CAP_NET_ADMIN` changes. No real-host mutation, merge, release, or deploy.
 - This slice remains unadvertised and cannot claim Enrolled; Enroller and accepted first-report integration are later slices.
 
 ## Review Focus
 
 - A wrong or stale Hub pin must fail before the member sends its CSR.
-- A valid CA chain with the wrong Hub EKU, URI identity, or dial-target SAN must fail closed.
+- Even with the exact pin, a leaf with the wrong Hub EKU, URI identity, validity period, or dial-target SAN must fail closed.
 - Slow, oversized, truncated, replayed, and malformed frames must not block or exhaust the listener.
 - A failed delivery or missing member acknowledgement must not be reported as success.
 - The member's private key and Fleet CA private key must never enter a Join message, browser response, argv, environment, or log.
@@ -42,13 +42,13 @@
 
 **Interfaces:**
 - `tls::fleet_join_acceptor(cert, key) -> Result<TlsAcceptor>` builds TLS 1.3 with no client auth and early data disabled.
-- `fleet_join::HubPinVerifier` combines WebPKI chain/CRL/name/validity checks with an exact leaf pin; the Fleet-specific identity check runs after handshake.
-- `fleet_join::client_connector(ca, crl, pin) -> Result<TlsConnector>` wraps `WebPkiServerVerifier` with an exact leaf SHA-256 pin check; chain, CRL, validity and dial-target DNS/IP SAN are verified by WebPKI.
-- After handshake, `fleet_report::verify_hub_identity(leaf_der, hub_id)` (or a Fleet Join-specific strict wrapper) enforces the Fleet Hub EKU and URI SAN before any request bytes are sent.
+- `fleet_join::HubPinVerifier` verifies the exact leaf SHA-256 pin, validity period, Fleet Hub EKU, URI SAN, and configured DNS/IP SAN inside rustls certificate verification. It uses the pinned leaf as the bootstrap trust anchor; no CA/CRL is required before Join.
+- `fleet_join::client_connector(pin, hub_id, hub_name) -> Result<TlsConnector>` uses a rustls custom verifier and ring TLS 1.3 handshake-signature verification. It rejects intermediate chains and never sends a CSR before all leaf identity checks pass.
+- The Hub sends the public CA certificate and current CRL only in `JoinResponse`, over the already-pinned TLS session; the member uses them for the subsequent mandatory-mTLS Report connection.
 
-- [ ] Write tests proving TLS 1.3 server-only acceptor construction and rejecting wrong pin, invalid CA chain, expired certificate, wrong EKU, wrong URI SAN, and wrong DNS/IP SAN.
+- [ ] Write tests proving TLS 1.3 server-only acceptor construction and accepting an exact pinned Hub leaf without preloaded CA/CRL; reject wrong pin, expired/not-yet-valid certificate, wrong EKU, wrong URI SAN, and wrong DNS/IP SAN.
 - [ ] Run the focused tests and confirm they fail for the intended missing behavior.
-- [ ] Implement the minimal TLS acceptor and pinned verifier; keep signature verification delegated to rustls WebPKI/ring.
+- [ ] Implement the minimal TLS acceptor and pinned verifier; keep TLS 1.3 handshake-signature verification delegated to rustls ring.
 - [ ] Run focused tests and `cargo fmt --all -- --check`.
 
 ### Task 2: Fleet-specific offer and bounded message framing
@@ -59,11 +59,11 @@
 
 **Interfaces:**
 - `JoinOffer { v, host, port, hub_name, hub_id, hub_pin, offer_id, node_id, token, nonce, expires }` has `encode/decode/validate` using a Fleet-only prefix and bounded base64url JSON; no `PairCode` reuse.
-- `JoinRequest { offer_id, node_id, token, nonce, csr_pem }` and `JoinResponse { ok, certificate_pem, ca_pem, crl_pem, reason }` are strict (`deny_unknown_fields`); response contains public material only.
+- `JoinRequest { offer_id, node_id, token, nonce, csr_pem }` and `JoinResponse { ok, member_certificate_pem, ca_certificate_pem, crl_pem, hub_certificate_pem, reason }` are strict (`deny_unknown_fields`); response contains public material only. The returned Hub identity certificate must match the exact TLS peer leaf pin before it is persisted.
 - `JoinAck { ok }` confirms transport delivery only; it does not imply Enrolled.
 - Length-prefixed JSON frames use a fixed maximum and bounded read/write deadlines.
 
-- [ ] Write tests for offer encoding, invalid fields, unknown JSON fields, frame lengths 0/oversized/truncated, and timeout.
+- [ ] Write tests for offer encoding, invalid fields, unknown JSON fields, frame lengths 0/oversized/truncated, and timeout; ensure no CA/CRL field is required in the offer and the Join response carries the public Hub identity alongside CA/CRL.
 - [ ] Run focused tests and confirm the missing cases fail.
 - [ ] Implement strict Fleet-only types and framing; never log request or response bodies.
 - [ ] Run focused tests and formatting.
