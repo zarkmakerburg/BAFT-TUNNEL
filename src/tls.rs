@@ -355,6 +355,32 @@ impl ReloadingAcceptor {
     }
 }
 
+/// TLS 1.3 server for the Fleet Join bootstrap (ADR-0051): server authentication only.
+/// This listener is distinct from the persistent mandatory-mTLS Fleet Report listener.
+#[allow(dead_code)] // activated by the per-offer listener in the next enrollment slice
+pub(crate) fn fleet_join_acceptor(cert: &Path, key: &Path) -> Result<TlsAcceptor> {
+    let mut config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+        .with_no_client_auth()
+        .with_single_cert(certificates(cert)?, private_key(key)?)
+        .context("build TLS 1.3 Fleet Join server configuration")?;
+    config.max_early_data_size = 0;
+    Ok(TlsAcceptor::from(Arc::new(config)))
+}
+
+/// Fleet Join's member-side verifier uses the same CA and mandatory CRL policy as Report,
+/// while the caller additionally pins the exact Hub leaf certificate.
+pub(crate) fn fleet_join_server_verifier(
+    ca: &Path,
+    crl: &Path,
+) -> Result<Arc<WebPkiServerVerifier>> {
+    WebPkiServerVerifier::builder(Arc::new(roots(ca)?))
+        .with_crls(revocation_lists(crl)?)
+        .enforce_revocation_expiration()
+        .build()
+        .context("build Fleet Join server verifier with mandatory CA and CRL checks")
+        .map(Arc::new)
+}
+
 /// TLS 1.3 server for the one-shot pairing exchange (ADR-0050): no client certificate; the
 /// joiner authenticates with a one-time token and the server by the pin carried in the code.
 pub fn pairing_acceptor(cert: &Path, key: &Path) -> Result<TlsAcceptor> {
