@@ -264,8 +264,8 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_tls13_accepts_server_auth_only_client_with_exact_pin() {
-        let m = material("server-only", "hub-1", "DNS:localhost");
-        connect(&m, &m.ca, &m.crl, &m.pin, "localhost")
+        let m = material("server-only", "hub-1", "DNS:hub-1.fleet.baft.invalid");
+        connect(&m, &m.ca, &m.crl, &m.pin, "hub-1.fleet.baft.invalid")
             .await
             .unwrap();
         let _ = std::fs::remove_dir_all(m.root);
@@ -273,23 +273,33 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_rejects_wrong_leaf_pin_and_wrong_ca() {
-        let m = material("wrong-pin", "hub-1", "DNS:localhost");
+        let m = material("wrong-pin", "hub-1", "DNS:hub-1.fleet.baft.invalid");
         let wrong_pin = format!(
             "{}{}",
             if m.pin.starts_with('0') { "1" } else { "0" },
             &m.pin[1..]
         );
+        let pin_error = connect(&m, &m.ca, &m.crl, &wrong_pin, "hub-1.fleet.baft.invalid")
+            .await
+            .unwrap_err();
         assert!(
-            connect(&m, &m.ca, &m.crl, &wrong_pin, "localhost")
-                .await
-                .is_err()
+            pin_error
+                .to_string()
+                .contains("Fleet Hub certificate pin mismatch"),
+            "wrong-pin test failed for an unexpected reason: {pin_error}"
         );
 
-        let other = material("wrong-ca", "hub-2", "DNS:localhost");
+        let other = material("wrong-ca", "hub-2", "DNS:hub-2.fleet.baft.invalid");
         assert!(
-            connect(&m, &other.ca, &other.crl, &m.pin, "localhost")
-                .await
-                .is_err()
+            connect(
+                &m,
+                &other.ca,
+                &other.crl,
+                &m.pin,
+                "hub-1.fleet.baft.invalid"
+            )
+            .await
+            .is_err()
         );
         let _ = std::fs::remove_dir_all(m.root);
         let _ = std::fs::remove_dir_all(other.root);
@@ -297,9 +307,9 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_rejects_wrong_dial_target_san() {
-        let m = material("wrong-san", "hub-1", "DNS:other.local");
+        let m = material("wrong-san", "hub-1", "DNS:other.fleet.baft.invalid");
         assert!(
-            connect(&m, &m.ca, &m.crl, &m.pin, "localhost")
+            connect(&m, &m.ca, &m.crl, &m.pin, "hub-1.fleet.baft.invalid")
                 .await
                 .is_err()
         );
@@ -308,9 +318,9 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_rejects_expired_hub_certificate() {
-        let m = expired_material("expired", "hub-1", "DNS:localhost");
+        let m = expired_material("expired", "hub-1", "DNS:hub-1.fleet.baft.invalid");
         assert!(
-            connect(&m, &m.ca, &m.crl, &m.pin, "localhost")
+            connect(&m, &m.ca, &m.crl, &m.pin, "hub-1.fleet.baft.invalid")
                 .await
                 .is_err()
         );
@@ -319,7 +329,7 @@ mod tests {
 
     #[test]
     fn fleet_hub_identity_requires_the_exact_hub_eku_and_uri_san() {
-        let hub = material("hub-identity", "hub-1", "DNS:localhost");
+        let hub = material("hub-identity", "hub-1", "DNS:hub-1.fleet.baft.invalid");
         let leaf = crate::tls::certificates(&hub.cert).unwrap()[0]
             .as_ref()
             .to_vec();
