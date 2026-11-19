@@ -5,7 +5,7 @@
 //! the joining member receives the Fleet CA and CRL only after this TLS session is established.
 #![allow(dead_code)] // transport primitives are wired to the Enroller in the next slice
 
-use std::{net::IpAddr, path::Path, sync::Arc};
+use std::{net::IpAddr, sync::Arc};
 
 use anyhow::{Context, Result, bail, ensure};
 use rustls::{
@@ -92,7 +92,7 @@ impl ServerCertVerifier for HubPinVerifier {
 
 fn server_name_matches(server_name: &ServerName<'_>, expected: &str) -> bool {
     if let Ok(expected_ip) = expected.parse::<IpAddr>() {
-        matches!(server_name, ServerName::IpAddress(actual) if *actual == expected_ip)
+        matches!(server_name, ServerName::IpAddress(actual) if *actual == expected_ip.into())
     } else {
         matches!(server_name, ServerName::DnsName(actual) if actual.as_ref().eq_ignore_ascii_case(expected))
     }
