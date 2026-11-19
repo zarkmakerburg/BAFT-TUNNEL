@@ -3581,6 +3581,8 @@ struct FleetHubProvisionRequest {
     hub_name: String,
     dial_san: String,
     listen: String,
+    #[serde(default)]
+    join_listen: Option<String>,
 }
 
 /// Provision a Hub identity through the bounded root helper. The response is deliberately marked
@@ -3608,6 +3610,7 @@ async fn fleet_hub_provision_route(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             &request.hub_name,
             &request.dial_san,
             &request.listen,
+            request.join_listen.as_deref(),
             Duration::from_secs(30),
         )
     })

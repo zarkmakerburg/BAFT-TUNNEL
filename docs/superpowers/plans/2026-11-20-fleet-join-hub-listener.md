@@ -45,7 +45,7 @@
 - Root helper request accepts optional `join_listen`; the advertised host is derived from the validated `dial_san`.
 
 - [ ] Write `hub_provision_rejects_invalid_join_bind`, `hub_provision_derives_join_host_from_dial_san`, and `hub_provision_preserves_legacy_without_join` tests in `src/fleet_helper.rs`; write `fleet_config_validates_optional_join_section` in `src/fleet_run.rs`.
-- [ ] Run `cargo test hub_provision --lib` and `cargo test fleet_config_validates_optional_join_section --lib`; confirm the new assertions fail for missing configuration behavior.
+- [ ] Run `cargo test hub_provision --bin baft-tunnel` and `cargo test fleet_config_validates_optional_join_section --bin baft-tunnel`; confirm the new assertions fail for missing configuration behavior.
 - [ ] Add strict validation for nonzero bind port and the derived TLS server name.
 - [ ] Persist the optional Join section in the root-generated config using the provisioned Hub ID and TLS dial name.
 - [ ] Preserve compatibility for existing requests that omit `join_listen`.
@@ -63,7 +63,7 @@
 - Existing single-offer transport tests remain covered or are migrated to the shared listener API.
 
 - [ ] Write `shared_listener_serves_two_distinct_offers`, `shared_listener_ack_completes_only_matching_offer`, `shared_listener_negative_ack_never_completes_offer`, `shared_listener_disconnect_before_ack_never_completes_offer`, `shared_listener_rejects_malformed_and_oversized_frames`, and `shared_listener_rate_accounting_is_bounded` tests in `src/fleet_join.rs`.
-- [ ] Run `cargo test shared_listener --lib`; verify the expected missing shared-listener behavior.
+- [ ] Run `cargo test shared_listener --bin baft-tunnel`; verify the expected missing shared-listener behavior.
 - [ ] Implement bounded connection/session handling and listener shutdown through the Agent watch channel.
 - [ ] Implement bounded rolling failure accounting with a hard cap on tracked IPs.
 - [ ] Ensure malformed frames, negative ACK, timeout and disconnect never invoke delivery completion.
@@ -88,7 +88,7 @@
 - Positive ACK callback calls `mark_delivered(offer_id, now)` after rechecking current state.
 
 - [ ] Write `fleet_csr_requires_exact_offer_nonce_challenge_password` and `fleet_csr_rejects_missing_duplicate_or_wrong_nonce_challenge` in `src/fleet_ca.rs`; write `enroller_submit_allows_only_exact_idempotent_retry_after_first_submit`, `enroller_submit_rejects_changed_csr_after_first_submit`, `enroller_begin_confirm_claims_signing_state`, `enroller_finish_confirm_rejects_late_result_after_deny`, `enroller_finish_confirm_rejects_expired_result`, and `enroller_signing_failure_never_marks_delivered` in `src/fleet_enroll.rs`; write `fleet_confirm_releases_enroller_lock_during_helper_call`, `join_admission_waits_for_operator_confirmation`, `join_admission_delivers_only_after_confirmation`, and `join_ack_racing_deny_cannot_resurrect_offer` in `src/fleet_run.rs` / `src/agent.rs`.
-- [ ] Run `cargo test fleet_csr_ --lib`, `cargo test enroller_submit_ --lib`, `cargo test enroller_begin_confirm --lib`, `cargo test enroller_finish_confirm --lib`, `cargo test enroller_signing_failure --lib`, `cargo test fleet_confirm_releases_enroller_lock --lib`, `cargo test join_admission_ --lib`, and `cargo test join_ack_racing_deny --lib`; confirm expected failures.
+- [ ] Run `cargo test fleet_csr_ --bin baft-tunnel`, `cargo test enroller_submit_ --bin baft-tunnel`, `cargo test enroller_begin_confirm --bin baft-tunnel`, `cargo test enroller_finish_confirm --bin baft-tunnel`, `cargo test enroller_signing_failure --bin baft-tunnel`, `cargo test fleet_confirm_releases_enroller_lock --bin baft-tunnel`, `cargo test join_admission_ --bin baft-tunnel`, and `cargo test join_ack_racing_deny --bin baft-tunnel`; confirm expected failures.
 - [ ] Implement exact-request retry validation and return `Retry` while awaiting operator confirmation; never sign from the listener. Refactor operator confirmation into begin/sign/finish phases so the root helper runs without the Enroller mutex held.
 - [ ] Deliver the certificate only after the operator confirm route has moved the offer to `Issued`; assemble only public trust material.
 - [ ] Implement exact offer completion only after a positive ACK.
@@ -108,7 +108,7 @@
 - On encoding failure after offer creation, close the offer before returning.
 
 - [ ] Write `fleet_offer_unavailable_without_join_listener`, `fleet_offer_contains_exact_hub_pin_and_advertised_endpoint`, and `fleet_offer_encoding_failure_closes_created_offer` tests in `src/agent.rs`.
-- [ ] Run `cargo test fleet_offer_ --lib`; verify expected failures.
+- [ ] Run `cargo test fleet_offer_ --bin baft-tunnel`; verify expected failures.
 - [ ] Implement offer construction using configured bind port, derived dial SAN and parsed Hub certificate DER.
 - [ ] Ensure token/nonce are not logged or exposed by list/status responses.
 - [ ] Run focused API and certificate tests.

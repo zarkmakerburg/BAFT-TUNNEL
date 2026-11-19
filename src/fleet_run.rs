@@ -36,6 +36,19 @@ pub struct HubSection {
     pub key: Option<PathBuf>,
     #[serde(default)]
     pub key_credential: Option<String>,
+    /// Optional pre-enrollment Join listener, separate from the mandatory-mTLS report socket.
+    #[serde(default)]
+    pub join: Option<JoinSection>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JoinSection {
+    pub listen: SocketAddr,
+    pub advertise_host: String,
+    pub advertise_port: u16,
+    pub hub_id: String,
+    pub hub_name: String,
 }
 
 /// This host reports to a hub with its `fleet-node` certificate.
@@ -137,6 +150,24 @@ impl FleetConfig {
                 check_file(l, p)?;
             }
             validate_key_source(h.key.as_deref(), h.key_credential.as_deref())?;
+            if let Some(join) = &h.join {
+                ensure!(
+                    join.listen.port() != 0,
+                    "Fleet Join listen port must not be zero"
+                );
+                ensure!(
+                    join.advertise_port != 0 && join.advertise_port == join.listen.port(),
+                    "Fleet Join advertised port must equal its nonzero bind port"
+                );
+                crate::tls::server_name(&join.advertise_host)
+                    .context("Fleet Join advertised host is not a valid TLS name")?;
+                ensure!(
+                    crate::fleet_ca::valid_node_id(&join.hub_id),
+                    "Fleet Join hub_id is invalid"
+                );
+                crate::tls::server_name(&join.hub_name)
+                    .context("Fleet Join hub_name is not a valid TLS name")?;
+            }
         }
         if let Some(m) = &cfg.member {
             ensure!(
