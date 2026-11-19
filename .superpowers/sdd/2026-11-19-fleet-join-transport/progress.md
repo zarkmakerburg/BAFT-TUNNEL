@@ -22,8 +22,8 @@ Ruling: Transport-level Join acknowledgement is not evidence of Enrolled. Only t
 
 - Task 1: **complete** — implementation and all three exact-SHA workflows passed on `532f4462aca8245a9973fc6437a6cc6b9a3cd7ab`; see `task-1-report.md`.
 - Task 2: **complete** — strict offer/message schemas and bounded framing accepted on `5699c38849a714d657f09c0e708568df963de602`; all three exact-SHA workflows passed; see `task-2-report.md`.
-- Task 3: pending.
-- Task 4: pending.
+- Task 3: implementation and behavior verification complete on `26f66133117a4c84fb6544e845e3e49c25b13483`; exact-SHA run `44562305399` SUCCESS. One test-first RED-evidence checkbox remains open because its run URL/result was not independently recovered; see `task-3-report.md`.
+- Task 4: complete on the same HEAD; module registered, no Fleet Join public API/UI entry point, static checks and full exact-SHA CI pass, PR #403 opened Draft and stacked on #402.
 
 Task 1 RED attempt:
 - Test-only commit: `46994f81048b2f75a402fd74fb069e75a3a103b1` (`test(fleet): specify pinned Join TLS identity`).
@@ -90,3 +90,12 @@ Task 2 acceptance checkpoint (2026-11-19):
 - Test totals: 430 passed / 0 failed / 5 ignored, plus a secondary test binary 6 passed. Clippy and release build passed.
 - Task 2 report: `.superpowers/sdd/2026-11-19-fleet-join-transport/task-2-report.md`.
 - Task 3 is next: bounded one-shot Hub listener and pinned member session; Enroller/Report integration and two-host LAB remain later gates.
+
+
+Task 3/4 acceptance checkpoint (2026-11-19):
+- Exact HEAD `26f66133117a4c84fb6544e845e3e49c25b13483`; PR #403 base corrected to PR #402 head `337901e18f47f1c54a0f17a07704cefd8f273b36`.
+- Exact-head run `44562305399`: SUCCESS; all 13 PR status checks completed successfully.
+- Loopback success/ACK and negative lifecycle cases verified by the test suite; see `task-3-report.md`.
+- Local formatting and diff checks passed.
+- Plan Task 3 RED evidence remains explicitly unchecked pending direct run evidence; all Task 3 implementation/behavior items and Task 4 handoff items are checked.
+- PR #403 remains Draft; Enroller/Report integration and two-host acceptance are subsequent slices.
