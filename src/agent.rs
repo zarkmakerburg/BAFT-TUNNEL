@@ -149,6 +149,16 @@ impl crate::fleet_hub::HubStore for Ctx {
     fn hub(&self) -> &std::sync::Mutex<crate::fleet::Hub> {
         &self.fleet
     }
+
+    fn report_accepted(&self, identity: &crate::fleet_hub::Identity) {
+        // Capture time after the report has been read and accepted, not before a bounded body read.
+        let now = unix_now();
+        let mut enroller = self
+            .fleet_enroll
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _ = enroller.acknowledge_first_report(&identity.node_id, &identity.fingerprint, now);
+    }
 }
 
 impl Ctx {
@@ -4315,6 +4325,56 @@ mod tests {
         assert_eq!(
             body["error"],
             "Hub configuration is not ready for activation"
+        );
+    }
+
+    #[test]
+    fn hub_store_enrolls_only_the_exact_delivered_node_certificate() {
+        let ctx = Ctx::with_config(None, TOKEN.to_owned(), None);
+        let now = unix_now();
+        let mut enroller = crate::fleet_enroll::Enroller::default();
+        let (offer_id, delivered_fingerprint) =
+            crate::fleet_enroll::test_support::awaiting_report(&mut enroller, "edge-1", now);
+        *ctx.fleet_enroll.lock().unwrap() = enroller;
+
+        let identity = |node_id: &str, fingerprint: &str| crate::fleet_hub::Identity {
+            node_id: node_id.to_owned(),
+            serial: "01".to_owned(),
+            fingerprint: fingerprint.to_owned(),
+            ekus: vec![crate::fleet::EKU_FLEET_NODE.to_owned()],
+        };
+        <Ctx as crate::fleet_hub::HubStore>::report_accepted(
+            &ctx,
+            &identity("edge-1", &"cd".repeat(32)),
+        );
+        assert_eq!(
+            ctx.fleet_enroll.lock().unwrap().pending(now + 1)[0].state,
+            crate::fleet_enroll::State::AwaitingReport
+        );
+
+        <Ctx as crate::fleet_hub::HubStore>::report_accepted(
+            &ctx,
+            &identity("edge-2", &delivered_fingerprint),
+        );
+        assert_eq!(
+            ctx.fleet_enroll.lock().unwrap().pending(now + 2)[0].state,
+            crate::fleet_enroll::State::AwaitingReport
+        );
+
+        <Ctx as crate::fleet_hub::HubStore>::report_accepted(
+            &ctx,
+            &identity("edge-1", &delivered_fingerprint),
+        );
+        assert_eq!(
+            ctx.fleet_enroll
+                .lock()
+                .unwrap()
+                .pending(now + 3)
+                .into_iter()
+                .find(|pending| pending.id == offer_id)
+                .unwrap()
+                .state,
+            crate::fleet_enroll::State::Enrolled
         );
     }
 

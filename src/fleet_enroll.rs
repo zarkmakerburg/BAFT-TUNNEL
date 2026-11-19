@@ -35,6 +35,7 @@ pub enum Error {
     BadCsr,
     WrongState,
     FingerprintMismatch,
+    BadCertificate,
     Sign,
     WrongNode,
 }
@@ -59,6 +60,7 @@ struct Offer {
     csr: Option<String>,
     fingerprint: Option<String>,
     certificate: Option<String>,
+    delivered_fingerprint: Option<String>,
 }
 
 /// What the operator hands to the new server (shown once).
@@ -105,6 +107,20 @@ fn live(o: &Offer, now: u64) -> bool {
     matches!(o.state, State::Offered | State::Submitted) && now <= o.expires
 }
 
+fn leaf_fingerprint(certificate_pem: &str) -> Result<String, Error> {
+    let (tail, certificate) = x509_parser::pem::parse_x509_pem(certificate_pem.as_bytes())
+        .map_err(|_| Error::BadCertificate)?;
+    if certificate.label != "CERTIFICATE" || !tail.iter().all(u8::is_ascii_whitespace) {
+        return Err(Error::BadCertificate);
+    }
+    let (rest, _) = x509_parser::parse_x509_certificate(&certificate.contents)
+        .map_err(|_| Error::BadCertificate)?;
+    if !rest.is_empty() {
+        return Err(Error::BadCertificate);
+    }
+    Ok(hex::encode(Sha256::digest(&certificate.contents)))
+}
+
 impl Enroller {
     fn sweep(&mut self, now: u64) {
         self.offers.retain(|_, o| now <= o.expires + OFFER_TTL_SECS);
@@ -140,6 +156,7 @@ impl Enroller {
                 csr: None,
                 fingerprint: None,
                 certificate: None,
+                delivered_fingerprint: None,
             },
         );
         Ok(Issued {
@@ -208,7 +225,11 @@ impl Enroller {
             .map(|(id, o)| Pending {
                 id: id.clone(),
                 node_id: o.node_id.clone(),
-                state: if now > o.expires && matches!(o.state, State::Offered | State::Submitted) {
+                state: if now > o.expires
+                    && matches!(
+                        o.state,
+                        State::Offered | State::Submitted | State::AwaitingReport
+                    ) {
                     State::Closed
                 } else {
                     o.state
@@ -267,29 +288,57 @@ impl Enroller {
         o.certificate.as_deref().ok_or(Error::WrongState)
     }
 
-    /// Called only after the certificate and public trust bundle were written to the pinned Join session.
-    pub fn mark_delivered(&mut self, id: &str) -> Result<(), Error> {
+    /// Called only after the Join transport ACK confirms local persistence of the delivered bundle.
+    /// The fingerprint is derived here from the exact issued leaf, never supplied by the caller.
+    pub fn mark_delivered(&mut self, id: &str, now: u64) -> Result<(), Error> {
         let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
-        if o.state != State::Issued || o.certificate.is_none() {
+        if o.state != State::Issued {
             return Err(Error::WrongState);
         }
+        if now > o.expires {
+            o.state = State::Closed;
+            o.certificate = None;
+            o.delivered_fingerprint = None;
+            return Err(Error::Expired);
+        }
+        let certificate = o.certificate.as_deref().ok_or(Error::WrongState)?;
+        let fingerprint = leaf_fingerprint(certificate)?;
+        o.delivered_fingerprint = Some(fingerprint);
         o.state = State::AwaitingReport;
         Ok(())
     }
 
-    /// Enrolled is reached only after the first mandatory-mTLS report has been accepted and the
-    /// Join session can return its acknowledgement to the same member identity.
-    pub fn acknowledge_first_report(&mut self, id: &str, node_id: &str) -> Result<(), Error> {
-        let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
-        if o.state != State::AwaitingReport {
-            return Err(Error::WrongState);
+    /// Enrolled is reached only after the Hub accepts a mandatory-mTLS report from the exact
+    /// certificate delivered for an offer. Both values are derived from the authenticated leaf.
+    pub fn acknowledge_first_report(
+        &mut self,
+        node_id: &str,
+        certificate_fingerprint: &str,
+        now: u64,
+    ) -> bool {
+        if certificate_fingerprint.len() != 64 || hex::decode(certificate_fingerprint).is_err() {
+            return false;
         }
-        if o.node_id != node_id {
-            return Err(Error::WrongNode);
+        let got = certificate_fingerprint.to_ascii_lowercase();
+        let Some(o) = self.offers.values_mut().find(|o| {
+            o.state == State::AwaitingReport
+                && o.node_id == node_id
+                && o.delivered_fingerprint
+                    .as_deref()
+                    .is_some_and(|want| ct_eq(want.as_bytes(), got.as_bytes()))
+        }) else {
+            return false;
+        };
+        if now > o.expires {
+            o.state = State::Closed;
+            o.certificate = None;
+            o.delivered_fingerprint = None;
+            return false;
         }
         o.state = State::Enrolled;
         o.certificate = None;
-        Ok(())
+        o.delivered_fingerprint = None;
+        true
     }
 
     /// The operator cancels, or declines a CSR.
@@ -298,7 +347,45 @@ impl Enroller {
         o.state = State::Closed;
         o.csr = None;
         o.certificate = None;
+        o.delivered_fingerprint = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::{Enroller, State};
+
+    pub(crate) fn certificate_pem() -> String {
+        let key = rcgen::KeyPair::generate().unwrap();
+        rcgen::CertificateParams::new(Vec::new())
+            .unwrap()
+            .self_signed(&key)
+            .unwrap()
+            .pem()
+    }
+
+    pub(crate) fn certificate_fingerprint(pem: &str) -> String {
+        use sha2::Digest;
+        let (tail, certificate) = x509_parser::pem::parse_x509_pem(pem.as_bytes()).unwrap();
+        assert!(tail.iter().all(u8::is_ascii_whitespace));
+        hex::encode(sha2::Sha256::digest(&certificate.contents))
+    }
+
+    /// Prepare a real Enroller instance at the post-persistence-ACK boundary without invoking
+    /// OpenSSL CSR/signing fixtures; those boundaries have their own tests.
+    pub(crate) fn awaiting_report(
+        enroller: &mut Enroller,
+        node_id: &str,
+        now: u64,
+    ) -> (String, String) {
+        let issued = enroller.offer(node_id, now).unwrap();
+        let offer = enroller.offers.get_mut(&issued.id).unwrap();
+        offer.state = State::Issued;
+        offer.certificate = Some(certificate_pem());
+        let fingerprint = certificate_fingerprint(offer.certificate.as_deref().unwrap());
+        enroller.mark_delivered(&issued.id, now + 1).unwrap();
+        (issued.id, fingerprint)
     }
 }
 
@@ -450,26 +537,110 @@ mod tests {
         submit_ok(&mut e, &i, 110).unwrap();
 
         let fp = e.pending(111)[0].fingerprint.clone().unwrap();
-        e.confirm(&i.id, &fp, 120, ok_sign).unwrap();
+        let certificate = test_support::certificate_pem();
+        e.confirm(&i.id, &fp, 120, |_, _| Ok(certificate.clone()))
+            .unwrap();
         assert_eq!(e.pending(121)[0].state, State::Issued);
-        assert_eq!(e.certificate_for_delivery(&i.id).unwrap(), "CERT");
+        assert_eq!(e.certificate_for_delivery(&i.id).unwrap(), certificate);
         assert_eq!(e.pending(121)[0].state, State::Issued);
-        assert_eq!(
-            e.acknowledge_first_report(&i.id, "edge-1"),
-            Err(Error::WrongState)
-        );
+        let delivered = test_support::certificate_fingerprint(&certificate);
+        assert!(!e.acknowledge_first_report("edge-1", &delivered, 121));
 
-        e.mark_delivered(&i.id).unwrap();
+        e.mark_delivered(&i.id, 122).unwrap();
         assert_eq!(e.certificate_for_delivery(&i.id), Err(Error::WrongState));
         assert_eq!(e.pending(122)[0].state, State::AwaitingReport);
-        assert_eq!(
-            e.acknowledge_first_report(&i.id, "edge-2"),
-            Err(Error::WrongNode)
-        );
+        assert!(!e.acknowledge_first_report("edge-2", &delivered, 122));
         assert_eq!(e.pending(122)[0].state, State::AwaitingReport);
-        e.acknowledge_first_report(&i.id, "edge-1").unwrap();
+        assert!(e.acknowledge_first_report("edge-1", &delivered, 123));
         assert_eq!(e.pending(123)[0].state, State::Enrolled);
         assert_eq!(e.certificate_for_delivery(&i.id), Err(Error::WrongState));
+    }
+
+    #[test]
+    fn first_report_must_match_node_and_exact_delivered_certificate() {
+        let mut e = Enroller::default();
+        let i = e.offer("edge-1", 100).unwrap();
+        // Isolate the state transition from OpenSSL CSR fixtures; submit/confirm have separate tests.
+        let offer = e.offers.get_mut(&i.id).unwrap();
+        offer.state = State::Issued;
+        let certificate = test_support::certificate_pem();
+        offer.certificate = Some(certificate.clone());
+
+        let delivered = test_support::certificate_fingerprint(&certificate);
+        e.mark_delivered(&i.id, 101).unwrap();
+        assert_eq!(e.pending(121)[0].state, State::AwaitingReport);
+        assert!(!e.acknowledge_first_report("edge-1", &"b".repeat(64), 122));
+        assert!(!e.acknowledge_first_report("edge-2", &delivered, 122));
+        assert_eq!(e.pending(122)[0].state, State::AwaitingReport);
+        assert!(e.acknowledge_first_report("edge-1", &delivered, 123));
+        assert_eq!(e.pending(123)[0].state, State::Enrolled);
+        assert!(!e.acknowledge_first_report("edge-1", &delivered, 123));
+    }
+
+    #[test]
+    fn expired_offer_cannot_be_marked_delivered() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-1", 100).unwrap();
+        let offer = e.offers.get_mut(&issued.id).unwrap();
+        offer.state = State::Issued;
+        offer.certificate = Some(test_support::certificate_pem());
+
+        assert_eq!(e.mark_delivered(&issued.id, 1001), Err(Error::Expired));
+        assert_eq!(e.pending(1001)[0].state, State::Closed);
+        assert!(e.offers[&issued.id].certificate.is_none());
+    }
+
+    #[test]
+    fn expired_awaiting_report_offer_cannot_become_enrolled() {
+        let mut e = Enroller::default();
+        let i = e.offer("edge-1", 100).unwrap();
+        let offer = e.offers.get_mut(&i.id).unwrap();
+        offer.state = State::Issued;
+        let certificate = test_support::certificate_pem();
+        offer.certificate = Some(certificate.clone());
+        let delivered = test_support::certificate_fingerprint(&certificate);
+        e.mark_delivered(&i.id, 101).unwrap();
+
+        assert!(!e.acknowledge_first_report("edge-1", &delivered, 1001));
+        assert_eq!(e.pending(1001)[0].state, State::Closed);
+    }
+
+    #[test]
+    fn mark_delivered_derives_fingerprint_from_the_issued_certificate() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-1", 100).unwrap();
+        let offer = e.offers.get_mut(&issued.id).unwrap();
+        offer.state = State::Issued;
+        offer.certificate = Some(test_support::certificate_pem());
+        let expected = test_support::certificate_fingerprint(offer.certificate.as_deref().unwrap());
+
+        e.mark_delivered(&issued.id, 101).unwrap();
+        assert_eq!(
+            e.offers[&issued.id].delivered_fingerprint.as_deref(),
+            Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn mark_delivered_rejects_an_invalid_issued_certificate() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-1", 100).unwrap();
+        let offer = e.offers.get_mut(&issued.id).unwrap();
+        offer.state = State::Issued;
+        offer.certificate = Some("not a certificate".to_owned());
+        assert_eq!(
+            e.mark_delivered(&issued.id, 101),
+            Err(Error::BadCertificate)
+        );
+        assert_eq!(e.pending(101)[0].state, State::Issued);
+    }
+
+    #[test]
+    fn denying_awaiting_report_offer_clears_delivered_certificate_binding() {
+        let mut e = Enroller::default();
+        let (id, _fingerprint) = test_support::awaiting_report(&mut e, "edge-1", 100);
+        e.deny(&id).unwrap();
+        assert!(e.offers[&id].delivered_fingerprint.is_none());
     }
 
     #[test]
