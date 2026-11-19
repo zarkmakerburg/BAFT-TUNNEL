@@ -5,7 +5,13 @@
 //! the joining member receives the Fleet CA and CRL only after this TLS session is established.
 #![allow(dead_code)] // transport primitives are wired to the Enroller in the next slice
 
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    future::Future,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -19,9 +25,12 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    time::timeout,
+    net::{TcpListener, TcpStream},
+    sync::Semaphore,
+    task::JoinSet,
+    time::{Instant, sleep_until, timeout},
 };
-use tokio_rustls::TlsConnector;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 pub(crate) const FLEET_JOIN_PREFIX: &str = "BAFTFLEETJOIN1:";
 pub(crate) const MAX_JOIN_FRAME: usize = 64 * 1024;
@@ -29,6 +38,11 @@ const MAX_JOIN_OFFER_BYTES: usize = 2048;
 const JOIN_IO_TIMEOUT: Duration = Duration::from_secs(10);
 const JOIN_MAX_CSR_BYTES: usize = 4096;
 const JOIN_MAX_REASON_BYTES: usize = 256;
+const JOIN_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const JOIN_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_JOIN_CONNECTIONS: usize = 8;
+const MAX_JOIN_FAILURES_PER_IP: usize = 3;
+const MAX_JOIN_FAILURES_TOTAL: usize = 32;
 
 /// One-time, Fleet-specific offer delivered out-of-band by the operator.
 /// Token and nonce are secrets: do not log this value or format it with Debug.
@@ -529,6 +543,312 @@ pub(crate) fn client_connector(
     Ok(TlsConnector::from(Arc::new(config)))
 }
 
+/// The admission controller owns the enrollment state machine. `Retry` is a bounded refusal
+/// that permits another attempt; `Close` ends this one-shot offer; `Deliver` sends only public
+/// certificates/trust material and waits for the member's transport acknowledgement.
+pub(crate) enum Admission {
+    Retry,
+    Close,
+    Deliver(JoinResponse),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionOutcome {
+    Failed,
+    Closed,
+    Acknowledged,
+}
+
+/// A member-side authenticated Join session. The caller must persist the public certificate,
+/// CA and CRL from `response()` before calling `ack(true)`.
+pub(crate) struct JoinSession {
+    stream: tokio_rustls::client::TlsStream<TcpStream>,
+    response: JoinResponse,
+}
+
+impl JoinSession {
+    pub(crate) fn response(&self) -> &JoinResponse {
+        &self.response
+    }
+
+    /// Acknowledges successful local persistence (or explicitly refuses it with `false`).
+    /// This is a transport acknowledgement only; it does not transition Enroller to Enrolled.
+    pub(crate) async fn ack(mut self, ok: bool) -> Result<()> {
+        write_frame(&mut self.stream, &JoinAck { ok }).await?;
+        self.stream
+            .shutdown()
+            .await
+            .context("close Fleet Join member session")?;
+        Ok(())
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn refusal(reason: &str) -> JoinResponse {
+    JoinResponse {
+        ok: false,
+        member_certificate_pem: None,
+        ca_certificate_pem: None,
+        crl_pem: None,
+        hub_certificate_pem: None,
+        reason: Some(reason.to_owned()),
+    }
+}
+
+/// Connect as a joining member. TLS 1.3 and the exact Hub leaf pin/identity are verified before
+/// the CSR is sent. The returned session keeps TLS open until the caller has persisted the public
+/// trust bundle and sends its explicit acknowledgement.
+pub(crate) async fn join(offer: &JoinOffer, csr_pem: &str) -> Result<JoinSession> {
+    let now = unix_now();
+    offer.validate(now)?;
+    let remaining = Duration::from_secs(offer.expires.saturating_sub(now));
+    ensure!(!remaining.is_zero(), "Fleet Join offer has expired");
+
+    let request = JoinRequest {
+        offer_id: offer.offer_id.clone(),
+        node_id: offer.node_id.clone(),
+        token: offer.token.clone(),
+        nonce: offer.nonce.clone(),
+        csr_pem: csr_pem.to_owned(),
+    };
+    request.validate()?;
+
+    let tcp = timeout(
+        remaining.min(JOIN_CONNECT_TIMEOUT),
+        TcpStream::connect((offer.host.as_str(), offer.port)),
+    )
+    .await
+    .context("Fleet Join connection deadline exceeded")?
+    .context("connect to Fleet Hub for Join")?;
+
+    let connector = client_connector(&offer.hub_pin, &offer.hub_id, &offer.hub_name)?;
+    let remaining = Duration::from_secs(offer.expires.saturating_sub(unix_now()));
+    ensure!(
+        !remaining.is_zero(),
+        "Fleet Join offer expired during connection setup"
+    );
+    let mut tls = timeout(
+        remaining.min(JOIN_HANDSHAKE_TIMEOUT),
+        connector.connect(crate::tls::server_name(&offer.hub_name)?, tcp),
+    )
+    .await
+    .context("Fleet Join TLS handshake deadline exceeded")?
+    .context("TLS handshake with Fleet Hub")?;
+
+    let peer_leaf = tls
+        .get_ref()
+        .1
+        .peer_certificates()
+        .and_then(|certificates| certificates.first())
+        .context("Fleet Hub presented no leaf certificate")?;
+    ensure!(
+        hex::encode(Sha256::digest(peer_leaf.as_ref())) == offer.hub_pin,
+        "Fleet Hub TLS peer does not match the offered leaf pin"
+    );
+    write_frame(&mut tls, &request).await?;
+
+    let remaining = Duration::from_secs(offer.expires.saturating_sub(unix_now()));
+    ensure!(
+        !remaining.is_zero(),
+        "Fleet Join offer expired before trust delivery"
+    );
+    let response: JoinResponse = timeout(remaining, read_frame(&mut tls))
+        .await
+        .context("Fleet Join response deadline exceeded")??;
+    response.validate()?;
+    if !response.ok {
+        bail!(
+            "Fleet Hub refused Join: {}",
+            response.reason.as_deref().unwrap_or("unspecified")
+        );
+    }
+
+    let hub_pem = response
+        .hub_certificate_pem
+        .as_deref()
+        .context("successful Fleet Join response has no Hub certificate")?;
+    let (pem_tail, parsed_hub) = x509_parser::pem::parse_x509_pem(hub_pem.as_bytes())
+        .map_err(|_| anyhow::anyhow!("delivered Fleet Hub certificate PEM is invalid"))?;
+    ensure!(
+        pem_tail.iter().all(|byte| byte.is_ascii_whitespace()),
+        "delivered Hub certificate contains trailing or additional PEM data"
+    );
+    ensure!(
+        parsed_hub.label == "CERTIFICATE",
+        "delivered Hub PEM is not a certificate"
+    );
+    ensure!(
+        hex::encode(Sha256::digest(&parsed_hub.contents)) == offer.hub_pin,
+        "delivered Hub certificate does not match the authenticated TLS leaf"
+    );
+    verify_hub_tls_identity(
+        &parsed_hub.contents,
+        &offer.hub_id,
+        &offer.hub_name,
+        unix_now(),
+    )?;
+
+    // Recheck expiry after the response; the caller must not persist a bundle from an expired offer.
+    ensure!(
+        unix_now() <= offer.expires,
+        "Fleet Join offer expired during the session"
+    );
+    Ok(JoinSession {
+        stream: tls,
+        response,
+    })
+}
+
+async fn handle_join_connection<F, Fut>(
+    tcp: TcpStream,
+    peer: SocketAddr,
+    acceptor: TlsAcceptor,
+    offer_id: String,
+    node_id: String,
+    decide: Arc<F>,
+) -> SessionOutcome
+where
+    F: Fn(JoinRequest, SocketAddr) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Admission> + Send + 'static,
+{
+    let Ok(Ok(mut tls)) = timeout(JOIN_HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await else {
+        return SessionOutcome::Failed;
+    };
+    let Ok(request) = read_frame::<_, JoinRequest>(&mut tls).await else {
+        return SessionOutcome::Failed;
+    };
+    if request.validate().is_err() || request.offer_id != offer_id || request.node_id != node_id {
+        return SessionOutcome::Failed;
+    }
+
+    match decide(request, peer).await {
+        Admission::Retry => {
+            let _ = write_frame(&mut tls, &refusal("retry")).await;
+            SessionOutcome::Failed
+        }
+        Admission::Close => {
+            let _ = write_frame(&mut tls, &refusal("offer_closed")).await;
+            SessionOutcome::Closed
+        }
+        Admission::Deliver(response) => {
+            if !response.ok || response.validate().is_err() {
+                return SessionOutcome::Failed;
+            }
+            if write_frame(&mut tls, &response).await.is_err() {
+                return SessionOutcome::Failed;
+            }
+            match read_frame::<_, JoinAck>(&mut tls).await {
+                Ok(JoinAck { ok: true }) => SessionOutcome::Acknowledged,
+                _ => SessionOutcome::Failed,
+            }
+        }
+    }
+}
+
+/// Serve one bounded Join offer. The listener exits successfully only after a member has received
+/// the public trust bundle and sent `JoinAck { ok: true }`; no Enroller state is changed here.
+pub(crate) async fn serve<F, Fut>(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    offer_id: String,
+    node_id: String,
+    expires: u64,
+    decide: F,
+) -> Result<()>
+where
+    F: Fn(JoinRequest, SocketAddr) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Admission> + Send + 'static,
+{
+    ensure!(
+        offer_id.len() == 16 && hex::decode(&offer_id).is_ok(),
+        "invalid Fleet Join offer id"
+    );
+    ensure!(
+        crate::fleet_ca::valid_node_id(&node_id),
+        "invalid Fleet node id"
+    );
+    let now = unix_now();
+    ensure!(expires > now, "Fleet Join offer has expired");
+    ensure!(
+        expires <= now.saturating_add(crate::fleet_enroll::OFFER_TTL_SECS),
+        "Fleet Join offer expiry exceeds the maximum TTL"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(expires - now);
+    let acceptor = Arc::new(acceptor);
+    let decide = Arc::new(decide);
+    let slots = Arc::new(Semaphore::new(MAX_JOIN_CONNECTIONS));
+    let mut sessions = JoinSet::new();
+    let mut failures_by_ip: HashMap<IpAddr, usize> = HashMap::new();
+    let mut total_failures = 0usize;
+
+    loop {
+        if total_failures >= MAX_JOIN_FAILURES_TOTAL {
+            sessions.abort_all();
+            bail!("Fleet Join offer exhausted its failure budget");
+        }
+        tokio::select! {
+            _ = sleep_until(deadline) => {
+                sessions.abort_all();
+                bail!("Fleet Join offer expired before acknowledged delivery");
+            }
+            Some(joined) = sessions.join_next(), if !sessions.is_empty() => {
+                match joined {
+                    Ok((_ip, SessionOutcome::Acknowledged)) => {
+                        sessions.abort_all();
+                        return Ok(());
+                    }
+                    Ok((_, SessionOutcome::Closed)) => {
+                        sessions.abort_all();
+                        bail!("Fleet Join offer was closed by the admission controller");
+                    }
+                    Ok((ip, SessionOutcome::Failed)) => {
+                        total_failures = total_failures.saturating_add(1);
+                        *failures_by_ip.entry(ip).or_default() += 1;
+                    }
+                    Err(_) => total_failures = total_failures.saturating_add(1),
+                }
+            }
+            accepted = listener.accept() => {
+                let (tcp, peer) = accepted.context("accept Fleet Join connection")?;
+                let ip = peer.ip();
+                if failures_by_ip.get(&ip).copied().unwrap_or(0) >= MAX_JOIN_FAILURES_PER_IP {
+                    drop(tcp);
+                    continue;
+                }
+                let Ok(permit) = slots.clone().try_acquire_owned() else {
+                    drop(tcp);
+                    continue;
+                };
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    drop(tcp);
+                    continue;
+                }
+                let (acceptor, decide) = (acceptor.clone(), decide.clone());
+                let (offer_id, node_id) = (offer_id.clone(), node_id.clone());
+                sessions.spawn(async move {
+                    let _permit = permit;
+                    let outcome = match timeout(
+                        remaining,
+                        handle_join_connection(tcp, peer, (*acceptor).clone(), offer_id, node_id, decide),
+                    ).await {
+                        Ok(outcome) => outcome,
+                        Err(_) => SessionOutcome::Failed,
+                    };
+                    (ip, outcome)
+                });
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -984,7 +1304,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fleet_join_server_refuses_wrong_offer_and_retries_bad_token() {
+    async fn fleet_join_server_refuses_wrong_offer_id() {
         let material = material("wrong-offer-network", "hub-1", "DNS:localhost");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1118,7 +1438,6 @@ mod tests {
     async fn fleet_join_rejects_oversized_and_stalled_frames_without_success() {
         for (tag, oversized) in [("oversized-frame", true), ("stalled-frame", false)] {
             let material = material(tag, "hub-1", "DNS:localhost");
-            let csr = member_csr(&material);
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let expires = unix_now() + 2;
@@ -1228,6 +1547,28 @@ mod tests {
         ));
         assert!(join(&offer, &csr).await.is_err());
         server.abort();
+        let _ = std::fs::remove_dir_all(material.root);
+    }
+
+    #[tokio::test]
+    async fn fleet_join_server_closes_offer_when_admission_controller_closes_it() {
+        let material = material("closed-offer-network", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 30;
+        let offer = join_offer(&material, address, expires);
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let server = tokio::spawn(serve(
+            listener,
+            acceptor,
+            offer.offer_id.clone(),
+            offer.node_id.clone(),
+            expires,
+            |_request, _peer| async { Admission::Close },
+        ));
+        assert!(join(&offer, &csr).await.is_err());
+        assert!(server.await.unwrap().is_err());
         let _ = std::fs::remove_dir_all(material.root);
     }
 
