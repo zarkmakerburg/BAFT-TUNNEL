@@ -216,8 +216,8 @@ enum Command {
         /// the unprivileged `baft-tunnel` user (see docs/SECURITY_ASSESSMENT.md, SA-01).
         #[arg(long)]
         allow_root: bool,
-        /// Fleet (ADR-0045 F1, read-only, Preview): JSON file naming the certificate files for a
-        /// hub listener and/or a member reporter. Off unless given; see docs/ADR-0045.
+        /// Fleet (ADR-0045 F1, read-only, Preview): explicit JSON config for a hub listener and/or
+        /// member reporter. If omitted, a root-managed per-instance config is auto-loaded when present.
         #[arg(long)]
         fleet_config: Option<PathBuf>,
     },
@@ -1018,10 +1018,18 @@ async fn run() -> Result<()> {
                 Some(config)
             };
             let token = agent::read_token(&token_file)?;
-            let fleet = fleet_config
-                .as_deref()
-                .map(fleet_run::FleetConfig::load)
-                .transpose()?;
+            let fleet = if let Some(path) = fleet_config.as_deref() {
+                Some(fleet_run::FleetConfig::load(path)?)
+            } else if let Some(name) = instance.as_deref() {
+                if !apply::valid_instance(name) {
+                    anyhow::bail!("invalid --instance name");
+                }
+                let path = std::path::Path::new(fleet_helper::FLEET_CONFIG_ROOT)
+                    .join(format!("{name}.json"));
+                fleet_run::FleetConfig::load_if_present(&path)?
+            } else {
+                None
+            };
             agent::run(
                 config,
                 agent::parse_listen(&listen)?,

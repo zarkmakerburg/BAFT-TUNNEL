@@ -130,7 +130,7 @@ step "3 verify root-only key, public certificate, per-instance config and sandbo
 [[ "$(stat -c '%U:%G %a' "$CONFIG")" == 'root:root 644' ]] || fail "Fleet config is not root:root 0644"
 [[ "$(stat -c '%U:%G %a' "$DROPIN")" == 'root:root 644' ]] || fail "Agent drop-in is not root:root 0644"
 grep -Fqx 'LoadCredential=fleet-hub-key:/etc/baft-tunnel/fleet-hub/%i/hub-key' "$DROPIN" || fail "LoadCredential is not instance-scoped"
-grep -Fq -- "--fleet-config /etc/baft-tunnel/fleet/%i.json" "$DROPIN" || fail "Agent does not receive the generated Fleet config"
+if grep -q '^ExecStart=' "$DROPIN"; then fail "Hub drop-in must not replace the Agent ExecStart"; fi
 if runuser -u baft-tunnel-agent -- cat "$KEY" >/dev/null 2>&1; then fail "Agent can read the root-held credential source"; fi
 if grep -q 'PRIVATE KEY' "$TMP/provision-result.json" "$CONFIG" "$DROPIN"; then fail "private key leaked into result/config/drop-in"; fi
 systemctl is-active --quiet "baft-tunnel-agent@$NAME.service" || fail "helper unexpectedly stopped the running Agent"

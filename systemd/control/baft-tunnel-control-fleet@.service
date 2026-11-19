@@ -1,12 +1,12 @@
 [Unit]
-Description=Sign one fleet-node certificate for baft-tunnel@%i (root Fleet helper, ADR-0051)
+Description=Fleet identity and control helper for baft-tunnel-agent@%i (root Fleet helper, ADR-0051)
 StartLimitIntervalSec=10s
 StartLimitBurst=60
 
 [Service]
 Type=oneshot
-# Fixed command, one operation: sign one fleet-node certificate from a bounded CSR with the Fleet
-# CA in /etc/baft-tunnel/fleet-ca (root only). No network. Only the public certificate is returned.
+# Fixed command, one bounded Fleet helper operation. It may sign a fleet-node CSR, provision the
+# per-instance Hub identity, or queue that Agent instance restart. No network; private keys stay root-only.
 ExecStart=/usr/local/bin/baft-tunnel fleet helper --instance %i
 ExecStopPost=/usr/bin/rm -f /run/baft-tunnel/control/%i.fleet
 TimeoutStartSec=60s

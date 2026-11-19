@@ -74,6 +74,10 @@ pub fn create(dir: &Path, name: &str) -> Result<String> {
         }
         Err(e) => return Err(e.into()),
     }
+    // DirBuilder mode is filtered by the process umask. Enforce the exact traversal-only mode
+    // after creation so a restrictive sudo/service umask cannot silently make public trust files
+    // unreadable to the unprivileged Agent.
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o711))?;
     fs::DirBuilder::new()
         .mode(0o700)
         .create(dir.join("newcerts"))?;

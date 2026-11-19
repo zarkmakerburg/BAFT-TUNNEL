@@ -143,8 +143,9 @@ fn write_managed_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     result
 }
 
-fn daemon_reload_if_systemd() -> Result<()> {
-    if std::path::Path::new("/run/systemd/system").is_dir() {
+fn daemon_reload_if_systemd(systemd_root: &Path) -> Result<()> {
+    // Unit tests and staging pass synthetic unit roots; never reload the host's systemd for them.
+    if systemd_root == Path::new(AGENT_SYSTEMD_ROOT) && Path::new("/run/systemd/system").is_dir() {
         let output = std::process::Command::new("/usr/bin/systemctl")
             .arg("daemon-reload")
             .output()
@@ -263,7 +264,7 @@ fn provision_hub(
     });
     let config_bytes = serde_json::to_vec_pretty(&fleet_config)?;
     let dropin = format!(
-        "# Managed by BAFT-TUNNEL fleet helper; do not edit.\n[Service]\nLoadCredential={HUB_CREDENTIAL_ID}:/etc/baft-tunnel/fleet-hub/%i/hub-key\nExecStart=\nExecStart=/usr/local/bin/baft-tunnel agent --config /etc/baft-tunnel/%i.json --token-file /var/lib/baft-tunnel-agent/token --state-dir /var/lib/baft-tunnel-agent/%i --instance %i --listen ${{BAFT_AGENT_LISTEN}} --fleet-config /etc/baft-tunnel/fleet/%i.json\n"
+        "# Managed by BAFT-TUNNEL fleet helper; do not edit.\n[Service]\nLoadCredential={HUB_CREDENTIAL_ID}:/etc/baft-tunnel/fleet-hub/%i/hub-key\n"
     );
 
     std::fs::create_dir(&instance_dir).context("create per-instance Hub identity directory")?;
@@ -299,7 +300,7 @@ fn provision_hub(
         let _ = std::fs::remove_dir(&instance_dir);
         return Err(error).context("write per-instance Agent systemd credential drop-in");
     }
-    if let Err(error) = daemon_reload_if_systemd() {
+    if let Err(error) = daemon_reload_if_systemd(systemd_root) {
         let _ = std::fs::remove_file(&dropin_path);
         let _ = std::fs::remove_file(&config_path);
         let _ = std::fs::remove_file(&key_path);
@@ -642,7 +643,7 @@ mod tests {
         .unwrap();
 
         let result = run_with_hub_root("edge", &control, &ca, &hub_root).unwrap();
-        assert_eq!(result["state"], "done");
+        assert_eq!(result["state"], "done", "Hub provisioning failed: {result}");
         assert_eq!(result["credential_id"], HUB_CREDENTIAL_ID);
         let certificate = result["certificate"].as_str().unwrap();
         assert!(certificate.starts_with("-----BEGIN CERTIFICATE-----"));
@@ -681,7 +682,10 @@ mod tests {
         assert!(
             dropin.contains("LoadCredential=fleet-hub-key:/etc/baft-tunnel/fleet-hub/%i/hub-key")
         );
-        assert!(dropin.contains("--fleet-config /etc/baft-tunnel/fleet/%i.json"));
+        assert!(
+            !dropin.contains("ExecStart="),
+            "Hub drop-in must preserve the managed Agent ExecStart"
+        );
 
         let key_public = crate::pair_ca::run(
             &["pkey", "-pubout"],
@@ -791,7 +795,10 @@ mod tests {
         }
         assert!(request_path.exists(), "agent did not publish its request");
         let helper_result = run_with_hub_root("edge", &control, &ca, &hub_root).unwrap();
-        assert_eq!(helper_result["state"], "done");
+        assert_eq!(
+            helper_result["state"], "done",
+            "root helper failed: {helper_result}"
+        );
         let agent_result = agent.join().unwrap().unwrap();
         assert_eq!(agent_result["credential_id"], HUB_CREDENTIAL_ID);
         assert_eq!(agent_result["certificate"], helper_result["certificate"]);

@@ -102,6 +102,24 @@ impl FleetConfig {
         Self::parse(&text)
     }
 
+    /// Load the root-managed per-instance config when present. A missing file means this Agent
+    /// has no Fleet role; any other error or non-regular file fails closed. This avoids replacing
+    /// a user's managed systemd ExecStart merely to attach the optional Fleet Hub role.
+    pub fn load_if_present(path: &Path) -> Result<Option<Self>> {
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error)
+                .with_context(|| format!("cannot inspect Fleet config {}", path.display())),
+            Ok(meta) => {
+                ensure!(
+                    meta.file_type().is_file() && meta.len() <= MAX_CONFIG_BYTES,
+                    "fleet config must be a regular file of at most {MAX_CONFIG_BYTES} bytes"
+                );
+                Self::load(path).map(Some)
+            }
+        }
+    }
+
     pub fn parse(text: &str) -> Result<Self> {
         let cfg: Self = serde_json::from_str(text).context("fleet config is not valid")?;
         if cfg.hub.is_none() && cfg.member.is_none() {
@@ -229,6 +247,18 @@ mod tests {
         let d = std::env::temp_dir().join(format!("baft-fleet-run-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn per_instance_config_is_optional_but_symlinks_fail_closed() {
+        let d = tmp("optional");
+        let path = d.join("fleet.json");
+        assert!(FleetConfig::load_if_present(&path).unwrap().is_none());
+        let target = d.join("target.json");
+        std::fs::write(&target, "{}\n").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(FleetConfig::load_if_present(&path).is_err());
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]
