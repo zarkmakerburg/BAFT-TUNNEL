@@ -27,12 +27,13 @@ Complete the Hub-side trust transition that is already modeled by ADR-0051: a Jo
 
 ## Design
 
-`Enroller::mark_delivered` receives the issued leaf fingerprint only after the Join transport ACK. The offer stores it and moves to `AwaitingReport`. The Hub's `peer_identity` derives the same SHA-256 fingerprint from the authenticated TLS leaf. After `fleet::Hub::accept` returns `Ok(())`, the HubStore callback passes certificate-derived node ID and fingerprint to the Enroller. The Enroller moves to `Enrolled` only if one `AwaitingReport` offer matches both values, then clears the transient certificate/fingerprint material. Rejected reports never trigger the callback. Existing HubStore implementations may use a no-op default callback.
+`Enroller::mark_delivered` parses its own issued certificate after the Join transport ACK and derives the SHA-256 leaf fingerprint internally, so the caller cannot supply or spoof this binding. The offer stores it and moves to `AwaitingReport`. The Hub's `peer_identity` derives the same SHA-256 fingerprint from the authenticated TLS leaf. After `fleet::Hub::accept` returns `Ok(())`, the HubStore callback passes certificate-derived node ID and fingerprint to the Enroller. The Enroller moves to `Enrolled` only if one `AwaitingReport` offer matches both values, then clears the transient certificate/fingerprint material. Rejected reports never trigger the callback. The Ctx callback captures the timestamp only after the full report has been read and accepted, then passes it into Enroller so the 15-minute offer expiry also bounds the first-report transition. Existing HubStore implementations may use a no-op default callback.
 
 ## Security constraints
 
 - Never accept node ID, serial, or certificate fingerprint from the report body as identity evidence.
 - Do not call the enrollment callback before the report's profile, schema, sequence, rate and inventory checks pass.
+- A first report arriving after the offer expiry must close, not enroll, the pending offer.
 - Keep Hub mutex and Enroller mutex acquisition non-overlapping to avoid lock-order deadlocks.
 - A wrong node, wrong certificate, duplicate/replayed report, rejected report, or report before delivery ACK must not enroll.
 

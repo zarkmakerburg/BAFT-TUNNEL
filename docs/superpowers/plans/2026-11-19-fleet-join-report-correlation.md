@@ -35,14 +35,14 @@
 - Test: `src/fleet_enroll.rs` unit tests
 
 **Interfaces:**
-- Produces: `Enroller::mark_delivered(id: &str, certificate_fingerprint: &str) -> Result<(), Error>`
-- Produces: `Enroller::acknowledge_first_report(node_id: &str, certificate_fingerprint: &str) -> bool`
+- Produces: `Enroller::mark_delivered(id: &str) -> Result<(), Error>; derives the fingerprint from the stored issued certificate`
+- Produces: `Enroller::acknowledge_first_report(node_id: &str, certificate_fingerprint: &str, now: u64) -> bool`
 
-- [ ] Add a test proving a Join delivery ACK stores the fingerprint and wrong node/fingerprint cannot enroll.
-- [ ] Run the focused Enroller test and verify it fails for the expected missing signature/behavior.
-- [ ] Add an optional stored fingerprint to each offer; validate it as a 32-byte hex SHA-256 digest.
-- [ ] Change `mark_delivered` to store the fingerprint and enter `AwaitingReport`.
-- [ ] Change first-report acknowledgment to match node ID + fingerprint, transition only that offer, and clear transient certificate/fingerprint material.
+- [x] Add tests proving a Join delivery ACK stores the fingerprint, wrong node/fingerprint cannot enroll, and an expired offer cannot enroll.
+- [x] Run the focused Enroller test and verify it fails for the expected missing signature/behavior.
+- [x] Add an optional stored fingerprint to each offer; parse the stored issued certificate as exactly one X.509 PEM leaf and derive its SHA-256 digest internally.
+- [x] Change `mark_delivered` to store the fingerprint and enter `AwaitingReport`.
+- [x] Change first-report acknowledgment to match node ID + fingerprint, enforce expiry, transition only that offer, and clear transient certificate/fingerprint material.
 - [ ] Run all `fleet_enroll` tests and confirm the focused test passes.
 
 ### Task 2: Derive and forward authenticated peer fingerprint after report acceptance
@@ -56,12 +56,12 @@
 - Produces: `HubStore::report_accepted(&self, identity: &Identity)` with a default no-op.
 - `handle` accepts a `HubStore` and invokes the callback only after `Hub::accept` succeeds.
 
-- [ ] Add tests for fingerprint derivation and callback behavior on accepted versus rejected reports.
-- [ ] Run focused Hub tests and verify the new assertions fail before implementation.
-- [ ] Derive the SHA-256 fingerprint in `peer_identity` from the authenticated DER.
-- [ ] Add the default callback and call it only after releasing the Hub mutex and after `accept` returns `Ok(())`.
-- [ ] Adapt `serve` and existing test stores to the generic HubStore interface.
-- [ ] Run all `fleet_hub` tests and confirm accepted/rejected behavior.
+- [x] Add tests for fingerprint derivation and callback behavior on accepted versus rejected reports.
+- [x] Run focused Hub tests and verify the new assertions fail before implementation.
+- [x] Derive the SHA-256 fingerprint in `peer_identity` from the authenticated DER.
+- [x] Add the default callback and call it only after releasing the Hub mutex and after `accept` returns `Ok(())`.
+- [x] Adapt `serve` and existing test stores to the generic HubStore interface.
+- [x] Run all `fleet_hub` tests and confirm accepted/rejected behavior.
 
 ### Task 3: Connect Ctx report acceptance to Enroller
 
@@ -72,10 +72,10 @@
 **Interfaces:**
 - `Ctx`'s `HubStore::report_accepted` calls `Enroller::acknowledge_first_report(identity.node_id, identity.fingerprint)`.
 
-- [ ] Add a test with an `AwaitingReport` offer proving only its exact identity transitions to `Enrolled` through the Ctx callback.
-- [ ] Run the focused test and verify it fails before implementation.
-- [ ] Implement the callback with lock acquisition kept separate from Hub report acceptance.
-- [ ] Run focused tests, `cargo fmt --all -- --check`, and `git diff --check`.
+- [x] Add a test with an `AwaitingReport` offer proving only its exact identity transitions to `Enrolled` through the Ctx callback.
+- [x] Run the focused test and verify it fails before implementation.
+- [x] Implement the callback with lock acquisition kept separate from Hub report acceptance.
+- [x] Run focused tests, `cargo fmt --all -- --check`, and `git diff --check`.
 
 ### Task 4: Whole-slice verification and checkpoint
 
@@ -83,8 +83,8 @@
 - No product code unless verification finds a defect.
 - Update: Issue #2 checkpoint after verified material progress.
 
-- [ ] Run focused tests for `fleet_enroll`, `fleet_hub`, and `agent`.
+- [x] Run focused tests for `fleet_enroll`, `fleet_hub`, and `agent`.
 - [ ] Run the full Rust test suite on Linux CI (local macOS is not authoritative for Linux-only code paths).
 - [ ] Run Clippy/release build through CI on the exact SHA.
-- [ ] Inspect diff and verify no host operations or unrelated changes.
+- [x] Inspect diff and verify no host operations or unrelated changes.
 - [ ] Commit and push the feature branch; create a Draft PR only if all checks on its exact SHA are green.
