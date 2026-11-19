@@ -30,3 +30,6 @@
 /fuzz/artifacts/
 __pycache__/
 *.pyc
+
+# Superpowers execution workspace
+.superpowers/
