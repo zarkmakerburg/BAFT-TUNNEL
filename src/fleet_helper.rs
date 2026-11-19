@@ -158,19 +158,31 @@ fn daemon_reload_if_systemd(systemd_root: &Path) -> Result<()> {
     Ok(())
 }
 
+struct HubProvision<'a> {
+    instance: &'a str,
+    ca_dir: &'a Path,
+    hub_root: &'a Path,
+    fleet_config_root: &'a Path,
+    systemd_root: &'a Path,
+    hub_name: &'a str,
+    dial_san: &'a str,
+    listen: &'a str,
+}
+
 /// Generate the Hub key in the root helper, issue its server-only certificate, and store the
 /// key in a root-only per-instance directory for systemd LoadCredential delivery. Neither the
 /// request nor the result contains private-key bytes.
-fn provision_hub(
-    instance: &str,
-    ca_dir: &Path,
-    hub_root: &Path,
-    fleet_config_root: &Path,
-    systemd_root: &Path,
-    hub_name: &str,
-    dial_san: &str,
-    listen: &str,
-) -> Result<Value> {
+fn provision_hub(request: HubProvision<'_>) -> Result<Value> {
+    let HubProvision {
+        instance,
+        ca_dir,
+        hub_root,
+        fleet_config_root,
+        systemd_root,
+        hub_name,
+        dial_san,
+        listen,
+    } = request;
     ensure!(crate::fleet_ca::valid_node_id(hub_name), "invalid hub name");
     crate::pair_ca::validate_san(dial_san)?;
     let listen_addr = listen
@@ -392,16 +404,16 @@ fn run_with_paths(
                 hub_name,
                 dial_san,
                 listen,
-            } => provision_hub(
-                name,
+            } => provision_hub(HubProvision {
+                instance: name,
                 ca_dir,
                 hub_root,
                 fleet_config_root,
                 systemd_root,
-                &hub_name,
-                &dial_san,
-                &listen,
-            ),
+                hub_name: &hub_name,
+                dial_san: &dial_san,
+                listen: &listen,
+            }),
             Request::RestartAgent => {
                 let config_path = fleet_config_root.join(format!("{name}.json"));
                 let config: Value = serde_json::from_slice(
