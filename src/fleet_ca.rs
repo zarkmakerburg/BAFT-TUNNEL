@@ -12,7 +12,7 @@
 
 use std::{
     fs,
-    os::unix::fs::DirBuilderExt,
+    os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -52,16 +52,26 @@ pub fn create(dir: &Path, name: &str) -> Result<String> {
                 .all(|b| b.is_ascii_alphanumeric() || b" ._-".contains(&b)),
         "invalid CA name"
     );
-    if dir.exists() {
-        ensure!(
-            fs::read_dir(dir)?.next().is_none(),
-            "refusing to initialize a non-empty directory"
-        );
-    } else {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)?;
+    match fs::symlink_metadata(dir) {
+        Ok(meta) => {
+            ensure!(
+                meta.file_type().is_dir(),
+                "refusing to initialize a non-directory or symlink"
+            );
+            ensure!(
+                fs::read_dir(dir)?.next().is_none(),
+                "refusing to initialize a non-empty directory"
+            );
+            // An operator may pre-create the empty target directory. Tighten it before any key is written.
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)?;
+        }
+        Err(e) => return Err(e.into()),
     }
     fs::DirBuilder::new()
         .mode(0o700)
@@ -384,6 +394,40 @@ mod tests {
                 .unwrap();
         assert!(ctext.contains("Serial Number"), "{ctext}");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn refuses_ca_name_config_injection_before_creating_files() {
+        for (index, bad) in ["", "x\n[evil]", "x\"\npolicy = any", "x\tbad"]
+            .into_iter()
+            .enumerate()
+        {
+            let dir = tmp(&format!("bad-name-{index}"));
+            assert!(
+                create(&dir, bad).is_err(),
+                "accepted unsafe CA name {bad:?}"
+            );
+            assert!(
+                !dir.exists(),
+                "created a directory for rejected CA name {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn creates_private_ca_directory_and_private_key() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tmp("private");
+        create(&dir, "BAFT Fleet CA").unwrap();
+        let dir_mode = fs::metadata(&dir).unwrap().mode() & 0o777;
+        let key_mode = fs::metadata(dir.join("ca.key")).unwrap().mode() & 0o777;
+        let cfg_mode = fs::metadata(dir.join("openssl.cnf")).unwrap().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(key_mode, 0o600);
+        assert_eq!(cfg_mode, 0o600);
+        assert!(dir.join("ca.crt").is_file());
+        assert!(dir.join("ca.crl").is_file());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

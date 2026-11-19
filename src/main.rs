@@ -53,7 +53,7 @@ mod tls;
 mod transport_health;
 mod tunnel;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use authorization::ConnectionDirection;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -225,11 +225,93 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum FleetCommand {
+    /// Initialize the separate root-only Fleet CA for the registered LAB only. For non-LAB use,
+    /// follow the offline CA ceremony in the project release/security policy.
+    Ca {
+        #[command(subcommand)]
+        command: FleetCaCommand,
+    },
     /// Run by `baft-tunnel-control-fleet@NAME.service` as root: sign one requested certificate.
     Helper {
         #[arg(long)]
         instance: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum FleetCaCommand {
+    /// Create the LAB Fleet CA at /etc/baft-tunnel/fleet-ca. Never overwrites an existing path.
+    Init {
+        /// Common name of the Fleet CA certificate.
+        #[arg(long, default_value = "BAFT Fleet CA")]
+        name: String,
+        /// Explicitly confirm creation of the long-lived Fleet CA key on this host.
+        #[arg(long)]
+        confirm: bool,
+    },
+}
+
+/// Initialize the operator-owned Fleet CA. This command never exports or prints the private key.
+fn init_fleet_ca(name: &str, confirm: bool) -> Result<()> {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } != 0 {
+        bail!("Fleet CA initialization must run as root");
+    }
+    if !confirm {
+        bail!("refusing to create a Fleet CA without --confirm");
+    }
+
+    let parent = std::path::Path::new("/etc/baft-tunnel");
+    let parent_meta = std::fs::symlink_metadata(parent)
+        .context("the /etc/baft-tunnel directory must already exist")?;
+    if !parent_meta.file_type().is_dir()
+        || std::os::unix::fs::MetadataExt::uid(&parent_meta) != 0
+        || std::os::unix::fs::MetadataExt::mode(&parent_meta) & 0o022 != 0
+    {
+        bail!("/etc/baft-tunnel must be a real root-owned directory and not group/world writable");
+    }
+
+    let ca_dir = std::path::Path::new(fleet_helper::CA_DIR);
+    match std::fs::symlink_metadata(ca_dir) {
+        Ok(_) => bail!(
+            "{} already exists; refusing to replace or reuse it",
+            ca_dir.display()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).context("cannot inspect the Fleet CA path"),
+    }
+
+    let cert = fleet_ca::create(ca_dir, name)?;
+    if !cert.starts_with("-----BEGIN CERTIFICATE-----") {
+        bail!(
+            "Fleet CA creation did not return a certificate; inspect {}",
+            ca_dir.display()
+        );
+    }
+    let dir_meta = std::fs::symlink_metadata(ca_dir)?;
+    let key_path = ca_dir.join("ca.key");
+    let key_meta = std::fs::symlink_metadata(&key_path)?;
+    if !dir_meta.file_type().is_dir()
+        || std::os::unix::fs::MetadataExt::uid(&dir_meta) != 0
+        || std::os::unix::fs::MetadataExt::mode(&dir_meta) & 0o777 != 0o700
+        || !key_meta.file_type().is_file()
+        || std::os::unix::fs::MetadataExt::uid(&key_meta) != 0
+        || std::os::unix::fs::MetadataExt::mode(&key_meta) & 0o777 != 0o600
+        || !ca_dir.join("ca.crt").is_file()
+        || !ca_dir.join("ca.crl").is_file()
+    {
+        bail!(
+            "Fleet CA was created but its ownership/mode verification failed; do not use it until inspected"
+        );
+    }
+
+    println!("Fleet CA initialized at {}", ca_dir.display());
+    println!("Public trust anchor: {}", ca_dir.join("ca.crt").display());
+    println!("CRL: {}", ca_dir.join("ca.crl").display());
+    println!(
+        "Private key remains root-owned with mode 0600; do not copy it to any node or browser."
+    );
+    Ok(())
 }
 
 #[derive(Debug, Subcommand)]
@@ -824,6 +906,11 @@ async fn run() -> Result<()> {
             )
             .await
         }
+        Command::Fleet {
+            command: FleetCommand::Ca {
+                command: FleetCaCommand::Init { name, confirm },
+            },
+        } => init_fleet_ca(&name, confirm),
         Command::Fleet {
             command: FleetCommand::Helper { instance },
         } => {
