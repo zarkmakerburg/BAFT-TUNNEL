@@ -6,7 +6,7 @@
 #![allow(dead_code)] // transport primitives are wired to the Enroller in the next slice
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     future::Future,
     net::{IpAddr, SocketAddr},
     sync::Arc,
@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::Semaphore,
+    sync::{Semaphore, watch},
     task::JoinSet,
     time::{Instant, sleep_until, timeout},
 };
@@ -549,14 +549,23 @@ pub(crate) fn client_connector(
 pub(crate) enum Admission {
     Retry,
     Close,
-    Deliver(JoinResponse),
+    Deliver {
+        response: JoinResponse,
+        expires: u64,
+    },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl Admission {
+    fn deliver(response: JoinResponse, expires: u64) -> Self {
+        Self::Deliver { response, expires }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum SessionOutcome {
     Failed,
     Closed,
-    Acknowledged,
+    Acknowledged { offer_id: String, node_id: String },
 }
 
 /// A member-side authenticated Join session. The caller must persist the public certificate,
@@ -709,8 +718,7 @@ async fn handle_join_connection<F, Fut>(
     tcp: TcpStream,
     peer: SocketAddr,
     acceptor: TlsAcceptor,
-    offer_id: String,
-    node_id: String,
+    expected: Option<(String, String)>,
     decide: Arc<F>,
 ) -> SessionOutcome
 where
@@ -723,11 +731,22 @@ where
     let Ok(request) = read_frame::<_, JoinRequest>(&mut tls).await else {
         return SessionOutcome::Failed;
     };
-    if request.validate().is_err() || request.offer_id != offer_id || request.node_id != node_id {
+    if request.validate().is_err() {
         return SessionOutcome::Failed;
     }
+    if expected.as_ref().is_some_and(|(offer_id, node_id)| {
+        request.offer_id != *offer_id || request.node_id != *node_id
+    }) {
+        return SessionOutcome::Failed;
+    }
+    let offer_id = request.offer_id.clone();
+    let node_id = request.node_id.clone();
 
-    match decide(request, peer).await {
+    let admission = match timeout(JOIN_IO_TIMEOUT, decide(request, peer)).await {
+        Ok(admission) => admission,
+        Err(_) => return SessionOutcome::Failed,
+    };
+    match admission {
         Admission::Retry => {
             let _ = write_frame(&mut tls, &refusal("retry")).await;
             SessionOutcome::Failed
@@ -736,17 +755,87 @@ where
             let _ = write_frame(&mut tls, &refusal("offer_closed")).await;
             SessionOutcome::Closed
         }
-        Admission::Deliver(response) => {
+        Admission::Deliver { response, expires } => {
             if !response.ok || response.validate().is_err() {
                 return SessionOutcome::Failed;
             }
-            if write_frame(&mut tls, &response).await.is_err() {
+            let now = unix_now();
+            if expires <= now || expires > now.saturating_add(crate::fleet_enroll::OFFER_TTL_SECS) {
                 return SessionOutcome::Failed;
             }
-            match read_frame::<_, JoinAck>(&mut tls).await {
-                Ok(JoinAck { ok: true }) => SessionOutcome::Acknowledged,
+            let remaining = Duration::from_secs(expires - now);
+            let exchange = async {
+                write_frame(&mut tls, &response).await?;
+                match read_frame::<_, JoinAck>(&mut tls).await? {
+                    JoinAck { ok: true } => Ok::<bool, anyhow::Error>(true),
+                    JoinAck { ok: false } => Ok(false),
+                }
+            };
+            match timeout(remaining, exchange).await {
+                Ok(Ok(true)) => SessionOutcome::Acknowledged { offer_id, node_id },
                 _ => SessionOutcome::Failed,
             }
+        }
+    }
+}
+
+const JOIN_FAILURE_WINDOW: Duration = Duration::from_secs(60);
+const MAX_JOIN_TRACKED_IPS: usize = 1024;
+
+#[derive(Default)]
+struct FailureWindow {
+    per_ip: HashMap<IpAddr, VecDeque<Instant>>,
+    global: VecDeque<Instant>,
+}
+
+impl FailureWindow {
+    fn prune_queue(queue: &mut VecDeque<Instant>, now: Instant) {
+        while queue
+            .front()
+            .is_some_and(|recorded| now.saturating_duration_since(*recorded) >= JOIN_FAILURE_WINDOW)
+        {
+            queue.pop_front();
+        }
+    }
+
+    fn prune(&mut self, now: Instant) {
+        Self::prune_queue(&mut self.global, now);
+        self.per_ip.retain(|_, records| {
+            Self::prune_queue(records, now);
+            !records.is_empty()
+        });
+    }
+
+    fn is_limited(&mut self, ip: IpAddr, now: Instant) -> bool {
+        self.prune(now);
+        self.global.len() >= MAX_JOIN_FAILURES_TOTAL
+            || self
+                .per_ip
+                .get(&ip)
+                .is_some_and(|records| records.len() >= MAX_JOIN_FAILURES_PER_IP)
+    }
+
+    fn record_failure(&mut self, ip: IpAddr, now: Instant) {
+        self.prune(now);
+        if self.global.len() < MAX_JOIN_FAILURES_TOTAL {
+            self.global.push_back(now);
+        }
+        if !self.per_ip.contains_key(&ip) && self.per_ip.len() >= MAX_JOIN_TRACKED_IPS {
+            let oldest = self
+                .per_ip
+                .iter()
+                .filter_map(|(candidate, records)| {
+                    records.front().map(|first| (*candidate, *first))
+                })
+                .min_by_key(|(_, first)| *first)
+                .map(|(candidate, _)| candidate);
+            if let Some(oldest) = oldest {
+                self.per_ip.remove(&oldest);
+            }
+        }
+        let records = self.per_ip.entry(ip).or_default();
+        if records.len() < MAX_JOIN_FAILURES_PER_IP {
+            records.push_back(now);
         }
     }
 }
@@ -785,11 +874,10 @@ where
     let decide = Arc::new(decide);
     let slots = Arc::new(Semaphore::new(MAX_JOIN_CONNECTIONS));
     let mut sessions = JoinSet::new();
-    let mut failures_by_ip: HashMap<IpAddr, usize> = HashMap::new();
-    let mut total_failures = 0usize;
+    let mut failures = FailureWindow::default();
 
     loop {
-        if total_failures >= MAX_JOIN_FAILURES_TOTAL {
+        if failures.global.len() >= MAX_JOIN_FAILURES_TOTAL {
             sessions.abort_all();
             bail!("Fleet Join offer exhausted its failure budget");
         }
@@ -800,7 +888,7 @@ where
             }
             Some(joined) = sessions.join_next(), if !sessions.is_empty() => {
                 match joined {
-                    Ok((_ip, SessionOutcome::Acknowledged)) => {
+                    Ok((_ip, SessionOutcome::Acknowledged { .. })) => {
                         sessions.abort_all();
                         return Ok(());
                     }
@@ -809,16 +897,16 @@ where
                         bail!("Fleet Join offer was closed by the admission controller");
                     }
                     Ok((ip, SessionOutcome::Failed)) => {
-                        total_failures = total_failures.saturating_add(1);
-                        *failures_by_ip.entry(ip).or_default() += 1;
+                        failures.record_failure(ip, Instant::now());
                     }
-                    Err(_) => total_failures = total_failures.saturating_add(1),
+                    Err(_) => {}
                 }
             }
             accepted = listener.accept() => {
                 let (tcp, peer) = accepted.context("accept Fleet Join connection")?;
                 let ip = peer.ip();
-                if failures_by_ip.get(&ip).copied().unwrap_or(0) >= MAX_JOIN_FAILURES_PER_IP {
+                let now = Instant::now();
+                if failures.is_limited(ip, now) {
                     drop(tcp);
                     continue;
                 }
@@ -826,22 +914,91 @@ where
                     drop(tcp);
                     continue;
                 };
-                let remaining = deadline.saturating_duration_since(Instant::now());
+                let remaining = deadline.saturating_duration_since(now);
                 if remaining.is_zero() {
                     drop(tcp);
                     continue;
                 }
                 let (acceptor, decide) = (acceptor.clone(), decide.clone());
-                let (offer_id, node_id) = (offer_id.clone(), node_id.clone());
+                let expected = Some((offer_id.clone(), node_id.clone()));
                 sessions.spawn(async move {
                     let _permit = permit;
                     let outcome = match timeout(
                         remaining,
-                        handle_join_connection(tcp, peer, (*acceptor).clone(), offer_id, node_id, decide),
+                        handle_join_connection(tcp, peer, (*acceptor).clone(), expected, decide),
                     ).await {
                         Ok(outcome) => outcome,
                         Err(_) => SessionOutcome::Failed,
                     };
+                    (ip, outcome)
+                });
+            }
+        }
+    }
+}
+
+/// Serve multiple one-time offers from one shared Join socket. A positive ACK is correlated back
+/// to the exact offer and node; it never terminates the shared listener. Shutdown aborts all
+/// bounded in-flight sessions.
+pub(crate) async fn serve_shared<F, Fut, A, AFut>(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    admit: F,
+    acknowledged: A,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<()>
+where
+    F: Fn(JoinRequest, SocketAddr) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Admission> + Send + 'static,
+    A: Fn(String, String) -> AFut + Send + Sync + 'static,
+    AFut: Future<Output = ()> + Send + 'static,
+{
+    if *shutdown.borrow() {
+        return Ok(());
+    }
+    let acceptor = Arc::new(acceptor);
+    let admit = Arc::new(admit);
+    let acknowledged = Arc::new(acknowledged);
+    let slots = Arc::new(Semaphore::new(MAX_JOIN_CONNECTIONS));
+    let mut sessions = JoinSet::new();
+    let mut failures = FailureWindow::default();
+
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    sessions.abort_all();
+                    while sessions.join_next().await.is_some() {}
+                    return Ok(());
+                }
+            }
+            Some(joined) = sessions.join_next(), if !sessions.is_empty() => {
+                match joined {
+                    Ok((_ip, SessionOutcome::Acknowledged { offer_id, node_id })) => {
+                        acknowledged(offer_id, node_id).await;
+                    }
+                    Ok((ip, SessionOutcome::Failed | SessionOutcome::Closed)) => {
+                        failures.record_failure(ip, Instant::now());
+                    }
+                    Err(_) => {}
+                }
+            }
+            accepted = listener.accept() => {
+                let (tcp, peer) = accepted.context("accept Fleet Join connection")?;
+                let ip = peer.ip();
+                let now = Instant::now();
+                if failures.is_limited(ip, now) {
+                    drop(tcp);
+                    continue;
+                }
+                let Ok(permit) = slots.clone().try_acquire_owned() else {
+                    drop(tcp);
+                    continue;
+                };
+                let (acceptor, admit) = (acceptor.clone(), admit.clone());
+                sessions.spawn(async move {
+                    let _permit = permit;
+                    let outcome = handle_join_connection(tcp, peer, (*acceptor).clone(), None, admit).await;
                     (ip, outcome)
                 });
             }
@@ -857,6 +1014,7 @@ mod tests {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpStream},
+        sync::{mpsc, watch},
     };
 
     struct Material {
@@ -1212,31 +1370,285 @@ mod tests {
         offer_b.token = "f".repeat(32);
         offer_b.nonce = "a".repeat(32);
         let response_a = std::sync::Arc::new(join_response(&material, "node-1", &csr_a));
+        let response_b = std::sync::Arc::new(join_response(&material, "node-2", &csr_b));
         let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
-        let response_for_server = response_a.clone();
-        let server = tokio::spawn(serve(
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();
+        let offer_a_id = offer_a.offer_id.clone();
+        let offer_b_id = offer_b.offer_id.clone();
+        let response_a_for_server = response_a.clone();
+        let response_b_for_server = response_b.clone();
+        let server = tokio::spawn(serve_shared(
             listener,
             acceptor,
-            offer_a.offer_id.clone(),
-            offer_a.node_id.clone(),
-            expires,
-            move |_request, _peer| {
-                let response = response_for_server.clone();
-                async move { Admission::Deliver((*response).clone()) }
+            move |request, _peer| {
+                let response = if request.offer_id == offer_a_id {
+                    Some(response_a_for_server.clone())
+                } else if request.offer_id == offer_b_id {
+                    Some(response_b_for_server.clone())
+                } else {
+                    None
+                };
+                async move {
+                    match response {
+                        Some(response) => Admission::deliver((*response).clone(), expires),
+                        None => Admission::Close,
+                    }
+                }
             },
+            move |offer_id, node_id| {
+                let ack_tx = ack_tx.clone();
+                async move {
+                    let _ = ack_tx.send((offer_id, node_id));
+                }
+            },
+            shutdown_rx,
         ));
 
         let session_a = join(&offer_a, &csr_a).await.unwrap();
         session_a.ack(true).await.unwrap();
-        server.await.unwrap().unwrap();
-
-        let second = join(&offer_b, &csr_b).await;
-        assert!(
-            second.is_ok(),
-            "one acknowledged offer must not close the shared listener"
+        assert_eq!(
+            ack_rx.recv().await,
+            Some((offer_a.offer_id.clone(), "node-1".into()))
         );
-        second.unwrap().ack(true).await.unwrap();
+
+        let session_b = join(&offer_b, &csr_b).await.unwrap();
+        session_b.ack(true).await.unwrap();
+        assert_eq!(
+            ack_rx.recv().await,
+            Some((offer_b.offer_id.clone(), "node-2".into()))
+        );
+
+        shutdown_tx.send(true).unwrap();
+        server.await.unwrap().unwrap();
         let _ = std::fs::remove_dir_all(material.root);
+    }
+
+    #[tokio::test]
+    async fn shared_listener_ack_completes_only_matching_offer() {
+        let material = material("shared-matching-ack", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 30;
+        let offer = join_offer(&material, address, expires);
+        let response = std::sync::Arc::new(join_response(&material, "node-1", &csr));
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();
+        let expected_id = offer.offer_id.clone();
+        let response_for_server = response.clone();
+        let server = tokio::spawn(serve_shared(
+            listener,
+            acceptor,
+            move |request, _peer| {
+                let response = response_for_server.clone();
+                let matches = request.offer_id == expected_id && request.node_id == "node-1";
+                async move {
+                    if matches {
+                        Admission::deliver((*response).clone(), expires)
+                    } else {
+                        Admission::Close
+                    }
+                }
+            },
+            move |offer_id, node_id| {
+                let ack_tx = ack_tx.clone();
+                async move {
+                    let _ = ack_tx.send((offer_id, node_id));
+                }
+            },
+            shutdown_rx,
+        ));
+
+        let mut wrong_offer = offer.clone();
+        wrong_offer.offer_id = "e".repeat(16);
+        assert!(join(&wrong_offer, &csr).await.is_err());
+        let session = join(&offer, &csr).await.unwrap();
+        session.ack(true).await.unwrap();
+        assert_eq!(
+            ack_rx.recv().await,
+            Some((offer.offer_id.clone(), "node-1".into()))
+        );
+        assert!(ack_rx.try_recv().is_err());
+        shutdown_tx.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(material.root);
+    }
+
+    #[tokio::test]
+    async fn shared_listener_negative_ack_never_completes_offer() {
+        let material = material("shared-negative-ack", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 30;
+        let offer = join_offer(&material, address, expires);
+        let response = std::sync::Arc::new(join_response(&material, "node-1", &csr));
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();
+        let response_for_server = response.clone();
+        let server = tokio::spawn(serve_shared(
+            listener,
+            acceptor,
+            move |_request, _peer| {
+                let response = response_for_server.clone();
+                async move { Admission::deliver((*response).clone(), expires) }
+            },
+            move |offer_id, node_id| {
+                let ack_tx = ack_tx.clone();
+                async move {
+                    let _ = ack_tx.send((offer_id, node_id));
+                }
+            },
+            shutdown_rx,
+        ));
+        let session = join(&offer, &csr).await.unwrap();
+        session.ack(false).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(ack_rx.try_recv().is_err());
+        shutdown_tx.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(material.root);
+    }
+
+    #[tokio::test]
+    async fn shared_listener_delivery_is_bounded_by_offer_expiry() {
+        let material = material("shared-delivery-expiry", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 5;
+        let offer = join_offer(&material, address, expires);
+        let response = std::sync::Arc::new(join_response(&material, "node-1", &csr));
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();
+        let response_for_server = response.clone();
+        let server = tokio::spawn(serve_shared(
+            listener,
+            acceptor,
+            move |_request, _peer| {
+                let response = response_for_server.clone();
+                async move { Admission::deliver((*response).clone(), expires) }
+            },
+            move |offer_id, node_id| {
+                let ack_tx = ack_tx.clone();
+                async move {
+                    let _ = ack_tx.send((offer_id, node_id));
+                }
+            },
+            shutdown_rx,
+        ));
+        let session = join(&offer, &csr).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5100)).await;
+        drop(session);
+        assert!(ack_rx.try_recv().is_err());
+        shutdown_tx.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(material.root);
+    }
+
+    #[tokio::test]
+    async fn shared_listener_disconnect_before_ack_never_completes_offer() {
+        let material = material("shared-disconnect-before-ack", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 30;
+        let offer = join_offer(&material, address, expires);
+        let response = std::sync::Arc::new(join_response(&material, "node-1", &csr));
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();
+        let response_for_server = response.clone();
+        let server = tokio::spawn(serve_shared(
+            listener,
+            acceptor,
+            move |_request, _peer| {
+                let response = response_for_server.clone();
+                async move { Admission::deliver((*response).clone(), expires) }
+            },
+            move |offer_id, node_id| {
+                let ack_tx = ack_tx.clone();
+                async move {
+                    let _ = ack_tx.send((offer_id, node_id));
+                }
+            },
+            shutdown_rx,
+        ));
+        let session = join(&offer, &csr).await.unwrap();
+        drop(session);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(ack_rx.try_recv().is_err());
+        shutdown_tx.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(material.root);
+    }
+
+    #[tokio::test]
+    async fn shared_listener_rejects_malformed_and_oversized_frames() {
+        for (tag, malformed) in [("shared-malformed", true), ("shared-oversized", false)] {
+            let material = material(tag, "hub-1", "DNS:localhost");
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let expires = unix_now() + 30;
+            let offer = join_offer(&material, address, expires);
+            let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+            let (shutdown_tx, shutdown_rx) = watch::channel(false);
+            let admitted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let admitted_for_server = admitted.clone();
+            let server = tokio::spawn(serve_shared(
+                listener,
+                acceptor,
+                move |_request, _peer| {
+                    admitted_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    async { Admission::Retry }
+                },
+                |_offer_id, _node_id| async {},
+                shutdown_rx,
+            ));
+            let mut tls = raw_tls_client(&offer).await;
+            if malformed {
+                tls.write_all(&1u32.to_be_bytes()).await.unwrap();
+                tls.write_all(b"{").await.unwrap();
+            } else {
+                tls.write_all(&((MAX_JOIN_FRAME as u32) + 1).to_be_bytes())
+                    .await
+                    .unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert_eq!(admitted.load(std::sync::atomic::Ordering::SeqCst), 0);
+            shutdown_tx.send(true).unwrap();
+            server.await.unwrap().unwrap();
+            drop(tls);
+            let _ = std::fs::remove_dir_all(material.root);
+        }
+    }
+
+    #[test]
+    fn shared_listener_rate_accounting_is_bounded() {
+        let now = Instant::now();
+        let blocked_ip = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1));
+        let mut failures = FailureWindow::default();
+        for _ in 0..=MAX_JOIN_FAILURES_PER_IP {
+            failures.record_failure(blocked_ip, now);
+        }
+        assert!(failures.is_limited(blocked_ip, now));
+        for index in 0..(MAX_JOIN_TRACKED_IPS + 100) {
+            let ip = IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000u32 + index as u32));
+            failures.record_failure(ip, now);
+        }
+        assert!(failures.per_ip.len() <= MAX_JOIN_TRACKED_IPS);
+        assert!(failures.global.len() <= MAX_JOIN_FAILURES_TOTAL);
+        assert!(failures.is_limited(blocked_ip, now));
+        assert!(!failures.is_limited(
+            blocked_ip,
+            now + JOIN_FAILURE_WINDOW + Duration::from_secs(1)
+        ));
+        assert!(failures.per_ip.is_empty());
+        assert!(failures.global.is_empty());
     }
 
     #[tokio::test]
@@ -1268,7 +1680,7 @@ mod tests {
                     assert_eq!(request.node_id, "node-1");
                     assert_eq!(request.token, token);
                     assert_eq!(request.nonce, nonce);
-                    Admission::Deliver((*response).clone())
+                    Admission::deliver((*response).clone(), expires)
                 }
             },
         ));
@@ -1464,7 +1876,7 @@ mod tests {
                 let attempt = attempts_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 async move {
                     if attempt == 0 {
-                        Admission::Deliver((*response).clone())
+                        Admission::deliver((*response).clone(), expires)
                     } else {
                         Admission::Retry
                     }
@@ -1541,7 +1953,7 @@ mod tests {
                 let receiver = receiver_for_server.lock().unwrap().take().unwrap();
                 async move {
                     let _ = receiver.await;
-                    Admission::Deliver((*response).clone())
+                    Admission::deliver((*response).clone(), expires)
                 }
             },
         ));
@@ -1588,7 +2000,7 @@ mod tests {
             expires,
             move |_request, _peer| {
                 let response = response_for_server.clone();
-                async move { Admission::Deliver((*response).clone()) }
+                async move { Admission::deliver((*response).clone(), expires) }
             },
         ));
         assert!(join(&offer, &csr).await.is_err());
@@ -1637,7 +2049,7 @@ mod tests {
             expires,
             move |_request, _peer| {
                 let response = response_for_server.clone();
-                async move { Admission::Deliver((*response).clone()) }
+                async move { Admission::deliver((*response).clone(), expires) }
             },
         ));
         let session = join(&offer, &csr).await.unwrap();

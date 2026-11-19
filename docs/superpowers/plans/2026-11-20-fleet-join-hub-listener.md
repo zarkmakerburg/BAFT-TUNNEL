@@ -62,8 +62,8 @@
 - Delivery completion callback receives the exact validated `offer_id` and `node_id` only after `JoinAck { ok: true }`.
 - Existing single-offer transport tests remain covered or are migrated to the shared listener API.
 
-- [ ] Write `shared_listener_serves_two_distinct_offers`, `shared_listener_ack_completes_only_matching_offer`, `shared_listener_negative_ack_never_completes_offer`, `shared_listener_disconnect_before_ack_never_completes_offer`, `shared_listener_rejects_malformed_and_oversized_frames`, and `shared_listener_rate_accounting_is_bounded` tests in `src/fleet_join.rs`.
-- [ ] Run `cargo test shared_listener --bin baft-tunnel`; verify the expected missing shared-listener behavior.
+- [x] Write `shared_listener_serves_two_distinct_offers`, `shared_listener_ack_completes_only_matching_offer`, `shared_listener_negative_ack_never_completes_offer`, `shared_listener_disconnect_before_ack_never_completes_offer`, `shared_listener_delivery_is_bounded_by_offer_expiry`, `shared_listener_rejects_malformed_and_oversized_frames`, and `shared_listener_rate_accounting_is_bounded` tests in `src/fleet_join.rs`.
+- [x] RED confirmed by `cargo test --locked --all-targets` on exact SHA `1154951` in phase1-rust run `44633050763`: 453 passed, 1 expected failure, 5 ignored; the two-offer test failed because the single-offer listener closed after the first ACK.
 - [ ] Implement bounded connection/session handling and listener shutdown through the Agent watch channel.
 - [ ] Implement bounded rolling failure accounting with a hard cap on tracked IPs.
 - [ ] Ensure malformed frames, negative ACK, timeout and disconnect never invoke delivery completion.
