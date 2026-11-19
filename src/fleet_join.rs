@@ -26,7 +26,7 @@ use tokio_rustls::TlsConnector;
 pub(crate) const FLEET_JOIN_PREFIX: &str = "BAFTFLEETJOIN1:";
 pub(crate) const MAX_JOIN_FRAME: usize = 64 * 1024;
 const MAX_JOIN_OFFER_BYTES: usize = 2048;
-const JOIN_IO_TIMEOUT: Duration = Duration::from_secs(2);
+const JOIN_IO_TIMEOUT: Duration = Duration::from_secs(10);
 const JOIN_MAX_CSR_BYTES: usize = 4096;
 const JOIN_MAX_REASON_BYTES: usize = 256;
 
@@ -197,17 +197,25 @@ pub(crate) struct JoinResponse {
 
 impl JoinResponse {
     pub(crate) fn validate(&self) -> Result<()> {
-        let public_material = [
-            &self.member_certificate_pem,
-            &self.ca_certificate_pem,
-            &self.crl_pem,
-            &self.hub_certificate_pem,
-        ];
+        let has_all_public_material = self
+            .member_certificate_pem
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+            && self
+                .ca_certificate_pem
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+            && self
+                .crl_pem
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+            && self
+                .hub_certificate_pem
+                .as_deref()
+                .is_some_and(|value| !value.is_empty());
         if self.ok {
             ensure!(
-                public_material
-                    .iter()
-                    .all(|item| item.as_ref().is_some_and(|v| !v.is_empty())),
+                has_all_public_material,
                 "successful Fleet Join response lacks public trust material"
             );
             ensure!(
@@ -216,7 +224,10 @@ impl JoinResponse {
             );
         } else {
             ensure!(
-                public_material.iter().all(|item| item.is_none()),
+                self.member_certificate_pem.is_none()
+                    && self.ca_certificate_pem.is_none()
+                    && self.crl_pem.is_none()
+                    && self.hub_certificate_pem.is_none(),
                 "refused Fleet Join response must not carry certificates"
             );
             ensure!(
@@ -242,13 +253,25 @@ where
     W: AsyncWrite + Unpin,
     T: Serialize,
 {
+    write_frame_with_deadline(writer, message, JOIN_IO_TIMEOUT).await
+}
+
+async fn write_frame_with_deadline<W, T>(
+    writer: &mut W,
+    message: &T,
+    deadline: Duration,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    T: Serialize,
+{
     let bytes = serde_json::to_vec(message).context("serialize Fleet Join frame")?;
     ensure!(
         !bytes.is_empty() && bytes.len() <= MAX_JOIN_FRAME,
         "Fleet Join frame is empty or too large"
     );
     let length = u32::try_from(bytes.len()).context("Fleet Join frame length overflow")?;
-    timeout(JOIN_IO_TIMEOUT, async {
+    timeout(deadline, async {
         writer.write_all(&length.to_be_bytes()).await?;
         writer.write_all(&bytes).await?;
         writer.flush().await
@@ -264,7 +287,15 @@ where
     R: AsyncRead + Unpin,
     T: DeserializeOwned,
 {
-    timeout(JOIN_IO_TIMEOUT, async {
+    read_frame_with_deadline(reader, JOIN_IO_TIMEOUT).await
+}
+
+async fn read_frame_with_deadline<R, T>(reader: &mut R, deadline: Duration) -> Result<T>
+where
+    R: AsyncRead + Unpin,
+    T: DeserializeOwned,
+{
+    timeout(deadline, async {
         let mut prefix = [0_u8; 4];
         reader
             .read_exact(&mut prefix)
@@ -957,13 +988,26 @@ mod framing_tests {
     async fn frame_reader_has_a_bounded_deadline_when_peer_stalls() {
         let (_writer, mut reader) = duplex(16);
         assert!(
-            timeout(
-                Duration::from_secs(3),
-                read_frame::<_, JoinRequest>(&mut reader)
-            )
-            .await
-            .unwrap()
-            .is_err()
+            read_frame_with_deadline::<_, JoinRequest>(&mut reader, Duration::from_millis(25))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn frame_writer_rejects_oversized_serialized_payload_before_writing() {
+        let (mut writer, _reader) = duplex(16);
+        let oversized = "x".repeat(MAX_JOIN_FRAME + 1);
+        assert!(write_frame(&mut writer, &oversized).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn frame_writer_has_a_bounded_deadline_when_peer_does_not_read() {
+        let (mut writer, _reader) = duplex(1);
+        assert!(
+            write_frame_with_deadline(&mut writer, &request(), Duration::from_millis(25))
+                .await
+                .is_err()
         );
     }
 }
