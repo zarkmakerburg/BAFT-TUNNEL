@@ -64,10 +64,10 @@
 
 - [x] Write `shared_listener_serves_two_distinct_offers`, `shared_listener_ack_completes_only_matching_offer`, `shared_listener_negative_ack_never_completes_offer`, `shared_listener_disconnect_before_ack_never_completes_offer`, `shared_listener_delivery_is_bounded_by_offer_expiry`, `shared_listener_rejects_malformed_and_oversized_frames`, and `shared_listener_rate_accounting_is_bounded` tests in `src/fleet_join.rs`.
 - [x] RED confirmed by `cargo test --locked --all-targets` on exact SHA `1154951` in phase1-rust run `44633050763`: 453 passed, 1 expected failure, 5 ignored; the two-offer test failed because the single-offer listener closed after the first ACK.
-- [ ] Implement bounded connection/session handling and listener shutdown through the Agent watch channel.
-- [ ] Implement bounded rolling failure accounting with a hard cap on tracked IPs.
-- [ ] Ensure malformed frames, negative ACK, timeout and disconnect never invoke delivery completion.
-- [ ] Run all `fleet_join` tests.
+- [x] Implement bounded connection/session handling and listener shutdown via `watch::Receiver`; Agent runtime wiring remains Task 5.
+- [x] Implement bounded rolling 60-second per-IP/global failure accounting with a hard cap of 1,024 tracked IPs.
+- [x] Ensure malformed frames, negative ACK, offer expiry/timeout and disconnect never invoke delivery completion; covered by shared-listener tests.
+- [x] Run all `fleet_join` tests as part of `cargo +1.88.0 test --locked --all-targets` on exact SHA `27d3049` (phase1-rust run `44634572686`, test step success).
 
 ### Task 3: Bridge listener admission to Enroller and operator approval state
 

@@ -193,6 +193,42 @@ mod tests {
     }
 
     #[test]
+    fn fleet_confirm_releases_enroller_lock_during_helper_call() {
+        use std::sync::Mutex;
+        let enroller = Mutex::new(Enroller::default());
+        let (id, token, nonce) = {
+            let mut guard = enroller.lock().unwrap();
+            let (status, value) = offer(&mut guard, br#"{"node_id":"edge-1"}"#, 10);
+            assert_eq!(status, 200);
+            (
+                value["id"].as_str().unwrap().to_owned(),
+                value["token"].as_str().unwrap().to_owned(),
+                value["nonce"].as_str().unwrap().to_owned(),
+            )
+        };
+        let request = csr("edge-1");
+        let fingerprint = crate::fleet_ca::validate_node_csr("edge-1", &request).unwrap();
+        enroller
+            .lock()
+            .unwrap()
+            .submit(&id, "edge-1", &token, &nonce, &request, 11)
+            .unwrap();
+        let body = format!(r#"{{"id":"{id}","fingerprint":"{fingerprint}"}}"#);
+        let signer = |_: &str, _: &str| {
+            assert!(
+                enroller.try_lock().is_ok(),
+                "Enroller mutex must be released while the helper signs"
+            );
+            Ok("CERT".to_owned())
+        };
+        let mut guard = enroller.lock().unwrap();
+        assert_eq!(
+            confirm(&mut guard, body.as_bytes(), 12, Some(&signer)).0,
+            202
+        );
+    }
+
+    #[test]
     fn bad_input_maps_to_clean_errors() {
         let mut e = Enroller::default();
         assert_eq!(offer(&mut e, b"{", 0).0, 400);

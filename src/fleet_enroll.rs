@@ -393,7 +393,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
 
-    fn csr(node_id: &str) -> String {
+    fn csr(node_id: &str, challenge: Option<&str>) -> String {
         use std::fs;
         let dir =
             std::env::temp_dir().join(format!("fleet-enroll-csr-{:x}", rand::random::<u64>()));
@@ -411,14 +411,26 @@ mod tests {
         .unwrap();
         let key_path = dir.join("node.key");
         crate::pair_ca::write_private(&key_path, &key, 0o600).unwrap();
+        let config_path = dir.join("request.cnf");
+        let mut config = format!("[ req ]\nprompt = no\ndistinguished_name = dn\n");
+        if challenge.is_some() {
+            config.push_str("attributes = req_attributes\n");
+        }
+        config.push_str(&format!("[ dn ]\nCN = {node_id}\n"));
+        if let Some(challenge) = challenge {
+            config.push_str(&format!(
+                "[ req_attributes ]\nchallengePassword = {challenge}\n"
+            ));
+        }
+        fs::write(&config_path, config).unwrap();
         let csr = crate::pair_ca::run(
             &[
                 "req",
                 "-new",
                 "-key",
                 &key_path.to_string_lossy(),
-                "-subj",
-                &format!("/CN={node_id}"),
+                "-config",
+                &config_path.to_string_lossy(),
             ],
             None,
         )
@@ -428,7 +440,7 @@ mod tests {
     }
 
     fn submit_ok(e: &mut Enroller, i: &Issued, now: u64) -> Result<(), Error> {
-        let csr = csr(&i.node_id);
+        let csr = csr(&i.node_id, Some(&i.nonce));
         e.submit(&i.id, &i.node_id, &i.token, &i.nonce, &csr, now)
     }
 
@@ -458,13 +470,117 @@ mod tests {
     fn submit_uses_fingerprint_from_cryptographically_validated_csr() {
         let mut e = Enroller::default();
         let i = e.offer("edge-1", 0).unwrap();
-        let request = csr("edge-1");
+        let request = csr("edge-1", Some(&i.nonce));
         let expected = crate::fleet_ca::validate_node_csr("edge-1", &request).unwrap();
         e.submit(&i.id, &i.node_id, &i.token, &i.nonce, &request, 1)
             .unwrap();
         assert_eq!(
             e.pending(2)[0].fingerprint.as_deref(),
             Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn fleet_csr_requires_exact_offer_nonce_challenge_password() {
+        let mut e = Enroller::default();
+        let missing_offer = e.offer("edge-1", 100).unwrap();
+        let missing = csr("edge-1", None);
+        let missing_result = e.submit(
+            &missing_offer.id,
+            &missing_offer.node_id,
+            &missing_offer.token,
+            &missing_offer.nonce,
+            &missing,
+            101,
+        );
+
+        let wrong_offer = e.offer("edge-2", 100).unwrap();
+        let wrong = csr("edge-2", Some("ffffffffffffffffffffffffffffffff"));
+        let wrong_result = e.submit(
+            &wrong_offer.id,
+            &wrong_offer.node_id,
+            &wrong_offer.token,
+            &wrong_offer.nonce,
+            &wrong,
+            101,
+        );
+
+        let valid_offer = e.offer("edge-3", 100).unwrap();
+        let valid = csr("edge-3", Some(&valid_offer.nonce));
+        let valid_result = e.submit(
+            &valid_offer.id,
+            &valid_offer.node_id,
+            &valid_offer.token,
+            &valid_offer.nonce,
+            &valid,
+            101,
+        );
+
+        assert_eq!(
+            missing_result,
+            Err(Error::BadCsr),
+            "missing challengePassword must be rejected"
+        );
+        assert_eq!(
+            wrong_result,
+            Err(Error::BadCsr),
+            "wrong challengePassword must be rejected"
+        );
+        assert_eq!(
+            valid_result,
+            Ok(()),
+            "the exact offer nonce must be accepted"
+        );
+    }
+
+    #[test]
+    fn enroller_submit_allows_only_exact_idempotent_retry_after_first_submit() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-1", 100).unwrap();
+        let original = csr("edge-1", Some(&issued.nonce));
+        e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &original,
+            101,
+        )
+        .unwrap();
+        let exact_retry = e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &original,
+            102,
+        );
+        let changed_csr = csr("edge-1", Some(&issued.nonce));
+        let changed_retry = e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &changed_csr,
+            103,
+        );
+        assert_eq!(
+            exact_retry,
+            Ok(()),
+            "the exact original request must be idempotent"
+        );
+        assert_eq!(
+            changed_retry,
+            Err(Error::WrongState),
+            "a changed CSR must be rejected"
+        );
+        assert_eq!(
+            e.pending(103)
+                .iter()
+                .find(|p| p.id == issued.id)
+                .unwrap()
+                .state,
+            State::Submitted
         );
     }
 
