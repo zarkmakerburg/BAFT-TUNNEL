@@ -104,7 +104,7 @@ Evidence: container-free unit tests with the real `openssl` (profile, EKU exclus
 
 ## Addendum 2026-11-19: Fleet Join TLS bootstrap and certificate delivery
 
-**Owner decision:** The owner approved the architecture in this addendum. This resolves the transport and bootstrap direction for Path A / panel-driven Fleet enrollment. It does not authorize implementation on real hosts, opening ports, firewall or route changes, deployment, or release. Existing independent-review and staged acceptance gates remain in force.
+**Owner decision:** The owner approved the architecture in this addendum. This resolves the transport and bootstrap direction for Path A / panel-driven Fleet enrollment. It does not authorize implementation on real hosts, opening ports, firewall or route changes, deployment, or release. Per the current owner decision, independent external review is not a prerequisite anywhere in this project for now, including Path B; security self-review and all staged technical and LAB acceptance gates remain mandatory. This supersedes earlier ADR wording that made independent review a release prerequisite.
 
 ### Decision: separate Join and Report TLS channels
 
@@ -163,6 +163,6 @@ The two-host end-to-end acceptance must demonstrate the complete sequence: opera
 - No inbound listener is added to the member. Only the Hub-side Join listener is temporary; the existing Report listener remains persistent and mandatory-mTLS.
 - No automatic firewall, route, sysctl or host-network changes are permitted. No `CAP_NET_ADMIN` is permitted. The operator is told which Hub port must be made reachable and configures it separately.
 - Implement in gated slices: (1) provision and verify the Hub certificate through the root helper; (2) implement the isolated Join TLS transport and Fleet-specific bounded protocol; (3) bind it to the enrollment state machine and operator approval; (4) deliver the certificate and public trust bundle; (5) require first accepted mTLS report plus acknowledgement before Enrolled; (6) complete negative tests and two-host LAB acceptance.
-- Until all required implementation, independent review and LAB gates pass, the panel and API MUST NOT advertise this Join flow as available. Existing report mTLS behavior remains unchanged.
+- Until implementation, security self-review, negative tests and two-host LAB acceptance pass, the panel and API MUST NOT advertise this Join flow as available. Existing report mTLS behavior remains unchanged.
 
-This addendum supersedes any earlier interpretation of the F-7 `proof` field as standalone proof of private-key possession. It does not change the separate Path B SSH review gate or authorize enabling SSH enrollment.
+This addendum supersedes any earlier interpretation of the F-7 `proof` field as standalone proof of private-key possession. It does not authorize enabling the separate Path B SSH enrollment flow, which remains disabled until its own implementation, security self-review and acceptance gates pass.
