@@ -835,7 +835,7 @@ mod tests {
 mod framing_tests {
     use super::*;
     use tokio::io::{AsyncWriteExt, duplex};
-    use tokio::time::{Duration, timeout};
+    use tokio::time::Duration;
 
     fn offer() -> JoinOffer {
         JoinOffer {
