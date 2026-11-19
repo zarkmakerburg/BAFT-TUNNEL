@@ -720,6 +720,8 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/probe/run"
             | "/v1/geo"
             | "/v1/fleet/nodes"
+            | "/v1/fleet/hub/provision"
+            | "/v1/fleet/hub/restart"
             | "/v1/fleet/enroll"
             | "/v1/fleet/enroll/offer"
             | "/v1/fleet/enroll/confirm"
@@ -752,6 +754,8 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             crate::geoip::geo_json(ctx.state_dir.as_deref(), config.remote()),
         ),
         ("GET", "/v1/fleet/nodes") => (200, fleet_nodes(ctx)),
+        ("POST", "/v1/fleet/hub/provision") => fleet_hub_provision_route(ctx, body).await,
+        ("POST", "/v1/fleet/hub/restart") => fleet_hub_restart_route(ctx, body).await,
         ("GET", "/v1/fleet/enroll") => fleet_enroll_route(ctx, "list", body),
         ("POST", "/v1/fleet/enroll/offer") => fleet_enroll_route(ctx, "offer", body),
         ("POST", "/v1/fleet/enroll/confirm") => fleet_enroll_route(ctx, "confirm", body),
@@ -908,6 +912,8 @@ async fn setup_mode_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (
         ("POST", "/v1/probe/run") => crate::probe_api::run(ctx.state_dir.as_deref(), body).await,
         ("GET", "/v1/geo") => (200, crate::geoip::geo_json(ctx.state_dir.as_deref(), None)),
         ("GET", "/v1/fleet/nodes") => (200, fleet_nodes(ctx)),
+        ("POST", "/v1/fleet/hub/provision") => fleet_hub_provision_route(ctx, body).await,
+        ("POST", "/v1/fleet/hub/restart") => fleet_hub_restart_route(ctx, body).await,
         ("GET", "/v1/fleet/enroll") => fleet_enroll_route(ctx, "list", body),
         ("POST", "/v1/fleet/enroll/offer") => fleet_enroll_route(ctx, "offer", body),
         ("POST", "/v1/fleet/enroll/confirm") => fleet_enroll_route(ctx, "confirm", body),
@@ -3559,6 +3565,88 @@ fn update_notice(ctx: &Ctx) -> Value {
     })
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FleetHubProvisionRequest {
+    hub_name: String,
+    dial_san: String,
+    listen: String,
+}
+
+/// Provision a Hub identity through the bounded root helper. The response is deliberately marked
+/// restart_required: the helper has installed the per-instance LoadCredential drop-in and config,
+/// but this Agent process does not claim the Hub listener is active until systemd restarts it.
+async fn fleet_hub_provision_route(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
+    if body.len() > 4096 {
+        return (413, json!({"error": "request too large"}));
+    }
+    let request: FleetHubProvisionRequest = match serde_json::from_slice(body) {
+        Ok(value) => value,
+        Err(_) => return (400, json!({"error": "invalid Hub provisioning request"})),
+    };
+    let Some(instance) = ctx.instance.clone() else {
+        return (
+            503,
+            json!({"error": "this Agent is not bound to an instance"}),
+        );
+    };
+    let control_dir = ctx.pair_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::fleet_helper::request_hub_identity(
+            &control_dir,
+            &instance,
+            &request.hub_name,
+            &request.dial_san,
+            &request.listen,
+            Duration::from_secs(30),
+        )
+    })
+    .await;
+    match result {
+        Ok(Ok(value)) => (202, value),
+        Ok(Err(error)) => (503, json!({"error": error})),
+        Err(_) => (500, json!({"error": "Hub provisioning worker failed"})),
+    }
+}
+
+/// Queue a bounded restart of this Agent after the operator has reviewed the pending Hub setup.
+/// The endpoint returns immediately; the browser reconnects and reads the real listener state.
+async fn fleet_hub_restart_route(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
+    if body.len() > 16 || (!body.is_empty() && body != b"{}") {
+        return (400, json!({"error": "invalid restart request"}));
+    }
+    let Some(instance) = ctx.instance.clone() else {
+        return (
+            503,
+            json!({"error": "this Agent is not bound to an instance"}),
+        );
+    };
+    let config_path = std::path::Path::new(crate::fleet_helper::FLEET_CONFIG_ROOT)
+        .join(format!("{instance}.json"));
+    let config_ready = std::fs::read(&config_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|config| {
+            config["hub"]["key_credential"] == crate::fleet_helper::HUB_CREDENTIAL_ID
+        });
+    if !config_ready {
+        return (
+            409,
+            json!({"error": "Hub configuration is not ready for activation"}),
+        );
+    }
+    let control_dir = ctx.pair_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::fleet_helper::queue_agent_restart(&control_dir, &instance)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => (202, json!({"state": "restart_queued"})),
+        Ok(Err(error)) => (409, json!({"error": error})),
+        Err(_) => (500, json!({"error": "Agent restart worker failed"})),
+    }
+}
+
 /// Fleet enrollment operator routes (ADR-0051 Path A). Signing goes through the root Fleet helper
 /// (the CA key never reaches the agent, M5); without an instance or helper `confirm` answers 503.
 fn fleet_enroll_route(ctx: &Ctx, op: &str, body: &[u8]) -> (u16, Value) {
@@ -3634,8 +3722,26 @@ fn fleet_nodes(ctx: &Ctx) -> Value {
             })
         })
         .collect();
+    let hub_listen = ctx.fleet_hub_listen.lock().ok().and_then(|listen| *listen);
+    let hub_configured = ctx.instance.as_ref().is_some_and(|instance| {
+        let path = std::path::Path::new(crate::fleet_helper::FLEET_CONFIG_ROOT)
+            .join(format!("{instance}.json"));
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|config| {
+                config["hub"]["key_credential"] == crate::fleet_helper::HUB_CREDENTIAL_ID
+            })
+    });
+    let hub = json!({
+        "configured": hub_configured,
+        "listener": hub_listen.is_some(),
+        "listen": hub_listen.map(|address| address.to_string()),
+        "restart_required": hub_configured && hub_listen.is_none(),
+        "reason": if !hub_configured { Some("Hub is not configured") } else if hub_listen.is_none() { Some("Agent restart required to activate Hub") } else { None },
+    });
     json!({
-        "hub": {"listener": false, "reason": "hub listener not enabled (Preview, ADR-0045)"},
+        "hub": hub,
         "latest_tag": latest,
         "nodes": nodes,
     })
@@ -4174,6 +4280,43 @@ mod tests {
     use super::*;
 
     const TOKEN: &str = "tttttttttttttttttttttttttttttttttttttttt";
+
+    #[tokio::test]
+    async fn fleet_hub_provision_route_requires_valid_request_and_bound_helper() {
+        let unbound = Ctx::with_config(None, TOKEN.to_string(), None);
+        let (status, _) = fleet_hub_provision_route(&unbound, b"{}").await;
+        assert_eq!(status, 400);
+
+        let request =
+            br#"{"hub_name":"hub-1","dial_san":"DNS:hub.example.test","listen":"0.0.0.0:18443"}"#;
+        let (status, body) = fleet_hub_provision_route(&unbound, request).await;
+        assert_eq!(status, 503);
+        assert_eq!(body["error"], "this Agent is not bound to an instance");
+
+        let bound = Ctx::with_config(None, TOKEN.to_string(), None)
+            .with_unit(Some("edge".into()), None)
+            .with_pair_dir(
+                std::env::temp_dir().join(format!("missing-fleet-control-{}", std::process::id())),
+            );
+        let (status, body) = fleet_hub_provision_route(&bound, request).await;
+        assert_eq!(status, 503);
+        assert_eq!(body["error"], "the root Fleet helper is not installed");
+
+        let oversized = vec![b'x'; 4097];
+        let (status, _) = fleet_hub_provision_route(&bound, &oversized).await;
+        assert_eq!(status, 413);
+
+        let (status, _) = fleet_hub_restart_route(&unbound, b"bad").await;
+        assert_eq!(status, 400);
+        let (status, _) = fleet_hub_restart_route(&unbound, b"{}").await;
+        assert_eq!(status, 503);
+        let (status, body) = fleet_hub_restart_route(&bound, b"{}").await;
+        assert_eq!(status, 409);
+        assert_eq!(
+            body["error"],
+            "Hub configuration is not ready for activation"
+        );
+    }
 
     fn sample() -> RuntimeConfig {
         serde_json::from_value(json!({

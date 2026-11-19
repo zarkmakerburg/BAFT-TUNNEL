@@ -61,6 +61,30 @@ install_templates() {
   for f in baft-tunnel-agent@.service baft-tunnel-agent@.path; do install -m 0644 "$AGENT_SRC/$f" "$UNIT_DIR/$f"; done
   install -m 0644 "$SRC/baft-tunnel-control.conf" "$TMPF"
 }
+# Ensure every installed Agent instance has the exact directory that its Fleet helper sandbox
+# permits writing. Existing per-instance drop-ins are preserved.
+prepare_agent_dropin_dirs() {
+  local path unit
+  shopt -s nullglob
+  for path in "$UNIT_DIR"/multi-user.target.wants/baft-tunnel-agent@*.service "$UNIT_DIR"/baft-tunnel-agent@*.service.d; do
+    unit="$(basename "$path")"
+    if [[ "$unit" =~ ^baft-tunnel-agent@([A-Za-z0-9][A-Za-z0-9_-]{0,62})\.service(\.d)?$ ]]; then
+      install -d -m 0755 "$UNIT_DIR/baft-tunnel-agent@${BASH_REMATCH[1]}.service.d"
+    fi
+  done
+  shopt -u nullglob
+  if [[ "$STAGING" == "0" ]]; then
+    local -a existing=()
+    mapfile -t existing < <({
+      systemctl list-unit-files --no-legend 'baft-tunnel-agent@*.service' 2>/dev/null | awk '{print $1}'
+      systemctl list-units --all --no-legend 'baft-tunnel-agent@*.service' 2>/dev/null | awk '{print $1}'
+    } | sort -u)
+    for unit in "${existing[@]}"; do
+      [[ "$unit" =~ ^baft-tunnel-agent@([A-Za-z0-9][A-Za-z0-9_-]{0,62})\.service$ ]] || continue
+      install -d -m 0755 "$UNIT_DIR/baft-tunnel-agent@${BASH_REMATCH[1]}.service.d"
+    done
+  fi
+}
 # Enforce the request-group boundary and migrate the request directory if needed (fail-closed).
 enforce_control_boundary() {
   local AGENT_GID OTHER_PRIMARY_USERS
@@ -89,6 +113,7 @@ if (( UPGRADE )); then
       die "agent control is installed but account $AGENT_USER is missing; re-run install-agent-control.sh --instance NAME"
   fi
   install_templates
+  prepare_agent_dropin_dirs
   if [[ "$STAGING" == "1" ]]; then
     echo "CONTROL_BOUNDARY=staged-not-verified"
     exit 0
@@ -109,8 +134,9 @@ if [[ "$REMOVE" == "1" ]]; then
 fi
 
 install_templates
+# The Fleet helper is sandboxed to this per-instance directory when it writes the Hub credential drop-in.
+install -d -m 0755 "$DROPIN_DIR"
 if [[ -n "$LISTEN" ]]; then
-  install -d -m 0755 "$DROPIN_DIR"
   printf '# Managed by BAFT-TUNNEL scripts/install-agent-control.sh\n[Service]\nEnvironment=BAFT_AGENT_LISTEN=%s\n' "$LISTEN" > "$DROPIN_DIR/listen.conf"
   chmod 0644 "$DROPIN_DIR/listen.conf"
 fi

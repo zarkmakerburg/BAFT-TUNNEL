@@ -225,7 +225,8 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum FleetCommand {
-    /// Initialize the separate root-only Fleet CA for the registered LAB only. For non-LAB use,
+    /// Initialize the separate root-held Fleet CA for the registered LAB only. Its public CA/CRL
+    /// are Agent-readable; the private key and signing state remain root-only. For non-LAB use,
     /// follow the offline CA ceremony in the project release/security policy.
     Ca {
         #[command(subcommand)]
@@ -293,12 +294,22 @@ fn init_fleet_ca(name: &str, confirm: bool) -> Result<()> {
     let key_meta = std::fs::symlink_metadata(&key_path)?;
     if !dir_meta.file_type().is_dir()
         || std::os::unix::fs::MetadataExt::uid(&dir_meta) != 0
-        || std::os::unix::fs::MetadataExt::mode(&dir_meta) & 0o777 != 0o700
+        || std::os::unix::fs::MetadataExt::mode(&dir_meta) & 0o777 != 0o711
         || !key_meta.file_type().is_file()
         || std::os::unix::fs::MetadataExt::uid(&key_meta) != 0
         || std::os::unix::fs::MetadataExt::mode(&key_meta) & 0o777 != 0o600
         || !ca_dir.join("ca.crt").is_file()
         || !ca_dir.join("ca.crl").is_file()
+        || std::os::unix::fs::MetadataExt::mode(&std::fs::symlink_metadata(ca_dir.join("ca.crt"))?)
+            & 0o777
+            != 0o644
+        || std::os::unix::fs::MetadataExt::mode(&std::fs::symlink_metadata(ca_dir.join("ca.crl"))?)
+            & 0o777
+            != 0o644
+        || std::os::unix::fs::MetadataExt::uid(&std::fs::symlink_metadata(ca_dir.join("ca.crt"))?)
+            != 0
+        || std::os::unix::fs::MetadataExt::uid(&std::fs::symlink_metadata(ca_dir.join("ca.crl"))?)
+            != 0
     {
         bail!(
             "Fleet CA was created but its ownership/mode verification failed; do not use it until inspected"

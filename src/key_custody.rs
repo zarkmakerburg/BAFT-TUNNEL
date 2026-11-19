@@ -7,9 +7,8 @@ use anyhow::{Context, Result, bail};
 
 const MAX_CREDENTIAL_BYTES: u64 = 16 * 1024;
 
-/// Resolve a systemd-provided credential without accepting arbitrary paths.
-/// The returned path remains inside the service-scoped credential directory.
-pub fn systemd_credential_path(identifier: &str) -> Result<PathBuf> {
+/// Validate an identifier before it is placed in a systemd LoadCredential= directive.
+pub fn validate_systemd_credential_id(identifier: &str) -> Result<()> {
     if identifier.is_empty()
         || identifier.len() > 128
         || !identifier
@@ -20,6 +19,13 @@ pub fn systemd_credential_path(identifier: &str) -> Result<PathBuf> {
     {
         bail!("invalid systemd credential identifier");
     }
+    Ok(())
+}
+
+/// Resolve a systemd-provided credential without accepting arbitrary paths.
+/// The returned path remains inside the service-scoped credential directory.
+pub fn systemd_credential_path(identifier: &str) -> Result<PathBuf> {
+    validate_systemd_credential_id(identifier)?;
 
     let directory = env::var_os("CREDENTIALS_DIRECTORY").context(
         "CREDENTIALS_DIRECTORY is not set; systemd credential mode requires systemd delivery",
