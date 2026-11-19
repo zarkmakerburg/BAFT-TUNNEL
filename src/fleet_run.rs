@@ -5,7 +5,7 @@
 #![allow(dead_code)]
 
 use crate::agent::Ctx;
-use crate::fleet_report::ReporterConfig;
+use crate::{fleet_report::ReporterConfig, key_custody};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -31,7 +31,11 @@ pub struct HubSection {
     pub ca: PathBuf,
     pub crl: PathBuf,
     pub cert: PathBuf,
-    pub key: PathBuf,
+    /// Legacy/preview file source. New Hub identities use the systemd credential source below.
+    #[serde(default)]
+    pub key: Option<PathBuf>,
+    #[serde(default)]
+    pub key_credential: Option<String>,
 }
 
 /// This host reports to a hub with its `fleet-node` certificate.
@@ -63,6 +67,29 @@ fn check_file(label: &str, p: &Path) -> Result<()> {
     Ok(())
 }
 
+fn validate_key_source(key: Option<&Path>, credential: Option<&str>) -> Result<()> {
+    ensure!(
+        key.is_some() ^ credential.is_some(),
+        "Hub key must use exactly one source: key or key_credential"
+    );
+    if let Some(path) = key {
+        check_file("hub key", path)?;
+    }
+    if let Some(identifier) = credential {
+        key_custody::validate_systemd_credential_id(identifier)?;
+    }
+    Ok(())
+}
+
+fn resolve_key_source(key: Option<&Path>, credential: Option<&str>) -> Result<PathBuf> {
+    validate_key_source(key, credential)?;
+    match (key, credential) {
+        (Some(path), None) => Ok(path.to_path_buf()),
+        (None, Some(identifier)) => key_custody::systemd_credential_path(identifier),
+        _ => unreachable!("validated key source has exactly one variant"),
+    }
+}
+
 impl FleetConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let meta = std::fs::symlink_metadata(path)
@@ -73,6 +100,24 @@ impl FleetConfig {
         );
         let text = std::fs::read_to_string(path).context("read fleet config")?;
         Self::parse(&text)
+    }
+
+    /// Load the root-managed per-instance config when present. A missing file means this Agent
+    /// has no Fleet role; any other error or non-regular file fails closed. This avoids replacing
+    /// a user's managed systemd ExecStart merely to attach the optional Fleet Hub role.
+    pub fn load_if_present(path: &Path) -> Result<Option<Self>> {
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error)
+                .with_context(|| format!("cannot inspect Fleet config {}", path.display())),
+            Ok(meta) => {
+                ensure!(
+                    meta.file_type().is_file() && meta.len() <= MAX_CONFIG_BYTES,
+                    "fleet config must be a regular file of at most {MAX_CONFIG_BYTES} bytes"
+                );
+                Self::load(path).map(Some)
+            }
+        }
     }
 
     pub fn parse(text: &str) -> Result<Self> {
@@ -88,10 +133,10 @@ impl FleetConfig {
                 ("hub ca", &h.ca),
                 ("hub crl", &h.crl),
                 ("hub cert", &h.cert),
-                ("hub key", &h.key),
             ] {
                 check_file(l, p)?;
             }
+            validate_key_source(h.key.as_deref(), h.key_credential.as_deref())?;
         }
         if let Some(m) = &cfg.member {
             ensure!(
@@ -126,12 +171,17 @@ pub async fn start(ctx: Arc<Ctx>, cfg: FleetConfig, instance: Option<&str>) -> R
     let (_stop, rx) = watch::channel(false);
     std::mem::forget(_stop);
     if let Some(h) = cfg.hub {
+        let hub_key = resolve_key_source(h.key.as_deref(), h.key_credential.as_deref())?;
         let acceptor = Arc::new(crate::tls::ReloadingAcceptor::new(
-            &h.ca, &h.crl, &h.cert, &h.key,
+            &h.ca, &h.crl, &h.cert, &hub_key,
         )?);
         let listener = TcpListener::bind(&h.listen)
             .await
             .with_context(|| format!("cannot bind fleet hub on {}", h.listen))?;
+        let bound = listener.local_addr()?;
+        *ctx.fleet_hub_listen
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Fleet Hub listener state is poisoned"))? = Some(bound);
         eprintln!(
             "Fleet hub listening on {} (mutual TLS, read-only)",
             h.listen
@@ -200,6 +250,18 @@ mod tests {
     }
 
     #[test]
+    fn per_instance_config_is_optional_but_symlinks_fail_closed() {
+        let d = tmp("optional");
+        let path = d.join("fleet.json");
+        assert!(FleetConfig::load_if_present(&path).unwrap().is_none());
+        let target = d.join("target.json");
+        std::fs::write(&target, "{}\n").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(FleetConfig::load_if_present(&path).is_err());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
     fn config_is_strict_and_off_by_default() {
         let d = tmp("cfg");
         let [ca, crl, cert, key] = files(&d);
@@ -214,6 +276,19 @@ mod tests {
             r#"{{"hub":{{"listen":"127.0.0.1:18443","ca":"{ca}","crl":"{crl}","cert":"{cert}","key":"{key}"}}}}"#
         );
         assert!(FleetConfig::parse(&hub).unwrap().hub.is_some());
+        let hub_credential = format!(
+            r#"{{"hub":{{"listen":"127.0.0.1:18443","ca":"{ca}","crl":"{crl}","cert":"{cert}","key_credential":"fleet-hub-key"}}}}"#
+        );
+        assert!(FleetConfig::parse(&hub_credential).unwrap().hub.is_some());
+        let both_key_sources = hub_credential.replace(
+            "\"key_credential\":\"fleet-hub-key\"",
+            &format!("\"key\":\"{key}\",\"key_credential\":\"fleet-hub-key\""),
+        );
+        assert!(FleetConfig::parse(&both_key_sources).is_err());
+        let no_key_source = hub.replace(&format!(",\"key\":\"{key}\""), "");
+        assert!(FleetConfig::parse(&no_key_source).is_err());
+        let invalid_credential = hub_credential.replace("fleet-hub-key", "../hub-key");
+        assert!(FleetConfig::parse(&invalid_credential).is_err());
         let bad_listen = hub.replace("127.0.0.1:18443", "nope");
         assert!(FleetConfig::parse(&bad_listen).is_err());
         let relative = hub.replace(&ca, "ca.pem");

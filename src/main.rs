@@ -216,8 +216,8 @@ enum Command {
         /// the unprivileged `baft-tunnel` user (see docs/SECURITY_ASSESSMENT.md, SA-01).
         #[arg(long)]
         allow_root: bool,
-        /// Fleet (ADR-0045 F1, read-only, Preview): JSON file naming the certificate files for a
-        /// hub listener and/or a member reporter. Off unless given; see docs/ADR-0045.
+        /// Fleet (ADR-0045 F1, read-only, Preview): explicit JSON config for a hub listener and/or
+        /// member reporter. If omitted, a root-managed per-instance config is auto-loaded when present.
         #[arg(long)]
         fleet_config: Option<PathBuf>,
     },
@@ -225,7 +225,8 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum FleetCommand {
-    /// Initialize the separate root-only Fleet CA for the registered LAB only. For non-LAB use,
+    /// Initialize the separate root-held Fleet CA for the registered LAB only. Its public CA/CRL
+    /// are Agent-readable; the private key and signing state remain root-only. For non-LAB use,
     /// follow the offline CA ceremony in the project release/security policy.
     Ca {
         #[command(subcommand)]
@@ -293,12 +294,22 @@ fn init_fleet_ca(name: &str, confirm: bool) -> Result<()> {
     let key_meta = std::fs::symlink_metadata(&key_path)?;
     if !dir_meta.file_type().is_dir()
         || std::os::unix::fs::MetadataExt::uid(&dir_meta) != 0
-        || std::os::unix::fs::MetadataExt::mode(&dir_meta) & 0o777 != 0o700
+        || std::os::unix::fs::MetadataExt::mode(&dir_meta) & 0o777 != 0o711
         || !key_meta.file_type().is_file()
         || std::os::unix::fs::MetadataExt::uid(&key_meta) != 0
         || std::os::unix::fs::MetadataExt::mode(&key_meta) & 0o777 != 0o600
         || !ca_dir.join("ca.crt").is_file()
         || !ca_dir.join("ca.crl").is_file()
+        || std::os::unix::fs::MetadataExt::mode(&std::fs::symlink_metadata(ca_dir.join("ca.crt"))?)
+            & 0o777
+            != 0o644
+        || std::os::unix::fs::MetadataExt::mode(&std::fs::symlink_metadata(ca_dir.join("ca.crl"))?)
+            & 0o777
+            != 0o644
+        || std::os::unix::fs::MetadataExt::uid(&std::fs::symlink_metadata(ca_dir.join("ca.crt"))?)
+            != 0
+        || std::os::unix::fs::MetadataExt::uid(&std::fs::symlink_metadata(ca_dir.join("ca.crl"))?)
+            != 0
     {
         bail!(
             "Fleet CA was created but its ownership/mode verification failed; do not use it until inspected"
@@ -1007,10 +1018,18 @@ async fn run() -> Result<()> {
                 Some(config)
             };
             let token = agent::read_token(&token_file)?;
-            let fleet = fleet_config
-                .as_deref()
-                .map(fleet_run::FleetConfig::load)
-                .transpose()?;
+            let fleet = if let Some(path) = fleet_config.as_deref() {
+                Some(fleet_run::FleetConfig::load(path)?)
+            } else if let Some(name) = instance.as_deref() {
+                if !apply::valid_instance(name) {
+                    anyhow::bail!("invalid --instance name");
+                }
+                let path = std::path::Path::new(fleet_helper::FLEET_CONFIG_ROOT)
+                    .join(format!("{name}.json"));
+                fleet_run::FleetConfig::load_if_present(&path)?
+            } else {
+                None
+            };
             agent::run(
                 config,
                 agent::parse_listen(&listen)?,

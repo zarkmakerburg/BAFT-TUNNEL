@@ -128,6 +128,7 @@ grep -qx 'PathExists=/run/baft-tunnel/control/%i.pki' "$STAGE/etc/systemd/system
 grep -qx 'TimeoutStartSec=60s' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel fleet helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-fleet@.service"
 grep -qx 'PathExists=/run/baft-tunnel/control/%i.fleet' "$STAGE/etc/systemd/system/baft-tunnel-control-fleet@.path"
+grep -Fq 'ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control -/etc/systemd/system/baft-tunnel-agent@%i.service.d' "$STAGE/etc/systemd/system/baft-tunnel-control-fleet@.service" || { echo 'fleet helper may only write its per-instance Agent drop-in' >&2; exit 1; }
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel pair helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-pair@.service"
 grep -qx 'PathExists=/run/baft-tunnel/control/%i.pair' "$STAGE/etc/systemd/system/baft-tunnel-control-pair@.path"
 grep -qx 'ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
@@ -139,6 +140,13 @@ grep -qx 'User=baft-tunnel-agent' "$AGENT_UNIT" && ! grep -q '^User=baft-tunnel$
 grep -qx 'SupplementaryGroups=baft-tunnel' "$AGENT_UNIT" && grep -qx 'NoNewPrivileges=true' "$AGENT_UNIT"
 grep -q -- '--listen ${BAFT_AGENT_LISTEN}' "$AGENT_UNIT" && grep -q -- '--instance %i' "$AGENT_UNIT"
 grep -qx 'Environment=BAFT_AGENT_LISTEN=127.0.0.1:18085' "$STAGE/etc/systemd/system/baft-tunnel-agent@iran.service.d/listen.conf"
+[[ -d "$STAGE/etc/systemd/system/baft-tunnel-agent@iran.service.d" ]]
+# Simulate an older staged install whose instance drop-in directory was never created.
+mkdir -p "$STAGE/etc/systemd/system/multi-user.target.wants"
+ln -s ../baft-tunnel-agent@.service "$STAGE/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@iran.service"
+rm -rf "$STAGE/etc/systemd/system/baft-tunnel-agent@iran.service.d"
+"$ROOT/scripts/install-agent-control.sh" --upgrade-boundary --destdir "$STAGE" >/dev/null
+[[ -d "$STAGE/etc/systemd/system/baft-tunnel-agent@iran.service.d" ]]
 [[ -f "$STAGE/etc/systemd/system/baft-tunnel-agent@.path" ]]
 grep -qx 'RuntimeDirectoryMode=0750' "$UNIT" && grep -q 'InaccessiblePaths=.*/var/lib/baft-tunnel-agent' "$UNIT"
 grep -qx 'Environment=BAFT_TUNNEL_CONTROL_SOCKET=/run/baft-tunnel/%i/control.sock' "$UNIT"
@@ -186,7 +194,10 @@ if "$UNINSTALL" --destdir "$STAGE" --purge-config >/dev/null 2>&1; then
   echo "uninstall accepted config purge without --yes" >&2
   exit 1
 fi
+FLEET_DROPIN="$STAGE/etc/systemd/system/baft-tunnel-agent@iran.service.d/fleet-hub.conf"
+printf '# Managed by BAFT-TUNNEL fleet helper; do not edit.\n' > "$FLEET_DROPIN"
 "$UNINSTALL" --destdir "$STAGE" --purge-config --yes >/dev/null
+[[ ! -e "$FLEET_DROPIN" ]]
 [[ ! -e "$STAGE/etc/baft-tunnel" && ! -e "$STAGE/var/lib/baft-tunnel" && ! -e "$STAGE/var/lib/baft-tunnel-control" ]]
 [[ ! -e "$DROPIN" && ! -e "$(dirname "$DROPIN")" ]]
 [[ ! -e "$STAGE/usr/local/bin/baft-tunnel" && ! -e "$STAGE/etc/systemd/system/baft-tunnel@.service" ]]

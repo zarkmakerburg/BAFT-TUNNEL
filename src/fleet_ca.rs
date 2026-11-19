@@ -42,7 +42,8 @@ pub fn node_uri(node_id: &str) -> String {
     format!("baft-fleet://{node_id}.{DOMAIN}")
 }
 
-/// Create the Fleet CA in an empty or absent `dir` (mode 0700). Returns the CA certificate PEM.
+/// Create the Fleet CA in an empty or absent directory (mode 0711). Only public trust files are
+/// readable by the Agent; the CA key and signing database remain root-only. Returns CA PEM.
 pub fn create(dir: &Path, name: &str) -> Result<String> {
     ensure!(
         !name.is_empty()
@@ -63,16 +64,20 @@ pub fn create(dir: &Path, name: &str) -> Result<String> {
                 "refusing to initialize a non-empty directory"
             );
             // An operator may pre-create the empty target directory. Tighten it before any key is written.
-            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o711))?;
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             fs::DirBuilder::new()
                 .recursive(true)
-                .mode(0o700)
+                .mode(0o711)
                 .create(dir)?;
         }
         Err(e) => return Err(e.into()),
     }
+    // DirBuilder mode is filtered by the process umask. Enforce the exact traversal-only mode
+    // after creation so a restrictive sudo/service umask cannot silently make public trust files
+    // unreadable to the unprivileged Agent.
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o711))?;
     fs::DirBuilder::new()
         .mode(0o700)
         .create(dir.join("newcerts"))?;
@@ -121,6 +126,9 @@ pub fn create(dir: &Path, name: &str) -> Result<String> {
         None,
     )?;
     crate::pair_ca::crl(dir, CRL_DAYS)?;
+    // The Agent needs only these public files; keep all signing state and the CA key private.
+    fs::set_permissions(&ca_crt, fs::Permissions::from_mode(0o644))?;
+    fs::set_permissions(dir.join("ca.crl"), fs::Permissions::from_mode(0o644))?;
     Ok(fs::read_to_string(ca_crt)?)
 }
 
@@ -422,11 +430,21 @@ mod tests {
         let dir_mode = fs::metadata(&dir).unwrap().mode() & 0o777;
         let key_mode = fs::metadata(dir.join("ca.key")).unwrap().mode() & 0o777;
         let cfg_mode = fs::metadata(dir.join("openssl.cnf")).unwrap().mode() & 0o777;
-        assert_eq!(dir_mode, 0o700);
+        assert_eq!(dir_mode, 0o711);
         assert_eq!(key_mode, 0o600);
         assert_eq!(cfg_mode, 0o600);
-        assert!(dir.join("ca.crt").is_file());
-        assert!(dir.join("ca.crl").is_file());
+        assert_eq!(
+            fs::metadata(dir.join("ca.crt")).unwrap().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(
+            fs::metadata(dir.join("ca.crl")).unwrap().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(
+            fs::metadata(dir.join("newcerts")).unwrap().mode() & 0o777,
+            0o700
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -102,6 +102,10 @@ jobs:
         run: |
           bash -n scripts/pki/test-panel-pairing.sh
           timeout 600 bash scripts/pki/test-panel-pairing.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"
+      - name: Validate Fleet Hub provisioning and per-instance LoadCredential on real systemd
+        run: |
+          bash -n scripts/pki/test-fleet-hub-provision-systemd.sh
+          sudo timeout 300 bash scripts/pki/test-fleet-hub-provision-systemd.sh "$GITHUB_WORKSPACE/target/release/baft-tunnel"
       - name: Test panel HTTPS front end on Ubuntu 22.04 nginx (own-CA issuance, auth pass-through, idempotence, rollback; certbot and systemctl shimmed)
         run: |
           bash -n scripts/panel-https.sh scripts/test-panel-https.sh

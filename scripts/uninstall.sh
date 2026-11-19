@@ -90,6 +90,12 @@ if [[ "$PURGE" == "1" ]]; then
     fi
   done
   shopt -u nullglob
+  for dropin in "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-agent@*.service.d/fleet-hub.conf; do
+    if grep -Fqx '# Managed by BAFT-TUNNEL fleet helper; do not edit.' "$dropin"; then
+      rm -f "$dropin"
+      rmdir "$(dirname "$dropin")" 2>/dev/null || true
+    fi
+  done
   rm -rf "$ROOT_PREFIX/etc/baft-tunnel" "$ROOT_PREFIX/var/lib/baft-tunnel" "$ROOT_PREFIX/var/lib/baft-tunnel-control" "$ROOT_PREFIX/var/lib/baft-tunnel-agent"
 fi
 if [[ "$STAGING" == "0" ]]; then systemctl daemon-reload; fi

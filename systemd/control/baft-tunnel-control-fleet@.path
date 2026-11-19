@@ -1,5 +1,5 @@
 [Unit]
-Description=BAFT-TUNNEL agent Fleet signing request for instance %i
+Description=BAFT-TUNNEL agent Fleet helper request for instance %i
 
 [Path]
 PathExists=/run/baft-tunnel/control/%i.fleet
