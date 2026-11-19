@@ -482,7 +482,12 @@ mod tests {
         assert_eq!(e.confirm(&i.id, &i_fp, 2, ok_sign), Err(Error::WrongState));
         let j = e.offer("edge-1", 3).unwrap();
         submit_ok(&mut e, &j, 4).unwrap();
-        let j_fp = e.pending(4)[0].fingerprint.clone().unwrap();
+        let j_fp = e
+            .pending(4)
+            .into_iter()
+            .find(|pending| pending.id == j.id)
+            .and_then(|pending| pending.fingerprint)
+            .unwrap();
         assert_eq!(
             e.confirm(&j.id, &j_fp, 5, |_, _| Err(Error::Sign)),
             Err(Error::Sign)
