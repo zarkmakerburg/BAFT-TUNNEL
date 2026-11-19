@@ -378,7 +378,6 @@ pub(crate) fn fleet_join_server_verifier(
         .enforce_revocation_expiration()
         .build()
         .context("build Fleet Join server verifier with mandatory CA and CRL checks")
-        .map(Arc::new)
 }
 
 /// TLS 1.3 server for the one-shot pairing exchange (ADR-0050): no client certificate; the
