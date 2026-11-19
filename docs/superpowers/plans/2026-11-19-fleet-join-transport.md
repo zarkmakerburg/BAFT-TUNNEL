@@ -81,11 +81,11 @@
 - `JoinSession::ack(ok)` writes the final bounded acknowledgement over the same pinned TLS session.
 - The listener returns success only after the member acknowledgement; integration with the Report listener and Enroller state transition is deliberately deferred to the next slice.
 
-- [ ] Write a loopback TLS integration test with a real generated Hub certificate and a valid member CSR.
-- [ ] Add negative tests for bad pin, Hub identity mismatch, wrong offer/node, wrong token/nonce, expired offer, concurrent/replayed submission, oversized/slow frame, disconnect before response, and missing acknowledgement.
+- [x] Write a loopback TLS integration test with a real generated Hub certificate and a valid member CSR.
+- [x] Add negative tests for bad pin, Hub identity mismatch, wrong offer/node, wrong token/nonce, expired offer, concurrent/replayed submission, oversized/slow frame, disconnect before response, and missing acknowledgement.
 - [ ] Run tests and confirm expected failures before implementation.
-- [ ] Implement the one-shot accept loop, bounded session lifecycle and member client.
-- [ ] Verify success, refusal, expiry, disconnect and timeout behavior with exact test output.
+- [x] Implement the one-shot accept loop, bounded session lifecycle and member client.
+- [x] Verify success, refusal, expiry, disconnect and timeout behavior with exact test output.
 
 ### Task 4: Module registration, documentation and handoff
 
@@ -94,8 +94,18 @@
 - Modify: `docs/ADR-0051-add-server-from-panel.md` only if a precise implementation note is needed; do not copy the unmerged PR #399 addendum into this branch.
 - Test: full hosted `phase1-rust` workflow on the exact new HEAD
 
-- [ ] Register `mod fleet_join;` and ensure no public API or UI advertises Join yet.
-- [ ] Run `cargo fmt --all -- --check`, `git diff --check`, focused Rust tests, and inspect the complete diff.
-- [ ] Commit the transport slice on this isolated branch and push only this task branch.
-- [ ] Open a Draft PR stacked on PR #402; record exact SHA, CI, limitations and next Enroller/Report integration in Issue #2.
+- [x] Register `mod fleet_join;` and ensure no public API or UI advertises Fleet Join yet.
+- [x] Run `cargo fmt --all -- --check`, `git diff --check`, focused Rust tests, and inspect the complete diff.
+- [x] Commit the transport slice on this isolated branch and push only this task branch.
+- [x] Open a Draft PR stacked on PR #402; record exact SHA, CI, limitations and next Enroller/Report integration in Issue #2.
 
+
+
+### Task 3/4 evidence reconciliation (2026-11-19)
+
+- Implementation HEAD: `26f66133117a4c84fb6544e845f24a9b55683256`; PR #403 exact-head CI run `44562305399` completed SUCCESS. All 13 check-runs passed, including the Rust job (formatting, focused tests, Clippy, release build), Ubuntu 22.04 baseline, Ubuntu 24.04 installer, panel, and offline CA container.
+- Loopback integration uses a generated Hub certificate and member CSR. Negative tests cover bad pin/Hub identity, expired offer, wrong offer/node/token/nonce, replay/concurrent submission, oversized/stalled frames, disconnect, mismatched delivered Hub identity, closed offer, and missing ACK. Exact test names are in `task-3-report.md`.
+- Local `cargo fmt --all -- --check` and `git diff --check` passed on the clean branch before this documentation reconciliation.
+- The test-first RED checkbox remains open: the PR description records a failure on test-only parent `5a71a2a` before the implementation landed, but a directly retrievable run URL/result was not independently recovered during this reconciliation. Do not treat that process-evidence item as verified.
+- `SetupCommand::Join` in `src/main.rs` is a pre-existing local bundle/checksum import command (introduced before this Fleet Join branch); it is not the new Fleet Join transport. This slice adds no Fleet Join public API or panel/UI entry point.
+- Task 4 is complete for this transport slice. Task 3 implementation and behavioral verification are complete; only the explicit test-first RED evidence checkbox remains unverified.
