@@ -762,6 +762,53 @@ mod tests {
     }
 
     #[test]
+    fn hub_keys_and_credentials_are_isolated_per_instance() {
+        let dir = tmp("hub-instance-isolation");
+        let ca = dir.join("ca");
+        crate::fleet_ca::create(&ca, "Test Fleet CA").unwrap();
+        let control = dir.join("control");
+        std::fs::create_dir(&control).unwrap();
+        let hub_root = dir.join("fleet-hub");
+
+        for instance in ["edge-a", "edge-b"] {
+            std::fs::write(
+                control.join(format!("{instance}.fleet")),
+                serde_json::json!({
+                    "op": "provision_hub",
+                    "hub_name": format!("hub-{instance}"),
+                    "dial_san": "DNS:hub.example.test",
+                    "listen": "0.0.0.0:18443"
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let result = run_with_hub_root(instance, &control, &ca, &hub_root).unwrap();
+            assert_eq!(result["state"], "done", "{instance}: {result}");
+            let _ = std::fs::remove_file(control.join(format!("{instance}.fleet-result")));
+        }
+
+        let key_a = std::fs::read(hub_root.join("edge-a/hub-key")).unwrap();
+        let key_b = std::fs::read(hub_root.join("edge-b/hub-key")).unwrap();
+        assert_ne!(
+            key_a, key_b,
+            "different Agent instances must never share Hub keys"
+        );
+        for instance in ["edge-a", "edge-b"] {
+            let config = dir.join(format!("fleet-config/{instance}.json"));
+            let value: Value = serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+            assert_eq!(value["hub"]["key_credential"], HUB_CREDENTIAL_ID);
+            let dropin = dir.join(format!(
+                "systemd/baft-tunnel-agent@{instance}.service.d/fleet-hub.conf"
+            ));
+            let text = std::fs::read_to_string(dropin).unwrap();
+            assert!(text.contains(&format!(
+                "LoadCredential=fleet-hub-key:/etc/baft-tunnel/fleet-hub/%i/hub-key"
+            )));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn hub_provisioning_without_ca_creates_no_key_or_certificate() {
         let dir = tmp("hub-no-ca");
         let control = dir.join("control");
