@@ -87,4 +87,4 @@
 - [ ] Run the full Rust test suite on Linux CI (local macOS is not authoritative for Linux-only code paths).
 - [ ] Run Clippy/release build through CI on the exact SHA.
 - [x] Inspect diff and verify no host operations or unrelated changes.
-- [ ] Commit and push the feature branch; create a Draft PR only if all checks on its exact SHA are green.
+- [ ] Commit and push the feature branch; open a Draft PR to trigger pull_request CI, keep it Draft until all checks on the exact SHA are green.
