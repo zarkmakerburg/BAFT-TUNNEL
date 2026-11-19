@@ -101,11 +101,11 @@ CERT="/etc/baft-tunnel/fleet-hub/$NAME/hub.crt"
 CONFIG="/etc/baft-tunnel/fleet/$NAME.json"
 python3 - "$HUB_NAME" "$LISTEN" >"$TMP/request.json" <<'PY'
 import json, sys
-print(json.dumps({"op":"provision_hub","hub_name":sys.argv[1],"dial_san":"DNS:localhost","listen":sys.argv[2]}))
+print(json.dumps({"hub_name":sys.argv[1],"dial_san":"DNS:localhost","listen":sys.argv[2]}))
 PY
 TOKEN="$(cat /var/lib/baft-tunnel-agent/token)"
 HTTP="$(curl -sS -o "$TMP/provision-result.json" -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary @"$TMP/request.json" "http://$API/v1/fleet/hub/provision")"
-[[ "$HTTP" == 202 ]] || fail "Hub provision API returned HTTP $HTTP: $(cat "$TMP/provision-result.json")"
+[[ "$HTTP" == 202 ]] || fail "Hub provision API returned HTTP $HTTP for request $(cat "$TMP/request.json"): $(cat "$TMP/provision-result.json")"
 python3 - "$TMP/provision-result.json" <<'PYJSON' || fail "Agent API did not return a complete Hub identity"
 import json, sys
 v=json.load(open(sys.argv[1]))
