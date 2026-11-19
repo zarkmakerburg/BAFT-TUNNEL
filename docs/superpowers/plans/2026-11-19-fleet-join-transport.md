@@ -46,10 +46,10 @@
 - `fleet_join::client_connector(pin, hub_id, hub_name) -> Result<TlsConnector>` uses a rustls custom verifier and ring TLS 1.3 handshake-signature verification. It rejects intermediate chains and never sends a CSR before all leaf identity checks pass.
 - The Hub sends the public CA certificate and current CRL only in `JoinResponse`, over the already-pinned TLS session; the member uses them for the subsequent mandatory-mTLS Report connection.
 
-- [ ] Write tests proving TLS 1.3 server-only acceptor construction and accepting an exact pinned Hub leaf without preloaded CA/CRL; reject wrong pin, expired/not-yet-valid certificate, wrong EKU, wrong URI SAN, and wrong DNS/IP SAN.
-- [ ] Run the focused tests and confirm they fail for the intended missing behavior.
-- [ ] Implement the minimal TLS acceptor and pinned verifier; keep TLS 1.3 handshake-signature verification delegated to rustls ring.
-- [ ] Run focused tests and `cargo fmt --all -- --check`.
+- [x] Write tests proving TLS 1.3 server-only acceptor construction and accepting an exact pinned Hub leaf without preloaded CA/CRL; reject wrong pin, expired/not-yet-valid certificate, wrong EKU, wrong URI SAN, and wrong DNS/IP SAN.
+- [x] Run the focused tests and confirm they fail for the intended missing behavior.
+- [x] Implement the minimal TLS acceptor and pinned verifier; keep TLS 1.3 handshake-signature verification delegated to rustls ring.
+- [x] Run focused tests and `cargo fmt --all -- --check`.
 
 ### Task 2: Fleet-specific offer and bounded message framing
 
@@ -63,10 +63,10 @@
 - `JoinAck { ok }` confirms transport delivery only; it does not imply Enrolled.
 - Length-prefixed JSON frames use a fixed maximum and bounded read/write deadlines.
 
-- [ ] Write tests for offer encoding, invalid fields, unknown JSON fields, frame lengths 0/oversized/truncated, and timeout; ensure no CA/CRL field is required in the offer and the Join response carries the public Hub identity alongside CA/CRL.
-- [ ] Run focused tests and confirm the missing cases fail.
-- [ ] Implement strict Fleet-only types and framing; never log request or response bodies.
-- [ ] Run focused tests and formatting.
+- [x] Write tests for offer encoding, invalid fields, unknown JSON fields, frame lengths 0/oversized/truncated, and timeout; ensure no CA/CRL field is required in the offer and the Join response carries the public Hub identity alongside CA/CRL.
+- [x] Run focused tests and confirm the missing cases fail.
+- [x] Implement strict Fleet-only types and framing; never log request or response bodies.
+- [x] Run focused tests and formatting.
 
 ### Task 3: One-shot Hub Join listener and member session
 

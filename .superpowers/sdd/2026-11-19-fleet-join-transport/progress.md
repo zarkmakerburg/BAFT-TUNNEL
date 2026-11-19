@@ -21,7 +21,7 @@ Ruling: Transport-level Join acknowledgement is not evidence of Enrolled. Only t
 ## Task ledger
 
 - Task 1: **complete** — implementation and all three exact-SHA workflows passed on `532f4462aca8245a9973fc6437a6cc6b9a3cd7ab`; see `task-1-report.md`.
-- Task 2: pending.
+- Task 2: **complete** — strict offer/message schemas and bounded framing accepted on `5699c38849a714d657f09c0e708568df963de602`; all three exact-SHA workflows passed; see `task-2-report.md`.
 - Task 3: pending.
 - Task 4: pending.
 
@@ -80,3 +80,13 @@ Task 1 acceptance checkpoint (2026-11-19):
 - Same-SHA package/signature `44488007895`: SUCCESS.
 - Task 1 report: `.superpowers/sdd/2026-11-19-fleet-join-transport/task-1-report.md`.
 - Scope remains transport primitives only; no listener, framing, Enroller integration or two-host LAB claim.
+
+
+Task 2 acceptance checkpoint (2026-11-19):
+- Exact HEAD `5699c38849a714d657f09c0e708568df963de602`.
+- `phase1-rust` `44512226284`: SUCCESS, all six jobs successful.
+- `phase0` `44512181372`: SUCCESS.
+- Same-SHA package/signature `44512181308`: SUCCESS.
+- Test totals: 430 passed / 0 failed / 5 ignored, plus a secondary test binary 6 passed. Clippy and release build passed.
+- Task 2 report: `.superpowers/sdd/2026-11-19-fleet-join-transport/task-2-report.md`.
+- Task 3 is next: bounded one-shot Hub listener and pinned member session; Enroller/Report integration and two-host LAB remain later gates.
