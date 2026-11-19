@@ -57,6 +57,7 @@ fn fail(e: Error) -> (u16, Value) {
         Error::Expired => (410, "offer expired"),
         Error::WrongState => (409, "offer is not in a state that allows this"),
         Error::FingerprintMismatch => (422, "fingerprint does not match the one the node reported"),
+        Error::BadCertificate => (400, "issued certificate is invalid"),
         Error::Sign => (503, "signing is not available on this host"),
         Error::BadToken | Error::BadCsr => (400, "invalid enrollment request"),
         Error::WrongNode => (409, "first report identity does not match the offered node"),
