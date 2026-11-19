@@ -8,6 +8,7 @@
 
 use crate::fleet::{self, Hub, PeerCert, Reject};
 use anyhow::{Context, Result, bail};
+use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -27,6 +28,10 @@ const MAX_HEAD_BYTES: usize = 4096;
 /// shared context, so the listener never needs to know about the rest of the agent.
 pub trait HubStore: Send + Sync + 'static {
     fn hub(&self) -> &Mutex<Hub>;
+
+    /// Called only after the report has passed all Hub acceptance rules. Identity is derived
+    /// from the authenticated TLS leaf, never from report JSON.
+    fn report_accepted(&self, _identity: &Identity) {}
 }
 
 impl HubStore for Mutex<Hub> {
@@ -40,6 +45,8 @@ impl HubStore for Mutex<Hub> {
 pub struct Identity {
     pub node_id: String,
     pub serial: String,
+    /// SHA-256 of the exact authenticated leaf DER, used to bind first-report acceptance to Join.
+    pub fingerprint: String,
     pub ekus: Vec<String>,
 }
 
@@ -89,6 +96,7 @@ pub fn peer_identity(leaf_der: &[u8]) -> Result<Identity> {
     Ok(Identity {
         node_id: node_id.to_owned(),
         serial: cert.raw_serial_as_string(),
+        fingerprint: hex::encode(Sha256::digest(leaf_der)),
         ekus,
     })
 }
@@ -123,9 +131,10 @@ fn reason(code: u16) -> &'static str {
 
 /// Parse one bounded POST and answer it. Returns the status that was (or would have been) sent.
 /// No keep-alive, no chunked bodies, no `Expect`, one route.
-pub async fn handle<S>(stream: &mut S, id: &Identity, hub: &Mutex<Hub>, now: u64) -> u16
+pub async fn handle<S, H>(stream: &mut S, id: &Identity, hub: &H, now: u64) -> u16
 where
     S: AsyncRead + AsyncWrite + Unpin,
+    H: HubStore,
 {
     let code = match read_request(stream).await {
         Ok(body) => {
@@ -135,11 +144,16 @@ where
                 serial: &id.serial,
                 ekus: &ekus,
             };
-            let r = hub
+            let accepted = hub
+                .hub()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .accept(&peer, &body, now);
-            status_of(&r)
+            if accepted.is_ok() {
+                // Do not hold the Hub lock while the enrollment store acquires its own lock.
+                hub.report_accepted(id);
+            }
+            status_of(&accepted)
         }
         Err(code) => code,
     };
@@ -253,7 +267,7 @@ pub async fn serve<S: HubStore>(
                         .and_then(|c| c.first())
                         .and_then(|leaf| peer_identity(leaf.as_ref()).ok());
                     let Some(id) = id else { return };
-                    let _ = timeout(REQUEST_TIMEOUT, handle(&mut tls, &id, hub.hub(), unix_now())).await;
+                    let _ = timeout(REQUEST_TIMEOUT, handle(&mut tls, &id, hub.as_ref(), unix_now())).await;
                 });
             }
         }
@@ -268,6 +282,7 @@ mod tests {
         CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
         KeyUsagePurpose, SanType, string::Ia5String,
     };
+    use sha2::Digest;
     use std::path::{Path, PathBuf};
     use tokio::io::duplex;
 
@@ -328,7 +343,9 @@ mod tests {
         let d = tmp("id");
         let ca = crate::tls::tests::make_ca(&d, "ca");
         let (c, _) = client_cert(&d, "n1", "node-a", &[EKU_FLEET_NODE], &ca.issuer);
-        let id = peer_identity(&der_of(&c)).unwrap();
+        let der = der_of(&c);
+        let id = peer_identity(&der).unwrap();
+        assert_eq!(id.fingerprint, hex::encode(sha2::Sha256::digest(&der)));
         assert_eq!(id.node_id, "node-a");
         assert_eq!(id.ekus, vec![EKU_FLEET_NODE.to_owned()]);
         assert!(!id.serial.is_empty());
@@ -343,11 +360,28 @@ mod tests {
         Identity {
             node_id: "node-a".into(),
             serial: "01".into(),
+            fingerprint: "a".repeat(64),
             ekus: ekus.iter().map(|s| (*s).to_owned()).collect(),
         }
     }
 
-    async fn post(raw: Vec<u8>, id: &Identity, hub: &Mutex<Hub>, now: u64) -> u16 {
+    #[derive(Default)]
+    struct RecordingStore {
+        hub: Mutex<Hub>,
+        accepted: Mutex<Vec<Identity>>,
+    }
+
+    impl HubStore for RecordingStore {
+        fn hub(&self) -> &Mutex<Hub> {
+            &self.hub
+        }
+
+        fn report_accepted(&self, identity: &Identity) {
+            self.accepted.lock().unwrap().push(identity.clone());
+        }
+    }
+
+    async fn post<S: HubStore>(raw: Vec<u8>, id: &Identity, hub: &S, now: u64) -> u16 {
         let (mut client, mut server) = duplex(64 * 1024);
         let w = tokio::spawn(async move {
             client.write_all(&raw).await.unwrap();
@@ -405,6 +439,22 @@ mod tests {
         let short =
             format!("POST {REPORT_PATH} HTTP/1.1\r\nContent-Length: 50\r\n\r\n{{").into_bytes();
         assert_eq!(post(short, &good, &hub, 400).await, 400);
+    }
+
+    #[tokio::test]
+    async fn only_accepted_reports_notify_the_hub_store() {
+        let store = RecordingStore::default();
+        let good = ident(&[EKU_FLEET_NODE]);
+        let body = r#"{"schema":"node.status.v1","seq":1,"instances":[]}"#;
+        assert_eq!(post(req(body), &good, &store, 100).await, 204);
+        assert_eq!(store.accepted.lock().unwrap().len(), 1);
+        assert_eq!(store.accepted.lock().unwrap()[0].node_id, "node-a");
+        assert_eq!(
+            post(req(body), &good, &store, 200).await,
+            409,
+            "a replayed report must not be reported as newly accepted"
+        );
+        assert_eq!(store.accepted.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
