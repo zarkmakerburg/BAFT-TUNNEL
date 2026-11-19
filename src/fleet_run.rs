@@ -310,6 +310,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(d);
     }
 
+    #[test]
+    fn fleet_config_validates_optional_join_section() {
+        let d = tmp("join-config");
+        let [ca, crl, cert, key] = files(&d);
+        let valid = format!(
+            r#"{{"hub":{{"listen":"127.0.0.1:18443","ca":"{ca}","crl":"{crl}","cert":"{cert}","key":"{key}","join":{{"listen":"0.0.0.0:18444","advertise_host":"hub.example.test","advertise_port":18444,"hub_id":"hub-1","hub_name":"hub.example.test"}}}}}}"#
+        );
+        assert!(
+            FleetConfig::parse(&valid).is_ok(),
+            "valid optional Join config must parse"
+        );
+        let zero_port = valid.replace("18444", "0");
+        assert!(
+            FleetConfig::parse(&zero_port).is_err(),
+            "zero Join port must be rejected"
+        );
+        let bad_host = valid.replace("hub.example.test", "not a host");
+        assert!(
+            FleetConfig::parse(&bad_host).is_err(),
+            "invalid Join TLS host must be rejected"
+        );
+        let _ = std::fs::remove_dir_all(d);
+    }
+
     #[tokio::test]
     async fn member_without_instance_is_refused_and_missing_material_fails_start() {
         let d = tmp("start");

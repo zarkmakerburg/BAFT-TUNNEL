@@ -809,6 +809,70 @@ mod tests {
     }
 
     #[test]
+    fn hub_provision_derives_join_host_from_dial_san() {
+        let dir = tmp("hub-join-derived");
+        let ca = dir.join("ca");
+        crate::fleet_ca::create(&ca, "Test Fleet CA").unwrap();
+        let control = dir.join("control");
+        std::fs::create_dir(&control).unwrap();
+        let hub_root = dir.join("fleet-hub");
+        std::fs::write(
+            control.join("edge.fleet"),
+            serde_json::json!({
+                "op": "provision_hub", "hub_name": "hub-1",
+                "dial_san": "DNS:hub.example.test", "listen": "0.0.0.0:18443",
+                "join_listen": "0.0.0.0:18444"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let result = run_with_hub_root("edge", &control, &ca, &hub_root).unwrap();
+        assert_eq!(result["state"], "done", "{result}");
+        let config: Value =
+            serde_json::from_slice(&std::fs::read(dir.join("fleet-config/edge.json")).unwrap())
+                .unwrap();
+        assert_eq!(config["hub"]["join"]["listen"], "0.0.0.0:18444");
+        assert_eq!(config["hub"]["join"]["advertise_host"], "hub.example.test");
+        assert_eq!(config["hub"]["join"]["advertise_port"], 18444);
+        assert_eq!(config["hub"]["join"]["hub_id"], "hub-1");
+        assert_eq!(config["hub"]["join"]["hub_name"], "hub.example.test");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hub_provision_rejects_invalid_join_bind() {
+        let dir = tmp("hub-join-invalid");
+        let ca = dir.join("ca");
+        crate::fleet_ca::create(&ca, "Test Fleet CA").unwrap();
+        let control = dir.join("control");
+        std::fs::create_dir(&control).unwrap();
+        let hub_root = dir.join("fleet-hub");
+        std::fs::write(
+            control.join("edge.fleet"),
+            serde_json::json!({
+                "op": "provision_hub", "hub_name": "hub-1",
+                "dial_san": "DNS:hub.example.test", "listen": "0.0.0.0:18443",
+                "join_listen": "0.0.0.0:0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let result = run_with_hub_root("edge", &control, &ca, &hub_root).unwrap();
+        assert_eq!(result["state"], "failed");
+        assert!(
+            result["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Join")
+        );
+        assert!(
+            !hub_root.exists(),
+            "invalid Join bind must not create Hub identity material"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn hub_provisioning_without_ca_creates_no_key_or_certificate() {
         let dir = tmp("hub-no-ca");
         let control = dir.join("control");
