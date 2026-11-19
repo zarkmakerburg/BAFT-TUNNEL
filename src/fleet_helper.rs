@@ -318,10 +318,10 @@ fn provision_hub(
     }))
 }
 
-fn restart_agent_unit(instance: &str) -> Result<()> {
+fn restart_agent_unit(instance: &str, systemd_root: &Path) -> Result<()> {
     ensure!(
-        Path::new("/run/systemd/system").is_dir(),
-        "systemd is not available to restart the Agent"
+        systemd_root == Path::new(AGENT_SYSTEMD_ROOT) && Path::new("/run/systemd/system").is_dir(),
+        "systemd is not available for this Agent unit root"
     );
     let unit = format!("baft-tunnel-agent@{instance}.service");
     let output = std::process::Command::new("/usr/bin/systemctl")
@@ -424,7 +424,7 @@ fn run_with_paths(
         if result["state"] == "done" {
             // The API route does not wait for a result: systemd may terminate its Agent while
             // the browser is reconnecting. The helper itself is a separate root service.
-            restart_agent_unit(name)?;
+            restart_agent_unit(name, systemd_root)?;
         }
         return Ok(result);
     }
@@ -804,6 +804,13 @@ mod tests {
         assert_eq!(agent_result["certificate"], helper_result["certificate"]);
         assert!(!agent_result.to_string().contains("PRIVATE KEY"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restart_helper_refuses_synthetic_systemd_roots() {
+        let d = tmp("restart-systemd-root");
+        assert!(restart_agent_unit("edge", &d).is_err());
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]
