@@ -531,6 +531,7 @@ pub(crate) fn client_connector(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use sha2::{Digest, Sha256};
     use std::path::{Path, PathBuf};
     use tokio::{
@@ -828,6 +829,440 @@ mod tests {
                 .is_err()
         );
         let _ = std::fs::remove_dir_all(wrong_eku.root);
+    }
+
+    fn unix_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    fn join_offer(material: &Material, address: std::net::SocketAddr, expires: u64) -> JoinOffer {
+        JoinOffer {
+            v: 1,
+            host: address.ip().to_string(),
+            port: address.port(),
+            hub_name: "localhost".into(),
+            hub_id: "hub-1".into(),
+            hub_pin: material.pin.clone(),
+            offer_id: "b".repeat(16),
+            node_id: "node-1".into(),
+            token: "c".repeat(32),
+            nonce: "d".repeat(32),
+            expires,
+        }
+    }
+
+    fn join_response(material: &Material, node_id: &str, csr: &str) -> JoinResponse {
+        let ca_dir = material.root.join("ca");
+        JoinResponse {
+            ok: true,
+            member_certificate_pem: Some(crate::fleet_ca::sign(&ca_dir, node_id, csr).unwrap()),
+            ca_certificate_pem: Some(std::fs::read_to_string(ca_dir.join("ca.crt")).unwrap()),
+            crl_pem: Some(std::fs::read_to_string(ca_dir.join("ca.crl")).unwrap()),
+            hub_certificate_pem: Some(std::fs::read_to_string(&material.cert).unwrap()),
+            reason: None,
+        }
+    }
+
+    fn member_csr(material: &Material) -> String {
+        let member_dir = material.root.join("member");
+        std::fs::create_dir_all(&member_dir).unwrap();
+        let (_private_key_path, csr) = hub_key_and_csr(&member_dir, "node-1");
+        csr
+    }
+
+    #[tokio::test]
+    async fn fleet_join_loopback_delivers_public_trust_and_waits_for_member_ack() {
+        let material = material("loopback-join", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 30;
+        let offer = join_offer(&material, address, expires);
+        let response = std::sync::Arc::new(join_response(&material, "node-1", &csr));
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let offer_id = offer.offer_id.clone();
+        let node_id = offer.node_id.clone();
+        let expected_token = offer.token.clone();
+        let expected_nonce = offer.nonce.clone();
+        let response_for_server = response.clone();
+        let server = tokio::spawn(serve(
+            listener,
+            acceptor,
+            offer_id,
+            node_id,
+            expires,
+            move |request, _peer| {
+                let response = response_for_server.clone();
+                let token = expected_token.clone();
+                let nonce = expected_nonce.clone();
+                async move {
+                    assert_eq!(request.node_id, "node-1");
+                    assert_eq!(request.token, token);
+                    assert_eq!(request.nonce, nonce);
+                    Admission::Deliver((*response).clone())
+                }
+            },
+        ));
+
+        let session = join(&offer, &csr).await.unwrap();
+        assert_eq!(
+            session.response().member_certificate_pem.as_deref(),
+            response.member_certificate_pem.as_deref()
+        );
+        assert_eq!(
+            session.response().ca_certificate_pem.as_deref(),
+            response.ca_certificate_pem.as_deref()
+        );
+        assert_eq!(
+            session.response().crl_pem.as_deref(),
+            response.crl_pem.as_deref()
+        );
+        session.ack(true).await.unwrap();
+        server.await.unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(material.root);
+    }
+
+    #[tokio::test]
+    async fn fleet_join_client_rejects_wrong_pin_and_wrong_hub_identity_before_request() {
+        for (tag, wrong_pin, wrong_hub) in [
+            ("wrong-pin-network", true, false),
+            ("wrong-hub-network", false, true),
+        ] {
+            let material = material(tag, "hub-1", "DNS:localhost");
+            let csr = member_csr(&material);
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let expires = unix_now() + 3;
+            let mut offer = join_offer(&material, address, expires);
+            if wrong_pin {
+                offer.hub_pin = format!(
+                    "{}{}",
+                    if material.pin.starts_with('0') {
+                        "1"
+                    } else {
+                        "0"
+                    },
+                    &material.pin[1..]
+                );
+            }
+            if wrong_hub {
+                offer.hub_id = "hub-2".into();
+            }
+            let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+            let server = tokio::spawn(serve(
+                listener,
+                acceptor,
+                offer.offer_id.clone(),
+                offer.node_id.clone(),
+                expires,
+                |_request, _peer| async {
+                    panic!("invalid Hub identity must fail before CSR submission")
+                },
+            ));
+            assert!(join(&offer, &csr).await.is_err());
+            server.abort();
+            let _ = std::fs::remove_dir_all(material.root);
+        }
+    }
+
+    #[tokio::test]
+    async fn fleet_join_rejects_expired_offer_before_opening_a_connection() {
+        let material = material("expired-offer-network", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let offer = join_offer(
+            &material,
+            listener.local_addr().unwrap(),
+            unix_now().saturating_sub(1),
+        );
+        assert!(join(&offer, &csr).await.is_err());
+        drop(listener);
+        let _ = std::fs::remove_dir_all(material.root);
+    }
+
+    #[tokio::test]
+    async fn fleet_join_server_refuses_wrong_offer_and_retries_bad_token() {
+        let material = material("wrong-offer-network", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 30;
+        let offer = join_offer(&material, address, expires);
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let server = tokio::spawn(serve(
+            listener,
+            acceptor,
+            "e".repeat(16),
+            "node-1".into(),
+            expires,
+            |_request, _peer| async { Admission::Close },
+        ));
+        assert!(join(&offer, &csr).await.is_err());
+        server.abort();
+        let _ = std::fs::remove_dir_all(material.root);
+    }
+
+    async fn raw_tls_client(offer: &JoinOffer) -> tokio_rustls::client::TlsStream<TcpStream> {
+        let connector = client_connector(&offer.hub_pin, &offer.hub_id, &offer.hub_name).unwrap();
+        let tcp = TcpStream::connect((offer.host.as_str(), offer.port))
+            .await
+            .unwrap();
+        connector
+            .connect(crate::tls::server_name(&offer.hub_name).unwrap(), tcp)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn fleet_join_server_retries_bad_token_and_nonce_without_delivering_certificates() {
+        for (tag, bad_token, bad_nonce) in [
+            ("bad-token-network", true, false),
+            ("bad-nonce-network", false, true),
+        ] {
+            let material = material(tag, "hub-1", "DNS:localhost");
+            let csr = member_csr(&material);
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let expires = unix_now() + 30;
+            let mut offer = join_offer(&material, address, expires);
+            if bad_token {
+                offer.token = "e".repeat(32);
+            }
+            if bad_nonce {
+                offer.nonce = "f".repeat(32);
+            }
+            let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+            let server = tokio::spawn(serve(
+                listener,
+                acceptor,
+                offer.offer_id.clone(),
+                offer.node_id.clone(),
+                expires,
+                |_request, _peer| async { Admission::Retry },
+            ));
+            assert!(join(&offer, &csr).await.is_err());
+            server.abort();
+            let _ = std::fs::remove_dir_all(material.root);
+        }
+    }
+
+    #[tokio::test]
+    async fn fleet_join_server_rejects_wrong_node_identity() {
+        let material = material("wrong-node-network", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 30;
+        let mut offer = join_offer(&material, address, expires);
+        offer.node_id = "node-2".into();
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let server = tokio::spawn(serve(
+            listener,
+            acceptor,
+            offer.offer_id.clone(),
+            "node-1".into(),
+            expires,
+            |_request, _peer| async {
+                panic!("wrong node identity must be rejected before admission")
+            },
+        ));
+        assert!(join(&offer, &csr).await.is_err());
+        server.abort();
+        let _ = std::fs::remove_dir_all(material.root);
+    }
+
+    #[tokio::test]
+    async fn fleet_join_replay_and_concurrent_submission_deliver_only_once() {
+        let material = material("replay-network", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 30;
+        let offer = join_offer(&material, address, expires);
+        let response = std::sync::Arc::new(join_response(&material, "node-1", &csr));
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let response_for_server = response.clone();
+        let attempts_for_server = attempts.clone();
+        let server = tokio::spawn(serve(
+            listener,
+            acceptor,
+            offer.offer_id.clone(),
+            offer.node_id.clone(),
+            expires,
+            move |_request, _peer| {
+                let response = response_for_server.clone();
+                let attempt = attempts_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move {
+                    if attempt == 0 {
+                        Admission::Deliver((*response).clone())
+                    } else {
+                        Admission::Retry
+                    }
+                }
+            },
+        ));
+        let (first, second) = tokio::join!(join(&offer, &csr), join(&offer, &csr));
+        assert_ne!(first.is_ok(), second.is_ok());
+        let session = first.or(second).unwrap();
+        session.ack(true).await.unwrap();
+        server.await.unwrap().unwrap();
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let _ = std::fs::remove_dir_all(material.root);
+    }
+
+    #[tokio::test]
+    async fn fleet_join_rejects_oversized_and_stalled_frames_without_success() {
+        for (tag, oversized) in [("oversized-frame", true), ("stalled-frame", false)] {
+            let material = material(tag, "hub-1", "DNS:localhost");
+            let csr = member_csr(&material);
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let expires = unix_now() + 2;
+            let offer = join_offer(&material, address, expires);
+            let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+            let server = tokio::spawn(serve(
+                listener,
+                acceptor,
+                offer.offer_id.clone(),
+                offer.node_id.clone(),
+                expires,
+                |_request, _peer| async { panic!("invalid frame must not reach admission") },
+            ));
+            let mut tls = raw_tls_client(&offer).await;
+            if oversized {
+                tls.write_all(&((MAX_JOIN_FRAME as u32) + 1).to_be_bytes())
+                    .await
+                    .unwrap();
+            }
+            // For the slow case, keep the authenticated socket open without sending a frame.
+            assert!(
+                timeout(std::time::Duration::from_secs(4), server)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_err()
+            );
+            drop(tls);
+            let _ = std::fs::remove_dir_all(material.root);
+        }
+    }
+
+    #[tokio::test]
+    async fn fleet_join_disconnect_before_response_never_reports_delivery_success() {
+        let material = material("disconnect-before-response", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 2;
+        let offer = join_offer(&material, address, expires);
+        let response = std::sync::Arc::new(join_response(&material, "node-1", &csr));
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let receiver = std::sync::Arc::new(std::sync::Mutex::new(Some(release_rx)));
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let response_for_server = response.clone();
+        let receiver_for_server = receiver.clone();
+        let server = tokio::spawn(serve(
+            listener,
+            acceptor,
+            offer.offer_id.clone(),
+            offer.node_id.clone(),
+            expires,
+            move |_request, _peer| {
+                let response = response_for_server.clone();
+                let receiver = receiver_for_server.lock().unwrap().take().unwrap();
+                async move {
+                    let _ = receiver.await;
+                    Admission::Deliver((*response).clone())
+                }
+            },
+        ));
+        let mut tls = raw_tls_client(&offer).await;
+        let request = JoinRequest {
+            offer_id: offer.offer_id.clone(),
+            node_id: offer.node_id.clone(),
+            token: offer.token.clone(),
+            nonce: offer.nonce.clone(),
+            csr_pem: csr,
+        };
+        write_frame(&mut tls, &request).await.unwrap();
+        drop(tls);
+        let _ = release_tx.send(());
+        assert!(
+            timeout(std::time::Duration::from_secs(4), server)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all(material.root);
+    }
+
+    #[tokio::test]
+    async fn fleet_join_member_rejects_hub_certificate_bundle_not_matching_tls_pin() {
+        let material = material("wrong-bundle-hub-cert", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 30;
+        let offer = join_offer(&material, address, expires);
+        let mut response = join_response(&material, "node-1", &csr);
+        response.hub_certificate_pem =
+            Some("-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n".into());
+        let response = std::sync::Arc::new(response);
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let response_for_server = response.clone();
+        let server = tokio::spawn(serve(
+            listener,
+            acceptor,
+            offer.offer_id.clone(),
+            offer.node_id.clone(),
+            expires,
+            move |_request, _peer| {
+                let response = response_for_server.clone();
+                async move { Admission::Deliver((*response).clone()) }
+            },
+        ));
+        assert!(join(&offer, &csr).await.is_err());
+        server.abort();
+        let _ = std::fs::remove_dir_all(material.root);
+    }
+
+    #[tokio::test]
+    async fn fleet_join_server_does_not_mark_delivery_success_without_member_ack() {
+        let material = material("missing-ack-network", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 2;
+        let offer = join_offer(&material, address, expires);
+        let response = std::sync::Arc::new(join_response(&material, "node-1", &csr));
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let response_for_server = response.clone();
+        let server = tokio::spawn(serve(
+            listener,
+            acceptor,
+            offer.offer_id.clone(),
+            offer.node_id.clone(),
+            expires,
+            move |_request, _peer| {
+                let response = response_for_server.clone();
+                async move { Admission::Deliver((*response).clone()) }
+            },
+        ));
+        let session = join(&offer, &csr).await.unwrap();
+        drop(session);
+        assert!(
+            timeout(std::time::Duration::from_secs(4), server)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all(material.root);
     }
 }
 
