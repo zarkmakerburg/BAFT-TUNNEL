@@ -801,9 +801,9 @@ mod tests {
                 "systemd/baft-tunnel-agent@{instance}.service.d/fleet-hub.conf"
             ));
             let text = std::fs::read_to_string(dropin).unwrap();
-            assert!(text.contains(&format!(
-                "LoadCredential=fleet-hub-key:/etc/baft-tunnel/fleet-hub/%i/hub-key"
-            )));
+            assert!(
+                text.contains("LoadCredential=fleet-hub-key:/etc/baft-tunnel/fleet-hub/%i/hub-key")
+            );
         }
         let _ = std::fs::remove_dir_all(dir);
     }
