@@ -15,6 +15,7 @@ mod fleet_ca;
 mod fleet_enroll;
 mod fleet_helper;
 mod fleet_hub;
+mod fleet_join;
 mod fleet_report;
 mod fleet_run;
 mod geoip;
