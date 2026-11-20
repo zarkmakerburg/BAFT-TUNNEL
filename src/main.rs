@@ -239,6 +239,13 @@ enum FleetCommand {
         #[arg(long)]
         instance: String,
     },
+    /// Join a Fleet Hub using a one-time offer read from stdin, or resume a pending activation.
+    Join {
+        #[arg(long)]
+        instance: String,
+        #[arg(long)]
+        resume: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -252,6 +259,47 @@ enum FleetCaCommand {
         #[arg(long)]
         confirm: bool,
     },
+}
+
+const MAX_JOIN_OFFER_LINE_BYTES: usize = 16 * 1024;
+
+fn validate_fleet_join_invocation(instance: &str, effective_uid: u32) -> Result<()> {
+    anyhow::ensure!(effective_uid == 0, "Fleet Join must run as root");
+    anyhow::ensure!(
+        apply::valid_instance(instance),
+        "invalid Fleet instance name"
+    );
+    Ok(())
+}
+
+fn read_join_offer<R: std::io::Read>(reader: &mut R) -> Result<String> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_JOIN_OFFER_LINE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .context("read the one-time Fleet Join offer from stdin")?;
+    anyhow::ensure!(
+        bytes.len() <= MAX_JOIN_OFFER_LINE_BYTES,
+        "Fleet Join offer exceeds the input limit"
+    );
+    let mut line = bytes.as_slice();
+    if line.last() == Some(&b'\n') {
+        line = &line[..line.len() - 1];
+    }
+    if line.last() == Some(&b'\r') {
+        line = &line[..line.len() - 1];
+    }
+    anyhow::ensure!(
+        !line.is_empty() && !line.contains(&b'\n') && !line.contains(&b'\r'),
+        "stdin must contain exactly one non-empty Fleet Join offer line"
+    );
+    let offer = std::str::from_utf8(line).context("Fleet Join offer is not UTF-8")?;
+    anyhow::ensure!(
+        offer.trim() == offer,
+        "Fleet Join offer line must not contain surrounding whitespace"
+    );
+    Ok(offer.to_owned())
 }
 
 /// Initialize the operator-owned Fleet CA. This command never exports or prints the private key.
@@ -925,6 +973,24 @@ async fn run() -> Result<()> {
             },
         } => init_fleet_ca(&name, confirm),
         Command::Fleet {
+            command: FleetCommand::Join { instance, resume },
+        } => {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            validate_fleet_join_invocation(&instance, unsafe { libc::geteuid() })?;
+            let outcome = if resume {
+                fleet_member::resume(&instance).await?
+            } else {
+                let encoded_offer = read_join_offer(&mut std::io::stdin().lock())?;
+                fleet_member::join_from_offer(&instance, &encoded_offer).await?
+            };
+            match outcome {
+                fleet_member::JoinOutcome::RestartQueued => {
+                    println!("state=restart_queued report_pending=true");
+                }
+            }
+            Ok(())
+        }
+        Command::Fleet {
             command: FleetCommand::Helper { instance },
         } => {
             // SAFETY: geteuid has no preconditions and cannot fail.
@@ -1082,6 +1148,70 @@ async fn run() -> Result<()> {
                 serde_json::to_string_pretty(&config.support_report())?
             );
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod fleet_join_cli_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn fleet_join_cli_parses_stdin_join_and_resume_without_offer_argv() {
+        let normal =
+            Cli::try_parse_from(["baft-tunnel", "fleet", "join", "--instance", "edge"]).unwrap();
+        assert!(
+            matches!(normal.command, Command::Fleet { command: FleetCommand::Join { instance, resume: false } } if instance == "edge")
+        );
+
+        let resume = Cli::try_parse_from([
+            "baft-tunnel",
+            "fleet",
+            "join",
+            "--instance",
+            "edge",
+            "--resume",
+        ])
+        .unwrap();
+        assert!(
+            matches!(resume.command, Command::Fleet { command: FleetCommand::Join { instance, resume: true } } if instance == "edge")
+        );
+
+        assert!(
+            Cli::try_parse_from([
+                "baft-tunnel",
+                "fleet",
+                "join",
+                "--instance",
+                "edge",
+                "secret-offer",
+            ])
+            .is_err(),
+            "offer must never be accepted as an argv value"
+        );
+    }
+
+    #[test]
+    fn fleet_join_requires_root_and_a_valid_instance() {
+        assert!(validate_fleet_join_invocation("edge", 0).is_ok());
+        assert!(validate_fleet_join_invocation("edge", 1000).is_err());
+        assert!(validate_fleet_join_invocation("../edge", 0).is_err());
+    }
+
+    #[test]
+    fn fleet_join_stdin_accepts_one_bounded_utf8_line_only() {
+        let mut input = Cursor::new(b"encoded-offer\n".to_vec());
+        assert_eq!(read_join_offer(&mut input).unwrap(), "encoded-offer");
+
+        for bytes in [
+            b"".to_vec(),
+            b"first\nsecond\n".to_vec(),
+            vec![0xff],
+            vec![b'x'; MAX_JOIN_OFFER_LINE_BYTES + 1],
+        ] {
+            let mut input = Cursor::new(bytes);
+            assert!(read_join_offer(&mut input).is_err());
         }
     }
 }

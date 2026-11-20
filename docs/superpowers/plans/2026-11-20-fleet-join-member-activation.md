@@ -86,7 +86,7 @@
 - [x] Write tests for CSR challengePassword presence/uniqueness, P-256 key profile, private-key exclusion from JoinRequest/JoinResponse, exact retry reusing the same CSR, invalid response causing no positive ACK, and resume behavior for pending vs installed state.
 - [x] Run the focused tests and observe expected failures.
 - [x] Implement orchestration using the existing pinned TLS Join client and no new network listener.
-- [ ] Run focused Join/Member tests and Linux Rust CI (local focused suite is green; exact-SHA Linux CI is still pending).
+- [ ] Run focused Join/Member tests and Linux Rust CI on exact SHA `deac556a0577a3c004c9a0dcdc5161626f57988a` (workflow dispatch `44805361555` is running).
 
 ### Task 4: Add `fleet join` and `fleet join --resume` CLI and restart integration
 
@@ -103,10 +103,10 @@
 - Queue restart only after successful Join ACK. If queueing fails, preserve pending state and return an error. `--resume` must retry safely.
 - Output only non-secret state: `restart_queued`, `report_pending`, or an actionable error. Never print `Enrolled` from the Member CLI.
 
-- [ ] Write CLI parse/input-bound tests, root/instance validation tests, Member-only restart helper tests, and restart-failure pending-state retention tests.
-- [ ] Run tests and confirm missing command/guard behavior fails as expected.
-- [ ] Implement CLI and helper integration.
-- [ ] Run CLI/help tests, focused Fleet tests and Linux Rust CI.
+- [x] Write CLI parse/input-bound tests, root/instance validation tests, Member-only restart helper tests, and restart-failure pending-state retention tests.
+- [x] Run tests and confirm missing command/guard behavior fails as expected.
+- [x] Implement CLI and helper integration.
+- [x] Run CLI/help tests and focused Fleet tests locally (3 CLI, 12 helper, 19 Member tests passed); exact-SHA Linux Rust CI is included in Task 5 final verification.
 
 ### Task 5: Documentation, exact-SHA verification and checkpoint
 
@@ -115,7 +115,7 @@
 - Modify: `docs/PRODUCT_ROADMAP.md` only if the new stage changes roadmap truth
 - Update: this plan's checkboxes and Issue #2 checkpoint after evidence is collected
 
-- [ ] Document the stdin-based command, root requirement, pending retry and resume behavior, credential paths/modes, and the distinction between restart queued, report pending and Enrolled.
+- [x] Document the stdin-based command, root requirement, pending retry and resume behavior, credential paths/modes, and the distinction between restart queued, report pending and Enrolled in `docs/FLEET_MEMBER_JOIN.md`.
 - [ ] Run `cargo fmt --all -- --check`, `git diff --check`, focused Fleet tests, full Rust tests, Clippy and release build on Linux CI for the exact branch SHA.
 - [ ] Inspect the final diff for secret leakage, symlink races, unsafe replacement, config loss, unbounded staging state and accidental host/network operations.
 - [ ] Push the feature branch and open/update a Draft PR only after the implementation and exact-SHA CI evidence are ready; do not merge.

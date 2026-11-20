@@ -26,7 +26,7 @@
 //! Secrets (offer token, nonce, private key) are never formatted, logged or returned by any
 //! function here; [`PendingJoin`] keeps a redacting `Debug`.
 
-#![allow(dead_code)] // CLI wiring follows in Task 4
+#![allow(dead_code)] // Internal storage helpers are also exercised through focused tests
 
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
@@ -1292,6 +1292,77 @@ mod tests {
             !control.join("edge.fleet").exists(),
             "restart must not be queued after invalid response"
         );
+        shutdown_tx.send(true).unwrap();
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn restart_request_failure_after_ack_retains_pending_offer_csr_and_key() {
+        let tmp = Temp::new("join-restart-queue-failure");
+        let config_root = tmp.config_root();
+        let paths = MemberPaths::new(&tmp.base(), &config_root, "edge").unwrap();
+        let control = tmp.path().join("control");
+        fs::create_dir(&control).unwrap();
+        fs::write(control.join("edge.fleet-result"), b"previous result").unwrap();
+        let (ca_dir, hub_cert, hub_key, pin) = hub_material(tmp.path());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 60;
+        let offer = live_offer(address, pin, expires);
+        let pending = prepare_pending(&tmp.base(), &config_root, "edge", &offer).unwrap();
+        let original_csr = pending.csr_pem.clone();
+        let original_key = fs::read(&paths.key).unwrap();
+        let acceptor = crate::tls::fleet_join_acceptor(&hub_cert, &hub_key).unwrap();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();
+        let ca_for_admission = ca_dir.clone();
+        let hub_cert_for_admission = hub_cert.clone();
+        let server = tokio::spawn(fleet_join::serve_shared(
+            listener,
+            acceptor,
+            move |request, _peer| {
+                let ca_dir = ca_for_admission.clone();
+                let hub_cert = hub_cert_for_admission.clone();
+                async move {
+                    let cert = fleet_ca::sign(&ca_dir, &request.node_id, &request.csr_pem).unwrap();
+                    Admission::Deliver {
+                        response: JoinResponse {
+                            ok: true,
+                            member_certificate_pem: Some(cert),
+                            ca_certificate_pem: Some(
+                                fs::read_to_string(ca_dir.join("ca.crt")).unwrap(),
+                            ),
+                            crl_pem: Some(fs::read_to_string(ca_dir.join("ca.crl")).unwrap()),
+                            hub_certificate_pem: Some(fs::read_to_string(hub_cert).unwrap()),
+                            reason: None,
+                        },
+                        expires,
+                    }
+                }
+            },
+            move |offer_id, node_id| {
+                let ack_tx = ack_tx.clone();
+                async move {
+                    let _ = ack_tx.send((offer_id, node_id));
+                }
+            },
+            shutdown_rx,
+        ));
+
+        assert!(resume_with_paths(&paths, &control).await.is_err());
+        assert_eq!(
+            ack_rx.recv().await,
+            Some((offer.offer_id, NODE_ID.to_owned())),
+            "Hub ACK must have happened before the restart queue failure"
+        );
+        assert!(
+            paths.offer.is_file(),
+            "pending offer must survive restart queue failure"
+        );
+        assert_eq!(fs::read(&paths.csr).unwrap(), original_csr.as_bytes());
+        assert_eq!(fs::read(&paths.key).unwrap(), original_key);
+        assert!(!control.join("edge.fleet").exists());
+
         shutdown_tx.send(true).unwrap();
         server.await.unwrap().unwrap();
     }
