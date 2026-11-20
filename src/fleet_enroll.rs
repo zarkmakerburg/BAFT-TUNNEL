@@ -601,6 +601,61 @@ mod tests {
     }
 
     #[test]
+    fn finish_confirm_rejects_a_late_result_after_deny_or_expiry() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-1", 100).unwrap();
+        let request = csr("edge-1", Some(&issued.nonce));
+        e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &request,
+            101,
+        )
+        .unwrap();
+        let fingerprint = e
+            .pending(101)
+            .iter()
+            .find(|p| p.id == issued.id)
+            .unwrap()
+            .fingerprint
+            .clone()
+            .unwrap();
+        e.begin_confirm(&issued.id, &fingerprint, 102).unwrap();
+        e.deny(&issued.id).unwrap();
+        assert_eq!(
+            e.finish_confirm(&issued.id, 103, Ok("CERT".into())),
+            Err(Error::WrongState)
+        );
+
+        let second = e.offer("edge-2", 200).unwrap();
+        let csr = csr("edge-2", Some(&second.nonce));
+        e.submit(
+            &second.id,
+            &second.node_id,
+            &second.token,
+            &second.nonce,
+            &csr,
+            201,
+        )
+        .unwrap();
+        let fingerprint = e
+            .pending(201)
+            .iter()
+            .find(|p| p.id == second.id)
+            .unwrap()
+            .fingerprint
+            .clone()
+            .unwrap();
+        e.begin_confirm(&second.id, &fingerprint, 202).unwrap();
+        assert_eq!(
+            e.finish_confirm(&second.id, second.expires + 1, Ok("CERT".into())),
+            Err(Error::Expired)
+        );
+    }
+
+    #[test]
     fn enroller_submit_allows_only_exact_idempotent_retry_after_first_submit() {
         let mut e = Enroller::default();
         let issued = e.offer("edge-1", 100).unwrap();
