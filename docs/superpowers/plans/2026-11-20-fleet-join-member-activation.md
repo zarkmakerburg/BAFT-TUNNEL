@@ -86,7 +86,7 @@
 - [x] Write tests for CSR challengePassword presence/uniqueness, P-256 key profile, private-key exclusion from JoinRequest/JoinResponse, exact retry reusing the same CSR, invalid response causing no positive ACK, and resume behavior for pending vs installed state.
 - [x] Run the focused tests and observe expected failures.
 - [x] Implement orchestration using the existing pinned TLS Join client and no new network listener.
-- [ ] Run focused Join/Member tests and Linux Rust CI on exact SHA `deac556a0577a3c004c9a0dcdc5161626f57988a` (workflow dispatch `44805361555` is running).
+- [x] Run focused Join/Member tests and Linux Rust CI on exact SHA `deac556a0577a3c004c9a0dcdc5161626f57988a` (workflow dispatch `44805361555`, all six jobs succeeded).
 
 ### Task 4: Add `fleet join` and `fleet join --resume` CLI and restart integration
 
