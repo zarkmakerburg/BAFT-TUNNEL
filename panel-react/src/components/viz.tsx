@@ -81,6 +81,11 @@ function linkOf(d: Loaded): LinkKind {
   return k === 'carrying_traffic' ? 'flow' : k === 'session_authorized' ? 'steady' : k === 'running_no_session' ? 'wait' : k === 'down' ? 'down' : 'none';
 }
 
+function shortIdentity(value?: string | null) {
+  const prefix = 'urn:baft-tunnel:node:';
+  return value?.startsWith(prefix) ? value.slice(prefix.length) : value;
+}
+
 function NodeBox({ role, id, sub, kind }: { role: string; id?: string | null; sub?: string; kind: Kind }) {
   const { t } = useApp();
   return (
@@ -98,6 +103,7 @@ function NodeBox({ role, id, sub, kind }: { role: string; id?: string | null; su
 export function Topology({ d }: { d: Loaded }) {
   const { t, lang } = useApp();
   const topo = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState(100);
   useTilt(topo);
   const c = conf(d);
   const s = d.status;
@@ -113,16 +119,32 @@ export function Topology({ d }: { d: Loaded }) {
   const rateHist: any[] = tr?.history ?? [];
   const aria = `${c.local_identity ?? t('unknown')} → ${c.peer_identity ?? t('unknown')}: ${state.l}`;
   return (
-    <Card title={t('viz.topo.title')} action={<Pill kind={state.k}>{state.l}</Pill>}>
-      <div ref={topo} className={`topo link-${lk}`} role="group" aria-label={aria}>
-        <NodeBox role={t('viz.this')} id={c.local_identity} sub={c.mode ? t((c.direction === 'reverse' ? 'role.rev.' : 'role.') + c.mode) : undefined} kind={s ? 'ok' : 'unknown'} />
-        <div className="wire" aria-hidden="true">
-          <span className="wire-tag">{t('dir.' + dirKey + '.t')}{dirKey === 'reverse' ? ` · ${t('dir.preview')}` : ''}</span>
-          <svg viewBox="0 0 200 24" preserveAspectRatio="none"><line x1="0" y1="12" x2="200" y2="12" className="wire-line" /></svg>
-          {lk === 'flow' && <span className="packets"><i /><i /><i /></span>}
-          <span className="wire-state">{state.l}</span>
+    <Card title={t('viz.topo.title')} action={
+      <div className="topo-tools">
+        <Pill kind={state.k}>{state.l}</Pill>
+        <div className="zoom-control" role="group" aria-label={t('dash.zoom.label')}>
+          <button type="button" className="ghost zoom-btn" aria-label={t('dash.zoom.out')} title={t('dash.zoom.out')} disabled={zoom <= 80} onClick={() => setZoom((v) => Math.max(80, v - 10))}>−</button>
+          <button type="button" className="ghost zoom-value" aria-label={t('dash.zoom.reset')} title={t('dash.zoom.reset')} onClick={() => setZoom(100)}>{zoom}%</button>
+          <button type="button" className="ghost zoom-btn" aria-label={t('dash.zoom.in')} title={t('dash.zoom.in')} disabled={zoom >= 120} onClick={() => setZoom((v) => Math.min(120, v + 10))}>+</button>
         </div>
-        <NodeBox role={t('viz.peer')} id={c.peer_identity} sub={t('viz.peer.note')} kind="unknown" />
+      </div>
+    }>
+      <div className={`topo-stage zoom-${zoom}`}>
+        <div ref={topo} className={`topo link-${lk}`} role="group" aria-label={aria}>
+          <NodeBox role={t('viz.this')} id={shortIdentity(c.local_identity)} sub={c.mode ? t((c.direction === 'reverse' ? 'role.rev.' : 'role.') + c.mode) : undefined} kind={state.k} />
+          <div className="wire" aria-hidden="true">
+            <span className="wire-tag">{t('dir.' + dirKey + '.t')}{dirKey === 'reverse' ? ` · ${t('dir.preview')}` : ''}</span>
+            <svg viewBox="0 0 200 24" preserveAspectRatio="none"><line x1="0" y1="12" x2="200" y2="12" className="wire-line" /></svg>
+            {lk === 'flow' && <span className="packets"><i /><i /><i /></span>}
+            <span className="wire-state">{state.l}</span>
+          </div>
+          <NodeBox role={t('viz.peer')} id={shortIdentity(c.peer_identity)} sub={t('viz.peer.note')} kind="unknown" />
+        </div>
+      </div>
+      <div className="topo-legend" aria-label={t('dash.link.title')}>
+        <span><i className="legend-dot up" />{t('dash.link.up')}</span>
+        <span><i className="legend-dot degraded" />{t('dash.link.degraded')}</span>
+        <span><i className="legend-dot down" />{t('dash.link.down')}</span>
       </div>
       <div className="vitals">
         <div className="vital"><span className="sub">{t('viz.rate.in')}</span><strong><Ltr>{bps(rate?.from_peer_bps)}</Ltr></strong><Spark pts={rateHist.map((x) => x.from_peer_bps ?? null)} label={t('viz.rate.in')} /></div>
