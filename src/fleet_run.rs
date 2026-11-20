@@ -227,7 +227,7 @@ pub(crate) fn admit_join_request(
     );
     if submit.is_err() {
         return match enroller.state_and_expiry(&offer_id) {
-            Ok((State::Closed, _)) | Err(crate::fleet_enroll::Error::Unknown) => {
+            Ok((State::Closed | State::Enrolled, _)) | Err(crate::fleet_enroll::Error::Unknown) => {
                 crate::fleet_join::Admission::Close
             }
             _ => crate::fleet_join::Admission::Retry,
@@ -237,10 +237,10 @@ pub(crate) fn admit_join_request(
         Ok(value) => value,
         Err(_) => return crate::fleet_join::Admission::Close,
     };
-    if expires < now || state == State::Closed {
+    if expires < now || matches!(state, State::Closed | State::Enrolled) {
         return crate::fleet_join::Admission::Close;
     }
-    if state != State::Issued {
+    if !matches!(state, State::Issued | State::AwaitingReport) {
         return crate::fleet_join::Admission::Retry;
     }
     let certificate = match enroller.certificate_for_delivery(&offer_id) {

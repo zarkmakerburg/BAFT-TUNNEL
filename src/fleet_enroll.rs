@@ -192,7 +192,16 @@ impl Enroller {
         now: u64,
     ) -> Result<(), Error> {
         let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
-        if matches!(o.state, State::Submitted | State::Issued) {
+        if o.state == State::AwaitingReport && now > o.expires {
+            o.state = State::Closed;
+            o.certificate = None;
+            o.delivered_fingerprint = None;
+            return Err(Error::Expired);
+        }
+        if matches!(
+            o.state,
+            State::Submitted | State::Issued | State::AwaitingReport
+        ) {
             let digest: [u8; 32] = Sha256::digest(csr_pem.as_bytes()).into();
             return if o.expires >= now
                 && ct_eq(&hash(token), &o.token_hash)
@@ -353,19 +362,21 @@ impl Enroller {
     }
 
     /// The Join TLS session retrieves the public certificate; the operator API never receives it.
+    /// Exact retries may retrieve the same leaf while AwaitingReport, but never after Enrolled.
     pub fn certificate_for_delivery(&self, id: &str) -> Result<&str, Error> {
         let o = self.offers.get(id).ok_or(Error::Unknown)?;
-        if o.state != State::Issued {
+        if !matches!(o.state, State::Issued | State::AwaitingReport) {
             return Err(Error::WrongState);
         }
         o.certificate.as_deref().ok_or(Error::WrongState)
     }
 
     /// Called only after the Join transport ACK confirms local persistence of the delivered bundle.
+    /// A repeated ACK in AwaitingReport is idempotent only for the same issued leaf fingerprint.
     /// The fingerprint is derived here from the exact issued leaf, never supplied by the caller.
     pub fn mark_delivered(&mut self, id: &str, now: u64) -> Result<(), Error> {
         let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
-        if o.state != State::Issued {
+        if !matches!(o.state, State::Issued | State::AwaitingReport) {
             return Err(Error::WrongState);
         }
         if now > o.expires {
@@ -373,6 +384,22 @@ impl Enroller {
             o.certificate = None;
             o.delivered_fingerprint = None;
             return Err(Error::Expired);
+        }
+        if o.state == State::AwaitingReport {
+            let certificate = o.certificate.as_deref().ok_or(Error::WrongState)?;
+            let fingerprint = leaf_fingerprint(certificate)?;
+            return if o
+                .delivered_fingerprint
+                .as_deref()
+                .is_some_and(|stored| ct_eq(stored.as_bytes(), fingerprint.as_bytes()))
+            {
+                Ok(())
+            } else {
+                Err(Error::WrongState)
+            };
+        }
+        if o.state != State::Issued {
+            return Err(Error::WrongState);
         }
         let certificate = o.certificate.as_deref().ok_or(Error::WrongState)?;
         let fingerprint = leaf_fingerprint(certificate)?;
