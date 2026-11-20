@@ -479,7 +479,7 @@ mod tests {
         let key_path = dir.join("node.key");
         crate::pair_ca::write_private(&key_path, &key, 0o600).unwrap();
         let config_path = dir.join("request.cnf");
-        let mut config = format!("[ req ]\nprompt = no\ndistinguished_name = dn\n");
+        let mut config = String::from("[ req ]\nprompt = no\ndistinguished_name = dn\n");
         if challenge.is_some() {
             config.push_str("attributes = req_attributes\n");
         }
