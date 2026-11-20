@@ -11,6 +11,11 @@
 
 echo "=== AUTO PAIRING: installed path via agent API, Direct then Reverse, from ${MVP_SOURCE} ==="
 stop_role iran serve; stop_role abroad serve; stop_role iran forward; stop_role abroad forward; sleep 1
+# The baseline E2E logs are no longer authoritative after those processes stop. Remove them so
+# a later pairing failure cannot accidentally report stale baseline tunnel output as AP evidence.
+for side in iran abroad; do
+  ssh_host "$side" "rm -f '$REMOTE_DIR/serve.log' '$REMOTE_DIR/forward.log' '$REMOTE_DIR/echo.log' '$REMOTE_DIR/impair.log'" || exit 1
+done
 AP_SVC=18094; AP_AG=18096; AP_TP="$E2E_PORT"
 EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGD=/var/lib/baft-tunnel-agent/lab-agent; PKG="$REMOTE_DIR/pkg"
 AP_SHA="$(sha256sum "$MVP_BINARY_PATH" | awk '{print $1}')"
@@ -45,9 +50,37 @@ ap_users() {
   done
 }
 AP_INSTANCES=""
-ap_cleanup() { for side in iran abroad; do ap_purge "$side" $AP_INSTANCES; done; ap_users; }
+ap_failure_evidence() {
+  local status="$1" side inst
+  (( status != 0 )) || return 0
+  echo "--- automatic-pairing failure evidence (candidate=${MVP_SOURCE}) ---" >&2
+  for side in iran abroad; do
+    echo "--- auto-pair host=$side ---" >&2
+    ssh_host "$side" "for f in '$REMOTE_DIR/agent.log' '$REMOTE_DIR/echo2.log'; do
+        if [ -f \"\$f\" ]; then echo === \"\$f\" ===; tail -n 80 \"\$f\"; fi;
+      done;
+      for i in $AP_INSTANCES; do echo === journal baft-tunnel@\$i ===; journalctl -u baft-tunnel@\$i.service -n 80 --no-pager 2>&1; done;
+      echo '# test-port sockets'; ss -ltnp 2>/dev/null | grep -E ':(18094|18096|$AP_TP)\b' || true;
+      echo '# relevant processes'; ps -eo pid,ppid,user,args | grep -E '[b]aft-tunnel|[e]cho.py' | head -n 40" >&2 || true
+  done
+}
+ap_cleanup() {
+  local status="${1:-0}" cleanup_failed=0 side
+  ap_failure_evidence "$status"
+  for side in iran abroad; do
+    ap_purge "$side" $AP_INSTANCES
+    if ssh_host "$side" "! test -e '$UB' && ! test -e '$EB' && ! test -e /var/lib/baft-tunnel && ! test -e /run/baft-tunnel/control && [ \"\$(systemctl list-unit-files --no-legend 'baft-tunnel*' 2>/dev/null | wc -l)\" = 0 ]"; then
+      echo "AUTO_PAIR_CLEANUP_HOST side=$side result=pass"
+    else
+      echo "AUTO_PAIR_CLEANUP_HOST side=$side result=fail" >&2
+      cleanup_failed=1
+    fi
+  done
+  ap_users
+  (( cleanup_failed == 0 )) || return 1
+}
 # set +e: under errexit the (exit N) that restores the status would end the trap before cleanup runs.
-trap 'ap_status=$?; set +e; ap_cleanup; (exit "$ap_status"); cleanup' EXIT
+trap 'ap_status=$?; set +e; ap_cleanup_status=0; ap_cleanup "$ap_status" || ap_cleanup_status=$?; if (( ap_status == 0 && ap_cleanup_status != 0 )); then ap_status=$ap_cleanup_status; fi; (exit "$ap_status"); cleanup' EXIT
 
 tar -czf "$LOCAL_TMP/ap-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-ap"

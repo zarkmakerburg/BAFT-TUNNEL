@@ -117,4 +117,15 @@ if grep -Eqi 'iptables|nft |systemctl|sysctl|tc qdisc|reboot' "$SSH_CALL_LOG"; t
   exit 1
 fi
 
+# Failure diagnostics must not reuse baseline logs and must verify remote temporary cleanup.
+auto_pair="$root/lab/real-hosts/auto-pair-stage.sh"
+grep -F "rm -f '\$REMOTE_DIR/serve.log' '\$REMOTE_DIR/forward.log' '\$REMOTE_DIR/echo.log' '\$REMOTE_DIR/impair.log'" "$auto_pair" >/dev/null
+grep -F "'\$REMOTE_DIR/echo2.log'" "$auto_pair" >/dev/null
+grep -F 'journalctl -u baft-tunnel@' "$auto_pair" >/dev/null
+grep -F 'AUTO_PAIR_CLEANUP_HOST side=$side result=pass' "$auto_pair" >/dev/null
+grep -F 'ap_cleanup "$ap_status"' "$auto_pair" >/dev/null
+grep -F 'ap_cleanup_status=$?; if (( ap_status == 0 && ap_cleanup_status != 0 ))' "$auto_pair" >/dev/null
+grep -F 'echo2.log agent.log' "$root/lab/real-hosts/phase1-two-host-e2e.sh" >/dev/null
+grep -F 'E2E_REMOTE_TMP_CLEANUP side=$side result=pass' "$root/lab/real-hosts/phase1-two-host-e2e.sh" >/dev/null
+
 echo 'Phase 1 two-host E2E orchestration tests: PASS (mock SSH/SCP only; no network connections made)'
