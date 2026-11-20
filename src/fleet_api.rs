@@ -288,10 +288,12 @@ mod tests {
                 Some(&join_context()),
             );
             assert_eq!(status, 200);
+            let encoded = value["join_offer"].as_str().unwrap();
+            let decoded = crate::fleet_join::JoinOffer::decode(encoded, 10).unwrap();
             (
                 value["id"].as_str().unwrap().to_owned(),
-                value["token"].as_str().unwrap().to_owned(),
-                value["nonce"].as_str().unwrap().to_owned(),
+                decoded.token,
+                decoded.nonce,
             )
         };
         let request = csr("edge-1", &nonce);
@@ -331,7 +333,9 @@ mod tests {
             offer(&mut e, br#"{"node_id":"edge-1"}"#, 10, Some(&context)).0,
             500
         );
-        assert!(list(&mut e, 11).1["offers"].as_array().unwrap().is_empty());
+        let listed = list(&mut e, 11).1;
+        assert_eq!(listed["offers"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["offers"][0]["state"], "closed");
     }
 
     #[test]
