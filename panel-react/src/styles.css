@@ -578,3 +578,6 @@ td .ltr,td code{overflow-wrap:anywhere;display:inline-block;max-inline-size:26ch
 .dash-panel .table-wrap th:nth-child(3),.dash-panel .table-wrap th:nth-child(4){inline-size:17%}
 .dash-panel .table-wrap th:nth-child(5){inline-size:23%}
 .dash-panel .table-wrap .pill{font-size:9px;padding:2px 5px;white-space:normal;line-height:1.25}
+
+/* Keep cards at their content height; grid rows must not stretch short panels into blank surfaces. */
+.dash-panel>.card{block-size:auto}
