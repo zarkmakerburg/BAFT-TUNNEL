@@ -193,7 +193,7 @@ mod tests {
             host: "hub.example.test".into(),
             port: 18444,
             hub_id: "hub-1".into(),
-            hub_name: "hub.example.test".into(),
+            hub_name: "hub-1.fleet.baft.invalid".into(),
             hub_pin: "a".repeat(64),
         }
     }

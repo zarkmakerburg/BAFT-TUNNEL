@@ -83,6 +83,10 @@ impl JoinOffer {
             "invalid Fleet Hub id"
         );
         ensure!(
+            self.hub_name == crate::fleet_ca::dns_name(&self.hub_id),
+            "Fleet Hub TLS identity must be derived from hub_id"
+        );
+        ensure!(
             crate::fleet_ca::valid_node_id(&self.node_id),
             "invalid Fleet node id"
         );
@@ -522,6 +526,10 @@ pub(crate) fn client_connector(
     ensure!(
         crate::fleet_ca::valid_node_id(hub_id),
         "invalid Fleet Hub identity"
+    );
+    ensure!(
+        hub_name == crate::fleet_ca::dns_name(hub_id),
+        "Fleet Hub TLS identity must be derived from hub_id"
     );
     crate::tls::server_name(hub_name)?;
 
@@ -1061,13 +1069,13 @@ mod tests {
         (key_path, String::from_utf8(csr).unwrap())
     }
 
-    fn material(tag: &str, hub_id: &str, dial_san: &str) -> Material {
+    fn material(tag: &str, hub_id: &str) -> Material {
         let root = temp_dir(tag);
         std::fs::create_dir_all(&root).unwrap();
         let ca_dir = root.join("ca");
         crate::fleet_ca::create(&ca_dir, "Fleet Join Test CA").unwrap();
         let (key, csr) = hub_key_and_csr(&root, hub_id);
-        let cert_pem = crate::fleet_ca::sign_hub(&ca_dir, hub_id, dial_san, &csr).unwrap();
+        let cert_pem = crate::fleet_ca::sign_hub(&ca_dir, hub_id, &csr).unwrap();
         let cert = root.join("hub.crt");
         crate::pair_ca::write_private(&cert, cert_pem.as_bytes(), 0o644).unwrap();
         let der = crate::tls::certificates(&cert).unwrap()[0]
@@ -1084,18 +1092,18 @@ mod tests {
     fn custom_material(
         tag: &str,
         hub_id: &str,
-        dial_san: &str,
+        dns_san: &str,
         eku_oid: &str,
         validity: Option<(&str, &str)>,
     ) -> Material {
-        custom_material_with_uri(tag, hub_id, hub_id, dial_san, eku_oid, validity)
+        custom_material_with_uri(tag, hub_id, hub_id, dns_san, eku_oid, validity)
     }
 
     fn custom_material_with_uri(
         tag: &str,
         cert_cn: &str,
         uri_hub_id: &str,
-        dial_san: &str,
+        dns_san: &str,
         eku_oid: &str,
         validity: Option<(&str, &str)>,
     ) -> Material {
@@ -1107,9 +1115,9 @@ mod tests {
         let ext_path = root.join("hub.ext");
         let csr_path = root.join("hub.csr");
         let ext = format!(
-            "[hub_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,{eku_oid}\nsubjectAltName=URI:{},{}\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n",
-            crate::fleet_ca::hub_uri(uri_hub_id),
-            dial_san
+            "[hub_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,{eku_oid}\nsubjectAltName={},URI:{}\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n",
+            dns_san,
+            crate::fleet_ca::hub_uri(uri_hub_id)
         );
         crate::pair_ca::write_private(&ext_path, ext.as_bytes(), 0o600).unwrap();
         crate::pair_ca::write_private(&csr_path, csr.as_bytes(), 0o600).unwrap();
@@ -1188,20 +1196,22 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_tls13_accepts_exact_pinned_leaf_without_preloaded_ca_or_crl() {
-        let m = material("server-only", "hub-1", "DNS:localhost");
-        connect(&m, &m.pin, "hub-1", "localhost").await.unwrap();
+        let m = material("server-only", "hub-1");
+        connect(&m, &m.pin, "hub-1", "hub-1.fleet.baft.invalid")
+            .await
+            .unwrap();
         let _ = std::fs::remove_dir_all(m.root);
     }
 
     #[tokio::test]
     async fn fleet_join_rejects_wrong_leaf_pin() {
-        let m = material("wrong-pin", "hub-1", "DNS:localhost");
+        let m = material("wrong-pin", "hub-1");
         let wrong_pin = format!(
             "{}{}",
             if m.pin.starts_with('0') { "1" } else { "0" },
             &m.pin[1..]
         );
-        let error = connect(&m, &wrong_pin, "hub-1", "localhost")
+        let error = connect(&m, &wrong_pin, "hub-1", "hub-1.fleet.baft.invalid")
             .await
             .unwrap_err();
         assert!(
@@ -1215,32 +1225,40 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_rejects_wrong_hub_id_uri_identity() {
-        let m = material("wrong-hub-id", "hub-1", "DNS:localhost");
-        assert!(connect(&m, &m.pin, "hub-2", "localhost").await.is_err());
+        let m = material("wrong-hub-id", "hub-1");
+        assert!(
+            connect(&m, &m.pin, "hub-2", "hub-2.fleet.baft.invalid")
+                .await
+                .is_err()
+        );
         let _ = std::fs::remove_dir_all(m.root);
     }
 
     #[tokio::test]
     async fn fleet_join_rejects_wrong_dns_san() {
-        let m = material("wrong-dns", "hub-1", "DNS:other.local");
-        assert!(connect(&m, &m.pin, "hub-1", "localhost").await.is_err());
+        let m = custom_material(
+            "wrong-dns",
+            "hub-1",
+            "DNS:other.fleet.baft.invalid",
+            crate::fleet::EKU_FLEET_HUB,
+            None,
+        );
+        assert!(
+            connect(&m, &m.pin, "hub-1", "hub-1.fleet.baft.invalid")
+                .await
+                .is_err()
+        );
         let _ = std::fs::remove_dir_all(m.root);
     }
 
     #[tokio::test]
-    async fn fleet_join_accepts_exact_ip_san_and_rejects_wrong_ip_san() {
-        let valid = material("valid-ip", "hub-1", "IP:203.0.113.7");
-        connect(&valid, &valid.pin, "hub-1", "203.0.113.7")
+    async fn fleet_join_uses_internal_tls_identity_independent_of_tcp_dial_address() {
+        let valid = material("tcp-sni-split", "hub-1");
+        // `connect` dials its loopback TCP listener but authenticates the Hub using internal SNI.
+        connect(&valid, &valid.pin, "hub-1", "hub-1.fleet.baft.invalid")
             .await
             .unwrap();
-        let wrong = material("wrong-ip", "hub-1", "IP:203.0.113.7");
-        assert!(
-            connect(&wrong, &wrong.pin, "hub-1", "203.0.113.8")
-                .await
-                .is_err()
-        );
         let _ = std::fs::remove_dir_all(valid.root);
-        let _ = std::fs::remove_dir_all(wrong.root);
     }
 
     #[tokio::test]
@@ -1248,12 +1266,12 @@ mod tests {
         let expired = custom_material(
             "expired",
             "hub-1",
-            "DNS:localhost",
+            "DNS:hub-1.fleet.baft.invalid",
             crate::fleet::EKU_FLEET_HUB,
             Some(("20000101000000Z", "20000102000000Z")),
         );
         assert!(
-            connect(&expired, &expired.pin, "hub-1", "localhost")
+            connect(&expired, &expired.pin, "hub-1", "hub-1.fleet.baft.invalid")
                 .await
                 .is_err()
         );
@@ -1261,12 +1279,12 @@ mod tests {
         let future = custom_material(
             "not-yet-valid",
             "hub-1",
-            "DNS:localhost",
+            "DNS:hub-1.fleet.baft.invalid",
             crate::fleet::EKU_FLEET_HUB,
             Some(("20270101000000Z", "20270102000000Z")),
         );
         assert!(
-            connect(&future, &future.pin, "hub-1", "localhost")
+            connect(&future, &future.pin, "hub-1", "hub-1.fleet.baft.invalid")
                 .await
                 .is_err()
         );
@@ -1280,14 +1298,19 @@ mod tests {
             "wrong-uri",
             "hub-2",
             "hub-1",
-            "DNS:localhost",
+            "DNS:hub-2.fleet.baft.invalid",
             crate::fleet::EKU_FLEET_HUB,
             None,
         );
         assert!(
-            connect(&wrong_uri, &wrong_uri.pin, "hub-2", "localhost")
-                .await
-                .is_err()
+            connect(
+                &wrong_uri,
+                &wrong_uri.pin,
+                "hub-2",
+                "hub-2.fleet.baft.invalid"
+            )
+            .await
+            .is_err()
         );
         let _ = std::fs::remove_dir_all(wrong_uri.root);
     }
@@ -1297,14 +1320,19 @@ mod tests {
         let wrong_eku = custom_material(
             "wrong-eku",
             "hub-1",
-            "DNS:localhost",
+            "DNS:hub-1.fleet.baft.invalid",
             crate::fleet::EKU_FLEET_NODE,
             None,
         );
         assert!(
-            connect(&wrong_eku, &wrong_eku.pin, "hub-1", "localhost")
-                .await
-                .is_err()
+            connect(
+                &wrong_eku,
+                &wrong_eku.pin,
+                "hub-1",
+                "hub-1.fleet.baft.invalid"
+            )
+            .await
+            .is_err()
         );
         let _ = std::fs::remove_dir_all(wrong_eku.root);
     }
@@ -1321,7 +1349,7 @@ mod tests {
             v: 1,
             host: address.ip().to_string(),
             port: address.port(),
-            hub_name: "localhost".into(),
+            hub_name: "hub-1.fleet.baft.invalid".into(),
             hub_id: "hub-1".into(),
             hub_pin: material.pin.clone(),
             offer_id: "b".repeat(16),
@@ -1357,7 +1385,7 @@ mod tests {
 
     #[tokio::test]
     async fn shared_listener_serves_two_distinct_offers() {
-        let material = material("shared-two-offers", "hub-1", "DNS:localhost");
+        let material = material("shared-two-offers", "hub-1");
         let csr_a = member_csr_for(&material, "node-1");
         let csr_b = member_csr_for(&material, "node-2");
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1426,7 +1454,7 @@ mod tests {
 
     #[tokio::test]
     async fn shared_listener_ack_completes_only_matching_offer() {
-        let material = material("shared-matching-ack", "hub-1", "DNS:localhost");
+        let material = material("shared-matching-ack", "hub-1");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1478,7 +1506,7 @@ mod tests {
 
     #[tokio::test]
     async fn shared_listener_negative_ack_never_completes_offer() {
-        let material = material("shared-negative-ack", "hub-1", "DNS:localhost");
+        let material = material("shared-negative-ack", "hub-1");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1515,7 +1543,7 @@ mod tests {
 
     #[tokio::test]
     async fn shared_listener_delivery_is_bounded_by_offer_expiry() {
-        let material = material("shared-delivery-expiry", "hub-1", "DNS:localhost");
+        let material = material("shared-delivery-expiry", "hub-1");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1552,7 +1580,7 @@ mod tests {
 
     #[tokio::test]
     async fn shared_listener_disconnect_before_ack_never_completes_offer() {
-        let material = material("shared-disconnect-before-ack", "hub-1", "DNS:localhost");
+        let material = material("shared-disconnect-before-ack", "hub-1");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1590,7 +1618,7 @@ mod tests {
     #[tokio::test]
     async fn shared_listener_rejects_malformed_and_oversized_frames() {
         for (tag, malformed) in [("shared-malformed", true), ("shared-oversized", false)] {
-            let material = material(tag, "hub-1", "DNS:localhost");
+            let material = material(tag, "hub-1");
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let expires = unix_now() + 30;
@@ -1653,7 +1681,7 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_loopback_delivers_public_trust_and_waits_for_member_ack() {
-        let material = material("loopback-join", "hub-1", "DNS:localhost");
+        let material = material("loopback-join", "hub-1");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1709,7 +1737,7 @@ mod tests {
             ("wrong-pin-network", true, false),
             ("wrong-hub-network", false, true),
         ] {
-            let material = material(tag, "hub-1", "DNS:localhost");
+            let material = material(tag, "hub-1");
             let csr = member_csr(&material);
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -1748,7 +1776,7 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_rejects_expired_offer_before_opening_a_connection() {
-        let material = material("expired-offer-network", "hub-1", "DNS:localhost");
+        let material = material("expired-offer-network", "hub-1");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let offer = join_offer(
@@ -1763,7 +1791,7 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_server_refuses_wrong_offer_id() {
-        let material = material("wrong-offer-network", "hub-1", "DNS:localhost");
+        let material = material("wrong-offer-network", "hub-1");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1800,7 +1828,7 @@ mod tests {
             ("bad-token-network", true, false),
             ("bad-nonce-network", false, true),
         ] {
-            let material = material(tag, "hub-1", "DNS:localhost");
+            let material = material(tag, "hub-1");
             let csr = member_csr(&material);
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -1829,7 +1857,7 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_server_rejects_wrong_node_identity() {
-        let material = material("wrong-node-network", "hub-1", "DNS:localhost");
+        let material = material("wrong-node-network", "hub-1");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1854,7 +1882,7 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_replay_and_concurrent_submission_deliver_only_once() {
-        let material = material("replay-network", "hub-1", "DNS:localhost");
+        let material = material("replay-network", "hub-1");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1895,7 +1923,7 @@ mod tests {
     #[tokio::test]
     async fn fleet_join_rejects_oversized_and_stalled_frames_without_success() {
         for (tag, oversized) in [("oversized-frame", true), ("stalled-frame", false)] {
-            let material = material(tag, "hub-1", "DNS:localhost");
+            let material = material(tag, "hub-1");
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let expires = unix_now() + 2;
@@ -1930,7 +1958,7 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_disconnect_before_response_never_reports_delivery_success() {
-        let material = material("disconnect-before-response", "hub-1", "DNS:localhost");
+        let material = material("disconnect-before-response", "hub-1");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1980,7 +2008,7 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_member_rejects_hub_certificate_bundle_not_matching_tls_pin() {
-        let material = material("wrong-bundle-hub-cert", "hub-1", "DNS:localhost");
+        let material = material("wrong-bundle-hub-cert", "hub-1");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -2010,7 +2038,7 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_server_closes_offer_when_admission_controller_closes_it() {
-        let material = material("closed-offer-network", "hub-1", "DNS:localhost");
+        let material = material("closed-offer-network", "hub-1");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -2032,7 +2060,7 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_join_server_does_not_mark_delivery_success_without_member_ack() {
-        let material = material("missing-ack-network", "hub-1", "DNS:localhost");
+        let material = material("missing-ack-network", "hub-1");
         let csr = member_csr(&material);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -2137,6 +2165,28 @@ mod framing_tests {
         let mut bad = offer();
         bad.expires = now + 901;
         assert!(bad.validate(now).is_err());
+    }
+
+    #[test]
+    fn fleet_join_connector_rejects_non_derived_tls_name() {
+        assert!(client_connector(&"a".repeat(64), "hub-1", "localhost").is_err());
+    }
+
+    #[test]
+    fn fleet_join_offer_requires_derived_hub_tls_identity() {
+        let now = 1_700_000_000;
+        let mut bad = offer();
+        bad.hub_name = "hub.example.test".into();
+        assert!(
+            bad.validate(now).is_err(),
+            "external dial name must not be used as TLS identity"
+        );
+        let mut bad = offer();
+        bad.hub_name = "other.fleet.baft.invalid".into();
+        assert!(
+            bad.validate(now).is_err(),
+            "TLS identity must be derived from hub_id"
+        );
     }
 
     #[test]

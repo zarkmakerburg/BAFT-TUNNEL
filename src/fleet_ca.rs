@@ -233,16 +233,15 @@ pub fn hub_uri(hub_name: &str) -> String {
 }
 
 /// Sign the `fleet-hub` server certificate (F-2): `serverAuth` plus the fleet-hub EKU only (never
-/// `clientAuth`, never the node EKU), the hub URI name, and the DNS name or IP the members dial
-/// (`DNS:name` or `IP:addr`) so ordinary name verification passes. The dialed address is not under
-/// the URI name constraint; the chain, the profile EKU and the URI name are what bind it.
-pub fn sign_hub(dir: &Path, hub_name: &str, dial_san: &str, csr_pem: &str) -> Result<String> {
+/// `clientAuth`, never the node EKU), one DNS identity constrained by the Fleet CA, and the exact
+/// Hub URI application identity. The public TCP dial address is deliberately not a certificate SAN.
+pub fn sign_hub(dir: &Path, hub_name: &str, csr_pem: &str) -> Result<String> {
     ensure!(valid_node_id(hub_name), "invalid hub name");
-    validate_san(dial_san)?;
     check_csr(csr_pem, hub_name)?;
     let tmp = dir.join(format!("sign-{}.tmp", rand::random::<u64>()));
     let ext = format!(
-        "[hub_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,{EKU_FLEET_HUB}\nsubjectAltName=URI:{},{dial_san}\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n",
+        "[hub_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,{EKU_FLEET_HUB}\nsubjectAltName=DNS:{},URI:{}\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n",
+        dns_name(hub_name),
         hub_uri(hub_name)
     );
     let ext_path: PathBuf = tmp.with_extension("ext");
@@ -528,17 +527,24 @@ mod tests {
     }
 
     #[test]
-    fn hub_profile_is_server_only() {
+    fn fleet_hub_certificate_uses_internal_dns_identity_not_dial_address() {
         let dir = tmp("ca4");
         create(&dir, "BAFT Fleet CA").unwrap();
-        let cert = sign_hub(&dir, "hub-1", "IP:203.0.113.7", &csr("hub-1", "prime256v1")).unwrap();
+        let cert = sign_hub(&dir, "hub-1", &csr("hub-1", "prime256v1")).unwrap();
         let t = text(&cert);
         assert!(t.contains("TLS Web Server Authentication"), "{t}");
         assert!(!t.contains("TLS Web Client Authentication"));
         assert!(t.contains("1.3.6.1.4.1.59999.1.3"));
         assert!(!t.contains("1.3.6.1.4.1.59999.1.2"));
-        assert!(t.contains("baft-fleet-hub://hub-1.fleet.baft.invalid"));
-        assert!(t.contains("203.0.113.7"));
+        assert!(t.contains("DNS:hub-1.fleet.baft.invalid"), "{t}");
+        assert!(
+            t.contains("baft-fleet-hub://hub-1.fleet.baft.invalid"),
+            "{t}"
+        );
+        assert!(
+            !t.contains("203.0.113.7"),
+            "public dial address leaked into Hub certificate: {t}"
+        );
         let (cp, ap) = (dir.join("hub.pem"), dir.join("ca.crt"));
         fs::write(&cp, &cert).unwrap();
         assert!(
@@ -555,8 +561,8 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(sign_hub(&dir, "hub-1", "bad", &csr("hub-1", "prime256v1")).is_err());
-        assert!(sign_hub(&dir, "Hub", "DNS:a.example", &csr("Hub", "prime256v1")).is_err());
+        assert!(sign_hub(&dir, "hub-1", &csr("other", "prime256v1")).is_err());
+        assert!(sign_hub(&dir, "Hub", &csr("Hub", "prime256v1")).is_err());
         let _ = fs::remove_dir_all(dir);
     }
 

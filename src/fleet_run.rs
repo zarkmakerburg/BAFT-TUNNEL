@@ -176,6 +176,10 @@ impl FleetConfig {
                     crate::fleet_ca::valid_node_id(&join.hub_id),
                     "Fleet Join hub_id is invalid"
                 );
+                ensure!(
+                    join.hub_name == crate::fleet_ca::dns_name(&join.hub_id),
+                    "Fleet Join TLS identity must be derived from hub_id"
+                );
                 crate::tls::server_name(&join.hub_name)
                     .context("Fleet Join hub_name is not a valid TLS name")?;
             }
@@ -192,6 +196,10 @@ impl FleetConfig {
                 "member hub_addr must be host:port"
             );
             ensure!(!m.hub_name.is_empty(), "member hub_name is empty");
+            ensure!(
+                m.hub_name == crate::fleet_ca::dns_name(&m.hub_id),
+                "Member TLS identity must be derived from hub_id"
+            );
             for (l, p) in [
                 ("member ca", &m.ca),
                 ("member crl", &m.crl),
@@ -548,7 +556,7 @@ mod tests {
         assert!(FleetConfig::parse(&relative).is_err());
         let member = |id: &str, addr: &str| {
             format!(
-                r#"{{"member":{{"hub_addr":"{addr}","hub_name":"hub.example","hub_id":"{id}","ca":"{ca}","crl":"{crl}","cert":"{cert}","key":"{key}"}}}}"#
+                r#"{{"member":{{"hub_addr":"{addr}","hub_name":"{id}.fleet.baft.invalid","hub_id":"{id}","ca":"{ca}","crl":"{crl}","cert":"{cert}","key":"{key}"}}}}"#
             )
         };
         assert!(
@@ -556,6 +564,12 @@ mod tests {
                 .unwrap()
                 .member
                 .is_some()
+        );
+        let invalid_member_tls_name =
+            member("hub-1", "hub.example:18443").replace("hub-1.fleet.baft.invalid", "hub.example");
+        assert!(
+            FleetConfig::parse(&invalid_member_tls_name).is_err(),
+            "Member TLS identity must be derived from hub_id"
         );
         assert!(FleetConfig::parse(&member("Hub_1", "hub.example:18443")).is_err());
         assert!(FleetConfig::parse(&member("hub-1", "no-port")).is_err());
@@ -568,7 +582,7 @@ mod tests {
         let d = tmp("join-config");
         let [ca, crl, cert, key] = files(&d);
         let valid = format!(
-            r#"{{"hub":{{"listen":"127.0.0.1:18443","ca":"{ca}","crl":"{crl}","cert":"{cert}","key":"{key}","join":{{"listen":"0.0.0.0:18444","advertise_host":"hub.example.test","advertise_port":18444,"hub_id":"hub-1","hub_name":"hub.example.test"}}}}}}"#
+            r#"{{"hub":{{"listen":"127.0.0.1:18443","ca":"{ca}","crl":"{crl}","cert":"{cert}","key":"{key}","join":{{"listen":"0.0.0.0:18444","advertise_host":"hub.example.test","advertise_port":18444,"hub_id":"hub-1","hub_name":"hub-1.fleet.baft.invalid"}}}}}}"#
         );
         assert!(
             FleetConfig::parse(&valid).is_ok(),
@@ -578,6 +592,11 @@ mod tests {
         assert!(
             FleetConfig::parse(&zero_port).is_err(),
             "zero Join port must be rejected"
+        );
+        let bad_tls_name = valid.replace("hub-1.fleet.baft.invalid", "hub.example.test");
+        assert!(
+            FleetConfig::parse(&bad_tls_name).is_err(),
+            "Join TLS identity must be derived from hub_id, not the advertised dial host"
         );
         let bad_host = valid.replace("hub.example.test", "not a host");
         assert!(
@@ -592,7 +611,7 @@ mod tests {
         let d = tmp("start");
         let [ca, crl, cert, key] = files(&d);
         let member = format!(
-            r#"{{"member":{{"hub_addr":"127.0.0.1:1","hub_name":"hub.example","hub_id":"hub-1","ca":"{ca}","crl":"{crl}","cert":"{cert}","key":"{key}"}}}}"#
+            r#"{{"member":{{"hub_addr":"127.0.0.1:1","hub_name":"hub-1.fleet.baft.invalid","hub_id":"hub-1","ca":"{ca}","crl":"{crl}","cert":"{cert}","key":"{key}"}}}}"#
         );
         let cfg = FleetConfig::parse(&member).unwrap();
         let ctx = Arc::new(Ctx::with_config(None, "t".repeat(40), None));

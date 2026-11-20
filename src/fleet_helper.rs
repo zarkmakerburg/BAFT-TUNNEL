@@ -288,7 +288,7 @@ fn provision_hub(request: HubProvision<'_>) -> Result<Value> {
     )
     .context("create Hub CSR from the locally generated key")?;
     let csr = String::from_utf8(csr).context("Hub CSR is not UTF-8")?;
-    let cert = crate::fleet_ca::sign_hub(ca_dir, hub_name, dial_san, &csr)?;
+    let cert = crate::fleet_ca::sign_hub(ca_dir, hub_name, &csr)?;
     let mut hub_config = json!({
         "listen": listen_addr.to_string(),
         "ca": ca_dir.join("ca.crt"),
@@ -302,7 +302,7 @@ fn provision_hub(request: HubProvision<'_>) -> Result<Value> {
             "advertise_host": advertised_host,
             "advertise_port": join_listen.port(),
             "hub_id": hub_name,
-            "hub_name": advertised_host
+            "hub_name": crate::fleet_ca::dns_name(hub_name)
         });
     }
     let fleet_config = json!({ "hub": hub_config });
@@ -785,7 +785,11 @@ mod tests {
         assert!(details.contains("TLS Web Server Authentication"));
         assert!(!details.contains("TLS Web Client Authentication"));
         assert!(details.contains("baft-fleet-hub://hub-1.fleet.baft.invalid"));
-        assert!(details.contains("203.0.113.7"));
+        assert!(details.contains("DNS:hub-1.fleet.baft.invalid"));
+        assert!(
+            !details.contains("203.0.113.7"),
+            "external dial address must not be embedded in the Hub certificate"
+        );
 
         let result_file = std::fs::read_to_string(control.join("edge.fleet-result")).unwrap();
         assert!(!result_file.contains("PRIVATE KEY"));
@@ -859,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn hub_provision_derives_join_host_from_dial_san() {
+    fn fleet_hub_provision_separates_advertise_host_from_tls_name() {
         let dir = tmp("hub-join-derived");
         let ca = dir.join("ca");
         crate::fleet_ca::create(&ca, "Test Fleet CA").unwrap();
@@ -885,7 +889,10 @@ mod tests {
         assert_eq!(config["hub"]["join"]["advertise_host"], "hub.example.test");
         assert_eq!(config["hub"]["join"]["advertise_port"], 18444);
         assert_eq!(config["hub"]["join"]["hub_id"], "hub-1");
-        assert_eq!(config["hub"]["join"]["hub_name"], "hub.example.test");
+        assert_eq!(
+            config["hub"]["join"]["hub_name"],
+            "hub-1.fleet.baft.invalid"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

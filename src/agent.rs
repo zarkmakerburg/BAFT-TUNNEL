@@ -4326,7 +4326,7 @@ mod tests {
             host: "join.example.test".into(),
             port: 18444,
             hub_id: "hub-1".into(),
-            hub_name: "hub.example.test".into(),
+            hub_name: "hub-1.fleet.baft.invalid".into(),
             hub_pin: "ab".repeat(32),
         });
         let (status, body) = fleet_enroll_route(&ctx, "offer", br#"{"node_id":"edge-1"}"#);
@@ -4336,7 +4336,7 @@ mod tests {
         assert_eq!(decoded.host, "join.example.test");
         assert_eq!(decoded.port, 18444);
         assert_eq!(decoded.hub_id, "hub-1");
-        assert_eq!(decoded.hub_name, "hub.example.test");
+        assert_eq!(decoded.hub_name, "hub-1.fleet.baft.invalid");
         assert_eq!(decoded.hub_pin, "ab".repeat(32));
         assert_eq!(decoded.node_id, "edge-1");
     }
