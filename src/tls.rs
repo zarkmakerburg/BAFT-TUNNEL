@@ -1347,4 +1347,218 @@ pub(crate) mod tests {
         );
         let _ = fs::remove_dir_all(&dir);
     }
+
+    fn fleet_key_csr(dir: &Path, id: &str) -> (PathBuf, String) {
+        let key_path = dir.join(format!("{id}.key"));
+        let key = crate::pair_ca::run(
+            &["ecparam", "-name", "prime256v1", "-genkey", "-noout"],
+            None,
+        )
+        .unwrap();
+        fs::write(&key_path, key).unwrap();
+        let csr = crate::pair_ca::run(
+            &[
+                "req",
+                "-new",
+                "-key",
+                &key_path.to_string_lossy(),
+                "-subj",
+                &format!("/CN={id}"),
+            ],
+            None,
+        )
+        .unwrap();
+        (key_path, String::from_utf8(csr).unwrap())
+    }
+
+    fn fleet_member_cert_with_dns(ca_dir: &Path, id: &str, csr: &str, dns: &str) -> String {
+        let ext_path = ca_dir.join(format!("{id}.test.ext"));
+        let csr_path = ca_dir.join(format!("{id}.test.csr"));
+        fs::write(
+            &ext_path,
+            format!(
+                "[node_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth,{}\nsubjectAltName=DNS:{dns},URI:{}\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n",
+                crate::fleet::EKU_FLEET_NODE,
+                crate::fleet_ca::node_uri(id),
+            ),
+        )
+        .unwrap();
+        fs::write(&csr_path, csr).unwrap();
+        let cert = crate::pair_ca::run(
+            &[
+                "ca",
+                "-batch",
+                "-notext",
+                "-config",
+                &ca_dir.join("openssl.cnf").to_string_lossy(),
+                "-extfile",
+                &ext_path.to_string_lossy(),
+                "-extensions",
+                "node_ext",
+                "-days",
+                "30",
+                "-in",
+                &csr_path.to_string_lossy(),
+                "-out",
+                "/dev/stdout",
+            ],
+            None,
+        )
+        .unwrap();
+        String::from_utf8(cert).unwrap()
+    }
+
+    async fn fleet_mtls_handshake(
+        ca: &Path,
+        crl: &Path,
+        hub_cert: &Path,
+        hub_key: &Path,
+        member_cert: &Path,
+        member_key: &Path,
+        tls_name: &str,
+    ) -> Result<()> {
+        let acceptor = server_config(ca, crl, hub_cert, hub_key)
+            .context("build standard WebPKI client verifier")?;
+        let client = client_config(ca, crl, member_cert, member_key)
+            .context("build standard WebPKI server verifier")?;
+        let (client_io, server_io) = duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            match timeout(StdDuration::from_secs(5), acceptor.accept(server_io)).await {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(error)) => Err(format!("server handshake: {error:?}")),
+                Err(_) => Err("server handshake timed out".to_owned()),
+            }
+        });
+        // Keep the client stream alive until the server has observed the client's Finished.
+        let client_stream = match timeout(
+            StdDuration::from_secs(5),
+            connector(client).connect(server_name(tls_name)?, client_io),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => Some(stream),
+            Ok(Err(_)) | Err(_) => None,
+        };
+        let server_result = match timeout(StdDuration::from_secs(5), server).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => Err(format!("server task join error: {error}")),
+            Err(_) => Err("server task timed out".to_owned()),
+        };
+        let client_ok = client_stream.is_some();
+        drop(client_stream);
+        if client_ok && server_result.is_ok() {
+            Ok(())
+        } else {
+            anyhow::bail!("client_ok={client_ok}; server={server_result:?}")
+        }
+    }
+
+    #[tokio::test]
+    async fn fleet_webpki_accepts_dns_constrained_fleet_hub_and_member_certificates() {
+        let dir = std::env::temp_dir().join(format!(
+            "baft-fleet-webpki-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let ca_dir = dir.join("fleet-ca");
+        crate::fleet_ca::create(&ca_dir, "BAFT Fleet CA").unwrap();
+        let ca_path = ca_dir.join("ca.crt");
+        let crl_path = ca_dir.join("ca.crl");
+
+        let (hub_key, hub_csr) = fleet_key_csr(&dir, "hub-1");
+        let hub_cert_pem = crate::fleet_ca::sign_hub(&ca_dir, "hub-1", &hub_csr).unwrap();
+        let hub_cert = dir.join("hub.crt");
+        fs::write(&hub_cert, &hub_cert_pem).unwrap();
+
+        let (member_key, member_csr) = fleet_key_csr(&dir, "node-1");
+        let member_cert_pem = crate::fleet_ca::sign(&ca_dir, "node-1", &member_csr).unwrap();
+        let member_cert = dir.join("member.crt");
+        fs::write(&member_cert, &member_cert_pem).unwrap();
+
+        // Both standard WebPKI verifier roles must accept the actual Fleet CA's DNS constraint.
+        let valid_handshake = fleet_mtls_handshake(
+            &ca_path,
+            &crl_path,
+            &hub_cert,
+            &hub_key,
+            &member_cert,
+            &member_key,
+            "hub-1.fleet.baft.invalid",
+        )
+        .await;
+        assert!(
+            valid_handshake.is_ok(),
+            "valid DNS-constrained Hub and Member certificates must complete mTLS: {valid_handshake:?}"
+        );
+        let hub_der = certificates(&hub_cert).unwrap()[0].as_ref().to_vec();
+        let member_der = certificates(&member_cert).unwrap()[0].as_ref().to_vec();
+        crate::fleet_report::verify_hub_identity(&hub_der, "hub-1").unwrap();
+        assert_eq!(
+            crate::fleet_hub::peer_identity(&member_der)
+                .unwrap()
+                .node_id,
+            "node-1"
+        );
+
+        // The WebPKI server verifier rejects the wrong Hub SNI.
+        assert!(
+            fleet_mtls_handshake(
+                &ca_path,
+                &crl_path,
+                &hub_cert,
+                &hub_key,
+                &member_cert,
+                &member_key,
+                "other.fleet.baft.invalid",
+            )
+            .await
+            .is_err(),
+            "wrong Hub SNI must fail closed",
+        );
+
+        // The WebPKI client verifier rejects a leaf whose DNS SAN is outside the CA subtree,
+        // even though its URI application identity is otherwise well-formed.
+        let (outside_key, outside_csr) = fleet_key_csr(&dir, "node-outside");
+        let outside_pem =
+            fleet_member_cert_with_dns(&ca_dir, "node-outside", &outside_csr, "attacker.example");
+        let outside_cert = dir.join("outside-member.crt");
+        fs::write(&outside_cert, outside_pem).unwrap();
+        assert!(
+            fleet_mtls_handshake(
+                &ca_path,
+                &crl_path,
+                &hub_cert,
+                &hub_key,
+                &outside_cert,
+                &outside_key,
+                "hub-1.fleet.baft.invalid",
+            )
+            .await
+            .is_err(),
+            "out-of-namespace DNS SAN must fail WebPKI client authentication",
+        );
+
+        // Revoke the valid Member certificate and ensure the next mTLS handshake fails.
+        let updated_crl = crate::fleet_ca::revoke(&ca_dir, &member_cert_pem).unwrap();
+        fs::write(&crl_path, updated_crl).unwrap();
+        assert!(
+            fleet_mtls_handshake(
+                &ca_path,
+                &crl_path,
+                &hub_cert,
+                &hub_key,
+                &member_cert,
+                &member_key,
+                "hub-1.fleet.baft.invalid",
+            )
+            .await
+            .is_err(),
+            "revoked Member certificate must fail WebPKI client authentication",
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

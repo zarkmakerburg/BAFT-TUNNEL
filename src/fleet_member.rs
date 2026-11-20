@@ -280,6 +280,18 @@ pub(crate) fn publish_bundle(
         .validate()
         .context("Fleet Join response is not a valid frame")?;
     ensure!(response.ok, "Fleet Join request was refused");
+    ensure!(
+        fleet_ca::valid_node_id(&offer.node_id),
+        "invalid Fleet node id in Join offer"
+    );
+    ensure!(
+        fleet_ca::valid_node_id(&offer.hub_id),
+        "invalid Fleet Hub id in Join offer"
+    );
+    ensure!(
+        offer.hub_name == fleet_ca::dns_name(&offer.hub_id),
+        "Fleet Hub TLS identity in Join offer must be derived from hub_id"
+    );
     let cert = response
         .member_certificate_pem
         .as_deref()
@@ -325,15 +337,13 @@ pub(crate) fn publish_bundle(
         subject.trim() == format!("subject=CN={}", offer.node_id),
         "issued certificate is not for this Fleet node id"
     );
-    let san = openssl_stdin(
-        &["x509", "-noout", "-ext", "subjectAltName"],
-        cert.as_bytes(),
-    )
-    .context("read the issued certificate SAN")?;
-    ensure!(
-        san.contains(&format!("URI:{}", node_uri(&offer.node_id))),
-        "issued certificate lacks this node's Fleet URI"
-    );
+    let der = pair_ca::run(&["x509", "-outform", "DER"], Some(cert.as_bytes()))
+        .context("encode the issued member certificate")?;
+    crate::fleet_ca::validate_identity_sans(
+        &der,
+        &fleet_ca::dns_name(&offer.node_id),
+        &node_uri(&offer.node_id),
+    )?;
     let eku = openssl_stdin(
         &["x509", "-noout", "-ext", "extendedKeyUsage"],
         cert.as_bytes(),
@@ -344,9 +354,11 @@ pub(crate) fn publish_bundle(
         "issued certificate is not a fleet-node certificate"
     );
     openssl_stdin(&["crl", "-noout", "-text"], crl.as_bytes()).context("parse the CRL")?;
+    let hub_der = pair_ca::run(&["x509", "-outform", "DER"], Some(hub_cert.as_bytes()))
+        .context("encode the paired Hub certificate")?;
+    crate::fleet_report::verify_hub_identity(&hub_der, &offer.hub_id)
+        .context("paired Hub certificate identity does not match the Join offer")?;
 
-    let der = pair_ca::run(&["x509", "-outform", "DER"], Some(cert.as_bytes()))
-        .context("encode the issued certificate")?;
     let leaf_sha256 = hex::encode(Sha256::digest(&der));
     let generation = paths.generations.join(&leaf_sha256);
     if symlink_metadata_opt(&generation)?.is_some() {
@@ -882,6 +894,61 @@ mod tests {
         ca
     }
 
+    fn issue_hub_certificate(ca_dir: &Path, hub_id: &str) -> String {
+        let key_path = ca_dir.join(format!("{hub_id}.test.key"));
+        let key = openssl(
+            &["ecparam", "-name", "prime256v1", "-genkey", "-noout"],
+            None,
+        );
+        fs::write(&key_path, key).unwrap();
+        let csr = openssl(
+            &[
+                "req",
+                "-new",
+                "-key",
+                &key_path.to_string_lossy(),
+                "-subj",
+                &format!("/CN={hub_id}"),
+            ],
+            None,
+        );
+        fleet_ca::sign_hub(ca_dir, hub_id, &csr).unwrap()
+    }
+
+    fn sign_member_with_dns(ca_dir: &Path, node_id: &str, csr_pem: &str, dns: &str) -> String {
+        let ext_path = ca_dir.join("test-member.ext");
+        let csr_path = ca_dir.join("test-member.csr");
+        fs::write(
+            &ext_path,
+            format!(
+                "[node_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth,{EKU_FLEET_NODE}\nsubjectAltName=DNS:{dns},URI:{}\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n",
+                fleet_ca::node_uri(node_id)
+            ),
+        )
+        .unwrap();
+        fs::write(&csr_path, csr_pem).unwrap();
+        openssl(
+            &[
+                "ca",
+                "-batch",
+                "-notext",
+                "-config",
+                &ca_dir.join("openssl.cnf").to_string_lossy(),
+                "-extfile",
+                &ext_path.to_string_lossy(),
+                "-extensions",
+                "node_ext",
+                "-days",
+                "30",
+                "-in",
+                &csr_path.to_string_lossy(),
+                "-out",
+                "/dev/stdout",
+            ],
+            None,
+        )
+    }
+
     fn fixture(tag: &str) -> (Temp, MemberPaths, PendingJoin, JoinResponse) {
         let tmp = Temp::new(tag);
         let base = tmp.base();
@@ -896,7 +963,7 @@ mod tests {
             member_certificate_pem: Some(cert),
             ca_certificate_pem: Some(read("ca.crt")),
             crl_pem: Some(read("ca.crl")),
-            hub_certificate_pem: Some(read("ca.crt")),
+            hub_certificate_pem: Some(issue_hub_certificate(&ca_dir, &o.hub_id)),
             reason: None,
         };
         (tmp, pending.paths.clone(), pending, response)
@@ -1079,6 +1146,31 @@ mod tests {
         let again = publish_bundle(&paths, &pending.offer, &response, &pending.key_path).unwrap();
         assert_eq!(again.dir, bundle.dir);
         assert_eq!(fs::read_dir(&paths.generations).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn publish_bundle_refuses_a_member_certificate_with_mismatched_dns_identity() {
+        let (_tmp, paths, pending, mut response) = fixture("mismatched-dns");
+        let ca_dir = _tmp.path().join("ca");
+        response.member_certificate_pem = Some(sign_member_with_dns(
+            &ca_dir,
+            NODE_ID,
+            &pending.csr_pem,
+            "other.fleet.baft.invalid",
+        ));
+
+        assert!(publish_bundle(&paths, &pending.offer, &response, &pending.key_path).is_err());
+        assert_no_generation(&paths);
+    }
+
+    #[test]
+    fn publish_bundle_refuses_a_hub_certificate_for_another_identity() {
+        let (_tmp, paths, pending, mut response) = fixture("wrong-hub-identity");
+        let ca_dir = _tmp.path().join("ca");
+        response.hub_certificate_pem = Some(issue_hub_certificate(&ca_dir, "hub-2"));
+
+        assert!(publish_bundle(&paths, &pending.offer, &response, &pending.key_path).is_err());
+        assert_no_generation(&paths);
     }
 
     #[test]

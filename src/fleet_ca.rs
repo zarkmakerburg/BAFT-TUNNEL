@@ -2,11 +2,10 @@
 //!
 //! The per-tunnel CA (ADR-0050) signs exactly two fixed node ids, so it cannot enroll a third
 //! panel-added server. This separate CA exists for that one purpose and is bounded by M5:
-//! its key lives only in a root-only directory (the root helper owns it), it is name
-//! DNS-constrained to `.fleet.baft.invalid`, carries the Fleet URI identity as an application
-//! identity, signs only the `fleet-node` profile (the single BAFT
-//! EKU from `fleet::EKU_FLEET_NODE` plus `clientAuth`, F-4), leaves live at most 30 days, and a
-//! CRL is kept. It never signs a tunnel certificate and a tunnel CA never signs a fleet one.
+//! its key lives only in a root-only directory (the root helper owns it). Leaf certificates are
+//! DNS-constrained to `.fleet.baft.invalid`, carry a Fleet URI SAN as the application identity,
+//! use explicit EKU profiles, live at most 30 days, and are checked against the CA CRL. It never
+//! signs a tunnel certificate and a tunnel CA never signs a fleet one.
 //! Uses `/usr/bin/openssl` through `pair_ca`, so no crypto dependency is added.
 
 #![allow(dead_code)] // wired by the root helper in the enrollment slice
@@ -21,7 +20,7 @@ use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 
 use crate::fleet::{EKU_FLEET_HUB, EKU_FLEET_NODE};
-use crate::pair_ca::{check_csr, run, validate_san, write_private};
+use crate::pair_ca::{check_csr, run, write_private};
 
 /// M5: at most 30 days.
 pub const LEAF_DAYS: u32 = 30;
@@ -230,6 +229,54 @@ pub fn sign(dir: &Path, node_id: &str, csr_pem: &str) -> Result<String> {
 /// The URI name a fleet-hub certificate carries (F-2); members check it after the chain.
 pub fn hub_uri(hub_name: &str) -> String {
     format!("baft-fleet-hub://{hub_name}.{DOMAIN}")
+}
+
+/// Require the exact paired DNS and URI identities on a Fleet leaf. No other SAN entry, duplicate
+/// SAN extension, missing name or mismatched identity is accepted. The DNS name is constrained
+/// by the CA for standard WebPKI; the URI remains the canonical Fleet application identity.
+pub(crate) fn validate_identity_sans(
+    leaf_der: &[u8],
+    expected_dns: &str,
+    expected_uri: &str,
+) -> Result<()> {
+    use x509_parser::extensions::GeneralName;
+
+    let (rest, cert) = x509_parser::parse_x509_certificate(leaf_der)
+        .map_err(|_| anyhow::anyhow!("Fleet certificate is not valid X.509 DER"))?;
+    ensure!(rest.is_empty(), "Fleet certificate has trailing DER data");
+    let san_extensions = cert
+        .extensions()
+        .iter()
+        .filter(|extension| extension.oid.to_id_string() == "2.5.29.17")
+        .count();
+    ensure!(
+        san_extensions == 1,
+        "Fleet certificate must contain exactly one SAN extension"
+    );
+    let san = cert
+        .subject_alternative_name()
+        .context("parse Fleet certificate subjectAltName")?
+        .context("Fleet certificate has no subjectAltName")?;
+    let mut dns_count = 0usize;
+    let mut uri_count = 0usize;
+    for name in &san.value.general_names {
+        match name {
+            GeneralName::DNSName(dns) if *dns == expected_dns => dns_count += 1,
+            GeneralName::URI(uri) if *uri == expected_uri => uri_count += 1,
+            _ => anyhow::bail!(
+                "Fleet certificate contains a missing, duplicate, mismatched or unexpected SAN entry"
+            ),
+        }
+    }
+    ensure!(
+        dns_count == 1,
+        "Fleet certificate must contain exactly one expected DNS SAN"
+    );
+    ensure!(
+        uri_count == 1,
+        "Fleet certificate must contain exactly one expected URI SAN"
+    );
+    Ok(())
 }
 
 /// Sign the `fleet-hub` server certificate (F-2): `serverAuth` plus the fleet-hub EKU only (never

@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 use crate::fleet::{self, Hub, PeerCert, Reject};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -80,13 +80,15 @@ pub fn peer_identity(leaf_der: &[u8]) -> Result<Identity> {
         }
     }
     let node_id = node_id.context("client certificate has no node identity")?;
-    if !(1..=63).contains(&node_id.len())
-        || !node_id
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-    {
-        bail!("client certificate node id is not [a-z0-9-]{{1,63}}");
-    }
+    ensure!(
+        crate::fleet_ca::valid_node_id(node_id),
+        "client certificate node id is invalid"
+    );
+    crate::fleet_ca::validate_identity_sans(
+        leaf_der,
+        &crate::fleet_ca::dns_name(node_id),
+        &crate::fleet_ca::node_uri(node_id),
+    )?;
     let eku = cert
         .extended_key_usage()
         .context("parse client certificate extended key usage")?
@@ -293,12 +295,13 @@ mod tests {
         ExtendedKeyUsagePurpose::Other(s.split('.').map(|p| p.parse().unwrap()).collect())
     }
 
-    /// A client certificate with exactly the given private EKUs (plus clientAuth, which the
-    /// TLS verifier needs) and the given node URI.
-    fn client_cert(
+    /// A client certificate with caller-selected DNS and URI SANs for strict identity tests.
+    fn client_cert_with_names(
         dir: &Path,
         name: &str,
         node: &str,
+        dns_names: &[&str],
+        uri_names: &[&str],
         ekus: &[&str],
         issuer: &rcgen::Issuer<'static, KeyPair>,
     ) -> (PathBuf, PathBuf) {
@@ -311,9 +314,16 @@ mod tests {
         usages.extend(ekus.iter().map(|e| oid(e)));
         p.extended_key_usages = usages;
         p.use_authority_key_identifier_extension = true;
-        p.subject_alt_names.push(SanType::URI(
-            Ia5String::try_from(format!("baft-fleet://{node}.fleet.baft.invalid")).unwrap(),
-        ));
+        for dns in dns_names {
+            p.subject_alt_names.push(SanType::DnsName(
+                Ia5String::try_from((*dns).to_owned()).unwrap(),
+            ));
+        }
+        for uri in uri_names {
+            p.subject_alt_names.push(SanType::URI(
+                Ia5String::try_from((*uri).to_owned()).unwrap(),
+            ));
+        }
         let key = KeyPair::generate().unwrap();
         let cert = p.signed_by(&key, issuer).unwrap();
         let (c, k) = (
@@ -323,6 +333,18 @@ mod tests {
         std::fs::write(&c, cert.pem()).unwrap();
         std::fs::write(&k, key.serialize_pem()).unwrap();
         (c, k)
+    }
+
+    fn client_cert(
+        dir: &Path,
+        name: &str,
+        node: &str,
+        ekus: &[&str],
+        issuer: &rcgen::Issuer<'static, KeyPair>,
+    ) -> (PathBuf, PathBuf) {
+        let dns = format!("{node}.fleet.baft.invalid");
+        let uri = format!("baft-fleet://{node}.fleet.baft.invalid");
+        client_cert_with_names(dir, name, node, &[&dns], &[&uri], ekus, issuer)
     }
 
     fn der_of(cert_pem: &Path) -> Vec<u8> {
@@ -339,6 +361,49 @@ mod tests {
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn fleet_identity_rejects_mismatched_dns_and_uri_sans() {
+        let d = tmp("strict-san");
+        let ca = crate::tls::tests::make_ca(&d, "ca");
+        let expected_dns = "node-a.fleet.baft.invalid";
+        let expected_uri = "baft-fleet://node-a.fleet.baft.invalid";
+        let cases: [(&str, &[&str], &[&str]); 5] = [
+            ("missing-dns", &[], &[expected_uri]),
+            ("wrong-dns", &["other.fleet.baft.invalid"], &[expected_uri]),
+            (
+                "wrong-uri",
+                &[expected_dns],
+                &["baft-fleet://other.fleet.baft.invalid"],
+            ),
+            (
+                "duplicate-dns",
+                &[expected_dns, expected_dns],
+                &[expected_uri],
+            ),
+            (
+                "duplicate-uri",
+                &[expected_dns],
+                &[expected_uri, expected_uri],
+            ),
+        ];
+        for (tag, dns_names, uri_names) in cases {
+            let (cert, _) = client_cert_with_names(
+                &d,
+                tag,
+                "node-a",
+                dns_names,
+                uri_names,
+                &[EKU_FLEET_NODE],
+                &ca.issuer,
+            );
+            assert!(
+                peer_identity(&der_of(&cert)).is_err(),
+                "{tag} must be rejected"
+            );
+        }
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

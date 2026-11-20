@@ -421,8 +421,6 @@ fn server_name_matches(server_name: &ServerName<'_>, expected: &str) -> bool {
 /// The exact pin is the bootstrap trust anchor; CA/CRL are deliberately delivered later over this
 /// authenticated session and are used for the persistent mandatory-mTLS Report connection.
 fn verify_hub_tls_identity(leaf_der: &[u8], hub_id: &str, hub_name: &str, now: u64) -> Result<()> {
-    use x509_parser::extensions::GeneralName;
-
     let (remaining, cert) = x509_parser::parse_x509_certificate(leaf_der)
         .map_err(|error| anyhow::anyhow!("parse pinned Fleet Hub certificate: {error}"))?;
     ensure!(
@@ -465,47 +463,13 @@ fn verify_hub_tls_identity(leaf_der: &[u8], hub_id: &str, hub_name: &str, now: u
             && !eku.value.ocsp_signing,
         "Fleet Hub certificate must be serverAuth-only outside its Fleet Hub EKU"
     );
+    ensure!(
+        hub_name == crate::fleet_ca::dns_name(hub_id),
+        "Fleet Hub TLS identity must be derived from hub_id"
+    );
     crate::fleet_report::verify_hub_identity(leaf_der, hub_id)?;
 
-    let expected_uri = crate::fleet_ca::hub_uri(hub_id);
-    let expected_ip = hub_name.parse::<IpAddr>().ok();
-    let san = cert
-        .subject_alternative_name()?
-        .context("Fleet Hub certificate lacks subjectAltName")?;
-    let mut uri_count = 0usize;
-    let mut dial_name_count = 0usize;
-    for name in &san.value.general_names {
-        match name {
-            GeneralName::URI(uri) if *uri == expected_uri => uri_count += 1,
-            GeneralName::DNSName(dns)
-                if expected_ip.is_none() && dns.eq_ignore_ascii_case(hub_name) =>
-            {
-                dial_name_count += 1;
-            }
-            GeneralName::IPAddress(bytes)
-                if expected_ip.is_some_and(|ip| ip_san_matches(bytes, ip)) =>
-            {
-                dial_name_count += 1;
-            }
-            _ => bail!("Fleet Hub certificate contains an unexpected SAN entry"),
-        }
-    }
-    ensure!(
-        uri_count == 1,
-        "Fleet Hub certificate must contain exactly one expected URI SAN"
-    );
-    ensure!(
-        dial_name_count == 1,
-        "Fleet Hub certificate must contain exactly one DNS/IP SAN matching hub_name"
-    );
     Ok(())
-}
-
-fn ip_san_matches(bytes: &[u8], expected: IpAddr) -> bool {
-    match expected {
-        IpAddr::V4(ip) => bytes == ip.octets().as_slice(),
-        IpAddr::V6(ip) => bytes == ip.octets().as_slice(),
-    }
 }
 
 /// Build a TLS 1.3 client connector whose bootstrap trust anchor is the exact Hub leaf pin.
