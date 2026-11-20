@@ -276,46 +276,84 @@ fn unix_now() -> u64 {
 /// Failures to bind or load certificates are returned so the unit fails visibly instead of
 /// running without the Fleet role the operator configured.
 pub async fn start(ctx: Arc<Ctx>, cfg: FleetConfig, instance: Option<&str>) -> Result<()> {
+    // Validate and prepare every configured role before spawning any task. A bad Join bind,
+    // certificate, or member identity must not leave an already-running Hub behind.
+    let FleetConfig { hub, member } = cfg;
+    let member_config = if let Some(m) = member {
+        let instance = instance.context("a Fleet member needs the agent's --instance")?;
+        crate::tls::client_config(&m.ca, &m.crl, &m.cert, &m.key)
+            .context("validate Fleet member TLS material")?;
+        Some(ReporterConfig {
+            hub_addr: m.hub_addr,
+            hub_name: m.hub_name,
+            hub_id: m.hub_id,
+            ca: m.ca,
+            crl: m.crl,
+            cert: m.cert,
+            key: m.key,
+            instance: instance.to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+        })
+    } else {
+        None
+    };
+
     // The tasks live as long as the agent process; shutdown is the process exit.
     let (_stop, rx) = watch::channel(false);
     std::mem::forget(_stop);
-    if let Some(h) = cfg.hub {
+
+    if let Some(h) = hub {
         let hub_key = resolve_key_source(h.key.as_deref(), h.key_credential.as_deref())?;
-        let acceptor = Arc::new(crate::tls::ReloadingAcceptor::new(
+        let hub_acceptor = Arc::new(crate::tls::ReloadingAcceptor::new(
             &h.ca, &h.crl, &h.cert, &hub_key,
         )?);
-        let listener = TcpListener::bind(&h.listen)
+        let hub_listener = TcpListener::bind(&h.listen)
             .await
             .with_context(|| format!("cannot bind fleet hub on {}", h.listen))?;
-        let bound = listener.local_addr()?;
+        let hub_bound = hub_listener.local_addr()?;
+
+        // Prepare Join completely before starting either listener.
+        let join_prepared = if let Some(join) = h.join {
+            let listener = TcpListener::bind(join.listen)
+                .await
+                .with_context(|| format!("cannot bind Fleet Join listener on {}", join.listen))?;
+            let bound = listener.local_addr()?;
+            ensure!(
+                bound.port() == join.advertise_port,
+                "Fleet Join listener bound port differs from advertised port"
+            );
+            let acceptor = crate::tls::fleet_join_acceptor(&h.cert, &hub_key)?;
+            Some((
+                listener,
+                acceptor,
+                bound,
+                h.ca.clone(),
+                h.crl.clone(),
+                h.cert.clone(),
+            ))
+        } else {
+            None
+        };
+
+        // Publish the bound address only after all startup validation and binds have succeeded.
         *ctx.fleet_hub_listen
             .lock()
-            .map_err(|_| anyhow::anyhow!("Fleet Hub listener state is poisoned"))? = Some(bound);
+            .map_err(|_| anyhow::anyhow!("Fleet Hub listener state is poisoned"))? =
+            Some(hub_bound);
+
         eprintln!(
             "Fleet hub listening on {} (mutual TLS, read-only)",
             h.listen
         );
         tokio::spawn(crate::fleet_hub::serve(
-            listener,
-            acceptor,
+            hub_listener,
+            hub_acceptor,
             ctx.clone(),
             rx.clone(),
         ));
 
-        if let Some(join) = h.join {
-            let join_listener = TcpListener::bind(join.listen)
-                .await
-                .with_context(|| format!("cannot bind Fleet Join listener on {}", join.listen))?;
-            let join_bound = join_listener.local_addr()?;
-            ensure!(
-                join_bound.port() == join.advertise_port,
-                "Fleet Join listener bound port differs from advertised port"
-            );
-            let join_acceptor = crate::tls::fleet_join_acceptor(&h.cert, &hub_key)?;
+        if let Some((join_listener, join_acceptor, join_bound, ca, crl, hub_cert)) = join_prepared {
             let admission_ctx = ctx.clone();
-            let ca = h.ca.clone();
-            let crl = h.crl.clone();
-            let hub_cert = h.cert.clone();
             let admit = move |request, _peer| {
                 let context = admission_ctx.clone();
                 let ca = ca.clone();
@@ -353,21 +391,8 @@ pub async fn start(ctx: Arc<Ctx>, cfg: FleetConfig, instance: Option<&str>) -> R
             ));
         }
     }
-    if let Some(m) = cfg.member {
-        let instance = instance.context("a Fleet member needs the agent's --instance")?;
-        // Fail now if the material does not load, not at the first report.
-        crate::tls::client_config(&m.ca, &m.crl, &m.cert, &m.key)?;
-        let rc = ReporterConfig {
-            hub_addr: m.hub_addr,
-            hub_name: m.hub_name,
-            hub_id: m.hub_id,
-            ca: m.ca,
-            crl: m.crl,
-            cert: m.cert,
-            key: m.key,
-            instance: instance.to_owned(),
-            version: env!("CARGO_PKG_VERSION").to_owned(),
-        };
+
+    if let Some(rc) = member_config {
         eprintln!(
             "Fleet member reporting to {} (outbound mutual TLS)",
             rc.hub_addr
