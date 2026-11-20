@@ -4309,6 +4309,38 @@ mod tests {
 
     const TOKEN: &str = "tttttttttttttttttttttttttttttttttttttttt";
 
+    #[test]
+    fn fleet_offer_unavailable_without_join_listener() {
+        let ctx = Ctx::with_config(None, TOKEN.to_string(), None);
+        let (status, body) = fleet_enroll_route(&ctx, "offer", br#"{"node_id":"edge-1"}"#);
+        assert_eq!(status, 503);
+        assert!(body["error"].as_str().unwrap().contains("Join listener"));
+        let (_, listed) = fleet_enroll_route(&ctx, "list", b"");
+        assert!(listed["offers"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn fleet_offer_contains_configured_endpoint_and_hub_pin() {
+        let ctx = Ctx::with_config(None, TOKEN.to_string(), None);
+        *ctx.fleet_join_offer.lock().unwrap() = Some(crate::fleet_run::JoinOfferContext {
+            host: "join.example.test".into(),
+            port: 18444,
+            hub_id: "hub-1".into(),
+            hub_name: "hub.example.test".into(),
+            hub_pin: "ab".repeat(32),
+        });
+        let (status, body) = fleet_enroll_route(&ctx, "offer", br#"{"node_id":"edge-1"}"#);
+        assert_eq!(status, 200);
+        let code = body["join_offer"].as_str().unwrap();
+        let decoded = crate::fleet_join::JoinOffer::decode(code, unix_now()).unwrap();
+        assert_eq!(decoded.host, "join.example.test");
+        assert_eq!(decoded.port, 18444);
+        assert_eq!(decoded.hub_id, "hub-1");
+        assert_eq!(decoded.hub_name, "hub.example.test");
+        assert_eq!(decoded.hub_pin, "ab".repeat(32));
+        assert_eq!(decoded.node_id, "edge-1");
+    }
+
     #[tokio::test]
     async fn fleet_hub_provision_route_requires_valid_request_and_bound_helper() {
         let unbound = Ctx::with_config(None, TOKEN.to_string(), None);
