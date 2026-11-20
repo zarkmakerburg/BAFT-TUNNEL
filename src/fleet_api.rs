@@ -10,6 +10,7 @@
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::sync::Mutex;
 
 use crate::fleet_enroll::{Enroller, Error, State};
 
@@ -38,6 +39,7 @@ fn state_name(s: State) -> &'static str {
     match s {
         State::Offered => "waiting-for-node",
         State::Submitted => "needs-confirmation",
+        State::Signing => "signing",
         State::Issued => "issued-unconfirmed",
         State::AwaitingReport => "awaiting-first-report",
         State::Enrolled => "enrolled",
@@ -110,6 +112,34 @@ pub fn confirm(e: &mut Enroller, body: &[u8], now: u64, sign: Option<&Signer>) -
     }
 }
 
+/// Confirm without holding the shared Enroller mutex across the privileged helper call.
+pub fn confirm_shared(
+    e: &Mutex<Enroller>,
+    body: &[u8],
+    now: u64,
+    sign: Option<&Signer>,
+) -> (u16, Value) {
+    let Ok(req) = serde_json::from_slice::<ConfirmReq>(body) else {
+        return (400, json!({"error": "invalid request"}));
+    };
+    let Some(sign) = sign else {
+        return fail(Error::Sign);
+    };
+    let request = {
+        let mut guard = e.lock().unwrap_or_else(|poison| poison.into_inner());
+        match guard.begin_confirm(&req.id, &req.fingerprint, now) {
+            Ok(value) => value,
+            Err(error) => return fail(error),
+        }
+    };
+    let signed = sign(&request.node_id, &request.csr_pem);
+    let mut guard = e.lock().unwrap_or_else(|poison| poison.into_inner());
+    match guard.finish_confirm(&request.id, now, signed) {
+        Ok(()) => (202, json!({"state": "issued-unconfirmed"})),
+        Err(error) => fail(error),
+    }
+}
+
 pub fn deny(e: &mut Enroller, body: &[u8]) -> (u16, Value) {
     let Ok(req) = serde_json::from_slice::<DenyReq>(body) else {
         return (400, json!({"error": "invalid request"}));
@@ -124,7 +154,7 @@ pub fn deny(e: &mut Enroller, body: &[u8]) -> (u16, Value) {
 mod tests {
     use super::*;
 
-    fn csr(node_id: &str) -> String {
+    fn csr(node_id: &str, challenge: &str) -> String {
         use std::fs;
         let dir = std::env::temp_dir().join(format!("fleet-api-csr-{:x}", rand::random::<u64>()));
         fs::create_dir_all(&dir).unwrap();
@@ -141,14 +171,16 @@ mod tests {
         .unwrap();
         let key_path = dir.join("node.key");
         crate::pair_ca::write_private(&key_path, &key, 0o600).unwrap();
+        let config_path = dir.join("request.cnf");
+        fs::write(&config_path, format!("[ req ]\nprompt = no\ndistinguished_name = dn\nattributes = req_attributes\n[ dn ]\nCN = {node_id}\n[ req_attributes ]\nchallengePassword = {challenge}\n")).unwrap();
         let request = crate::pair_ca::run(
             &[
                 "req",
                 "-new",
                 "-key",
                 &key_path.to_string_lossy(),
-                "-subj",
-                &format!("/CN={node_id}"),
+                "-config",
+                &config_path.to_string_lossy(),
             ],
             None,
         )
@@ -169,7 +201,7 @@ mod tests {
         );
         let listed = list(&mut e, 11).1.to_string();
         assert!(!listed.contains(&token) && !listed.contains(&nonce));
-        let request = csr("edge-1");
+        let request = csr("edge-1", &nonce);
         let fp = crate::fleet_ca::validate_node_csr("edge-1", &request).unwrap();
         e.submit(&id, "edge-1", &token, &nonce, &request, 12)
             .unwrap();
@@ -206,7 +238,7 @@ mod tests {
                 value["nonce"].as_str().unwrap().to_owned(),
             )
         };
-        let request = csr("edge-1");
+        let request = csr("edge-1", &nonce);
         let fingerprint = crate::fleet_ca::validate_node_csr("edge-1", &request).unwrap();
         enroller
             .lock()
@@ -221,9 +253,8 @@ mod tests {
             );
             Ok("CERT".to_owned())
         };
-        let mut guard = enroller.lock().unwrap();
         assert_eq!(
-            confirm(&mut guard, body.as_bytes(), 12, Some(&signer)).0,
+            confirm_shared(&enroller, body.as_bytes(), 12, Some(&signer)).0,
             202
         );
     }

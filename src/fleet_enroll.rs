@@ -44,6 +44,7 @@ pub enum Error {
 pub enum State {
     Offered,
     Submitted,
+    Signing,
     Issued,
     AwaitingReport,
     Enrolled,
@@ -61,6 +62,7 @@ struct Offer {
     fingerprint: Option<String>,
     certificate: Option<String>,
     delivered_fingerprint: Option<String>,
+    submit_digest: Option<[u8; 32]>,
 }
 
 /// What the operator hands to the new server (shown once).
@@ -80,6 +82,14 @@ pub struct Pending {
     pub state: State,
     pub fingerprint: Option<String>,
     pub expires: u64,
+}
+
+/// Immutable work handed to the privileged signer after the Enroller lock is released.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignRequest {
+    pub id: String,
+    pub node_id: String,
+    pub csr_pem: String,
 }
 
 #[derive(Default)]
@@ -157,6 +167,7 @@ impl Enroller {
                 fingerprint: None,
                 certificate: None,
                 delivered_fingerprint: None,
+                submit_digest: None,
             },
         );
         Ok(Issued {
@@ -181,6 +192,20 @@ impl Enroller {
         now: u64,
     ) -> Result<(), Error> {
         let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
+        if o.state == State::Submitted {
+            let digest: [u8; 32] = Sha256::digest(csr_pem.as_bytes()).into();
+            return if o.expires >= now
+                && ct_eq(&hash(token), &o.token_hash)
+                && ct_eq(nonce.as_bytes(), o.nonce.as_bytes())
+                && node_id == o.node_id
+                && o.submit_digest
+                    .is_some_and(|stored| ct_eq(&stored, &digest))
+            {
+                Ok(())
+            } else {
+                Err(Error::WrongState)
+            };
+        }
         if o.state != State::Offered {
             return Err(Error::WrongState);
         }
@@ -203,14 +228,16 @@ impl Enroller {
             o.state = State::Closed;
             return Err(Error::BadCsr);
         }
-        let fingerprint = match crate::fleet_ca::validate_node_csr(node_id, csr_pem) {
-            Ok(value) => value,
-            Err(_) => {
-                o.state = State::Closed;
-                return Err(Error::BadCsr);
-            }
-        };
+        let fingerprint =
+            match crate::fleet_ca::validate_node_csr_with_challenge(node_id, csr_pem, nonce) {
+                Ok(value) => value,
+                Err(_) => {
+                    o.state = State::Closed;
+                    return Err(Error::BadCsr);
+                }
+            };
         o.csr = Some(csr_pem.to_string());
+        o.submit_digest = Some(Sha256::digest(csr_pem.as_bytes()).into());
         o.fingerprint = Some(fingerprint);
         o.state = State::Submitted;
         Ok(())
@@ -242,15 +269,14 @@ impl Enroller {
         v
     }
 
-    /// The operator confirms the fingerprint it compared out of band; `sign(node_id, csr)` then
-    /// issues the certificate. A mismatch is an operator typo and may be retried until expiry.
-    pub fn confirm(
+    /// Atomically reserves a submitted offer for signing. The caller must release its mutex
+    /// before invoking the privileged helper.
+    pub fn begin_confirm(
         &mut self,
         id: &str,
         fingerprint: &str,
         now: u64,
-        sign: impl FnOnce(&str, &str) -> Result<String, Error>,
-    ) -> Result<(), Error> {
+    ) -> Result<SignRequest, Error> {
         let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
         if o.state != State::Submitted {
             return Err(Error::WrongState);
@@ -264,19 +290,60 @@ impl Enroller {
         if !ct_eq(want.as_bytes(), got.as_bytes()) {
             return Err(Error::FingerprintMismatch);
         }
-        let csr = o.csr.take().unwrap_or_default();
-        match sign(&o.node_id, &csr) {
+        let request = SignRequest {
+            id: id.to_owned(),
+            node_id: o.node_id.clone(),
+            csr_pem: o.csr.clone().ok_or(Error::WrongState)?,
+        };
+        o.state = State::Signing;
+        Ok(request)
+    }
+
+    /// Commits a signer result only if the reservation is still live. Deny/expiry wins over a
+    /// late helper result, so an in-flight signature can never resurrect a closed offer.
+    pub fn finish_confirm(
+        &mut self,
+        id: &str,
+        now: u64,
+        result: Result<String, Error>,
+    ) -> Result<(), Error> {
+        let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
+        if o.state != State::Signing {
+            return Err(Error::WrongState);
+        }
+        if now > o.expires {
+            o.state = State::Closed;
+            o.csr = None;
+            return Err(Error::Expired);
+        }
+        match result {
             Ok(certificate) => {
                 o.certificate = Some(certificate);
+                o.csr = None;
                 o.state = State::Issued;
                 Ok(())
             }
             Err(error) => {
                 o.state = State::Closed;
+                o.csr = None;
                 o.certificate = None;
                 Err(error)
             }
         }
+    }
+
+    /// Compatibility helper for callers that already own an exclusive Enroller borrow. Runtime
+    /// API paths use begin/finish around the helper without holding the mutex.
+    pub fn confirm(
+        &mut self,
+        id: &str,
+        fingerprint: &str,
+        now: u64,
+        sign: impl FnOnce(&str, &str) -> Result<String, Error>,
+    ) -> Result<(), Error> {
+        let request = self.begin_confirm(id, fingerprint, now)?;
+        let result = sign(&request.node_id, &request.csr_pem);
+        self.finish_confirm(id, now, result)
     }
 
     /// The Join TLS session retrieves the public certificate; the operator API never receives it.

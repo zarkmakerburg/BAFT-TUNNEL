@@ -3664,26 +3664,30 @@ async fn fleet_hub_restart_route(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
 /// (the CA key never reaches the agent, M5); without an instance or helper `confirm` answers 503.
 fn fleet_enroll_route(ctx: &Ctx, op: &str, body: &[u8]) -> (u16, Value) {
     let now = unix_now();
+    if op == "confirm" {
+        let signer = ctx.instance.as_deref().map(|name| {
+            |node_id: &str, csr: &str| {
+                crate::fleet_helper::sign(
+                    &ctx.pair_dir,
+                    name,
+                    node_id,
+                    csr,
+                    std::time::Duration::from_secs(8),
+                )
+                .map_err(|_| crate::fleet_enroll::Error::Sign)
+            }
+        });
+        return match signer.as_ref() {
+            Some(sign) => {
+                crate::fleet_api::confirm_shared(&ctx.fleet_enroll, body, now, Some(sign))
+            }
+            None => crate::fleet_api::confirm_shared(&ctx.fleet_enroll, body, now, None),
+        };
+    }
     let mut e = ctx.fleet_enroll.lock().unwrap_or_else(|e| e.into_inner());
     match op {
         "list" => crate::fleet_api::list(&mut e, now),
         "offer" => crate::fleet_api::offer(&mut e, body, now),
-        "confirm" => match ctx.instance.as_deref() {
-            Some(name) => {
-                let signer = |node_id: &str, csr: &str| {
-                    crate::fleet_helper::sign(
-                        &ctx.pair_dir,
-                        name,
-                        node_id,
-                        csr,
-                        std::time::Duration::from_secs(8),
-                    )
-                    .map_err(|_| crate::fleet_enroll::Error::Sign)
-                };
-                crate::fleet_api::confirm(&mut e, body, now, Some(&signer))
-            }
-            None => crate::fleet_api::confirm(&mut e, body, now, None),
-        },
         _ => crate::fleet_api::deny(&mut e, body),
     }
 }
