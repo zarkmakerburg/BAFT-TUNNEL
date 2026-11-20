@@ -192,7 +192,7 @@ impl Enroller {
         now: u64,
     ) -> Result<(), Error> {
         let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
-        if o.state == State::Submitted {
+        if matches!(o.state, State::Submitted | State::Issued) {
             let digest: [u8; 32] = Sha256::digest(csr_pem.as_bytes()).into();
             return if o.expires >= now
                 && ct_eq(&hash(token), &o.token_hash)
@@ -703,6 +703,48 @@ mod tests {
                 .unwrap()
                 .state,
             State::Submitted
+        );
+    }
+
+    #[test]
+    fn enroller_submit_allows_exact_retry_after_operator_issuance() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-1", 100).unwrap();
+        let original = csr("edge-1", Some(&issued.nonce));
+        e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &original,
+            101,
+        )
+        .unwrap();
+        let fingerprint = e.pending(102)[0].fingerprint.clone().unwrap();
+        e.confirm(&issued.id, &fingerprint, 103, ok_sign).unwrap();
+        assert_eq!(
+            e.submit(
+                &issued.id,
+                &issued.node_id,
+                &issued.token,
+                &issued.nonce,
+                &original,
+                104
+            ),
+            Ok(()),
+            "the exact CSR retry remains idempotent after operator issuance"
+        );
+        let changed = csr("edge-1", Some(&issued.nonce));
+        assert_eq!(
+            e.submit(
+                &issued.id,
+                &issued.node_id,
+                &issued.token,
+                &issued.nonce,
+                &changed,
+                105
+            ),
+            Err(Error::WrongState)
         );
     }
 
