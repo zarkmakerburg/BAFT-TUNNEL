@@ -988,6 +988,80 @@ mod tests {
     }
 
     #[test]
+    fn join_admission_redelivers_the_same_bundle_after_ack() {
+        let mut enroller = Enroller::default();
+        let issued = enroller.offer("edge-admission-retry", 100).unwrap();
+        let request_csr = csr(&issued.node_id, Some(&issued.nonce));
+        enroller
+            .submit(
+                &issued.id,
+                &issued.node_id,
+                &issued.token,
+                &issued.nonce,
+                &request_csr,
+                101,
+            )
+            .unwrap();
+        let fingerprint = enroller.pending(102)[0].fingerprint.clone().unwrap();
+        let certificate = test_support::certificate_pem();
+        enroller
+            .confirm(
+                &issued.id,
+                &fingerprint,
+                103,
+                |_, _| Ok(certificate.clone()),
+            )
+            .unwrap();
+        enroller.mark_delivered(&issued.id, 104).unwrap();
+
+        let dir =
+            std::env::temp_dir().join(format!("fleet-admission-retry-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ca = dir.join("ca.pem");
+        let crl = dir.join("ca.crl");
+        let hub = dir.join("hub.pem");
+        std::fs::write(&ca, "CA").unwrap();
+        std::fs::write(&crl, "CRL").unwrap();
+        std::fs::write(&hub, "HUB").unwrap();
+
+        let admission = crate::fleet_run::admit_join_request(
+            &mut enroller,
+            crate::fleet_join::JoinRequest {
+                offer_id: issued.id.clone(),
+                node_id: issued.node_id.clone(),
+                token: issued.token.clone(),
+                nonce: issued.nonce.clone(),
+                csr_pem: request_csr,
+            },
+            105,
+            &ca,
+            &crl,
+            &hub,
+        );
+        match admission {
+            crate::fleet_join::Admission::Deliver { response, .. } => {
+                assert_eq!(
+                    response.member_certificate_pem.as_deref(),
+                    Some(certificate.as_str())
+                );
+                assert_eq!(response.ca_certificate_pem.as_deref(), Some("CA"));
+                assert_eq!(response.crl_pem.as_deref(), Some("CRL"));
+                assert_eq!(response.hub_certificate_pem.as_deref(), Some("HUB"));
+            }
+            crate::fleet_join::Admission::Retry => {
+                panic!("exact AwaitingReport retry must redeliver")
+            }
+            crate::fleet_join::Admission::Close => panic!("live exact retry must not close"),
+        }
+        crate::fleet_run::acknowledge_join_delivery(&mut enroller, &issued.id, 106);
+        assert_eq!(
+            enroller.state_and_expiry(&issued.id).unwrap().0,
+            State::AwaitingReport
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn first_report_must_match_node_and_exact_delivered_certificate() {
         let mut e = Enroller::default();
         let i = e.offer("edge-1", 100).unwrap();
