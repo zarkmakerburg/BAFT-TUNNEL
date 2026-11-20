@@ -75,6 +75,58 @@ ap_wait_state() { # side want_state timeout -> prints the status JSON; fails on 
   done
   echo "timed out waiting for state $want on $side (last state: ${st:-none})" >&2; return 1
 }
+
+ap_pair_file_status() { # side instance -> prints only state and a bounded failure reason (never code/nonce/fingerprint)
+  local side="$1" inst="$2" raw
+  raw="$(ssh_host "$side" "if test -f /run/baft-tunnel/control/$inst.pair-status; then cat /run/baft-tunnel/control/$inst.pair-status; else printf '__MISSING__'; fi" </dev/null)" || return 1
+  python3 -c 'import json,sys
+raw=sys.stdin.read().strip()
+if raw == "__MISSING__":
+    print("missing")
+else:
+    try:
+        value=json.loads(raw)
+        state=value.get("state", "malformed") if isinstance(value,dict) else "malformed"
+        print(state)
+        if state == "failed":
+            reason=str(value.get("reason", "unspecified"))[:240]
+            print("reason="+reason, file=sys.stderr)
+    except (ValueError, TypeError):
+        print("malformed")' <<<"$raw"
+}
+
+ap_pair_failure_diagnostics() { # side instance -> bounded, non-secret failure evidence
+  local side="$1" inst="$2" http
+  echo "--- pairing failure evidence: side=$side instance=$inst ---" >&2
+  echo "helper_status=$(ap_pair_file_status "$side" "$inst" 2>&1 | tr '\n' ' ')" >&2 || true
+  http="$(ssh_host "$side" "curl -sS -o /dev/null -w '%{http_code} bytes=%{size_download}' -H 'Authorization: Bearer \$(cat $AGD/token)' http://127.0.0.1:$AP_AG/v1/pair/status 2>/dev/null || printf 'transport-error'" </dev/null 2>/dev/null || true)"
+  echo "agent_pair_status_http=$http" >&2
+  ssh_host "$side" "systemctl show baft-tunnel-control-pair@$inst.service -p LoadState -p ActiveState -p SubState -p Result -p ExecMainStatus --no-pager 2>/dev/null || true;
+    systemctl show baft-tunnel-control-pair@$inst.path -p LoadState -p ActiveState -p SubState --no-pager 2>/dev/null || true;
+    journalctl -u baft-tunnel-control-pair@$inst.service -n 20 --no-pager -o cat 2>/dev/null || true" >&2 || true
+}
+
+ap_wait_pair_file_done() { # side instance timeout -> waits for durable helper status, independent of Agent setup/runtime mode
+  local side="$1" inst="$2" limit="$3" t0=$SECONDS state=missing
+  while (( SECONDS - t0 < limit )); do
+    state="$(ap_pair_file_status "$side" "$inst" 2>/dev/null || printf 'unreadable')"
+    case "$state" in
+      done) return 0 ;;
+      failed)
+        echo "pair helper failed on $side ($inst)" >&2
+        ap_pair_failure_diagnostics "$side" "$inst"
+        return 1
+        ;;
+      missing|idle|working|waiting|approval|unreadable|malformed) ;;
+      *) echo "unexpected pair helper state on $side ($inst): $state" >&2 ;;
+    esac
+    sleep 1
+  done
+  echo "timed out waiting for helper status done on $side ($inst); last helper state: $state" >&2
+  ap_pair_failure_diagnostics "$side" "$inst"
+  return 1
+}
+
 ap_cfg_check() { # side instance expected_python_assertion
   # the assertion travels on stdin: it contains single quotes that would break a quoted ssh command
   { printf 'import json\nc=json.load(open("%s"))\n' "$EB/$2.json"; printf '%s\n' "${3//;/$'\n'}"; } | ssh_host "$1" "python3 -" &&
@@ -143,16 +195,10 @@ ap_round() { # name direction listener_side joiner_side joiner_location
   [[ "$(ap_api "$ls" POST /v1/pair/approve <<<'{"approve":true,"nonce":"wrong"}' | apjf error)" == *"no matching approval"* ]] || { echo "approval with a wrong nonce was not refused" >&2; return 1; }
   [[ "$(ap_api "$ls" GET /v1/pair/status </dev/null | apjf state)" == approval ]] || { echo "wrong-nonce approval changed the state" >&2; return 1; }
   [[ "$(ap_api "$ls" POST /v1/pair/approve <<<"{\"approve\":true,\"nonce\":\"$nonce\"}" | apjf ok)" == True ]] || { echo "approval was not taken" >&2; return 1; }
-  ap_wait_state "$ls" done 150 >/dev/null || return 1
-  # the joiner agent exits and restarts once the configuration appears (setup mode), so its final state is read
-  # from the helper status file rather than through the agent
-  local t0=$SECONDS jst=""
-  while (( SECONDS - t0 < 150 )); do
-    jst="$(ssh_host "$js" "cat /run/baft-tunnel/control/$ji.pair-status 2>/dev/null" </dev/null | apjf state)"
-    [[ "$jst" == done || "$jst" == failed ]] && break
-    sleep 1
-  done
-  [[ "$jst" == done ]] || { echo "joiner pairing did not finish (state: ${jst:-none})" >&2; return 1; }
+  # Both agents may exit setup mode as soon as the helper writes config. The API route is setup-only,
+  # so completion is read from each durable root-helper status file, not from /v1/pair/status.
+  ap_wait_pair_file_done "$ls" "$li" 150 || return 1
+  ap_wait_pair_file_done "$js" "$ji" 150 || return 1
   # both agents reload the new configuration (exit and restart); wait until they answer again as configured
   for side in "$ls" "$js"; do
     local sout=""
