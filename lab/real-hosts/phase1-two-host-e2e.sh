@@ -173,12 +173,17 @@ cleanup() {
   trap - EXIT
   if (( status != 0 )); then
     for side in iran abroad; do
-      ssh_host "$side" "for f in serve.log forward.log echo.log impair.log; do if [ -f '$REMOTE_DIR/'\$f ]; then echo === $side:\$f ===; tail -n 80 '$REMOTE_DIR/'\$f; fi; done" || true
+      ssh_host "$side" "for f in serve.log forward.log echo.log echo2.log agent.log impair.log; do if [ -f '$REMOTE_DIR/'\$f ]; then echo === $side:\$f ===; tail -n 80 '$REMOTE_DIR/'\$f; fi; done" || true
     done
   fi
   for side in iran abroad; do
     if (( LOSS > 0 || REVERSE_R3 > 0 )); then ssh_host "$side" "nft delete table inet $LOSS_TABLE 2>/dev/null || true" || true; fi
-    ssh_host "$side" "for role in serve forward echo echo2 impair agent; do f='$REMOTE_DIR/'\$role'.pid'; if [ -s \"\$f\" ]; then kill \$(cat \"\$f\") 2>/dev/null || true; fi; done; sleep 0.2; rm -rf '$REMOTE_DIR'" || status=1
+    if ssh_host "$side" "for role in serve forward echo echo2 impair agent; do f='$REMOTE_DIR/'\$role'.pid'; if [ -s \"\$f\" ]; then kill \$(cat \"\$f\") 2>/dev/null || true; fi; done; sleep 0.2; rm -rf '$REMOTE_DIR' && test ! -e '$REMOTE_DIR'"; then
+      echo "E2E_REMOTE_TMP_CLEANUP side=$side result=pass"
+    else
+      echo "E2E_REMOTE_TMP_CLEANUP side=$side result=fail" >&2
+      status=1
+    fi
   done
   rm -rf "$LOCAL_TMP"
   if (( status != 0 )); then
