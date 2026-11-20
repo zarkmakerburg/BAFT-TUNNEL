@@ -869,7 +869,9 @@ mod tests {
         assert!(!e.acknowledge_first_report("edge-1", &delivered, 121));
 
         e.mark_delivered(&i.id, 122).unwrap();
-        assert_eq!(e.certificate_for_delivery(&i.id), Err(Error::WrongState));
+        // Task 1 supersedes the old one-shot delivery rule: while AwaitingReport an exact retry may
+        // re-fetch the *same* leaf (never a new one), so a lost ACK response stays recoverable.
+        assert_eq!(e.certificate_for_delivery(&i.id).unwrap(), certificate);
         assert_eq!(e.pending(122)[0].state, State::AwaitingReport);
         assert!(!e.acknowledge_first_report("edge-2", &delivered, 122));
         assert_eq!(e.pending(122)[0].state, State::AwaitingReport);
