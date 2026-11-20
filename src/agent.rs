@@ -120,6 +120,8 @@ pub struct Ctx {
     /// Address the Fleet hub listener is bound to; `Some` only after `--fleet-config` bound it.
     #[allow(dead_code)] // read by GET /v1/fleet/nodes once that route reports the hub listener
     pub fleet_hub_listen: std::sync::Mutex<Option<SocketAddr>>,
+    /// Public, non-secret parameters used to create a one-time encoded Fleet Join offer.
+    pub fleet_join_offer: std::sync::Mutex<Option<crate::fleet_run::JoinOfferContext>>,
     /// ADR-0051 Path A enrollment offers (in memory only; nothing persists a token).
     pub fleet_enroll: std::sync::Mutex<crate::fleet_enroll::Enroller>,
     /// systemd access for the bound instance: state reads, and start/stop/enable/disable requests
@@ -185,6 +187,7 @@ impl Ctx {
             long: std::sync::Mutex::new(long),
             fleet: std::sync::Mutex::new(crate::fleet::Hub::default()),
             fleet_hub_listen: std::sync::Mutex::new(None),
+            fleet_join_offer: std::sync::Mutex::new(None),
             fleet_enroll: std::sync::Mutex::new(crate::fleet_enroll::Enroller::default()),
             units: Arc::new(crate::apply::SystemUnits::default()),
             config_dir: PathBuf::from("/etc/baft-tunnel"),
@@ -3684,10 +3687,18 @@ fn fleet_enroll_route(ctx: &Ctx, op: &str, body: &[u8]) -> (u16, Value) {
             None => crate::fleet_api::confirm_shared(&ctx.fleet_enroll, body, now, None),
         };
     }
+    let join_offer = if op == "offer" {
+        ctx.fleet_join_offer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    } else {
+        None
+    };
     let mut e = ctx.fleet_enroll.lock().unwrap_or_else(|e| e.into_inner());
     match op {
         "list" => crate::fleet_api::list(&mut e, now),
-        "offer" => crate::fleet_api::offer(&mut e, body, now),
+        "offer" => crate::fleet_api::offer(&mut e, body, now, join_offer.as_ref()),
         _ => crate::fleet_api::deny(&mut e, body),
     }
 }

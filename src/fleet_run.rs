@@ -8,6 +8,7 @@ use crate::agent::Ctx;
 use crate::{fleet_report::ReporterConfig, key_custody};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -40,6 +41,15 @@ pub struct HubSection {
     /// Optional pre-enrollment Join listener, separate from the mandatory-mTLS report socket.
     #[serde(default)]
     pub join: Option<JoinSection>,
+}
+
+#[derive(Debug, Clone)]
+pub struct JoinOfferContext {
+    pub host: String,
+    pub port: u16,
+    pub hub_id: String,
+    pub hub_name: String,
+    pub hub_pin: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -323,10 +333,22 @@ pub async fn start(ctx: Arc<Ctx>, cfg: FleetConfig, instance: Option<&str>) -> R
                 "Fleet Join listener bound port differs from advertised port"
             );
             let acceptor = crate::tls::fleet_join_acceptor(&h.cert, &hub_key)?;
+            let hub_chain = crate::tls::certificates(&h.cert)?;
+            let hub_leaf = hub_chain
+                .first()
+                .context("Hub certificate chain is empty")?;
+            let offer_context = JoinOfferContext {
+                host: join.advertise_host,
+                port: join.advertise_port,
+                hub_id: join.hub_id,
+                hub_name: join.hub_name,
+                hub_pin: hex::encode(Sha256::digest(hub_leaf.as_ref())),
+            };
             Some((
                 listener,
                 acceptor,
                 bound,
+                offer_context,
                 h.ca.clone(),
                 h.crl.clone(),
                 h.cert.clone(),
@@ -336,6 +358,18 @@ pub async fn start(ctx: Arc<Ctx>, cfg: FleetConfig, instance: Option<&str>) -> R
         };
 
         // Publish the bound address only after all startup validation and binds have succeeded.
+        let join_prepared =
+            if let Some((listener, acceptor, bound, offer_context, ca, crl, hub_cert)) =
+                join_prepared
+            {
+                *ctx.fleet_join_offer
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("Fleet Join offer state is poisoned"))? =
+                    Some(offer_context);
+                Some((listener, acceptor, bound, ca, crl, hub_cert))
+            } else {
+                None
+            };
         *ctx.fleet_hub_listen
             .lock()
             .map_err(|_| anyhow::anyhow!("Fleet Hub listener state is poisoned"))? =

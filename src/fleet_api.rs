@@ -67,19 +67,53 @@ fn fail(e: Error) -> (u16, Value) {
     (code, json!({"error": msg}))
 }
 
-pub fn offer(e: &mut Enroller, body: &[u8], now: u64) -> (u16, Value) {
+pub fn offer(
+    e: &mut Enroller,
+    body: &[u8],
+    now: u64,
+    join: Option<&crate::fleet_run::JoinOfferContext>,
+) -> (u16, Value) {
+    let Some(join) = join else {
+        return (
+            503,
+            json!({"error": "Fleet Join listener is not configured"}),
+        );
+    };
     let Ok(req) = serde_json::from_slice::<OfferReq>(body) else {
         return (400, json!({"error": "invalid request"}));
     };
     match e.offer(&req.node_id, now) {
-        Ok(i) => (
-            200,
-            json!({
-                "id": i.id, "node_id": i.node_id, "token": i.token, "nonce": i.nonce,
-                "expires": i.expires,
-                "note": "shown once; give it to the new server only"
-            }),
-        ),
+        Ok(i) => {
+            let offer = crate::fleet_join::JoinOffer {
+                v: 1,
+                host: join.host.clone(),
+                port: join.port,
+                hub_name: join.hub_name.clone(),
+                hub_id: join.hub_id.clone(),
+                hub_pin: join.hub_pin.clone(),
+                offer_id: i.id.clone(),
+                node_id: i.node_id.clone(),
+                token: i.token,
+                nonce: i.nonce,
+                expires: i.expires,
+            };
+            match offer.encode() {
+                Ok(code) => (
+                    200,
+                    json!({
+                        "id": i.id,
+                        "node_id": i.node_id,
+                        "join_offer": code,
+                        "expires": i.expires,
+                        "note": "shown once; give it to the new server only"
+                    }),
+                ),
+                Err(_) => {
+                    let _ = e.deny(&i.id);
+                    (500, json!({"error": "could not encode Fleet Join offer"}))
+                }
+            }
+        }
         Err(err) => fail(err),
     }
 }
@@ -154,6 +188,16 @@ pub fn deny(e: &mut Enroller, body: &[u8]) -> (u16, Value) {
 mod tests {
     use super::*;
 
+    fn join_context() -> crate::fleet_run::JoinOfferContext {
+        crate::fleet_run::JoinOfferContext {
+            host: "hub.example.test".into(),
+            port: 18444,
+            hub_id: "hub-1".into(),
+            hub_name: "hub.example.test".into(),
+            hub_pin: "a".repeat(64),
+        }
+    }
+
     fn csr(node_id: &str, challenge: &str) -> String {
         use std::fs;
         let dir = std::env::temp_dir().join(format!("fleet-api-csr-{:x}", rand::random::<u64>()));
@@ -192,13 +236,20 @@ mod tests {
     #[test]
     fn offer_list_confirm_flow_never_leaks_secrets_in_the_list() {
         let mut e = Enroller::default();
-        let (c, v) = offer(&mut e, br#"{"node_id":"edge-1"}"#, 10);
-        assert_eq!(c, 200);
-        let (id, token, nonce) = (
-            v["id"].as_str().unwrap().to_string(),
-            v["token"].as_str().unwrap().to_string(),
-            v["nonce"].as_str().unwrap().to_string(),
+        let (c, v) = offer(
+            &mut e,
+            br#"{"node_id":"edge-1"}"#,
+            10,
+            Some(&join_context()),
         );
+        assert_eq!(c, 200);
+        let id = v["id"].as_str().unwrap().to_string();
+        let encoded = v["join_offer"].as_str().unwrap();
+        let decoded = crate::fleet_join::JoinOffer::decode(encoded, 10).unwrap();
+        let (token, nonce) = (decoded.token, decoded.nonce);
+        assert_eq!(decoded.host, "hub.example.test");
+        assert_eq!(decoded.port, 18444);
+        assert_eq!(decoded.hub_id, "hub-1");
         let listed = list(&mut e, 11).1.to_string();
         assert!(!listed.contains(&token) && !listed.contains(&nonce));
         let request = csr("edge-1", &nonce);
@@ -230,7 +281,12 @@ mod tests {
         let enroller = Mutex::new(Enroller::default());
         let (id, token, nonce) = {
             let mut guard = enroller.lock().unwrap();
-            let (status, value) = offer(&mut guard, br#"{"node_id":"edge-1"}"#, 10);
+            let (status, value) = offer(
+                &mut guard,
+                br#"{"node_id":"edge-1"}"#,
+                10,
+                Some(&join_context()),
+            );
             assert_eq!(status, 200);
             (
                 value["id"].as_str().unwrap().to_owned(),
@@ -260,13 +316,47 @@ mod tests {
     }
 
     #[test]
+    fn fleet_offer_unavailable_without_join_does_not_create_offer() {
+        let mut e = Enroller::default();
+        assert_eq!(offer(&mut e, br#"{"node_id":"edge-1"}"#, 10, None).0, 503);
+        assert!(list(&mut e, 11).1["offers"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn fleet_offer_encoding_failure_closes_created_offer() {
+        let mut e = Enroller::default();
+        let mut context = join_context();
+        context.hub_pin = "not-a-pin".into();
+        assert_eq!(
+            offer(&mut e, br#"{"node_id":"edge-1"}"#, 10, Some(&context)).0,
+            500
+        );
+        assert!(list(&mut e, 11).1["offers"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn bad_input_maps_to_clean_errors() {
         let mut e = Enroller::default();
-        assert_eq!(offer(&mut e, b"{", 0).0, 400);
-        assert_eq!(offer(&mut e, br#"{"node_id":"X y"}"#, 0).0, 400);
-        assert_eq!(offer(&mut e, br#"{"node_id":"a","x":1}"#, 0).0, 400);
-        offer(&mut e, br#"{"node_id":"a"}"#, 0);
-        assert_eq!(offer(&mut e, br#"{"node_id":"a"}"#, 1).0, 409);
+        assert_eq!(offer(&mut e, b"{", 0, Some(&join_context())).0, 400);
+        assert_eq!(
+            offer(&mut e, br#"{"node_id":"X y"}"#, 0, Some(&join_context())).0,
+            400
+        );
+        assert_eq!(
+            offer(
+                &mut e,
+                br#"{"node_id":"a","x":1}"#,
+                0,
+                Some(&join_context())
+            )
+            .0,
+            400
+        );
+        offer(&mut e, br#"{"node_id":"a"}"#, 0, Some(&join_context()));
+        assert_eq!(
+            offer(&mut e, br#"{"node_id":"a"}"#, 1, Some(&join_context())).0,
+            409
+        );
         assert_eq!(deny(&mut e, br#"{"id":"nope"}"#).0, 404);
     }
 }
