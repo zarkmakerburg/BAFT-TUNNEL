@@ -43,10 +43,10 @@
 - `Enroller::mark_delivered` is idempotent in `AwaitingReport` only when the stored delivered fingerprint equals the fingerprint derived from the same issued certificate.
 - `admit_join_request` may return `Deliver` for exact retry in `AwaitingReport`; it must never reissue or change the certificate.
 
-- [ ] Write tests for exact retry in `AwaitingReport`, changed CSR rejection, changed token/nonce/node rejection, repeated ACK no-op, and deny/expiry still refusing delivery.
-- [ ] Run focused Enroller and Fleet Join admission tests; confirm the new retry test fails for the expected state rejection.
-- [ ] Implement the narrow idempotent retry behavior without changing the original issued certificate or delivered fingerprint.
-- [ ] Run the focused tests and the full Rust test suite in Linux CI.
+- [x] Write tests for exact retry in `AwaitingReport`, changed CSR rejection, changed token/nonce/node rejection, repeated ACK no-op, and deny/expiry still refusing delivery.
+- [x] Run focused Enroller and Fleet Join admission tests; confirm the new retry test fails for the expected state rejection (run `44705660845`).
+- [x] Implement the narrow idempotent retry behavior without changing the original issued certificate or delivered fingerprint (`0656744`).
+- [x] Run the focused tests and the full Rust test suite in Linux CI (exact SHA `a66e16d`, run `44708622808`, all jobs success).
 
 ### Task 2: Add secure Member bundle storage and atomic config publication
 
@@ -63,10 +63,10 @@
 - Implement `write_member_config(instance, member_section)` to preserve any valid existing Hub section and atomically add MemberSection.
 - Implement `finish_pending(instance)` to remove only the one-time offer and CSR after successful ACK and restart queue; retain the Member private key and public trust files.
 
-- [ ] Write tests first for directory/file modes, create-new behavior, symlink refusal, atomic generation publication, injected write failure leaving no published partial generation, config merge preserving Hub, malformed config refusal, and pending offer mismatch refusal.
-- [ ] Run the focused storage tests and observe expected failures before implementation.
-- [ ] Implement root-owned directory/file creation with explicit `fchown`/`fchmod`, `sync_all`, same-filesystem rename and parent-directory sync.
-- [ ] Run focused storage tests and Linux Rust CI.
+- [x] Write tests first for directory/file modes, create-new behavior, symlink refusal, atomic generation publication, injected write failure leaving no published partial generation, config merge preserving Hub, malformed config refusal, and pending offer mismatch refusal (13 tests in `src/fleet_member.rs`).
+- [x] Run the focused storage tests and observe expected failures before implementation (2 passed / 11 failed on the stub tree, local macOS).
+- [x] Implement root-owned directory/file creation with explicit `fchown`/`fchmod`, `sync_all`, same-filesystem rename and parent-directory sync (`47f6bb7`).
+- [x] Run focused storage tests and Linux Rust CI (exact SHA `47f6bb7`, run `44710353743`, six of six jobs success, 489 tests passed).
 
 ### Task 3: Implement Member Join orchestration and resume semantics
 
