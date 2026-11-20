@@ -413,8 +413,7 @@ pub async fn start(ctx: Arc<Ctx>, cfg: FleetConfig, instance: Option<&str>) -> R
                 }
             };
             eprintln!(
-                "Fleet Join listener listening on {} (TLS 1.3, pinned Hub identity)",
-                join_bound
+                "Fleet Join listener listening on {join_bound} (TLS 1.3, pinned Hub identity)"
             );
             tokio::spawn(crate::fleet_join::serve_shared(
                 join_listener,
