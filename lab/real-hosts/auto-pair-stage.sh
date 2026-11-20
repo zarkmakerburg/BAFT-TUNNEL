@@ -138,12 +138,30 @@ ap_diag() { # side label : tiers must show a verified, authorized, data-carrying
   ap_api "$side" POST /v1/diagnostics </dev/null >"$LOCAL_TMP/ap-diag-$label-$side.json"
   python3 - "$LOCAL_TMP/ap-diag-$label-$side.json" "$side" <<'PY' || { cat "$LOCAL_TMP/ap-diag-$label-$side.json" >&2; echo "diagnostics did not verify the paired tunnel on $side" >&2; return 1; }
 import json, sys
-d = json.load(open(sys.argv[1])); r = {t["id"]: t["result"] for t in d["tiers"]}
+d = json.load(open(sys.argv[1])); tiers = {t["id"]: t for t in d["tiers"]}; r = {k: v["result"] for k, v in tiers.items()}
 print("tiers[%s]=%s" % (sys.argv[2], json.dumps(r, sort_keys=True)))
-for k in ("secure_channel", "identity", "authorization", "session"):
+for k in ("secure_channel", "identity", "authorization", "session", "integrity"):
     assert r.get(k) == "pass", (k, r)
+assert tiers["integrity"].get("source") == "in_product_probe", tiers["integrity"]
+assert tiers["integrity"].get("params", {}).get("age_s", 999) <= 60, tiers["integrity"]
 assert d["unit"]["result"] == "active", d
 PY
+}
+
+ap_verify_diag() { # side label direction : run the authenticated B2 probe, then require fresh diagnostics PASS
+  local side="$1" label="$2" direction="$3" key body
+  key="apv-${label}-${side}-${RANDOM}${RANDOM}"
+  body="{\"idempotency_key\":\"$key\"}"
+  ap_api "$side" POST /v1/verify <<<"$body" >"$LOCAL_TMP/ap-verify-$label-$side.json"
+  python3 - "$LOCAL_TMP/ap-verify-$label-$side.json" "$side" "$direction" <<'PY' || { cat "$LOCAL_TMP/ap-verify-$label-$side.json" >&2; echo "authenticated integrity probe failed on $side ($label)" >&2; return 1; }
+import json, sys
+v = json.load(open(sys.argv[1]))
+assert v.get("result") == "pass", v
+assert v.get("sha256_match") is True and v.get("bytes") == 65536, v
+assert v.get("direction") == sys.argv[3], v
+print("integrity_probe[%s] direction=%s result=%s bytes=%s sha256_match=%s" % (sys.argv[2], v.get("direction"), v.get("result"), v.get("bytes"), v.get("sha256_match")))
+PY
+  ap_diag "$side" "$label"
 }
 
 ap_round() { # name direction listener_side joiner_side joiner_location
@@ -214,12 +232,12 @@ ap_round() { # name direction listener_side joiner_side joiner_location
   done
 
   if [[ "$dir" == direct ]]; then
-    ap_cfg_check "$ls" "$li" "assert c['mode']=='serve' and c['direction']=='direct' and c['engine']=='tcp-tls' and c['target']=='127.0.0.1:$AP_SVC' and 'session_rotate_secs' not in c" || return 1
+    ap_cfg_check "$ls" "$li" "assert c['mode']=='serve' and c['direction']=='direct' and c['engine']=='tcp-tls' and c['target']=='127.0.0.1:$AP_SVC' and 'session_rotate_secs' not in c;assert c['protocol_version']==2" || return 1
     if [[ "$jloc" == iran ]]; then rot="assert c.get('session_rotate_secs')==10"; else rot="assert 'session_rotate_secs' not in c"; fi
-    ap_cfg_check "$js" "$ji" "assert c['mode']=='forward' and c['direction']=='direct' and c['listen']=='127.0.0.1:$AP_SVC' and c['remote']=='$lhost:$AP_TP';$rot" || return 1
+    ap_cfg_check "$js" "$ji" "assert c['mode']=='forward' and c['direction']=='direct' and c['listen']=='127.0.0.1:$AP_SVC' and c['remote']=='$lhost:$AP_TP';$rot;assert c['protocol_version']==2" || return 1
   else
-    ap_cfg_check "$ls" "$li" "assert c['mode']=='serve' and c['direction']=='reverse' and c['ingress']=='127.0.0.1:$AP_SVC' and 'target' not in c" || return 1
-    ap_cfg_check "$js" "$ji" "assert c['mode']=='forward' and c['direction']=='reverse' and c['target']=='127.0.0.1:$AP_SVC' and 'listen' not in c and 'session_rotate_secs' not in c and c['remote']=='$lhost:$AP_TP'" || return 1
+    ap_cfg_check "$ls" "$li" "assert c['mode']=='serve' and c['direction']=='reverse' and c['ingress']=='127.0.0.1:$AP_SVC' and 'target' not in c;assert c['protocol_version']==2" || return 1
+    ap_cfg_check "$js" "$ji" "assert c['mode']=='forward' and c['direction']=='reverse' and c['target']=='127.0.0.1:$AP_SVC' and 'listen' not in c and 'session_rotate_secs' not in c and c['remote']=='$lhost:$AP_TP';assert c['protocol_version']==2" || return 1
   fi
   # the pair CA key stays on the listener only
   ssh_host "$ls" "test -s $EB/pair-ca/ca.key" || { echo "listener has no pair CA key" >&2; return 1; }
@@ -252,9 +270,9 @@ ap_round() { # name direction listener_side joiner_side joiner_location
       { echo "reverse service node listens on the tunnel port or has no outbound connection" >&2; return 1; }
   fi
   sleep 12   # the agents sample unit counters every 5 s
-  ap_diag "$ls" "$rn" || return 1
-  ap_diag "$js" "$rn" || return 1
-  echo "AUTO_PAIR_ROUND name=$rn direction=$dir listener=$ls joiner=$js joiner_location=$jloc fingerprints_match=1 wrong_nonce_refused=1 second_request_refused=1 configs_ok=1 ca_key_listener_only=1 workers_gone=1 start_via_agent=1 non_root=1 integrity_64k_2m=1 up_s=$AP_UP_S diagnostics_tiers=pass"
+  ap_verify_diag "$ls" "$rn" "$dir" || return 1
+  ap_verify_diag "$js" "$rn" "$dir" || return 1
+  echo "AUTO_PAIR_ROUND name=$rn direction=$dir listener=$ls joiner=$js joiner_location=$jloc fingerprints_match=1 wrong_nonce_refused=1 second_request_refused=1 configs_ok=1 ca_key_listener_only=1 workers_gone=1 start_via_agent=1 non_root=1 integrity_64k_2m=1 integrity_probe_both_nodes=pass up_s=$AP_UP_S diagnostics_tiers=pass"
   ap_cleanup
   for side in iran abroad; do
     ssh_host "$side" "! test -e $UB && ! test -e $EB && ! test -e /var/lib/baft-tunnel && ! test -e /run/baft-tunnel/control" || { echo "uninstall left BAFT-TUNNEL resources on $side" >&2; return 1; }
