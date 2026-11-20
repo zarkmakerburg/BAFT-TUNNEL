@@ -1,4 +1,5 @@
-//! Task 2 of the Member Join activation slice: the root-owned Member credential store.
+//! Member-side Fleet Join activation: root-owned credential storage, durable bundle publication,
+//! pinned TLS enrollment orchestration and crash-safe retry/resume.
 //!
 //! Layout per instance (all root-managed, Mode 0700 until publication):
 //!
@@ -25,7 +26,7 @@
 //! Secrets (offer token, nonce, private key) are never formatted, logged or returned by any
 //! function here; [`PendingJoin`] keeps a redacting `Debug`.
 
-#![allow(dead_code)] // wired by the Task 3 orchestration and the Task 4 CLI
+#![allow(dead_code)] // CLI wiring follows in Task 4
 
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
@@ -595,6 +596,98 @@ pub(crate) fn write_member_config(
     result
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JoinOutcome {
+    RestartQueued,
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+/// Join one Hub using the production root-managed Member store and Fleet helper control path.
+pub(crate) async fn join_from_offer(instance: &str, encoded_offer: &str) -> Result<JoinOutcome> {
+    let paths = MemberPaths::installed(instance)?;
+    join_from_offer_with_paths(&paths, encoded_offer, Path::new(crate::apply::CONTROL_DIR)).await
+}
+
+/// Complete one Member Join transaction. The caller provides the already-bounded offer line.
+pub(crate) async fn join_from_offer_with_paths(
+    paths: &MemberPaths,
+    encoded_offer: &str,
+    control_dir: &Path,
+) -> Result<JoinOutcome> {
+    let offer = JoinOffer::decode(encoded_offer, unix_now())?;
+    let base = paths
+        .root
+        .parent()
+        .context("Member store path has no parent")?;
+    let config_root = paths
+        .config
+        .parent()
+        .context("Fleet config path has no parent")?;
+    let pending = prepare_pending(base, config_root, &paths.instance, &offer)?;
+
+    // The Join client authenticates the exact pinned Hub leaf and TLS identity before sending
+    // this CSR. No Member private-key bytes are part of the transport request or response.
+    let session = crate::fleet_join::join(&offer, &pending.csr_pem).await?;
+    let response = session.response().clone();
+    let bundle = match publish_bundle(&pending.paths, &offer, &response, &pending.key_path) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            let _ = session.ack(false).await;
+            return Err(error).context("validate and publish the Fleet Member bundle");
+        }
+    };
+    if let Err(error) = write_member_config(&pending.paths, &offer, &bundle) {
+        let _ = session.ack(false).await;
+        return Err(error).context("publish the Fleet Member configuration");
+    }
+
+    // The Hub may bind Enrolled only after its later first mandatory-mTLS report. This ACK only
+    // confirms that the public bundle and Member config are durable on this host.
+    session
+        .ack(true)
+        .await
+        .context("acknowledge durable Fleet Member installation")?;
+    crate::fleet_helper::queue_agent_restart(control_dir, &paths.instance)
+        .map_err(anyhow::Error::msg)
+        .context("queue the per-instance Agent restart")?;
+    finish_pending(&pending.paths).context("remove completed one-time Join state")?;
+    Ok(JoinOutcome::RestartQueued)
+}
+
+/// Resume a pending transaction, or restart an already installed Member without a new offer.
+pub(crate) async fn resume(instance: &str) -> Result<JoinOutcome> {
+    let paths = MemberPaths::installed(instance)?;
+    resume_with_paths(&paths, Path::new(crate::apply::CONTROL_DIR)).await
+}
+
+async fn resume_with_paths(paths: &MemberPaths, control_dir: &Path) -> Result<JoinOutcome> {
+    if symlink_metadata_opt(&paths.offer)?.is_some() {
+        let bytes = read_regular(&paths.offer, MAX_OFFER_BYTES, "pending Join offer")?;
+        let offer: JoinOffer =
+            serde_json::from_slice(&bytes).context("pending Join offer is not valid")?;
+        let encoded = offer.encode()?;
+        return join_from_offer_with_paths(paths, &encoded, control_dir).await;
+    }
+
+    let config = crate::fleet_run::FleetConfig::load(&paths.config)
+        .context("no pending Join offer or valid installed Fleet config is available")?;
+    ensure!(
+        config.member.is_some(),
+        "installed Fleet config does not contain a Member identity"
+    );
+    crate::fleet_helper::queue_agent_restart(control_dir, &paths.instance)
+        .map_err(anyhow::Error::msg)
+        .context("queue the per-instance Agent restart")?;
+    finish_pending(paths).context("clean interrupted one-time Join state")?;
+    Ok(JoinOutcome::RestartQueued)
+}
+
 /// Remove the one-time offer, CSR and pending key copy after a successful ACK and restart queue.
 pub(crate) fn finish_pending(paths: &MemberPaths) -> Result<()> {
     for path in [&paths.offer, &paths.csr, &paths.key, &paths.request_config] {
@@ -818,7 +911,13 @@ pub(crate) fn member_config_for(offer: &JoinOffer, bundle: &InstalledBundle) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fleet_join::Admission;
+    use crate::{fleet_join, fleet_run};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use tokio::{
+        net::TcpListener,
+        sync::{mpsc, watch},
+    };
 
     const NODE_ID: &str = "edge-1";
 
@@ -967,6 +1066,271 @@ mod tests {
             reason: None,
         };
         (tmp, pending.paths.clone(), pending, response)
+    }
+
+    fn hub_material(root: &Path) -> (PathBuf, PathBuf, PathBuf, String) {
+        let ca_dir = root.join("join-ca");
+        fleet_ca::create(&ca_dir, "Member Join Test CA").unwrap();
+        let hub_key = root.join("join-hub.key");
+        let key = pair_ca::run(
+            &[
+                "genpkey",
+                "-algorithm",
+                "EC",
+                "-pkeyopt",
+                "ec_paramgen_curve:P-256",
+            ],
+            None,
+        )
+        .unwrap();
+        fs::write(&hub_key, key).unwrap();
+        let csr = pair_ca::run(
+            &[
+                "req",
+                "-new",
+                "-key",
+                &hub_key.to_string_lossy(),
+                "-subj",
+                "/CN=hub-1",
+            ],
+            None,
+        )
+        .unwrap();
+        let cert_pem =
+            fleet_ca::sign_hub(&ca_dir, "hub-1", &String::from_utf8(csr).unwrap()).unwrap();
+        let hub_cert = root.join("join-hub.crt");
+        fs::write(&hub_cert, &cert_pem).unwrap();
+        let der = pair_ca::run(&["x509", "-outform", "DER"], Some(cert_pem.as_bytes())).unwrap();
+        let pin = hex::encode(Sha256::digest(der));
+        (ca_dir, hub_cert, hub_key, pin)
+    }
+
+    fn live_offer(address: std::net::SocketAddr, pin: String, expires: u64) -> JoinOffer {
+        JoinOffer {
+            v: 1,
+            host: address.ip().to_string(),
+            port: address.port(),
+            hub_name: fleet_ca::dns_name("hub-1"),
+            hub_id: "hub-1".to_owned(),
+            hub_pin: pin,
+            offer_id: hex(8, 0x10),
+            node_id: NODE_ID.to_owned(),
+            token: hex(16, 0x40),
+            nonce: hex(16, 0x70),
+            expires,
+        }
+    }
+
+    fn unix_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    #[tokio::test]
+    async fn resume_pending_join_reuses_csr_and_publishes_before_positive_ack() {
+        let tmp = Temp::new("join-orchestration");
+        let config_root = tmp.config_root();
+        let paths = MemberPaths::new(&tmp.base(), &config_root, "edge").unwrap();
+        let control = tmp.path().join("control");
+        fs::create_dir(&control).unwrap();
+        let (ca_dir, hub_cert, hub_key, pin) = hub_material(tmp.path());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 60;
+        let offer = live_offer(address, pin, expires);
+        let pending = prepare_pending(&tmp.base(), &config_root, "edge", &offer).unwrap();
+        let original_csr = pending.csr_pem.clone();
+        let acceptor = crate::tls::fleet_join_acceptor(&hub_cert, &hub_key).unwrap();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();
+        let config_path = paths.config.clone();
+        let generations = paths.generations.clone();
+        let ca_for_admission = ca_dir.clone();
+        let hub_cert_for_admission = hub_cert.clone();
+        let expected_csr = original_csr.clone();
+        let server = tokio::spawn(fleet_join::serve_shared(
+            listener,
+            acceptor,
+            move |request, _peer| {
+                let ca_dir = ca_for_admission.clone();
+                let hub_cert = hub_cert_for_admission.clone();
+                let expected_csr = expected_csr.clone();
+                async move {
+                    assert_eq!(
+                        request.csr_pem, expected_csr,
+                        "pending resume must reuse the exact CSR"
+                    );
+                    let wire = serde_json::to_string(&request).unwrap();
+                    assert!(!wire.contains("PRIVATE KEY"));
+                    assert!(
+                        serde_json::from_str::<serde_json::Value>(&wire)
+                            .unwrap()
+                            .get("private_key")
+                            .is_none()
+                    );
+                    let cert = fleet_ca::sign(&ca_dir, &request.node_id, &request.csr_pem).unwrap();
+                    let response = JoinResponse {
+                        ok: true,
+                        member_certificate_pem: Some(cert),
+                        ca_certificate_pem: Some(
+                            fs::read_to_string(ca_dir.join("ca.crt")).unwrap(),
+                        ),
+                        crl_pem: Some(fs::read_to_string(ca_dir.join("ca.crl")).unwrap()),
+                        hub_certificate_pem: Some(fs::read_to_string(hub_cert).unwrap()),
+                        reason: None,
+                    };
+                    let response_wire = serde_json::to_string(&response).unwrap();
+                    assert!(!response_wire.contains("PRIVATE KEY"));
+                    assert!(
+                        serde_json::from_str::<serde_json::Value>(&response_wire)
+                            .unwrap()
+                            .get("private_key")
+                            .is_none()
+                    );
+                    Admission::Deliver { response, expires }
+                }
+            },
+            move |offer_id, node_id| {
+                let ack_tx = ack_tx.clone();
+                let config_path = config_path.clone();
+                let generations = generations.clone();
+                async move {
+                    assert!(
+                        config_path.is_file(),
+                        "positive ACK arrived before Member config publication"
+                    );
+                    assert!(generations.is_dir());
+                    assert_eq!(
+                        fs::read_dir(&generations).unwrap().count(),
+                        1,
+                        "positive ACK arrived before bundle publication"
+                    );
+                    let _ = ack_tx.send((offer_id, node_id));
+                }
+            },
+            shutdown_rx,
+        ));
+
+        let outcome = resume_with_paths(&paths, &control).await.unwrap();
+        assert_eq!(outcome, JoinOutcome::RestartQueued);
+        assert_eq!(
+            ack_rx.recv().await,
+            Some((offer.offer_id, NODE_ID.to_owned()))
+        );
+        assert_eq!(
+            fs::read(control.join("edge.fleet")).unwrap(),
+            br#"{"op":"restart_agent"}"#
+        );
+        assert!(!paths.offer.exists());
+        assert!(!paths.csr.exists());
+        assert!(!paths.key.exists());
+        let config = fleet_run::FleetConfig::load(&paths.config).unwrap();
+        assert!(config.member.is_some());
+        shutdown_tx.send(true).unwrap();
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_join_response_never_receives_a_positive_member_ack() {
+        let tmp = Temp::new("join-invalid-response");
+        let config_root = tmp.config_root();
+        let paths = MemberPaths::new(&tmp.base(), &config_root, "edge").unwrap();
+        let control = tmp.path().join("control");
+        fs::create_dir(&control).unwrap();
+        let (_ca_dir, hub_cert, hub_key, pin) = hub_material(tmp.path());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 60;
+        let offer = live_offer(address, pin, expires);
+        let pending = prepare_pending(&tmp.base(), &config_root, "edge", &offer).unwrap();
+        let original_csr = pending.csr_pem.clone();
+        let acceptor = crate::tls::fleet_join_acceptor(&hub_cert, &hub_key).unwrap();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();
+        let server = tokio::spawn(fleet_join::serve_shared(
+            listener,
+            acceptor,
+            move |_request, _peer| async move {
+                Admission::Deliver {
+                    response: JoinResponse {
+                        ok: true,
+                        member_certificate_pem: Some("not-a-certificate".to_owned()),
+                        ca_certificate_pem: None,
+                        crl_pem: None,
+                        hub_certificate_pem: None,
+                        reason: None,
+                    },
+                    expires,
+                }
+            },
+            move |offer_id, node_id| {
+                let ack_tx = ack_tx.clone();
+                async move {
+                    let _ = ack_tx.send((offer_id, node_id));
+                }
+            },
+            shutdown_rx,
+        ));
+
+        assert!(resume_with_paths(&paths, &control).await.is_err());
+        assert!(
+            ack_rx.try_recv().is_err(),
+            "invalid response must not receive a positive ACK"
+        );
+        assert!(
+            paths.offer.is_file(),
+            "failed Join must retain the exact pending transaction"
+        );
+        assert_eq!(
+            fs::read(&paths.csr).unwrap(),
+            original_csr.as_bytes(),
+            "pending resume must reuse the exact CSR"
+        );
+        assert!(
+            !control.join("edge.fleet").exists(),
+            "restart must not be queued after invalid response"
+        );
+        shutdown_tx.send(true).unwrap();
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn resume_installed_member_only_config_queues_restart_without_new_offer() {
+        let tmp = Temp::new("resume-installed-member");
+        let config_root = tmp.config_root();
+        let paths = MemberPaths::new(&tmp.base(), &config_root, "edge").unwrap();
+        let control = tmp.path().join("control");
+        fs::create_dir(&control).unwrap();
+        let bundle = tmp.path().join("installed-generation");
+        fs::create_dir(&bundle).unwrap();
+        for name in ["ca.crt", "ca.crl", "member.crt", "member.key"] {
+            fs::write(bundle.join(name), b"test material").unwrap();
+        }
+        let config = serde_json::json!({
+            "member": {
+                "hub_addr": "127.0.0.1:4443",
+                "hub_name": fleet_ca::dns_name("hub-1"),
+                "hub_id": "hub-1",
+                "ca": bundle.join("ca.crt"),
+                "crl": bundle.join("ca.crl"),
+                "cert": bundle.join("member.crt"),
+                "key": bundle.join("member.key")
+            }
+        });
+        fs::write(&paths.config, serde_json::to_vec(&config).unwrap()).unwrap();
+
+        let outcome = resume_with_paths(&paths, &control).await.unwrap();
+        assert_eq!(outcome, JoinOutcome::RestartQueued);
+        assert_eq!(
+            fs::read(control.join("edge.fleet")).unwrap(),
+            br#"{"op":"restart_agent"}"#
+        );
+        assert!(
+            !paths.offer.exists(),
+            "installed resume must not create a new offer"
+        );
     }
 
     #[test]

@@ -83,10 +83,10 @@
 - ACK only after durable publication. Keep retry state until restart has been queued successfully.
 - `async fn resume(instance: &str) -> Result<JoinOutcome>` reuses pending offer/CSR if present; otherwise validates the installed Member config and queues only an Agent restart.
 
-- [ ] Write tests for CSR challengePassword presence/uniqueness, P-256 key profile, private-key exclusion from JoinRequest/JoinResponse, exact retry reusing the same CSR, invalid response causing no positive ACK, and resume behavior for pending vs installed state.
-- [ ] Run the focused tests and observe expected failures.
-- [ ] Implement orchestration using the existing pinned TLS Join client and no new network listener.
-- [ ] Run focused Join/Member tests and Linux Rust CI.
+- [x] Write tests for CSR challengePassword presence/uniqueness, P-256 key profile, private-key exclusion from JoinRequest/JoinResponse, exact retry reusing the same CSR, invalid response causing no positive ACK, and resume behavior for pending vs installed state.
+- [x] Run the focused tests and observe expected failures.
+- [x] Implement orchestration using the existing pinned TLS Join client and no new network listener.
+- [ ] Run focused Join/Member tests and Linux Rust CI (local focused suite is green; exact-SHA Linux CI is still pending).
 
 ### Task 4: Add `fleet join` and `fleet join --resume` CLI and restart integration
 
