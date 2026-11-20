@@ -11,6 +11,7 @@ use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
@@ -194,6 +195,83 @@ impl FleetConfig {
     }
 }
 
+/// Validate a Join request against the live Enroller offer. The listener never signs: it only
+/// returns already-issued public material after operator confirmation.
+pub(crate) fn admit_join_request(
+    enroller: &mut crate::fleet_enroll::Enroller,
+    request: crate::fleet_join::JoinRequest,
+    now: u64,
+    ca: &Path,
+    crl: &Path,
+    hub_cert: &Path,
+) -> crate::fleet_join::Admission {
+    use crate::fleet_enroll::State;
+    let offer_id = request.offer_id.clone();
+    let submit = enroller.submit(
+        &request.offer_id,
+        &request.node_id,
+        &request.token,
+        &request.nonce,
+        &request.csr_pem,
+        now,
+    );
+    if submit.is_err() {
+        return match enroller.state_and_expiry(&offer_id) {
+            Ok((State::Closed, _)) | Err(crate::fleet_enroll::Error::Unknown) => {
+                crate::fleet_join::Admission::Close
+            }
+            _ => crate::fleet_join::Admission::Retry,
+        };
+    }
+    let (state, expires) = match enroller.state_and_expiry(&offer_id) {
+        Ok(value) => value,
+        Err(_) => return crate::fleet_join::Admission::Close,
+    };
+    if expires < now || state == State::Closed {
+        return crate::fleet_join::Admission::Close;
+    }
+    if state != State::Issued {
+        return crate::fleet_join::Admission::Retry;
+    }
+    let certificate = match enroller.certificate_for_delivery(&offer_id) {
+        Ok(value) => value.to_owned(),
+        Err(_) => return crate::fleet_join::Admission::Close,
+    };
+    let read_public = |path: &Path| std::fs::read_to_string(path).ok().filter(|v| !v.is_empty());
+    let (Some(ca_certificate_pem), Some(crl_pem), Some(hub_certificate_pem)) =
+        (read_public(ca), read_public(crl), read_public(hub_cert))
+    else {
+        return crate::fleet_join::Admission::Close;
+    };
+    crate::fleet_join::Admission::Deliver {
+        response: crate::fleet_join::JoinResponse {
+            ok: true,
+            member_certificate_pem: Some(certificate),
+            ca_certificate_pem: Some(ca_certificate_pem),
+            crl_pem: Some(crl_pem),
+            hub_certificate_pem: Some(hub_certificate_pem),
+            reason: None,
+        },
+        expires,
+    }
+}
+
+/// Apply the transport ACK to the exact offer. A late ACK after Deny or expiry is a no-op.
+pub(crate) fn acknowledge_join_delivery(
+    enroller: &mut crate::fleet_enroll::Enroller,
+    offer_id: &str,
+    now: u64,
+) {
+    let _ = enroller.mark_delivered(offer_id, now);
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
 /// Start what the file asks for. The member needs the agent's `--instance` (its report names it).
 /// Failures to bind or load certificates are returned so the unit fails visibly instead of
 /// running without the Fleet role the operator configured.
@@ -223,6 +301,57 @@ pub async fn start(ctx: Arc<Ctx>, cfg: FleetConfig, instance: Option<&str>) -> R
             ctx.clone(),
             rx.clone(),
         ));
+
+        if let Some(join) = h.join {
+            let join_listener = TcpListener::bind(join.listen)
+                .await
+                .with_context(|| format!("cannot bind Fleet Join listener on {}", join.listen))?;
+            let join_bound = join_listener.local_addr()?;
+            ensure!(
+                join_bound.port() == join.advertise_port,
+                "Fleet Join listener bound port differs from advertised port"
+            );
+            let join_acceptor = crate::tls::fleet_join_acceptor(&h.cert, &hub_key)?;
+            let admission_ctx = ctx.clone();
+            let ca = h.ca.clone();
+            let crl = h.crl.clone();
+            let hub_cert = h.cert.clone();
+            let admit = move |request, _peer| {
+                let context = admission_ctx.clone();
+                let ca = ca.clone();
+                let crl = crl.clone();
+                let hub_cert = hub_cert.clone();
+                async move {
+                    let mut enroller = context
+                        .fleet_enroll
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner());
+                    admit_join_request(&mut enroller, request, unix_now(), &ca, &crl, &hub_cert)
+                }
+            };
+            let ack_ctx = ctx.clone();
+            let acknowledged = move |offer_id: String, _node_id: String| {
+                let context = ack_ctx.clone();
+                async move {
+                    let mut enroller = context
+                        .fleet_enroll
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner());
+                    acknowledge_join_delivery(&mut enroller, &offer_id, unix_now());
+                }
+            };
+            eprintln!(
+                "Fleet Join listener listening on {} (TLS 1.3, pinned Hub identity)",
+                join_bound
+            );
+            tokio::spawn(crate::fleet_join::serve_shared(
+                join_listener,
+                join_acceptor,
+                admit,
+                acknowledged,
+                rx.clone(),
+            ));
+        }
     }
     if let Some(m) = cfg.member {
         let instance = instance.context("a Fleet member needs the agent's --instance")?;
@@ -278,6 +407,41 @@ mod tests {
         let d = std::env::temp_dir().join(format!("baft-fleet-run-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn join_ack_advances_only_the_issued_offer_to_awaiting_report() {
+        let mut enroller = crate::fleet_enroll::Enroller::default();
+        let id = crate::fleet_enroll::test_support::issued_offer(&mut enroller, "edge-ack", 100);
+        acknowledge_join_delivery(&mut enroller, &id, 101);
+        assert_eq!(
+            enroller.state_and_expiry(&id).unwrap().0,
+            crate::fleet_enroll::State::AwaitingReport
+        );
+    }
+
+    #[test]
+    fn join_ack_racing_deny_cannot_resurrect_offer() {
+        let mut enroller = crate::fleet_enroll::Enroller::default();
+        let id = crate::fleet_enroll::test_support::issued_offer(&mut enroller, "edge-deny", 100);
+        enroller.deny(&id).unwrap();
+        acknowledge_join_delivery(&mut enroller, &id, 101);
+        assert_eq!(
+            enroller.state_and_expiry(&id).unwrap().0,
+            crate::fleet_enroll::State::Closed
+        );
+    }
+
+    #[test]
+    fn join_ack_after_expiry_closes_without_delivery_transition() {
+        let mut enroller = crate::fleet_enroll::Enroller::default();
+        let id = crate::fleet_enroll::test_support::issued_offer(&mut enroller, "edge-expire", 100);
+        let expires = enroller.state_and_expiry(&id).unwrap().1;
+        acknowledge_join_delivery(&mut enroller, &id, expires + 1);
+        assert_eq!(
+            enroller.state_and_expiry(&id).unwrap().0,
+            crate::fleet_enroll::State::Closed
+        );
     }
 
     #[test]

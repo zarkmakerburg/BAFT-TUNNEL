@@ -244,6 +244,12 @@ impl Enroller {
     }
 
     /// Offers the operator can see (no token, no nonce, no CSR).
+    /// Returns the current state and expiry for a known offer without exposing its secrets.
+    pub fn state_and_expiry(&self, id: &str) -> Result<(State, u64), Error> {
+        let offer = self.offers.get(id).ok_or(Error::Unknown)?;
+        Ok((offer.state, offer.expires))
+    }
+
     pub fn pending(&mut self, now: u64) -> Vec<Pending> {
         self.sweep(now);
         let mut v: Vec<Pending> = self
@@ -437,6 +443,15 @@ pub(crate) mod test_support {
         let (tail, certificate) = x509_parser::pem::parse_x509_pem(pem.as_bytes()).unwrap();
         assert!(tail.iter().all(u8::is_ascii_whitespace));
         hex::encode(sha2::Sha256::digest(&certificate.contents))
+    }
+
+    /// Prepare an offer with a valid public certificate at the pre-delivery boundary.
+    pub(crate) fn issued_offer(enroller: &mut Enroller, node_id: &str, now: u64) -> String {
+        let issued = enroller.offer(node_id, now).unwrap();
+        let offer = enroller.offers.get_mut(&issued.id).unwrap();
+        offer.state = State::Issued;
+        offer.certificate = Some(certificate_pem());
+        issued.id
     }
 
     /// Prepare a real Enroller instance at the post-persistence-ACK boundary without invoking
