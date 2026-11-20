@@ -80,7 +80,7 @@ ap_cleanup() {
   (( cleanup_failed == 0 )) || return 1
 }
 # set +e: under errexit the (exit N) that restores the status would end the trap before cleanup runs.
-trap 'ap_status=$?; set +e; ap_cleanup "$ap_status"; (exit "$ap_status"); cleanup' EXIT
+trap 'ap_status=$?; set +e; ap_cleanup_status=0; ap_cleanup "$ap_status" || ap_cleanup_status=$?; if (( ap_status == 0 && ap_cleanup_status != 0 )); then ap_status=$ap_cleanup_status; fi; (exit "$ap_status"); cleanup' EXIT
 
 tar -czf "$LOCAL_TMP/ap-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-ap"

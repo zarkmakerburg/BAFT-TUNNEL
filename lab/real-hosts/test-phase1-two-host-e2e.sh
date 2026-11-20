@@ -124,6 +124,7 @@ grep -F "'\$REMOTE_DIR/echo2.log'" "$auto_pair" >/dev/null
 grep -F 'journalctl -u baft-tunnel@' "$auto_pair" >/dev/null
 grep -F 'AUTO_PAIR_CLEANUP_HOST side=$side result=pass' "$auto_pair" >/dev/null
 grep -F 'ap_cleanup "$ap_status"' "$auto_pair" >/dev/null
+grep -F 'ap_cleanup_status=$?; if (( ap_status == 0 && ap_cleanup_status != 0 ))' "$auto_pair" >/dev/null
 grep -F 'echo2.log agent.log' "$root/lab/real-hosts/phase1-two-host-e2e.sh" >/dev/null
 grep -F 'E2E_REMOTE_TMP_CLEANUP side=$side result=pass' "$root/lab/real-hosts/phase1-two-host-e2e.sh" >/dev/null
 
