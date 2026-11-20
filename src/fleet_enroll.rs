@@ -852,6 +852,142 @@ mod tests {
     }
 
     #[test]
+    fn exact_join_retry_after_ack_redelivers_the_same_certificate() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-retry", 100).unwrap();
+        let request_csr = csr(&issued.node_id, Some(&issued.nonce));
+        e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &request_csr,
+            101,
+        )
+        .unwrap();
+        let fingerprint = e.pending(102)[0].fingerprint.clone().unwrap();
+        let certificate = test_support::certificate_pem();
+        e.confirm(
+            &issued.id,
+            &fingerprint,
+            103,
+            |_, _| Ok(certificate.clone()),
+        )
+        .unwrap();
+        e.mark_delivered(&issued.id, 104).unwrap();
+
+        assert_eq!(
+            e.submit(
+                &issued.id,
+                &issued.node_id,
+                &issued.token,
+                &issued.nonce,
+                &request_csr,
+                105,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            e.certificate_for_delivery(&issued.id),
+            Ok(certificate.as_str())
+        );
+        assert_eq!(e.mark_delivered(&issued.id, 105), Ok(()));
+        assert_eq!(
+            e.state_and_expiry(&issued.id).unwrap().0,
+            State::AwaitingReport
+        );
+    }
+
+    #[test]
+    fn awaiting_report_retry_rejects_a_changed_csr_or_credential() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-retry-guard", 100).unwrap();
+        let request_csr = csr(&issued.node_id, Some(&issued.nonce));
+        e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &request_csr,
+            101,
+        )
+        .unwrap();
+        let fingerprint = e.pending(102)[0].fingerprint.clone().unwrap();
+        let certificate = test_support::certificate_pem();
+        e.confirm(
+            &issued.id,
+            &fingerprint,
+            103,
+            |_, _| Ok(certificate.clone()),
+        )
+        .unwrap();
+        e.mark_delivered(&issued.id, 104).unwrap();
+
+        let changed_csr = csr(&issued.node_id, Some(&issued.nonce));
+        assert_eq!(
+            e.submit(
+                &issued.id,
+                &issued.node_id,
+                &issued.token,
+                &issued.nonce,
+                &changed_csr,
+                105,
+            ),
+            Err(Error::WrongState)
+        );
+        assert_eq!(
+            e.submit(
+                &issued.id,
+                &issued.node_id,
+                &"00".repeat(16),
+                &issued.nonce,
+                &request_csr,
+                105,
+            ),
+            Err(Error::WrongState)
+        );
+    }
+
+    #[test]
+    fn expired_awaiting_report_offer_cannot_be_retried_for_delivery() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-retry-expired", 100).unwrap();
+        let request_csr = csr(&issued.node_id, Some(&issued.nonce));
+        e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &request_csr,
+            101,
+        )
+        .unwrap();
+        let fingerprint = e.pending(102)[0].fingerprint.clone().unwrap();
+        let certificate = test_support::certificate_pem();
+        e.confirm(
+            &issued.id,
+            &fingerprint,
+            103,
+            |_, _| Ok(certificate.clone()),
+        )
+        .unwrap();
+        e.mark_delivered(&issued.id, 104).unwrap();
+
+        assert_eq!(
+            e.submit(
+                &issued.id,
+                &issued.node_id,
+                &issued.token,
+                &issued.nonce,
+                &request_csr,
+                issued.expires + 1,
+            ),
+            Err(Error::Expired)
+        );
+        assert_eq!(e.state_and_expiry(&issued.id).unwrap().0, State::Closed);
+    }
+
+    #[test]
     fn first_report_must_match_node_and_exact_delivered_certificate() {
         let mut e = Enroller::default();
         let i = e.offer("edge-1", 100).unwrap();
