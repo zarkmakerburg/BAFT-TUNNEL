@@ -18,6 +18,83 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/baft-panel-pairing.XXXXXX")"
 CREATED_USER=0; CREATED_GROUP=0; CREATED_AGENT=0; INSTALLED=0; ECHO_PID=""
 die() { echo "panel pairing: $*" >&2; exit 1; }
 step() { echo "[step] $*"; }
+
+# Keep the last API exchange and systemd/helper state when the integration harness fails.
+# Request bodies are deliberately not logged (they can contain peer bundle material).
+diagnose_failure() {
+  echo "[diagnostic] last API exchange (request body omitted):" >&2
+  [[ ! -f "$TMP/api-last.meta" ]] || cat "$TMP/api-last.meta" >&2
+  [[ ! -s "$TMP/api-last.stderr" ]] || { echo "[diagnostic] curl stderr:" >&2; cat "$TMP/api-last.stderr" >&2; }
+  if [[ -s "$TMP/api-last.body" ]]; then
+    echo "[diagnostic] last API response summary:" >&2
+    python3 - "$TMP/api-last.body" <<'PYDIAG' >&2
+import json, sys
+try:
+    value = json.load(open(sys.argv[1]))
+except Exception as exc:
+    print(f"non-JSON response ({exc})")
+else:
+    keys = ("result", "reason", "source", "replayed", "verification", "rollback", "ownership_error")
+    print(json.dumps({k: value[k] for k in keys if k in value}, sort_keys=True))
+PYDIAG
+  fi
+  for unit in "baft-tunnel-agent@$NAME.service" "baft-tunnel-control-setup@$NAME.path" "baft-tunnel-control-setup@$NAME.service" "baft-tunnel@$NAME.service"; do
+    echo "[diagnostic] systemd $unit" >&2
+    sudo systemctl show "$unit" -p LoadState -p ActiveState -p SubState -p MainPID -p ExecMainCode -p ExecMainStatus -p Result --no-pager >&2 2>/dev/null || true
+    sudo systemctl status "$unit" --no-pager -l >&2 2>/dev/null || true
+  done
+  echo "[diagnostic] agent/helper process snapshot:" >&2
+  ps -eo pid,ppid,user,stat,lstart,args | grep -E '[b]aft-tunnel|[s]etup helper' >&2 || true
+  echo "[diagnostic] live control-channel files:" >&2
+  for path in "$CTL/$NAME.setup" "$CTL/$NAME.setup-result"; do
+    sudo stat -Lc 'mode=%a uid=%u gid=%g size=%s path=%n' "$path" >&2 || true
+    if [[ "$path" == *setup-result ]] && sudo test -e "$path"; then
+      if sudo -u baft-tunnel-agent test -r "$path"; then
+        echo "[diagnostic] setup result is readable by baft-tunnel-agent" >&2
+        sudo -u baft-tunnel-agent python3 - "$path" <<'PYRESULT' >&2
+import json, sys
+v = json.load(open(sys.argv[1]))
+keys = ("id", "result", "reason", "source", "receipt_stored", "receipt_error", "request_sha256")
+print(json.dumps({k: v[k] for k in keys if k in v}, sort_keys=True))
+PYRESULT
+      else
+        echo "[diagnostic] setup result is NOT readable by baft-tunnel-agent" >&2
+      fi
+    fi
+  done
+  echo "[diagnostic] helper receipts (sanitized):" >&2
+  for key in pair-join-0000 pair-join-0001; do
+    receipt="/var/lib/baft-tunnel-control/setup-receipts/$NAME/$key.json"
+    if sudo test -f "$receipt"; then
+      sudo python3 - "$receipt" <<'PYDIAG' >&2
+import json, sys
+v = json.load(open(sys.argv[1]))
+keys = ("id", "result", "reason", "source", "verification", "rollback", "ownership_error")
+print(json.dumps({k: v[k] for k in keys if k in v}, sort_keys=True))
+PYDIAG
+    else
+      echo "missing: $receipt" >&2
+    fi
+  done
+  echo "[diagnostic] recent unit journal:" >&2
+  sudo journalctl -u "baft-tunnel-agent@$NAME.service" -u "baft-tunnel-control-setup@$NAME.service" -u "baft-tunnel@$NAME.service" -n 160 --no-pager >&2 2>/dev/null || true
+}
+
+capture_helper_receipt() {
+  local key="$1" receipt="/var/lib/baft-tunnel-control/setup-receipts/$NAME/$1.json"
+  if sudo test -f "$receipt"; then
+    echo "[helper-receipt] $key:"
+    sudo python3 - "$receipt" <<'PYRECEIPT'
+import json, sys
+v = json.load(open(sys.argv[1]))
+keys = ("id", "result", "reason", "source", "verification", "rollback", "ownership_error")
+print(json.dumps({k: v[k] for k in keys if k in v}, sort_keys=True))
+PYRECEIPT
+  else
+    echo "[helper-receipt] $key: not present yet"
+  fi
+}
+
 [[ -x "$BIN" ]] || die "missing executable: $BIN"
 for c in systemctl python3 sudo curl; do command -v "$c" >/dev/null 2>&1 || die "missing command: $c"; done
 v="$(systemctl --version | awk 'NR == 1 { print $2 }')"
@@ -34,6 +111,7 @@ cleanup() {
   local status=$?
   trap - EXIT
   if [[ "$status" != 0 ]]; then
+    diagnose_failure
     sudo journalctl -u "baft-tunnel-agent@$NAME.service" -u "baft-tunnel-control-setup@$NAME.service" \
       -u "baft-tunnel@$NAME.service" -n 120 --no-pager >&2 2>/dev/null || true
   fi
@@ -65,7 +143,35 @@ sudo systemctl is-active --quiet "baft-tunnel-control-setup@$NAME.path" || die "
 for n in $(seq 1 60); do curl -fs "http://$API/v1/health" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://$API/v1/health" >/dev/null || die "agent is not running in setup mode"
 TOKEN="$(sudo cat /var/lib/baft-tunnel-agent/token)"
-api() { curl -s --max-time 90 -X "$1" "http://$API$2" -H "Authorization: Bearer $TOKEN" ${3:+--data-binary "$3"}; }
+api() {
+  local method="$1" path="$2" data="${3-}" response body http_status curl_status started duration
+  started=$SECONDS
+  local -a args=(--silent --show-error --max-time 90 --write-out $'\n__BAFT_HTTP_STATUS__:%{http_code}' \
+    -X "$method" "http://$API$path" -H "Authorization: Bearer $TOKEN")
+  [[ "$#" -lt 3 ]] || args+=(--data-binary "$data")
+  : >"$TMP/api-last.stderr"
+  set +e
+  response="$(curl "${args[@]}" 2>"$TMP/api-last.stderr")"
+  curl_status=$?
+  set -e
+  if [[ "$response" == *$'\n__BAFT_HTTP_STATUS__:'* ]]; then
+    http_status="${response##*$'\n__BAFT_HTTP_STATUS__:'}"
+    body="${response%$'\n__BAFT_HTTP_STATUS__:'*}"
+  else
+    http_status=000
+    body="$response"
+  fi
+  duration=$((SECONDS - started))
+  printf '%s' "$body" >"$TMP/api-last.body"
+  printf 'method=%s path=%s curl_exit=%s http_status=%s duration_seconds=%s\n' \
+    "$method" "$path" "$curl_status" "$http_status" "$duration" >"$TMP/api-last.meta"
+  if [[ "$curl_status" != 0 ]]; then
+    echo "[api-error] $method $path: curl exit $curl_status (HTTP $http_status)" >&2
+    cat "$TMP/api-last.stderr" >&2
+    return "$curl_status"
+  fi
+  printf '%s' "$body"
+}
 code() { curl -s -o /dev/null -w '%{http_code}' --max-time 90 -X "$1" "http://$API$2" -H "Authorization: Bearer $TOKEN" ${3:+--data-binary "$3"}; }
 field() { python3 -c 'import sys,json; d=json.load(sys.stdin)
 for k in sys.argv[1].split("."): d = d.get(k, "") if isinstance(d, dict) else ""
@@ -147,6 +253,7 @@ v="$(api POST /v1/setup/bundle/inspect "{\"bundle\":$peer_json,\"checksum\":\"$c
 [[ "$(echo "$v" | field checksum_match)" == True && "$(echo "$v" | field matches_this_node)" == True ]] || { echo "$v" >&2; die "import preview rejected the right bundle"; }
 out="$(api POST /v1/setup/apply "{\"stage\":\"join\",\"confirm\":true,\"idempotency_key\":\"pair-join-0000\",\"plan\":$PLAN,\"bundle\":$peer_json,\"checksum\":\"00000000-00000000-00000000-00000000\"}")"
 [[ "$(echo "$out" | field result)" != applied ]] || die "join with a wrong checksum was applied"
+capture_helper_receipt pair-join-0000
 [[ ! -e "/etc/baft-tunnel/$NAME.json" ]] || die "a refused join wrote the configuration"
 out="$(api POST /v1/setup/apply "{\"stage\":\"join\",\"confirm\":true,\"idempotency_key\":\"pair-join-0001\",\"plan\":$PLAN,\"bundle\":$peer_json,\"checksum\":\"$cb\"}")"
 [[ "$(echo "$out" | field result)" == applied ]] || { echo "$out" >&2; die "join through the panel was not applied"; }
