@@ -240,6 +240,11 @@ pub(crate) fn admit_join_request(
     if expires < now || state == State::Closed {
         return crate::fleet_join::Admission::Close;
     }
+    if state == State::Submitted {
+        // The CSR is valid and stored; operator approval is expected to take time.
+        // Keep the network refusal generic, but do not charge this wait to IP limits.
+        return crate::fleet_join::Admission::Pending;
+    }
     if state != State::Issued {
         return crate::fleet_join::Admission::Retry;
     }
@@ -465,6 +470,45 @@ mod tests {
         let d = std::env::temp_dir().join(format!("baft-fleet-run-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn operator_approval_wait_is_not_charged_as_an_ip_failure_but_bad_token_is() {
+        let mut enroller = crate::fleet_enroll::Enroller::default();
+        let issued =
+            crate::fleet_enroll::test_support::submitted_offer(&mut enroller, "edge-pending", 100);
+        let dir = tmp("pending-admission");
+        let ca = dir.join("ca.pem");
+        let crl = dir.join("ca.crl");
+        let hub = dir.join("hub.pem");
+        std::fs::write(&ca, "CA").unwrap();
+        std::fs::write(&crl, "CRL").unwrap();
+        std::fs::write(&hub, "HUB").unwrap();
+
+        let valid = crate::fleet_join::JoinRequest {
+            offer_id: issued.id.clone(),
+            node_id: issued.node_id.clone(),
+            token: issued.token.clone(),
+            nonce: issued.nonce.clone(),
+            csr_pem: "valid-csr-fixture".into(),
+        };
+        assert!(matches!(
+            admit_join_request(&mut enroller, valid, 101, &ca, &crl, &hub),
+            crate::fleet_join::Admission::Pending
+        ));
+
+        let invalid = crate::fleet_join::JoinRequest {
+            offer_id: issued.id,
+            node_id: issued.node_id,
+            token: "0".repeat(64),
+            nonce: issued.nonce,
+            csr_pem: "valid-csr-fixture".into(),
+        };
+        assert!(matches!(
+            admit_join_request(&mut enroller, invalid, 102, &ca, &crl, &hub),
+            crate::fleet_join::Admission::Retry
+        ));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

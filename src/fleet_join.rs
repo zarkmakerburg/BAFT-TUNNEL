@@ -548,6 +548,8 @@ pub(crate) fn client_connector(
 /// certificates/trust material and waits for the member's transport acknowledgement.
 pub(crate) enum Admission {
     Retry,
+    /// A valid CSR is stored and awaits explicit operator confirmation.
+    Pending,
     Close,
     Deliver {
         response: JoinResponse,
@@ -564,6 +566,7 @@ impl Admission {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SessionOutcome {
     Failed,
+    Pending,
     Closed,
     Acknowledged { offer_id: String, node_id: String },
 }
@@ -751,6 +754,10 @@ where
             let _ = write_frame(&mut tls, &refusal("retry")).await;
             SessionOutcome::Failed
         }
+        Admission::Pending => {
+            let _ = write_frame(&mut tls, &refusal("retry")).await;
+            SessionOutcome::Pending
+        }
         Admission::Close => {
             let _ = write_frame(&mut tls, &refusal("offer_closed")).await;
             SessionOutcome::Closed
@@ -896,6 +903,7 @@ where
                         sessions.abort_all();
                         bail!("Fleet Join offer was closed by the admission controller");
                     }
+                    Ok((_, SessionOutcome::Pending)) => {}
                     Ok((ip, SessionOutcome::Failed)) => {
                         failures.record_failure(ip, Instant::now());
                     }
@@ -977,6 +985,7 @@ where
                     Ok((_ip, SessionOutcome::Acknowledged { offer_id, node_id })) => {
                         acknowledged(offer_id, node_id).await;
                     }
+                    Ok((_, SessionOutcome::Pending)) => {}
                     Ok((ip, SessionOutcome::Failed | SessionOutcome::Closed)) => {
                         failures.record_failure(ip, Instant::now());
                     }
@@ -1353,6 +1362,62 @@ mod tests {
         std::fs::create_dir_all(&member_dir).unwrap();
         let (_private_key_path, csr) = hub_key_and_csr(&member_dir, node_id);
         csr
+    }
+
+    #[tokio::test]
+    async fn shared_listener_pending_operator_approval_does_not_consume_ip_failure_budget() {
+        let material = material("shared-pending-budget", "hub-1", "DNS:localhost");
+        let csr = member_csr(&material);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expires = unix_now() + 30;
+        let offer = join_offer(&material, address, expires);
+        let response = std::sync::Arc::new(join_response(&material, "node-1", &csr));
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let response_for_server = response.clone();
+        let attempts_for_server = attempts.clone();
+        let acceptor = crate::tls::fleet_join_acceptor(&material.cert, &material.key).unwrap();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();
+        let server = tokio::spawn(serve_shared(
+            listener,
+            acceptor,
+            move |_request, _peer| {
+                let attempt = attempts_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let response = response_for_server.clone();
+                async move {
+                    if attempt < MAX_JOIN_FAILURES_PER_IP + 1 {
+                        Admission::Pending
+                    } else {
+                        Admission::deliver((*response).clone(), expires)
+                    }
+                }
+            },
+            move |offer_id, node_id| {
+                let ack_tx = ack_tx.clone();
+                async move {
+                    let _ = ack_tx.send((offer_id, node_id));
+                }
+            },
+            shutdown_rx,
+        ));
+
+        for _ in 0..(MAX_JOIN_FAILURES_PER_IP + 1) {
+            assert!(join(&offer, &csr).await.is_err());
+        }
+        let session = join(&offer, &csr).await.unwrap();
+        session.ack(true).await.unwrap();
+        assert_eq!(
+            ack_rx.recv().await,
+            Some((offer.offer_id.clone(), "node-1".into()))
+        );
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            MAX_JOIN_FAILURES_PER_IP + 2
+        );
+        shutdown_tx.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(material.root);
     }
 
     #[tokio::test]
