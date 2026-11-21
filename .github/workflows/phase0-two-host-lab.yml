@@ -12,8 +12,9 @@ on:
 permissions:
   contents: read
 
+# Shared across every real-host workflow so read-only preflights cannot overlap mutating LABs.
 concurrency:
-  group: baft-tunnel-phase0-two-host-lab
+  group: baft-tunnel-trusted-lab-hosts
   cancel-in-progress: false
 
 jobs:

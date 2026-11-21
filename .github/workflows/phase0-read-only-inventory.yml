@@ -12,8 +12,9 @@ on:
 permissions:
   contents: read
 
+# Shared lock prevents inventory reads from overlapping state-changing LAB workflows.
 concurrency:
-  group: baft-tunnel-read-only-host-inventory
+  group: baft-tunnel-trusted-lab-hosts
   cancel-in-progress: false
 
 jobs:

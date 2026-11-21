@@ -12,10 +12,10 @@ on:
 permissions:
   contents: read
 
-# Serialize against the existing Phase 0 two-host workflow: only one real-host
-# SSH workflow may use the registered two-host LAB at a time.
+# Share the same lock as Phase 1 and read-only workflows: only one real-host
+# operation may use any registered BAFT-TUNNEL LAB environment at a time.
 concurrency:
-  group: baft-tunnel-phase0-two-host-lab
+  group: baft-tunnel-trusted-lab-hosts
   cancel-in-progress: false
 
 jobs:
