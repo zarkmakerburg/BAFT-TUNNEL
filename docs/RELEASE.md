@@ -87,7 +87,9 @@ installer and verifier; publish a new tag after this change is merged.
 
 - Tag `v0.3.1-rc.1` (`4c2a5bc`). Prerelease channel only; the README one-line install still pins `v0.3.0`.
 - Doctor: LAB PASS, one run ([44351670022](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44351670022)).
-- Upgrade and pairing LAB for this tag are pending. Do not claim them until recorded.
+- Upgrade LAB `v0.3.0` to `v0.3.1-rc.1` with session rotation 10 s (1 h soak): LAB PASS, one run ([44368821156](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44368821156)).
+- Upgrade LAB with rotation 30 s: FAIL ([44353076174](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44353076174)). 3 of 243 two-megabyte probes were cut mid-transfer (34-38 s, connection reset on the draining session); 0 restarts, flat fd and memory. Not accepted as a path outage. Rotation is opt-in and 10 s is the tested setting.
+- Pairing LAB for this tag is not recorded. Do not claim it until it is.
 - Fleet is not enabled for remote management; enrollment confirm/sign is not yet tested end-to-end (see roadmap §9.9).
 
 ## Notes
