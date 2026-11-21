@@ -11,6 +11,11 @@
 
 echo "=== AUTO PAIRING: installed path via agent API, Direct then Reverse, from ${MVP_SOURCE} ==="
 stop_role iran serve; stop_role abroad serve; stop_role iran forward; stop_role abroad forward; sleep 1
+# The baseline E2E logs are no longer authoritative after those processes stop. Remove them so
+# a later pairing failure cannot accidentally report stale baseline tunnel output as AP evidence.
+for side in iran abroad; do
+  ssh_host "$side" "rm -f '$REMOTE_DIR/serve.log' '$REMOTE_DIR/forward.log' '$REMOTE_DIR/echo.log' '$REMOTE_DIR/impair.log'" || exit 1
+done
 AP_SVC=18094; AP_AG=18096; AP_TP="$E2E_PORT"
 EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGD=/var/lib/baft-tunnel-agent/lab-agent; PKG="$REMOTE_DIR/pkg"
 AP_SHA="$(sha256sum "$MVP_BINARY_PATH" | awk '{print $1}')"
@@ -45,9 +50,37 @@ ap_users() {
   done
 }
 AP_INSTANCES=""
-ap_cleanup() { for side in iran abroad; do ap_purge "$side" $AP_INSTANCES; done; ap_users; }
+ap_failure_evidence() {
+  local status="$1" side inst
+  (( status != 0 )) || return 0
+  echo "--- automatic-pairing failure evidence (candidate=${MVP_SOURCE}) ---" >&2
+  for side in iran abroad; do
+    echo "--- auto-pair host=$side ---" >&2
+    ssh_host "$side" "for f in '$REMOTE_DIR/agent.log' '$REMOTE_DIR/echo2.log'; do
+        if [ -f \"\$f\" ]; then echo === \"\$f\" ===; tail -n 80 \"\$f\"; fi;
+      done;
+      for i in $AP_INSTANCES; do echo === journal baft-tunnel@\$i ===; journalctl -u baft-tunnel@\$i.service -n 80 --no-pager 2>&1; done;
+      echo '# test-port sockets'; ss -ltnp 2>/dev/null | grep -E ':(18094|18096|$AP_TP)\b' || true;
+      echo '# relevant processes'; ps -eo pid,ppid,user,args | grep -E '[b]aft-tunnel|[e]cho.py' | head -n 40" >&2 || true
+  done
+}
+ap_cleanup() {
+  local status="${1:-0}" cleanup_failed=0 side
+  ap_failure_evidence "$status"
+  for side in iran abroad; do
+    ap_purge "$side" $AP_INSTANCES
+    if ssh_host "$side" "! test -e '$UB' && ! test -e '$EB' && ! test -e /var/lib/baft-tunnel && ! test -e /run/baft-tunnel/control && [ \"\$(systemctl list-unit-files --no-legend 'baft-tunnel*' 2>/dev/null | wc -l)\" = 0 ]"; then
+      echo "AUTO_PAIR_CLEANUP_HOST side=$side result=pass"
+    else
+      echo "AUTO_PAIR_CLEANUP_HOST side=$side result=fail" >&2
+      cleanup_failed=1
+    fi
+  done
+  ap_users
+  (( cleanup_failed == 0 )) || return 1
+}
 # set +e: under errexit the (exit N) that restores the status would end the trap before cleanup runs.
-trap 'ap_status=$?; set +e; ap_cleanup; (exit "$ap_status"); cleanup' EXIT
+trap 'ap_status=$?; set +e; ap_cleanup_status=0; ap_cleanup "$ap_status" || ap_cleanup_status=$?; if (( ap_status == 0 && ap_cleanup_status != 0 )); then ap_status=$ap_cleanup_status; fi; (exit "$ap_status"); cleanup' EXIT
 
 tar -czf "$LOCAL_TMP/ap-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-ap"
@@ -75,6 +108,58 @@ ap_wait_state() { # side want_state timeout -> prints the status JSON; fails on 
   done
   echo "timed out waiting for state $want on $side (last state: ${st:-none})" >&2; return 1
 }
+
+ap_pair_file_status() { # side instance -> prints only state and a bounded failure reason (never code/nonce/fingerprint)
+  local side="$1" inst="$2" raw
+  raw="$(ssh_host "$side" "if test -f /run/baft-tunnel/control/$inst.pair-status; then cat /run/baft-tunnel/control/$inst.pair-status; else printf '__MISSING__'; fi" </dev/null)" || return 1
+  python3 -c 'import json,sys
+raw=sys.stdin.read().strip()
+if raw == "__MISSING__":
+    print("missing")
+else:
+    try:
+        value=json.loads(raw)
+        state=value.get("state", "malformed") if isinstance(value,dict) else "malformed"
+        print(state)
+        if state == "failed":
+            reason=str(value.get("reason", "unspecified"))[:240]
+            print("reason="+reason, file=sys.stderr)
+    except (ValueError, TypeError):
+        print("malformed")' <<<"$raw"
+}
+
+ap_pair_failure_diagnostics() { # side instance -> bounded, non-secret failure evidence
+  local side="$1" inst="$2" http
+  echo "--- pairing failure evidence: side=$side instance=$inst ---" >&2
+  echo "helper_status=$(ap_pair_file_status "$side" "$inst" 2>&1 | tr '\n' ' ')" >&2 || true
+  http="$(ssh_host "$side" "curl -sS -o /dev/null -w '%{http_code} bytes=%{size_download}' -H 'Authorization: Bearer \$(cat $AGD/token)' http://127.0.0.1:$AP_AG/v1/pair/status 2>/dev/null || printf 'transport-error'" </dev/null 2>/dev/null || true)"
+  echo "agent_pair_status_http=$http" >&2
+  ssh_host "$side" "systemctl show baft-tunnel-control-pair@$inst.service -p LoadState -p ActiveState -p SubState -p Result -p ExecMainStatus --no-pager 2>/dev/null || true;
+    systemctl show baft-tunnel-control-pair@$inst.path -p LoadState -p ActiveState -p SubState --no-pager 2>/dev/null || true;
+    journalctl -u baft-tunnel-control-pair@$inst.service -n 20 --no-pager -o cat 2>/dev/null || true" >&2 || true
+}
+
+ap_wait_pair_file_done() { # side instance timeout -> waits for durable helper status, independent of Agent setup/runtime mode
+  local side="$1" inst="$2" limit="$3" t0=$SECONDS state=missing
+  while (( SECONDS - t0 < limit )); do
+    state="$(ap_pair_file_status "$side" "$inst" 2>/dev/null || printf 'unreadable')"
+    case "$state" in
+      done) return 0 ;;
+      failed)
+        echo "pair helper failed on $side ($inst)" >&2
+        ap_pair_failure_diagnostics "$side" "$inst"
+        return 1
+        ;;
+      missing|idle|working|waiting|approval|unreadable|malformed) ;;
+      *) echo "unexpected pair helper state on $side ($inst): $state" >&2 ;;
+    esac
+    sleep 1
+  done
+  echo "timed out waiting for helper status done on $side ($inst); last helper state: $state" >&2
+  ap_pair_failure_diagnostics "$side" "$inst"
+  return 1
+}
+
 ap_cfg_check() { # side instance expected_python_assertion
   # the assertion travels on stdin: it contains single quotes that would break a quoted ssh command
   { printf 'import json\nc=json.load(open("%s"))\n' "$EB/$2.json"; printf '%s\n' "${3//;/$'\n'}"; } | ssh_host "$1" "python3 -" &&
@@ -86,12 +171,30 @@ ap_diag() { # side label : tiers must show a verified, authorized, data-carrying
   ap_api "$side" POST /v1/diagnostics </dev/null >"$LOCAL_TMP/ap-diag-$label-$side.json"
   python3 - "$LOCAL_TMP/ap-diag-$label-$side.json" "$side" <<'PY' || { cat "$LOCAL_TMP/ap-diag-$label-$side.json" >&2; echo "diagnostics did not verify the paired tunnel on $side" >&2; return 1; }
 import json, sys
-d = json.load(open(sys.argv[1])); r = {t["id"]: t["result"] for t in d["tiers"]}
+d = json.load(open(sys.argv[1])); tiers = {t["id"]: t for t in d["tiers"]}; r = {k: v["result"] for k, v in tiers.items()}
 print("tiers[%s]=%s" % (sys.argv[2], json.dumps(r, sort_keys=True)))
-for k in ("secure_channel", "identity", "authorization", "session"):
+for k in ("secure_channel", "identity", "authorization", "session", "integrity"):
     assert r.get(k) == "pass", (k, r)
+assert tiers["integrity"].get("source") == "in_product_probe", tiers["integrity"]
+assert tiers["integrity"].get("params", {}).get("age_s", 999) <= 60, tiers["integrity"]
 assert d["unit"]["result"] == "active", d
 PY
+}
+
+ap_verify_diag() { # side label direction : run the authenticated B2 probe, then require fresh diagnostics PASS
+  local side="$1" label="$2" direction="$3" key body
+  key="apv-${label}-${side}-${RANDOM}${RANDOM}"
+  body="{\"idempotency_key\":\"$key\"}"
+  ap_api "$side" POST /v1/verify <<<"$body" >"$LOCAL_TMP/ap-verify-$label-$side.json"
+  python3 - "$LOCAL_TMP/ap-verify-$label-$side.json" "$side" "$direction" <<'PY' || { cat "$LOCAL_TMP/ap-verify-$label-$side.json" >&2; echo "authenticated integrity probe failed on $side ($label)" >&2; return 1; }
+import json, sys
+v = json.load(open(sys.argv[1]))
+assert v.get("result") == "pass", v
+assert v.get("sha256_match") is True and v.get("bytes") == 65536, v
+assert v.get("direction") == sys.argv[3], v
+print("integrity_probe[%s] direction=%s result=%s bytes=%s sha256_match=%s" % (sys.argv[2], v.get("direction"), v.get("result"), v.get("bytes"), v.get("sha256_match")))
+PY
+  ap_diag "$side" "$label"
 }
 
 ap_round() { # name direction listener_side joiner_side joiner_location
@@ -143,16 +246,10 @@ ap_round() { # name direction listener_side joiner_side joiner_location
   [[ "$(ap_api "$ls" POST /v1/pair/approve <<<'{"approve":true,"nonce":"wrong"}' | apjf error)" == *"no matching approval"* ]] || { echo "approval with a wrong nonce was not refused" >&2; return 1; }
   [[ "$(ap_api "$ls" GET /v1/pair/status </dev/null | apjf state)" == approval ]] || { echo "wrong-nonce approval changed the state" >&2; return 1; }
   [[ "$(ap_api "$ls" POST /v1/pair/approve <<<"{\"approve\":true,\"nonce\":\"$nonce\"}" | apjf ok)" == True ]] || { echo "approval was not taken" >&2; return 1; }
-  ap_wait_state "$ls" done 150 >/dev/null || return 1
-  # the joiner agent exits and restarts once the configuration appears (setup mode), so its final state is read
-  # from the helper status file rather than through the agent
-  local t0=$SECONDS jst=""
-  while (( SECONDS - t0 < 150 )); do
-    jst="$(ssh_host "$js" "cat /run/baft-tunnel/control/$ji.pair-status 2>/dev/null" </dev/null | apjf state)"
-    [[ "$jst" == done || "$jst" == failed ]] && break
-    sleep 1
-  done
-  [[ "$jst" == done ]] || { echo "joiner pairing did not finish (state: ${jst:-none})" >&2; return 1; }
+  # Both agents may exit setup mode as soon as the helper writes config. The API route is setup-only,
+  # so completion is read from each durable root-helper status file, not from /v1/pair/status.
+  ap_wait_pair_file_done "$ls" "$li" 150 || return 1
+  ap_wait_pair_file_done "$js" "$ji" 150 || return 1
   # both agents reload the new configuration (exit and restart); wait until they answer again as configured
   for side in "$ls" "$js"; do
     local sout=""
@@ -168,12 +265,12 @@ ap_round() { # name direction listener_side joiner_side joiner_location
   done
 
   if [[ "$dir" == direct ]]; then
-    ap_cfg_check "$ls" "$li" "assert c['mode']=='serve' and c['direction']=='direct' and c['engine']=='tcp-tls' and c['target']=='127.0.0.1:$AP_SVC' and 'session_rotate_secs' not in c" || return 1
+    ap_cfg_check "$ls" "$li" "assert c['mode']=='serve' and c['direction']=='direct' and c['engine']=='tcp-tls' and c['target']=='127.0.0.1:$AP_SVC' and 'session_rotate_secs' not in c;assert c['protocol_version']==2" || return 1
     if [[ "$jloc" == iran ]]; then rot="assert c.get('session_rotate_secs')==10"; else rot="assert 'session_rotate_secs' not in c"; fi
-    ap_cfg_check "$js" "$ji" "assert c['mode']=='forward' and c['direction']=='direct' and c['listen']=='127.0.0.1:$AP_SVC' and c['remote']=='$lhost:$AP_TP';$rot" || return 1
+    ap_cfg_check "$js" "$ji" "assert c['mode']=='forward' and c['direction']=='direct' and c['listen']=='127.0.0.1:$AP_SVC' and c['remote']=='$lhost:$AP_TP';$rot;assert c['protocol_version']==2" || return 1
   else
-    ap_cfg_check "$ls" "$li" "assert c['mode']=='serve' and c['direction']=='reverse' and c['ingress']=='127.0.0.1:$AP_SVC' and 'target' not in c" || return 1
-    ap_cfg_check "$js" "$ji" "assert c['mode']=='forward' and c['direction']=='reverse' and c['target']=='127.0.0.1:$AP_SVC' and 'listen' not in c and 'session_rotate_secs' not in c and c['remote']=='$lhost:$AP_TP'" || return 1
+    ap_cfg_check "$ls" "$li" "assert c['mode']=='serve' and c['direction']=='reverse' and c['ingress']=='127.0.0.1:$AP_SVC' and 'target' not in c;assert c['protocol_version']==2" || return 1
+    ap_cfg_check "$js" "$ji" "assert c['mode']=='forward' and c['direction']=='reverse' and c['target']=='127.0.0.1:$AP_SVC' and 'listen' not in c and 'session_rotate_secs' not in c and c['remote']=='$lhost:$AP_TP';assert c['protocol_version']==2" || return 1
   fi
   # the pair CA key stays on the listener only
   ssh_host "$ls" "test -s $EB/pair-ca/ca.key" || { echo "listener has no pair CA key" >&2; return 1; }
@@ -206,9 +303,9 @@ ap_round() { # name direction listener_side joiner_side joiner_location
       { echo "reverse service node listens on the tunnel port or has no outbound connection" >&2; return 1; }
   fi
   sleep 12   # the agents sample unit counters every 5 s
-  ap_diag "$ls" "$rn" || return 1
-  ap_diag "$js" "$rn" || return 1
-  echo "AUTO_PAIR_ROUND name=$rn direction=$dir listener=$ls joiner=$js joiner_location=$jloc fingerprints_match=1 wrong_nonce_refused=1 second_request_refused=1 configs_ok=1 ca_key_listener_only=1 workers_gone=1 start_via_agent=1 non_root=1 integrity_64k_2m=1 up_s=$AP_UP_S diagnostics_tiers=pass"
+  ap_verify_diag "$ls" "$rn" "$dir" || return 1
+  ap_verify_diag "$js" "$rn" "$dir" || return 1
+  echo "AUTO_PAIR_ROUND name=$rn direction=$dir listener=$ls joiner=$js joiner_location=$jloc fingerprints_match=1 wrong_nonce_refused=1 second_request_refused=1 configs_ok=1 ca_key_listener_only=1 workers_gone=1 start_via_agent=1 non_root=1 integrity_64k_2m=1 integrity_probe_both_nodes=pass up_s=$AP_UP_S diagnostics_tiers=pass"
   ap_cleanup
   for side in iran abroad; do
     ssh_host "$side" "! test -e $UB && ! test -e $EB && ! test -e /var/lib/baft-tunnel && ! test -e /run/baft-tunnel/control" || { echo "uninstall left BAFT-TUNNEL resources on $side" >&2; return 1; }
