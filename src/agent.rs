@@ -120,6 +120,8 @@ pub struct Ctx {
     /// Address the Fleet hub listener is bound to; `Some` only after `--fleet-config` bound it.
     #[allow(dead_code)] // read by GET /v1/fleet/nodes once that route reports the hub listener
     pub fleet_hub_listen: std::sync::Mutex<Option<SocketAddr>>,
+    /// Public, non-secret parameters used to create a one-time encoded Fleet Join offer.
+    pub fleet_join_offer: std::sync::Mutex<Option<crate::fleet_run::JoinOfferContext>>,
     /// ADR-0051 Path A enrollment offers (in memory only; nothing persists a token).
     pub fleet_enroll: std::sync::Mutex<crate::fleet_enroll::Enroller>,
     /// systemd access for the bound instance: state reads, and start/stop/enable/disable requests
@@ -185,6 +187,7 @@ impl Ctx {
             long: std::sync::Mutex::new(long),
             fleet: std::sync::Mutex::new(crate::fleet::Hub::default()),
             fleet_hub_listen: std::sync::Mutex::new(None),
+            fleet_join_offer: std::sync::Mutex::new(None),
             fleet_enroll: std::sync::Mutex::new(crate::fleet_enroll::Enroller::default()),
             units: Arc::new(crate::apply::SystemUnits::default()),
             config_dir: PathBuf::from("/etc/baft-tunnel"),
@@ -3581,6 +3584,8 @@ struct FleetHubProvisionRequest {
     hub_name: String,
     dial_san: String,
     listen: String,
+    #[serde(default)]
+    join_listen: Option<String>,
 }
 
 /// Provision a Hub identity through the bounded root helper. The response is deliberately marked
@@ -3608,6 +3613,7 @@ async fn fleet_hub_provision_route(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             &request.hub_name,
             &request.dial_san,
             &request.listen,
+            request.join_listen.as_deref(),
             Duration::from_secs(30),
         )
     })
@@ -3661,26 +3667,38 @@ async fn fleet_hub_restart_route(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
 /// (the CA key never reaches the agent, M5); without an instance or helper `confirm` answers 503.
 fn fleet_enroll_route(ctx: &Ctx, op: &str, body: &[u8]) -> (u16, Value) {
     let now = unix_now();
+    if op == "confirm" {
+        let signer = ctx.instance.as_deref().map(|name| {
+            |node_id: &str, csr: &str| {
+                crate::fleet_helper::sign(
+                    &ctx.pair_dir,
+                    name,
+                    node_id,
+                    csr,
+                    std::time::Duration::from_secs(8),
+                )
+                .map_err(|_| crate::fleet_enroll::Error::Sign)
+            }
+        });
+        return match signer.as_ref() {
+            Some(sign) => {
+                crate::fleet_api::confirm_shared(&ctx.fleet_enroll, body, now, Some(sign))
+            }
+            None => crate::fleet_api::confirm_shared(&ctx.fleet_enroll, body, now, None),
+        };
+    }
+    let join_offer = if op == "offer" {
+        ctx.fleet_join_offer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    } else {
+        None
+    };
     let mut e = ctx.fleet_enroll.lock().unwrap_or_else(|e| e.into_inner());
     match op {
         "list" => crate::fleet_api::list(&mut e, now),
-        "offer" => crate::fleet_api::offer(&mut e, body, now),
-        "confirm" => match ctx.instance.as_deref() {
-            Some(name) => {
-                let signer = |node_id: &str, csr: &str| {
-                    crate::fleet_helper::sign(
-                        &ctx.pair_dir,
-                        name,
-                        node_id,
-                        csr,
-                        std::time::Duration::from_secs(8),
-                    )
-                    .map_err(|_| crate::fleet_enroll::Error::Sign)
-                };
-                crate::fleet_api::confirm(&mut e, body, now, Some(&signer))
-            }
-            None => crate::fleet_api::confirm(&mut e, body, now, None),
-        },
+        "offer" => crate::fleet_api::offer(&mut e, body, now, join_offer.as_ref()),
         _ => crate::fleet_api::deny(&mut e, body),
     }
 }
@@ -4290,6 +4308,38 @@ mod tests {
     use super::*;
 
     const TOKEN: &str = "tttttttttttttttttttttttttttttttttttttttt";
+
+    #[test]
+    fn fleet_offer_unavailable_without_join_listener() {
+        let ctx = Ctx::with_config(None, TOKEN.to_string(), None);
+        let (status, body) = fleet_enroll_route(&ctx, "offer", br#"{"node_id":"edge-1"}"#);
+        assert_eq!(status, 503);
+        assert!(body["error"].as_str().unwrap().contains("Join listener"));
+        let (_, listed) = fleet_enroll_route(&ctx, "list", b"");
+        assert!(listed["offers"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn fleet_offer_contains_configured_endpoint_and_hub_pin() {
+        let ctx = Ctx::with_config(None, TOKEN.to_string(), None);
+        *ctx.fleet_join_offer.lock().unwrap() = Some(crate::fleet_run::JoinOfferContext {
+            host: "join.example.test".into(),
+            port: 18444,
+            hub_id: "hub-1".into(),
+            hub_name: "hub.example.test".into(),
+            hub_pin: "ab".repeat(32),
+        });
+        let (status, body) = fleet_enroll_route(&ctx, "offer", br#"{"node_id":"edge-1"}"#);
+        assert_eq!(status, 200);
+        let code = body["join_offer"].as_str().unwrap();
+        let decoded = crate::fleet_join::JoinOffer::decode(code, unix_now()).unwrap();
+        assert_eq!(decoded.host, "join.example.test");
+        assert_eq!(decoded.port, 18444);
+        assert_eq!(decoded.hub_id, "hub-1");
+        assert_eq!(decoded.hub_name, "hub.example.test");
+        assert_eq!(decoded.hub_pin, "ab".repeat(32));
+        assert_eq!(decoded.node_id, "edge-1");
+    }
 
     #[tokio::test]
     async fn fleet_hub_provision_route_requires_valid_request_and_bound_helper() {

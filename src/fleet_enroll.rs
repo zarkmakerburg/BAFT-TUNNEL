@@ -44,6 +44,7 @@ pub enum Error {
 pub enum State {
     Offered,
     Submitted,
+    Signing,
     Issued,
     AwaitingReport,
     Enrolled,
@@ -61,6 +62,7 @@ struct Offer {
     fingerprint: Option<String>,
     certificate: Option<String>,
     delivered_fingerprint: Option<String>,
+    submit_digest: Option<[u8; 32]>,
 }
 
 /// What the operator hands to the new server (shown once).
@@ -80,6 +82,14 @@ pub struct Pending {
     pub state: State,
     pub fingerprint: Option<String>,
     pub expires: u64,
+}
+
+/// Immutable work handed to the privileged signer after the Enroller lock is released.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignRequest {
+    pub id: String,
+    pub node_id: String,
+    pub csr_pem: String,
 }
 
 #[derive(Default)]
@@ -157,6 +167,7 @@ impl Enroller {
                 fingerprint: None,
                 certificate: None,
                 delivered_fingerprint: None,
+                submit_digest: None,
             },
         );
         Ok(Issued {
@@ -181,6 +192,20 @@ impl Enroller {
         now: u64,
     ) -> Result<(), Error> {
         let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
+        if matches!(o.state, State::Submitted | State::Issued) {
+            let digest: [u8; 32] = Sha256::digest(csr_pem.as_bytes()).into();
+            return if o.expires >= now
+                && ct_eq(&hash(token), &o.token_hash)
+                && ct_eq(nonce.as_bytes(), o.nonce.as_bytes())
+                && node_id == o.node_id
+                && o.submit_digest
+                    .is_some_and(|stored| ct_eq(&stored, &digest))
+            {
+                Ok(())
+            } else {
+                Err(Error::WrongState)
+            };
+        }
         if o.state != State::Offered {
             return Err(Error::WrongState);
         }
@@ -203,20 +228,28 @@ impl Enroller {
             o.state = State::Closed;
             return Err(Error::BadCsr);
         }
-        let fingerprint = match crate::fleet_ca::validate_node_csr(node_id, csr_pem) {
-            Ok(value) => value,
-            Err(_) => {
-                o.state = State::Closed;
-                return Err(Error::BadCsr);
-            }
-        };
+        let fingerprint =
+            match crate::fleet_ca::validate_node_csr_with_challenge(node_id, csr_pem, nonce) {
+                Ok(value) => value,
+                Err(_) => {
+                    o.state = State::Closed;
+                    return Err(Error::BadCsr);
+                }
+            };
         o.csr = Some(csr_pem.to_string());
+        o.submit_digest = Some(Sha256::digest(csr_pem.as_bytes()).into());
         o.fingerprint = Some(fingerprint);
         o.state = State::Submitted;
         Ok(())
     }
 
     /// Offers the operator can see (no token, no nonce, no CSR).
+    /// Returns the current state and expiry for a known offer without exposing its secrets.
+    pub fn state_and_expiry(&self, id: &str) -> Result<(State, u64), Error> {
+        let offer = self.offers.get(id).ok_or(Error::Unknown)?;
+        Ok((offer.state, offer.expires))
+    }
+
     pub fn pending(&mut self, now: u64) -> Vec<Pending> {
         self.sweep(now);
         let mut v: Vec<Pending> = self
@@ -242,15 +275,14 @@ impl Enroller {
         v
     }
 
-    /// The operator confirms the fingerprint it compared out of band; `sign(node_id, csr)` then
-    /// issues the certificate. A mismatch is an operator typo and may be retried until expiry.
-    pub fn confirm(
+    /// Atomically reserves a submitted offer for signing. The caller must release its mutex
+    /// before invoking the privileged helper.
+    pub fn begin_confirm(
         &mut self,
         id: &str,
         fingerprint: &str,
         now: u64,
-        sign: impl FnOnce(&str, &str) -> Result<String, Error>,
-    ) -> Result<(), Error> {
+    ) -> Result<SignRequest, Error> {
         let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
         if o.state != State::Submitted {
             return Err(Error::WrongState);
@@ -264,19 +296,60 @@ impl Enroller {
         if !ct_eq(want.as_bytes(), got.as_bytes()) {
             return Err(Error::FingerprintMismatch);
         }
-        let csr = o.csr.take().unwrap_or_default();
-        match sign(&o.node_id, &csr) {
+        let request = SignRequest {
+            id: id.to_owned(),
+            node_id: o.node_id.clone(),
+            csr_pem: o.csr.clone().ok_or(Error::WrongState)?,
+        };
+        o.state = State::Signing;
+        Ok(request)
+    }
+
+    /// Commits a signer result only if the reservation is still live. Deny/expiry wins over a
+    /// late helper result, so an in-flight signature can never resurrect a closed offer.
+    pub fn finish_confirm(
+        &mut self,
+        id: &str,
+        now: u64,
+        result: Result<String, Error>,
+    ) -> Result<(), Error> {
+        let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
+        if o.state != State::Signing {
+            return Err(Error::WrongState);
+        }
+        if now > o.expires {
+            o.state = State::Closed;
+            o.csr = None;
+            return Err(Error::Expired);
+        }
+        match result {
             Ok(certificate) => {
                 o.certificate = Some(certificate);
+                o.csr = None;
                 o.state = State::Issued;
                 Ok(())
             }
             Err(error) => {
                 o.state = State::Closed;
+                o.csr = None;
                 o.certificate = None;
                 Err(error)
             }
         }
+    }
+
+    /// Compatibility helper for callers that already own an exclusive Enroller borrow. Runtime
+    /// API paths use begin/finish around the helper without holding the mutex.
+    pub fn confirm(
+        &mut self,
+        id: &str,
+        fingerprint: &str,
+        now: u64,
+        sign: impl FnOnce(&str, &str) -> Result<String, Error>,
+    ) -> Result<(), Error> {
+        let request = self.begin_confirm(id, fingerprint, now)?;
+        let result = sign(&request.node_id, &request.csr_pem);
+        self.finish_confirm(id, now, result)
     }
 
     /// The Join TLS session retrieves the public certificate; the operator API never receives it.
@@ -355,6 +428,7 @@ impl Enroller {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::{Enroller, State};
+    use sha2::{Digest, Sha256};
 
     pub(crate) fn certificate_pem() -> String {
         let key = rcgen::KeyPair::generate().unwrap();
@@ -370,6 +444,30 @@ pub(crate) mod test_support {
         let (tail, certificate) = x509_parser::pem::parse_x509_pem(pem.as_bytes()).unwrap();
         assert!(tail.iter().all(u8::is_ascii_whitespace));
         hex::encode(sha2::Sha256::digest(&certificate.contents))
+    }
+
+    /// Prepare a valid submitted offer for Join admission classification tests.
+    pub(crate) fn submitted_offer(
+        enroller: &mut Enroller,
+        node_id: &str,
+        now: u64,
+    ) -> super::Issued {
+        let issued = enroller.offer(node_id, now).unwrap();
+        let csr = "valid-csr-fixture".to_owned();
+        let offer = enroller.offers.get_mut(&issued.id).unwrap();
+        offer.state = State::Submitted;
+        offer.csr = Some(csr.clone());
+        offer.submit_digest = Some(Sha256::digest(csr.as_bytes()).into());
+        issued
+    }
+
+    /// Prepare an offer with a valid public certificate at the pre-delivery boundary.
+    pub(crate) fn issued_offer(enroller: &mut Enroller, node_id: &str, now: u64) -> String {
+        let issued = enroller.offer(node_id, now).unwrap();
+        let offer = enroller.offers.get_mut(&issued.id).unwrap();
+        offer.state = State::Issued;
+        offer.certificate = Some(certificate_pem());
+        issued.id
     }
 
     /// Prepare a real Enroller instance at the post-persistence-ACK boundary without invoking
@@ -393,7 +491,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
 
-    fn csr(node_id: &str) -> String {
+    fn csr(node_id: &str, challenge: Option<&str>) -> String {
         use std::fs;
         let dir =
             std::env::temp_dir().join(format!("fleet-enroll-csr-{:x}", rand::random::<u64>()));
@@ -411,14 +509,26 @@ mod tests {
         .unwrap();
         let key_path = dir.join("node.key");
         crate::pair_ca::write_private(&key_path, &key, 0o600).unwrap();
+        let config_path = dir.join("request.cnf");
+        let mut config = String::from("[ req ]\nprompt = no\ndistinguished_name = dn\n");
+        if challenge.is_some() {
+            config.push_str("attributes = req_attributes\n");
+        }
+        config.push_str(&format!("[ dn ]\nCN = {node_id}\n"));
+        if let Some(challenge) = challenge {
+            config.push_str(&format!(
+                "[ req_attributes ]\nchallengePassword = {challenge}\n"
+            ));
+        }
+        fs::write(&config_path, config).unwrap();
         let csr = crate::pair_ca::run(
             &[
                 "req",
                 "-new",
                 "-key",
                 &key_path.to_string_lossy(),
-                "-subj",
-                &format!("/CN={node_id}"),
+                "-config",
+                &config_path.to_string_lossy(),
             ],
             None,
         )
@@ -428,7 +538,7 @@ mod tests {
     }
 
     fn submit_ok(e: &mut Enroller, i: &Issued, now: u64) -> Result<(), Error> {
-        let csr = csr(&i.node_id);
+        let csr = csr(&i.node_id, Some(&i.nonce));
         e.submit(&i.id, &i.node_id, &i.token, &i.nonce, &csr, now)
     }
 
@@ -458,13 +568,214 @@ mod tests {
     fn submit_uses_fingerprint_from_cryptographically_validated_csr() {
         let mut e = Enroller::default();
         let i = e.offer("edge-1", 0).unwrap();
-        let request = csr("edge-1");
+        let request = csr("edge-1", Some(&i.nonce));
         let expected = crate::fleet_ca::validate_node_csr("edge-1", &request).unwrap();
         e.submit(&i.id, &i.node_id, &i.token, &i.nonce, &request, 1)
             .unwrap();
         assert_eq!(
             e.pending(2)[0].fingerprint.as_deref(),
             Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn fleet_csr_requires_exact_offer_nonce_challenge_password() {
+        let mut e = Enroller::default();
+        let missing_offer = e.offer("edge-1", 100).unwrap();
+        let missing = csr("edge-1", None);
+        let missing_result = e.submit(
+            &missing_offer.id,
+            &missing_offer.node_id,
+            &missing_offer.token,
+            &missing_offer.nonce,
+            &missing,
+            101,
+        );
+
+        let wrong_offer = e.offer("edge-2", 100).unwrap();
+        let wrong = csr("edge-2", Some("ffffffffffffffffffffffffffffffff"));
+        let wrong_result = e.submit(
+            &wrong_offer.id,
+            &wrong_offer.node_id,
+            &wrong_offer.token,
+            &wrong_offer.nonce,
+            &wrong,
+            101,
+        );
+
+        let valid_offer = e.offer("edge-3", 100).unwrap();
+        let valid = csr("edge-3", Some(&valid_offer.nonce));
+        let valid_result = e.submit(
+            &valid_offer.id,
+            &valid_offer.node_id,
+            &valid_offer.token,
+            &valid_offer.nonce,
+            &valid,
+            101,
+        );
+
+        assert_eq!(
+            missing_result,
+            Err(Error::BadCsr),
+            "missing challengePassword must be rejected"
+        );
+        assert_eq!(
+            wrong_result,
+            Err(Error::BadCsr),
+            "wrong challengePassword must be rejected"
+        );
+        assert_eq!(
+            valid_result,
+            Ok(()),
+            "the exact offer nonce must be accepted"
+        );
+    }
+
+    #[test]
+    fn finish_confirm_rejects_a_late_result_after_deny_or_expiry() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-1", 100).unwrap();
+        let request = csr("edge-1", Some(&issued.nonce));
+        e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &request,
+            101,
+        )
+        .unwrap();
+        let fingerprint = e
+            .pending(101)
+            .iter()
+            .find(|p| p.id == issued.id)
+            .unwrap()
+            .fingerprint
+            .clone()
+            .unwrap();
+        e.begin_confirm(&issued.id, &fingerprint, 102).unwrap();
+        e.deny(&issued.id).unwrap();
+        assert_eq!(
+            e.finish_confirm(&issued.id, 103, Ok("CERT".into())),
+            Err(Error::WrongState)
+        );
+
+        let second = e.offer("edge-2", 200).unwrap();
+        let csr = csr("edge-2", Some(&second.nonce));
+        e.submit(
+            &second.id,
+            &second.node_id,
+            &second.token,
+            &second.nonce,
+            &csr,
+            201,
+        )
+        .unwrap();
+        let fingerprint = e
+            .pending(201)
+            .iter()
+            .find(|p| p.id == second.id)
+            .unwrap()
+            .fingerprint
+            .clone()
+            .unwrap();
+        e.begin_confirm(&second.id, &fingerprint, 202).unwrap();
+        assert_eq!(
+            e.finish_confirm(&second.id, second.expires + 1, Ok("CERT".into())),
+            Err(Error::Expired)
+        );
+    }
+
+    #[test]
+    fn enroller_submit_allows_only_exact_idempotent_retry_after_first_submit() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-1", 100).unwrap();
+        let original = csr("edge-1", Some(&issued.nonce));
+        e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &original,
+            101,
+        )
+        .unwrap();
+        let exact_retry = e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &original,
+            102,
+        );
+        let changed_csr = csr("edge-1", Some(&issued.nonce));
+        let changed_retry = e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &changed_csr,
+            103,
+        );
+        assert_eq!(
+            exact_retry,
+            Ok(()),
+            "the exact original request must be idempotent"
+        );
+        assert_eq!(
+            changed_retry,
+            Err(Error::WrongState),
+            "a changed CSR must be rejected"
+        );
+        assert_eq!(
+            e.pending(103)
+                .iter()
+                .find(|p| p.id == issued.id)
+                .unwrap()
+                .state,
+            State::Submitted
+        );
+    }
+
+    #[test]
+    fn enroller_submit_allows_exact_retry_after_operator_issuance() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-1", 100).unwrap();
+        let original = csr("edge-1", Some(&issued.nonce));
+        e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &original,
+            101,
+        )
+        .unwrap();
+        let fingerprint = e.pending(102)[0].fingerprint.clone().unwrap();
+        e.confirm(&issued.id, &fingerprint, 103, ok_sign).unwrap();
+        assert_eq!(
+            e.submit(
+                &issued.id,
+                &issued.node_id,
+                &issued.token,
+                &issued.nonce,
+                &original,
+                104
+            ),
+            Ok(()),
+            "the exact CSR retry remains idempotent after operator issuance"
+        );
+        let changed = csr("edge-1", Some(&issued.nonce));
+        assert_eq!(
+            e.submit(
+                &issued.id,
+                &issued.node_id,
+                &issued.token,
+                &issued.nonce,
+                &changed,
+                105
+            ),
+            Err(Error::WrongState)
         );
     }
 

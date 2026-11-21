@@ -57,6 +57,36 @@ pub fn validate_node_csr(node_id: &str, csr_pem: &str) -> Result<String> {
     Ok(hex::encode(Sha256::digest(public_key_der)))
 }
 
+/// Validate a fleet CSR and require exactly one signed PKCS##9 challengePassword attribute
+/// matching this offer's nonce. OpenSSL verifies the CSR signature in `check_csr`; its parsed
+/// attribute view is used only after that verification succeeds.
+pub fn validate_node_csr_with_challenge(
+    node_id: &str,
+    csr_pem: &str,
+    nonce: &str,
+) -> Result<String> {
+    let fingerprint = validate_node_csr(node_id, csr_pem)?;
+    ensure!(
+        !nonce.is_empty() && nonce.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid offer nonce"
+    );
+    let text = run(&["req", "-noout", "-text"], Some(csr_pem.as_bytes()))?;
+    let text = String::from_utf8(text)?;
+    let mut values = Vec::new();
+    for line in text.lines() {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim() == "challengePassword" {
+                values.push(value.trim());
+            }
+        }
+    }
+    ensure!(
+        values.len() == 1 && values[0] == nonce,
+        "CSR challengePassword does not match offer nonce"
+    );
+    Ok(fingerprint)
+}
+
 /// Create the Fleet CA in an empty or absent directory (mode 0711). Only public trust files are
 /// readable by the Agent; the CA key and signing database remain root-only. Returns CA PEM.
 pub fn create(dir: &Path, name: &str) -> Result<String> {

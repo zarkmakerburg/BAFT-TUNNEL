@@ -46,6 +46,8 @@ enum Request {
         hub_name: String,
         dial_san: String,
         listen: String,
+        #[serde(default)]
+        join_listen: Option<String>,
     },
     /// Restart only this instance's Agent after a Hub config has been installed.
     RestartAgent,
@@ -167,6 +169,7 @@ struct HubProvision<'a> {
     hub_name: &'a str,
     dial_san: &'a str,
     listen: &'a str,
+    join_listen: Option<&'a str>,
 }
 
 /// Generate the Hub key in the root helper, issue its server-only certificate, and store the
@@ -182,6 +185,7 @@ fn provision_hub(request: HubProvision<'_>) -> Result<Value> {
         hub_name,
         dial_san,
         listen,
+        join_listen,
     } = request;
     ensure!(crate::fleet_ca::valid_node_id(hub_name), "invalid hub name");
     crate::pair_ca::validate_san(dial_san)?;
@@ -192,6 +196,26 @@ fn provision_hub(request: HubProvision<'_>) -> Result<Value> {
         listen_addr.port() != 0,
         "Fleet Hub listen port must not be zero"
     );
+    let join_listen_addr = join_listen
+        .map(|value| {
+            let addr = value
+                .parse::<std::net::SocketAddr>()
+                .context("Fleet Join listen must be an ip:port socket address")?;
+            ensure!(addr.port() != 0, "Fleet Join listen port must not be zero");
+            Ok::<_, anyhow::Error>(addr)
+        })
+        .transpose()?;
+    let advertised_host = if join_listen_addr.is_some() {
+        let host = dial_san
+            .strip_prefix("DNS:")
+            .or_else(|| dial_san.strip_prefix("IP:"))
+            .context("Fleet Hub dial SAN must identify a DNS or IP host")?;
+        crate::tls::server_name(host)
+            .context("Fleet Hub dial SAN is not a valid TLS server name")?;
+        Some(host)
+    } else {
+        None
+    };
     ensure_real_directory(ca_dir, false, 0o711)?;
     for name in ["ca.key", "ca.crt", "ca.crl", "openssl.cnf"] {
         let path = ca_dir.join(name);
@@ -265,15 +289,23 @@ fn provision_hub(request: HubProvision<'_>) -> Result<Value> {
     .context("create Hub CSR from the locally generated key")?;
     let csr = String::from_utf8(csr).context("Hub CSR is not UTF-8")?;
     let cert = crate::fleet_ca::sign_hub(ca_dir, hub_name, dial_san, &csr)?;
-    let fleet_config = json!({
-        "hub": {
-            "listen": listen_addr.to_string(),
-            "ca": ca_dir.join("ca.crt"),
-            "crl": ca_dir.join("ca.crl"),
-            "cert": cert_path,
-            "key_credential": HUB_CREDENTIAL_ID
-        }
+    let mut hub_config = json!({
+        "listen": listen_addr.to_string(),
+        "ca": ca_dir.join("ca.crt"),
+        "crl": ca_dir.join("ca.crl"),
+        "cert": cert_path,
+        "key_credential": HUB_CREDENTIAL_ID
     });
+    if let (Some(join_listen), Some(advertised_host)) = (join_listen_addr, advertised_host) {
+        hub_config["join"] = json!({
+            "listen": join_listen,
+            "advertise_host": advertised_host,
+            "advertise_port": join_listen.port(),
+            "hub_id": hub_name,
+            "hub_name": advertised_host
+        });
+    }
+    let fleet_config = json!({ "hub": hub_config });
     let config_bytes = serde_json::to_vec_pretty(&fleet_config)?;
     let dropin = format!(
         "# Managed by BAFT-TUNNEL fleet helper; do not edit.\n[Service]\nLoadCredential={HUB_CREDENTIAL_ID}:/etc/baft-tunnel/fleet-hub/%i/hub-key\n"
@@ -404,6 +436,7 @@ fn run_with_paths(
                 hub_name,
                 dial_san,
                 listen,
+                join_listen,
             } => provision_hub(HubProvision {
                 instance: name,
                 ca_dir,
@@ -413,6 +446,7 @@ fn run_with_paths(
                 hub_name: &hub_name,
                 dial_san: &dial_san,
                 listen: &listen,
+                join_listen: join_listen.as_deref(),
             }),
             Request::RestartAgent => {
                 let config_path = fleet_config_root.join(format!("{name}.json"));
@@ -504,6 +538,7 @@ pub fn request_hub_identity(
     hub_name: &str,
     dial_san: &str,
     listen: &str,
+    join_listen: Option<&str>,
     wait: Duration,
 ) -> Result<Value, String> {
     if !crate::apply::valid_instance(instance)
@@ -513,6 +548,14 @@ pub fn request_hub_identity(
             .parse::<std::net::SocketAddr>()
             .map(|addr| addr.port() == 0)
             .unwrap_or(true)
+        || join_listen
+            .map(|value| {
+                value
+                    .parse::<std::net::SocketAddr>()
+                    .map(|addr| addr.port() == 0)
+                    .unwrap_or(true)
+            })
+            .unwrap_or(false)
     {
         return Err("invalid instance, hub name or dial SAN".into());
     }
@@ -521,13 +564,16 @@ pub fn request_hub_identity(
     }
     let result_path = control_dir.join(format!("{instance}.{RESULT_SUFFIX}"));
     ensure_no_pending_result(control_dir, instance)?;
-    let request = json!({
+    let mut request = json!({
         "op": "provision_hub",
         "hub_name": hub_name,
         "dial_san": dial_san,
         "listen": listen
-    })
-    .to_string();
+    });
+    if let Some(join_listen) = join_listen {
+        request["join_listen"] = json!(join_listen);
+    }
+    let request = request.to_string();
     publish_request(control_dir, instance, request.as_bytes())?;
     let started = Instant::now();
     while started.elapsed() < wait {
@@ -633,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn root_helper_provisions_hub_key_and_server_only_certificate() {
+    fn hub_provision_preserves_legacy_without_join() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tmp("hub");
@@ -684,6 +730,10 @@ mod tests {
         let config_path = dir.join("fleet-config/edge.json");
         let config: Value = serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
         assert_eq!(config["hub"]["listen"], "0.0.0.0:18443");
+        assert!(
+            config["hub"]["join"].is_null(),
+            "legacy provisioning must omit Join config"
+        );
         assert_eq!(config["hub"]["key_credential"], HUB_CREDENTIAL_ID);
         assert_eq!(config["hub"]["cert"], cert_path.to_string_lossy().as_ref());
         assert!(config["hub"]["key"].is_null());
@@ -809,6 +859,70 @@ mod tests {
     }
 
     #[test]
+    fn hub_provision_derives_join_host_from_dial_san() {
+        let dir = tmp("hub-join-derived");
+        let ca = dir.join("ca");
+        crate::fleet_ca::create(&ca, "Test Fleet CA").unwrap();
+        let control = dir.join("control");
+        std::fs::create_dir(&control).unwrap();
+        let hub_root = dir.join("fleet-hub");
+        std::fs::write(
+            control.join("edge.fleet"),
+            serde_json::json!({
+                "op": "provision_hub", "hub_name": "hub-1",
+                "dial_san": "DNS:hub.example.test", "listen": "0.0.0.0:18443",
+                "join_listen": "0.0.0.0:18444"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let result = run_with_hub_root("edge", &control, &ca, &hub_root).unwrap();
+        assert_eq!(result["state"], "done", "{result}");
+        let config: Value =
+            serde_json::from_slice(&std::fs::read(dir.join("fleet-config/edge.json")).unwrap())
+                .unwrap();
+        assert_eq!(config["hub"]["join"]["listen"], "0.0.0.0:18444");
+        assert_eq!(config["hub"]["join"]["advertise_host"], "hub.example.test");
+        assert_eq!(config["hub"]["join"]["advertise_port"], 18444);
+        assert_eq!(config["hub"]["join"]["hub_id"], "hub-1");
+        assert_eq!(config["hub"]["join"]["hub_name"], "hub.example.test");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hub_provision_rejects_invalid_join_bind() {
+        let dir = tmp("hub-join-invalid");
+        let ca = dir.join("ca");
+        crate::fleet_ca::create(&ca, "Test Fleet CA").unwrap();
+        let control = dir.join("control");
+        std::fs::create_dir(&control).unwrap();
+        let hub_root = dir.join("fleet-hub");
+        std::fs::write(
+            control.join("edge.fleet"),
+            serde_json::json!({
+                "op": "provision_hub", "hub_name": "hub-1",
+                "dial_san": "DNS:hub.example.test", "listen": "0.0.0.0:18443",
+                "join_listen": "0.0.0.0:0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let result = run_with_hub_root("edge", &control, &ca, &hub_root).unwrap();
+        assert_eq!(result["state"], "failed");
+        assert!(
+            result["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Join")
+        );
+        assert!(
+            !hub_root.exists(),
+            "invalid Join bind must not create Hub identity material"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn hub_provisioning_without_ca_creates_no_key_or_certificate() {
         let dir = tmp("hub-no-ca");
         let control = dir.join("control");
@@ -844,6 +958,7 @@ mod tests {
                 "hub-1",
                 "DNS:hub.example.test",
                 "0.0.0.0:18443",
+                None,
                 Duration::from_secs(10),
             )
         });
