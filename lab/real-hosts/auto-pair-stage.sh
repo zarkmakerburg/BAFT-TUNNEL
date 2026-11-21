@@ -233,21 +233,31 @@ PY
 }
 
 ap_verify_diag() { # side label direction : run the authenticated B2 probe, then require fresh diagnostics PASS
-  local side="$1" label="$2" direction="$3" key body
+  local side="$1" label="$2" direction="$3" key body response_file retry_key
   key="apv-${label}-${side}-${RANDOM}${RANDOM}"
   body="{\"idempotency_key\":\"$key\"}"
-  ap_api "$side" POST /v1/verify <<<"$body" >"$LOCAL_TMP/ap-verify-$label-$side.json"
-  if python3 - "$LOCAL_TMP/ap-verify-$label-$side.json" <<'PY'
+  response_file="$LOCAL_TMP/ap-verify-$label-$side.json"
+  ap_api "$side" POST /v1/verify <<<"$body" >"$response_file"
+  if python3 - "$response_file" <<'PY'
 import json, sys
 v = json.load(open(sys.argv[1]))
 raise SystemExit(0 if v.get("result") == "unknown" and v.get("reason") == "rate_limited" else 1)
 PY
   then
+    # Preserve the first completed receipt as evidence. A retry must use a new key:
+    # the API replays completed receipts and will not rerun a probe for the same key.
+    cp -- "$response_file" "$response_file.rate-limited"
     echo "integrity probe on $side ($label) is rate-limited; waiting $((AP_PROBE_COOLDOWN + 1))s (cooldown plus margin) before one retry" >&2
     sleep "$((AP_PROBE_COOLDOWN + 1))"
-    ap_api "$side" POST /v1/verify <<<"$body" >"$LOCAL_TMP/ap-verify-$label-$side.json"
+    retry_key="apv-${label}-${side}-${RANDOM}${RANDOM}"
+    while [[ "$retry_key" == "$key" ]]; do
+      retry_key="apv-${label}-${side}-${RANDOM}${RANDOM}"
+    done
+    key="$retry_key"
+    body="{\"idempotency_key\":\"$key\"}"
+    ap_api "$side" POST /v1/verify <<<"$body" >"$response_file"
   fi
-  python3 - "$LOCAL_TMP/ap-verify-$label-$side.json" "$side" "$direction" <<'PY' || { cat "$LOCAL_TMP/ap-verify-$label-$side.json" >&2; echo "authenticated integrity probe failed on $side ($label)" >&2; return 1; }
+  python3 - "$response_file" "$side" "$direction" <<'PY' || { cat "$response_file" >&2; echo "authenticated integrity probe failed on $side ($label)" >&2; return 1; }
 import json, sys
 v = json.load(open(sys.argv[1]))
 assert v.get("result") == "pass", v
