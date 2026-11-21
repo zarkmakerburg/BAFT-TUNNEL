@@ -13,7 +13,7 @@ need "$WORKFLOW" 'refs/heads/main'
 need "$WORKFLOW" 'permissions:'
 need "$WORKFLOW" 'contents: read'
 need "$WORKFLOW" 'environment: baft-tunnel-fleet-lab-20261121'
-need "$WORKFLOW" 'group: baft-tunnel-phase0-two-host-lab'
+need "$WORKFLOW" 'group: baft-tunnel-trusted-lab-hosts'
 need "$WORKFLOW" 'secrets.LAB_IRAN_HOST'
 need "$WORKFLOW" 'secrets.LAB_ABROAD_HOST'
 need "$WORKFLOW" 'secrets.LAB_SSH_PRIVATE_KEY'
@@ -30,7 +30,7 @@ need "$WORKFLOW" 'trap cleanup EXIT'
 need "$ROOT/lab/real-hosts/preflight-two-hosts.sh" 'StrictHostKeyChecking=yes'
 need "$WORKFLOW" 'bash lab/real-hosts/preflight-two-hosts.sh'
 need "$WORKFLOW" 'rm -rf --'
-need "$OLD_WORKFLOW" 'group: baft-tunnel-phase0-two-host-lab'
+need "$OLD_WORKFLOW" 'group: baft-tunnel-trusted-lab-hosts'
 
 if grep -Eq '^[[:space:]]+(schedule|workflow_call):' "$WORKFLOW"; then
   fail "workflow must be manual-only"
