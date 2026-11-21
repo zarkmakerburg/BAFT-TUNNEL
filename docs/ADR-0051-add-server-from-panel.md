@@ -100,3 +100,69 @@ Evidence: container-free unit tests with the real `openssl` (profile, EKU exclus
 ## Addendum: root Fleet helper (M5)
 
 `src/fleet_helper.rs` plus `baft-tunnel-control-fleet@.path/.service` follow the pairing-helper pattern (ADR-0050): the agent drops `NAME.fleet` (node id and CSR only), the root unit runs `baft-tunnel fleet helper --instance NAME` with no network and the usual hardening, signs with `fleet_ca::sign` from `/etc/baft-tunnel/fleet-ca` and writes `NAME.fleet-result` (public certificate only). The helper never creates the CA; a missing CA fails closed. `POST /v1/fleet/enroll/confirm` now signs through this helper (8 s wait) and answers 503 when there is no instance or helper. Creating the Fleet CA (an operator command) and the node join over the hub listener are the next slices.
+
+
+## Addendum 2026-11-19: Fleet Join TLS bootstrap and certificate delivery
+
+**Owner decision:** The owner approved the architecture in this addendum. This resolves the transport and bootstrap direction for Path A / panel-driven Fleet enrollment. It does not authorize implementation on real hosts, opening ports, firewall or route changes, deployment, or release. Per the current owner decision, independent external review is not a prerequisite anywhere in this project for now, including Path B; security self-review and all staged technical and LAB acceptance gates remain mandatory. This supersedes earlier ADR wording that made independent review a release prerequisite.
+
+### Decision: separate Join and Report TLS channels
+
+Fleet enrollment uses two distinct TLS endpoints with different authentication requirements. They MUST NOT be combined by making the existing report listener accept optional client certificates or by selecting authentication policy after the TLS handshake.
+
+1. **Fleet Join listener (temporary, one-shot):** TLS 1.3 with server authentication only. A not-yet-enrolled member has no Fleet client certificate, so this endpoint intentionally does not request one. It is a Hub-side listener/session used only for a live enrollment offer; the member always initiates the connection outbound. The listener/session is bounded by the offer TTL, connection deadline, message limits, concurrency limits and one-time token semantics.
+2. **Fleet Report listener (persistent):** TLS 1.3 mandatory mTLS, unchanged in security posture. It continues to require a valid client certificate chaining to the Fleet CA, CRL acceptance and the expected `fleet-node` identity. Missing, expired or revoked client certificates fail during TLS authentication. Join traffic MUST NOT be routed through this listener.
+
+The Join transport may reuse low-level, reviewed transport techniques from the one-shot pairing implementation (TLS 1.3, bounded framing, deadlines, one-shot session and explicit acknowledgement). It MUST define Fleet-specific message types and protocol semantics; tunnel pairing codes, identities and state MUST NOT be reused as Fleet enrollment objects.
+
+### Hub identity bootstrap and trust
+
+Before the Join listener is enabled, the Hub must have a provisioned `fleet-hub` certificate and private key. The existing `fleet_ca::sign_hub` capability must be wired through a narrowly scoped root-helper operation; the Fleet CA private key remains only in the root helper and is never sent to the agent, browser or joining member.
+
+The operator-facing Join offer/code carries, at minimum:
+
+- Hub address and port, `hub_id` and `hub_name`;
+- the exact SHA-256 fingerprint of the Hub leaf certificate;
+- offer ID, target node ID, random one-time bearer token, nonce, expiry and protocol version.
+
+The member MUST authenticate the Hub against the exact pinned leaf fingerprint before sending its CSR or accepting trust material. It also validates the Hub certificate's validity period, `fleet-hub` EKU, URI SAN bound to `hub_id`, and DNS/IP SAN bound to the configured `hub_name`/dial target. A name match without the exact pin is insufficient. After the pinned TLS session is established, the Hub may send the public Fleet CA certificate and current CRL/trust bundle. No CA private key is ever transmitted.
+
+### Member key generation, submission and approval
+
+- The joining member generates its private key locally and creates its CSR locally. The private key MUST never leave the member.
+- The Join endpoint accepts no client certificate by design, because enrollment has not yet completed. Authorization is instead provided by a random, single-use bearer token of at least 128 bits, stored server-side only as a cryptographic hash. The token is not placed in a URL, browser history, logs or audit records.
+- Preserve the offer's fail-closed properties: one live offer per node ID, 15-minute TTL, one-time consumption, bounded wrong-token attempts, rate/concurrency limits, strict frame and field limits, and explicit connection/read/write deadlines. Restart or lost-session behavior must not silently restore a consumed token or mark an uncertain enrollment complete.
+- The Hub validates the CSR signature (the cryptographic proof of possession), allowed key algorithm/curve, subject and node identity. It parses the CSR itself and computes the canonical public-key fingerprint; it MUST NOT trust a client-supplied fingerprint as authoritative.
+- The operator approves the exact fingerprint computed from the validated CSR and shown by the joining member. The current `fleet_enroll::proof()` construction (plain SHA-256 over public nonce and fingerprint) is NOT proof of private-key possession and MUST NOT be treated as such. The CSR signature is the key-possession proof. If a request-binding proof is retained, it must be domain-separated and keyed by the offer secret; it is additional binding, not a replacement for token authorization or CSR validation.
+- The root helper signs only the exact validated and operator-approved CSR. The agent and panel never receive the Fleet CA private key.
+
+### Certificate delivery, first report and enrollment state
+
+Keep the one-shot Join TLS session available while the operator reviews the request. After approval and root-helper signing, deliver to the joining member over that same pinned TLS session only the issued member certificate and required public trust material (CA certificate, CRL and Hub identity). The browser receives status and public metadata only; it never receives the member private key or CA secret.
+
+The member installs the issued certificate and then establishes a fresh connection to the existing mandatory-mTLS Report listener. It sends its initial authenticated Fleet report and returns the Join acknowledgement. The Hub marks the node **Enrolled** only after the first report is accepted under the `fleet-node` identity and the acknowledgement is received.
+
+If the Join connection is lost before delivery, after signing, or before acknowledgement, the state is **Issued/Unconfirmed** or **Unknown**, as appropriate; it is never reported as Enrolled. Recovery and retry behavior must be explicit and fail closed. A consumed one-shot offer may require a new operator-issued offer rather than replaying its token or silently reusing an uncertain session.
+
+### Required negative and failure tests
+
+Before the Join path is enabled, automated tests must cover at least:
+
+- wrong Hub pin, Hub ID or Hub name; expired/not-yet-valid Hub certificate; wrong EKU, URI SAN or DNS/IP SAN;
+- wrong, expired, replayed or exhausted token; wrong node ID; duplicate and concurrent submissions; rate and concurrency limits;
+- malformed CSR, invalid CSR signature, disallowed key algorithm/curve, subject mismatch and tampered client-supplied fingerprint;
+- oversized frames/fields, slow client, read/write deadline expiry and abrupt disconnects;
+- report listener rejects missing client certificate, invalid chain, expired certificate and revoked certificate/CRL cases;
+- disconnect before signing, after signing/delivery and before acknowledgement never produces an Enrolled state; recovery follows the documented fail-closed path;
+- member private key and Fleet CA private key never appear in browser/API responses, process arguments, environment, files outside their designated protected locations, logs or audit records.
+
+The two-host end-to-end acceptance must demonstrate the complete sequence: operator creates offer, member verifies the pinned Hub and submits a locally generated CSR, operator approves the exact fingerprint, member receives its certificate and public trust bundle, member connects to the mandatory-mTLS Report listener, the Hub accepts the first report, and the Join acknowledgement completes enrollment. Unit or container tests alone do not count as two-host LAB evidence.
+
+### Operational constraints and implementation order
+
+- No inbound listener is added to the member. Only the Hub-side Join listener is temporary; the existing Report listener remains persistent and mandatory-mTLS.
+- No automatic firewall, route, sysctl or host-network changes are permitted. No `CAP_NET_ADMIN` is permitted. The operator is told which Hub port must be made reachable and configures it separately.
+- Implement in gated slices: (1) provision and verify the Hub certificate through the root helper; (2) implement the isolated Join TLS transport and Fleet-specific bounded protocol; (3) bind it to the enrollment state machine and operator approval; (4) deliver the certificate and public trust bundle; (5) require first accepted mTLS report plus acknowledgement before Enrolled; (6) complete negative tests and two-host LAB acceptance.
+- Until implementation, security self-review, negative tests and two-host LAB acceptance pass, the panel and API MUST NOT advertise this Join flow as available. Existing report mTLS behavior remains unchanged.
+
+This addendum supersedes any earlier interpretation of the F-7 `proof` field as standalone proof of private-key possession. It does not authorize enabling the separate Path B SSH enrollment flow, which remains disabled until its own implementation, security self-review and acceptance gates pass.
