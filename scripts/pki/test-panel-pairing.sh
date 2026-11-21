@@ -45,6 +45,23 @@ PYDIAG
   done
   echo "[diagnostic] agent/helper process snapshot:" >&2
   ps -eo pid,ppid,user,stat,lstart,args | grep -E '[b]aft-tunnel|[s]etup helper' >&2 || true
+  echo "[diagnostic] live control-channel files:" >&2
+  for path in "$CTL/$NAME.setup" "$CTL/$NAME.setup-result"; do
+    sudo stat -Lc 'mode=%a uid=%u gid=%g size=%s path=%n' "$path" >&2 || true
+    if [[ "$path" == *setup-result ]] && sudo test -e "$path"; then
+      if sudo -u baft-tunnel-agent test -r "$path"; then
+        echo "[diagnostic] setup result is readable by baft-tunnel-agent" >&2
+        sudo -u baft-tunnel-agent python3 - "$path" <<'PYRESULT' >&2
+import json, sys
+v = json.load(open(sys.argv[1]))
+keys = ("id", "result", "reason", "source", "receipt_stored", "receipt_error", "request_sha256")
+print(json.dumps({k: v[k] for k in keys if k in v}, sort_keys=True))
+PYRESULT
+      else
+        echo "[diagnostic] setup result is NOT readable by baft-tunnel-agent" >&2
+      fi
+    fi
+  done
   echo "[diagnostic] helper receipts (sanitized):" >&2
   for key in pair-join-0000 pair-join-0001; do
     receipt="/var/lib/baft-tunnel-control/setup-receipts/$NAME/$key.json"
