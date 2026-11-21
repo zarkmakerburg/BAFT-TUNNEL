@@ -144,7 +144,8 @@ for n in $(seq 1 60); do curl -fs "http://$API/v1/health" >/dev/null 2>&1 && bre
 curl -fs "http://$API/v1/health" >/dev/null || die "agent is not running in setup mode"
 TOKEN="$(sudo cat /var/lib/baft-tunnel-agent/token)"
 api() {
-  local method="$1" path="$2" data="${3-}" response body http_status curl_status
+  local method="$1" path="$2" data="${3-}" response body http_status curl_status started duration
+  started=$SECONDS
   local -a args=(--silent --show-error --max-time 90 --write-out $'\n__BAFT_HTTP_STATUS__:%{http_code}' \
     -X "$method" "http://$API$path" -H "Authorization: Bearer $TOKEN")
   [[ "$#" -lt 3 ]] || args+=(--data-binary "$data")
@@ -160,8 +161,10 @@ api() {
     http_status=000
     body="$response"
   fi
+  duration=$((SECONDS - started))
   printf '%s' "$body" >"$TMP/api-last.body"
-  printf 'method=%s path=%s curl_exit=%s http_status=%s\n' "$method" "$path" "$curl_status" "$http_status" >"$TMP/api-last.meta"
+  printf 'method=%s path=%s curl_exit=%s http_status=%s duration_seconds=%s\n' \
+    "$method" "$path" "$curl_status" "$http_status" "$duration" >"$TMP/api-last.meta"
   if [[ "$curl_status" != 0 ]]; then
     echo "[api-error] $method $path: curl exit $curl_status (HTTP $http_status)" >&2
     cat "$TMP/api-last.stderr" >&2
