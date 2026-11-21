@@ -33,7 +33,21 @@ runs unprivileged (SA-09) and must stay unable to write configuration or read ke
    on the old configuration (`rolled_back`). A stopped unit is not started. The agent reloads when `NAME.json` changes.
 4. Both routes: bearer token, state directory and `--instance` required, idempotency with replay and conflict,
    receipt in `receipts/`, one audit line (`tunnel_manage`, `tunnel/remove|edit`). Receipts and audit hold file names
-   only; key material, file contents and the token are never written. The newest 3 backups per instance are kept.
+   only; key material, file contents and the token are never written. The newest 3 edit backups per instance are
+   kept; remove backups (the only copy of a removed key) are never deleted automatically.
+
+## Security review (2026-11-21, independent review before merge)
+
+No Critical or High. Fixed in this change: M1 an edit revert is compare-and-swap (the manifest stores the sha256 of
+every file the edit wrote; revert refuses if any current file differs, then removes the backup); M2 only edit backups
+are pruned; M3 a failed remove keeps its backup when a file cannot be moved back; L1 the agent waits longer than the
+unit timeout, checks the result's `id` and `op`, and reports `unknown` (no rollback guesses) when the outcome is not
+known; L3 the edit backs up the exact bytes it was derived from and refuses if the file changed; L6 no
+`ExecStopPost` request cleanup, so a request written during a run is not dropped.
+Accepted and documented: L2 the "unit stopped" check before remove is not serialized with a concurrent start request
+(availability only; the agent holds its lock and stops first). L4 a revert that fails between files is not itself
+rolled back (every file is checked before any write, which leaves only I/O errors). L5 inherited from ADR-0023/0026:
+all agents share one account and control directory, so the instance binding is the agent's own, not enforced by root.
 
 Rejected: letting the agent write configuration (breaks SA-09); deleting without a backup (no rollback); editing ports
 or identities (needs the peer to change in step; a later pairing-level change, not a local edit).

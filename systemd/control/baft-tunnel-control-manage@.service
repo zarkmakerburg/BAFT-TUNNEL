@@ -12,7 +12,8 @@ Type=oneshot
 # revert (puts back one backup). Operator PKI files are never touched. File names only go to the
 # receipt /run/baft-tunnel/control/%i.manage-result (root:baft-tunnel 0640). It never starts a service.
 ExecStart=/usr/local/bin/baft-tunnel setup manage-helper --instance %i
-ExecStopPost=/usr/bin/rm -f /run/baft-tunnel/control/%i.manage
+# No ExecStopPost cleanup: the helper consumes only the request it read, so a request written
+# while it runs is not dropped (it re-triggers the path unit).
 TimeoutStartSec=30s
 UMask=0022
 NoNewPrivileges=true

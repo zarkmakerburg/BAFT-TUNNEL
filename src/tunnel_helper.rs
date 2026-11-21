@@ -34,7 +34,8 @@ const MAX_FILE_BYTES: u64 = 64 * 1024;
 const MANIFEST: &str = "manifest.json";
 /// Backups kept per instance; older ones are deleted after a successful operation.
 const KEEP_BACKUPS: usize = 3;
-pub const WAIT: Duration = Duration::from_secs(30);
+/// Longer than the unit's `TimeoutStartSec=30s`, so a slow helper is not reported as unanswered.
+pub const WAIT: Duration = Duration::from_secs(40);
 /// Files that belong to an instance only when `pairing-state.json` names its config file.
 const PAIRING_FILES: [&str; 4] = [
     crate::setup::STATE_FILE,
@@ -212,15 +213,18 @@ fn valid_peer_ip(host: &str, what: &str) -> Result<IpAddr> {
 }
 
 /// The edited configuration (and pairing state when this instance owns it); validated, unwritten.
-fn edited(
-    config_dir: &Path,
-    name: &str,
-    peer_host: &str,
-    backups: &[String],
-) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+/// New bytes for the config (and pairing state) plus the exact bytes they were derived from.
+struct Edited {
+    cfg: Vec<u8>,
+    cfg_old: Vec<u8>,
+    state: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+fn edited(config_dir: &Path, name: &str, peer_host: &str, backups: &[String]) -> Result<Edited> {
     let config_path = config_dir.join(format!("{name}.json"));
-    let mut cfg: Value = serde_json::from_slice(&read_bounded(&config_path)?)
-        .context("the current configuration is not valid JSON")?;
+    let cfg_old = read_bounded(&config_path)?;
+    let mut cfg: Value =
+        serde_json::from_slice(&cfg_old).context("the current configuration is not valid JSON")?;
     let old_remote = cfg["remote"]
         .as_str()
         .context("only the dialing (forward) side has a peer address to edit")?;
@@ -265,8 +269,8 @@ fn edited(
         .context("the edited configuration is not valid")?;
     let state_path = config_dir.join(crate::setup::STATE_FILE);
     let state = if regular(&state_path)?.is_some() {
-        let mut st: Value =
-            serde_json::from_slice(&read_bounded(&state_path)?).unwrap_or(Value::Null);
+        let st_old = read_bounded(&state_path)?;
+        let mut st: Value = serde_json::from_slice(&st_old).unwrap_or(Value::Null);
         if st["config_file"].as_str() == Some(format!("{name}.json").as_str()) {
             st["peer_host"] = json!(primary.to_string());
             st["backup_peer_hosts"] = json!(
@@ -275,18 +279,30 @@ fn edited(
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
             );
-            Some(serde_json::to_vec_pretty(&st)?)
+            Some((serde_json::to_vec_pretty(&st)?, st_old))
         } else {
             None
         }
     } else {
         None
     };
-    Ok((serde_json::to_vec_pretty(&cfg)?, state))
+    Ok(Edited {
+        cfg: serde_json::to_vec_pretty(&cfg)?,
+        cfg_old,
+        state,
+    })
 }
 
-fn write_manifest(dir: &Path, op: Op, files: &[String]) -> Result<()> {
-    let body = serde_json::to_vec(&json!({"op": op.as_str(), "files": files}))?;
+fn sha_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+/// `written`: for an edit, the sha256 of each file as the edit wrote it; a revert only puts the
+/// old bytes back while the current file still has exactly that content (compare-and-swap).
+fn write_manifest(dir: &Path, op: Op, files: &[String], written: &[String]) -> Result<()> {
+    let body =
+        serde_json::to_vec(&json!({"op": op.as_str(), "files": files, "written_sha256": written}))?;
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -298,7 +314,7 @@ fn write_manifest(dir: &Path, op: Op, files: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Delete all but the newest `KEEP_BACKUPS` backups of this instance (never `keep`).
+/// Delete all but the newest `KEEP_BACKUPS` edit backups of this instance (never `keep`).
 fn prune(instance_dir: &Path, keep: &Path) {
     let Ok(rd) = std::fs::read_dir(instance_dir) else {
         return;
@@ -308,7 +324,10 @@ fn prune(instance_dir: &Path, keep: &Path) {
         .filter_map(|e| {
             let m = std::fs::symlink_metadata(e.path()).ok()?;
             let t = m.modified().ok()?;
-            (m.is_dir() && e.path() != keep).then(|| (t, e.path()))
+            // Remove backups hold the only copy of a removed key: never deleted automatically.
+            let man: Value =
+                serde_json::from_slice(&read_bounded(&e.path().join(MANIFEST)).ok()?).ok()?;
+            (m.is_dir() && e.path() != keep && man["op"] == "edit").then(|| (t, e.path()))
         })
         .collect();
     dirs.sort_by(|a, b| b.0.cmp(&a.0));
@@ -332,15 +351,27 @@ fn op_remove(name: &str, key: &str, d: &Dirs<'_>, backup: &Path) -> Result<Vec<S
     let mut moved: Vec<&String> = Vec::new();
     for f in &files {
         if let Err(e) = move_file(&d.config.join(f), &backup.join(f)) {
+            let mut lost = Vec::new();
             for m in moved.iter().rev() {
-                let _ = move_file(&backup.join(m), &d.config.join(m));
+                if move_file(&backup.join(m), &d.config.join(m)).is_err() {
+                    lost.push(m.as_str());
+                }
             }
-            let _ = std::fs::remove_dir_all(backup);
-            return Err(e.context("removal failed and was rolled back"));
+            if lost.is_empty() {
+                let _ = std::fs::remove_dir_all(backup);
+                return Err(e.context("removal failed and was rolled back"));
+            }
+            // Never delete the only copy: keep the backup and say what is still in it.
+            let _ = write_manifest(backup, Op::Remove, &files, &[]);
+            return Err(e.context(format!(
+                "removal failed; {} could not be put back and stay in {}",
+                lost.join(", "),
+                backup.display()
+            )));
         }
         moved.push(f);
     }
-    write_manifest(backup, Op::Remove, &files)?;
+    write_manifest(backup, Op::Remove, &files, &[])?;
     Ok(files)
 }
 
@@ -353,7 +384,11 @@ fn op_edit(
 ) -> Result<Vec<String>> {
     let host = req.peer_host.as_deref().context("edit needs peer_host")?;
     let backups = req.backup_peer_hosts.clone().unwrap_or_default();
-    let (cfg, state) = edited(d.config, name, host, &backups)?;
+    let Edited {
+        cfg,
+        cfg_old,
+        state,
+    } = edited(d.config, name, host, &backups)?;
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(backup)
@@ -363,16 +398,27 @@ fn op_edit(
     if state.is_some() {
         files.push(crate::setup::STATE_FILE.to_string());
     }
-    for f in &files {
+    let mut olds = vec![cfg_old.as_slice()];
+    let mut written = vec![sha_hex(&cfg)];
+    if let Some((new, old)) = &state {
+        olds.push(old);
+        written.push(sha_hex(new));
+    }
+    for (f, old) in files.iter().zip(&olds) {
         let src = d.config.join(f);
         let meta = regular(&src)?.context("file disappeared")?;
-        write_like(&backup.join(f), &read_bounded(&src)?, &meta)?;
+        // The exact bytes the edit was derived from; refuse if the file changed meanwhile.
+        if read_bounded(&src)? != *old {
+            let _ = std::fs::remove_dir_all(backup);
+            bail!("{f} changed during the edit; nothing was changed");
+        }
+        write_like(&backup.join(f), old, &meta)?;
     }
-    write_manifest(backup, Op::Edit, &files)?;
+    write_manifest(backup, Op::Edit, &files, &written)?;
     let cfg_path = d.config.join(&config_name);
     let cfg_meta = regular(&cfg_path)?.context("configuration disappeared")?;
     replace(&cfg_path, &cfg, &cfg_meta)?;
-    if let Some(st) = state {
+    if let Some((st, _)) = state {
         let p = d.config.join(crate::setup::STATE_FILE);
         let meta = regular(&p)?.context("pairing state disappeared")?;
         if let Err(e) = replace(&p, &st, &meta) {
@@ -418,11 +464,28 @@ fn op_revert(name: &str, d: &Dirs<'_>, backup: &Path) -> Result<Vec<String>> {
             let _ = std::fs::remove_dir_all(backup);
         }
         Some("edit") => {
-            for f in &files {
+            let written: Vec<&str> = manifest["written_sha256"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            if written.len() != files.len() {
+                bail!("backup manifest has no content hashes; refusing to revert");
+            }
+            // Revert only the edit's own result: every current file must still be byte-for-byte
+            // what the edit wrote, so another instance's or a later change is never overwritten.
+            let mut plan = Vec::new();
+            for (f, want) in files.iter().zip(&written) {
                 let target = d.config.join(f);
                 let meta = regular(&target)?.with_context(|| format!("{f} is missing"))?;
-                replace(&target, &read_bounded(&backup.join(f))?, &meta)?;
+                if sha_hex(&read_bounded(&target)?) != *want {
+                    bail!("{f} changed after this edit; refusing to revert over it");
+                }
+                plan.push((target, read_bounded(&backup.join(f))?, meta));
             }
+            for (target, bytes, meta) in &plan {
+                replace(target, bytes, meta)?;
+            }
+            let _ = std::fs::remove_dir_all(backup);
         }
         _ => bail!("backup manifest has an unknown operation"),
     }
@@ -514,6 +577,9 @@ pub fn run(name: &str, d: &Dirs<'_>) -> Result<Value> {
 }
 
 /// Agent side: how a manage request reaches root. Tests use a fake that runs in-process.
+/// Prefix of a submit error after which the helper may or may not have acted.
+pub const UNKNOWN_OUTCOME: &str = "outcome unknown";
+
 pub trait ManageHelper {
     fn submit(&self, name: &str, request: &Request) -> Result<Value, String>;
 }
@@ -580,12 +646,19 @@ pub fn submit_in(
         }
         let bytes = read_bounded(&res_path).map_err(|e| format!("{e:#}"))?;
         let _ = std::fs::remove_file(&res_path);
-        return serde_json::from_slice(&bytes)
-            .map_err(|e| format!("the tunnel helper's result is not valid JSON: {e}"));
+        let v: Value = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("the tunnel helper's result is not valid JSON: {e}"))?;
+        // A parse refusal has no id; anything else must answer this request.
+        let ours = (v["id"] == json!(request.key) && v["op"] == json!(request.op.as_str()))
+            || (v["id"].is_null() && v["result"] == "refused");
+        if !ours {
+            return Err(UNKNOWN_OUTCOME.into());
+        }
+        return Ok(v);
     }
     let _ = std::fs::remove_file(&req_path);
     Err(format!(
-        "the root tunnel helper did not answer within {} s; check baft-tunnel-control-manage@{name}.path",
+        "{UNKNOWN_OUTCOME}: the root tunnel helper did not answer within {} s; check baft-tunnel-control-manage@{name}.path",
         wait.as_secs()
     ))
 }
@@ -839,6 +912,83 @@ pub(crate) mod tests {
         let n = std::fs::read_dir(e.backups.join("edge")).unwrap().count();
         assert_eq!(n, KEEP_BACKUPS);
         assert!(e.backups.join("edge/pr-key-0004").exists());
+    }
+
+    #[test]
+    fn revert_of_an_edit_refuses_files_changed_after_the_edit() {
+        let e = Env::new("cas");
+        e.forward("edge");
+        e.put(
+            "edge",
+            &json!({"op": "edit", "key": "cas-key-001", "peer_host": "198.51.100.9"}),
+        );
+        assert_eq!(run("edge", &e.dirs()).unwrap()["result"], "applied");
+        // Another setup rewrote the pairing state (e.g. for another instance) after the edit.
+        let other = json!({"config_file": "other.json"}).to_string();
+        std::fs::write(e.config.join("pairing-state.json"), &other).unwrap();
+        e.put("edge", &json!({"op": "revert", "key": "cas-key-001"}));
+        let out = run("edge", &e.dirs()).unwrap();
+        assert_eq!(out["result"], "refused", "{out}");
+        assert!(
+            out["reason"]
+                .as_str()
+                .unwrap()
+                .contains("changed after this edit")
+        );
+        assert_eq!(
+            std::fs::read_to_string(e.config.join("pairing-state.json")).unwrap(),
+            other
+        );
+        let cfg: Value =
+            serde_json::from_slice(&std::fs::read(e.config.join("edge.json")).unwrap()).unwrap();
+        assert_eq!(cfg["remote"], "198.51.100.9:8443", "nothing reverted");
+    }
+
+    #[test]
+    fn remove_backups_are_never_pruned() {
+        let e = Env::new("keep-rm");
+        e.forward("edge");
+        e.put("edge", &json!({"op": "remove", "key": "keep-rm-001"}));
+        assert_eq!(run("edge", &e.dirs()).unwrap()["result"], "applied");
+        e.forward("edge");
+        for i in 0..4 {
+            std::thread::sleep(Duration::from_millis(20));
+            e.put(
+                "edge",
+                &json!({"op": "edit", "key": format!("keep-ed-00{i}"), "peer_host": format!("198.51.100.{}", i + 1)}),
+            );
+            assert_eq!(run("edge", &e.dirs()).unwrap()["result"], "applied");
+        }
+        assert!(e.backups.join("edge/keep-rm-001/node.noise").exists());
+        assert!(
+            !e.backups.join("edge/keep-ed-000").exists(),
+            "old edit backup pruned"
+        );
+    }
+
+    #[test]
+    fn a_result_for_another_request_is_an_unknown_outcome() {
+        let e = Env::new("foreign");
+        let req = Request {
+            op: Op::Edit,
+            key: "fr-key-0001".into(),
+            peer_host: Some("198.51.100.9".into()),
+            backup_peer_hosts: None,
+        };
+        let res = e.control.join("edge.manage-result");
+        let control = e.control.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            let _ = std::fs::remove_file(control.join("edge.manage"));
+            std::fs::write(
+                &res,
+                json!({"id": "other-key-01", "op": "edit", "result": "applied"}).to_string(),
+            )
+            .unwrap();
+        });
+        let err = submit_in(&e.control, "edge", &req, Duration::from_secs(5)).unwrap_err();
+        t.join().unwrap();
+        assert!(err.starts_with(UNKNOWN_OUTCOME), "{err}");
     }
 
     #[test]

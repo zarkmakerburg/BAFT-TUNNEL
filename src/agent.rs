@@ -2713,6 +2713,15 @@ async fn tunnel_manage(ctx: &Ctx, body: &[u8], remove: bool) -> (u16, Value) {
     (crate::apply::result_code(&receipt), receipt)
 }
 
+/// A submit error: `unknown` when the helper may have acted (late or foreign result), else `failed`.
+fn helper_error(e: String) -> Value {
+    let unknown = e.starts_with(crate::tunnel_helper::UNKNOWN_OUTCOME);
+    json!({"result": if unknown { "unknown" } else { "failed" }, "reason": e})
+}
+
+const UNKNOWN_NOTE: &str =
+    "the root helper's outcome is unknown; check the tunnel's files and state before retrying";
+
 fn manage_steps(
     name: &str,
     dir: &Path,
@@ -2770,13 +2779,14 @@ fn manage_steps(
                     Some("the tunnel could not be stopped; nothing was removed".into()),
                 );
             }
-            let out = manage
-                .submit(name, &req)
-                .unwrap_or_else(|e| json!({"result": "failed", "reason": e}));
+            let out = manage.submit(name, &req).unwrap_or_else(helper_error);
             steps.push(
                 json!({"step": "remove_files", "result": out["result"], "files": out["files"],
                 "reason": out.get("reason")}),
             );
+            if out["result"] == "unknown" {
+                return finish(rc, steps, "unknown", Some(UNKNOWN_NOTE.into()));
+            }
             if out["result"] == "applied" {
                 rc["files_removed"] = out["files"].clone();
                 rc["backup"] = out["backup"].clone();
@@ -2807,13 +2817,14 @@ fn manage_steps(
             )
         }
         Op::Edit | Op::Revert => {
-            let out = manage
-                .submit(name, &req)
-                .unwrap_or_else(|e| json!({"result": "failed", "reason": e}));
+            let out = manage.submit(name, &req).unwrap_or_else(helper_error);
             steps.push(
                 json!({"step": "edit_files", "result": out["result"], "files": out["files"],
                 "reason": out.get("reason")}),
             );
+            if out["result"] == "unknown" {
+                return finish(rc, steps, "unknown", Some(UNKNOWN_NOTE.into()));
+            }
             if out["result"] != "applied" {
                 rc["changes"] = json!([]);
                 return finish(
@@ -2847,9 +2858,7 @@ fn manage_steps(
                 peer_host: None,
                 backup_peer_hosts: None,
             };
-            let back = manage
-                .submit(name, &revert)
-                .unwrap_or_else(|e| json!({"result": "failed", "reason": e}));
+            let back = manage.submit(name, &revert).unwrap_or_else(helper_error);
             steps.push(json!({"step": "revert_files", "result": back["result"], "reason": back.get("reason")}));
             let up = matches!(units.state(name).active.as_str(), "active" | "activating");
             let again = if up { Stage::Restart } else { Stage::Start };
