@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "project": {
+    "name": "BAFT-TUNNEL-hq-takeover-20261117",
+    "productType": null,
+    "stack": []
+  },
+  "sources": {
+    "tokens": [],
+    "components": [],
+    "assets": [],
+    "instructions": [
+      "DESIGN.md",
+      "AGENTS.md"
+    ]
+  },
+  "design": {
+    "colorMode": "unknown",
+    "colors": {},
+    "typography": {},
+    "spacing": {},
+    "radius": {},
+    "shadows": {},
+    "motion": {},
+    "density": "unknown"
+  },
+  "components": {
+    "installed": [],
+    "preferredPrimitives": [],
+    "patterns": []
+  },
+  "constraints": {
+    "must": [
+      "Project identity: BAFT-TUNNEL, a secure Rust tunnel agent with a per-node operator panel.",
+      "Local panel stack: native HTML, CSS, vanilla JavaScript, and dependency-free SVG; served by the Rust agent.",
+      "Truth before polish: use endpoint-backed data; otherwise show Unknown, Unavailable, or Error.",
+      "Never imply Ready, health, or success without matching evidence; status is glyph + word + color.",
+      "Support Persian-first RTL and English LTR as full layout modes; use logical CSS properties.",
+      "Keep IPs, ports, URLs, hashes, versions, and commands in LTR isolation.",
+      "Meet keyboard, focus, screen-reader, contrast, and touch-target accessibility requirements.",
+      "Keep the local panel compatible with the strict self-hosted Content Security Policy.",
+      "Use 21st.dev search/get for discovery and inspection; treat generated output as reference until reviewed."
+    ],
+    "avoid": [
+      "Do not add React, Tailwind, Radix, or third-party runtime dependencies to the local Agent panel.",
+      "Do not add CDN scripts, remote fonts, or external runtime assets.",
+      "Do not use fake/demo operational data or style Unknown as healthy.",
+      "Avoid decorative animation, excessive glass effects, parallax, and ornamental gradients.",
+      "Do not treat the future Central Fleet Console as authorization to implement or migrate the local panel."
+    ]
+  },
+  "decisions": [],
+  "evidence": [
+    {
+      "fact": "project.instructions",
+      "source": "AGENTS.md"
+    },
+    {
+      "fact": "project.instructions",
+      "source": "DESIGN.md"
+    }
+  ],
+  "generatedAt": "2026-11-17T21:04:49.580Z"
+}
