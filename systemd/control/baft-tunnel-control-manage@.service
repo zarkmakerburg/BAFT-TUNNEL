@@ -1,0 +1,40 @@
+[Unit]
+Description=Remove or edit baft-tunnel@%i (root tunnel helper, ADR-0055)
+StartLimitIntervalSec=10s
+StartLimitBurst=60
+
+[Service]
+Type=oneshot
+# Only this fixed command can run (ADR-0055). It reads and removes the request file and does one of:
+# remove (only while baft-tunnel@%i is stopped: moves %i.json and, when the pairing state names
+# %i.json, its pairing files and generated key into a root-only backup), edit (only remote and
+# backup_remotes of a forward configuration, port kept, validated, atomic, owner and mode kept) or
+# revert (puts back one backup). Operator PKI files are never touched. File names only go to the
+# receipt /run/baft-tunnel/control/%i.manage-result (root:baft-tunnel 0640). It never starts a service.
+ExecStart=/usr/local/bin/baft-tunnel setup manage-helper --instance %i
+# No ExecStopPost cleanup: the helper consumes only the request it read, so a request written
+# while it runs is not dropped (it re-triggers the path unit).
+TimeoutStartSec=30s
+UMask=0022
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+# Owners and modes of the files it creates; reading PKI files the operator gave to the service user.
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE

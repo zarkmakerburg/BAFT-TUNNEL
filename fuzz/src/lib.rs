@@ -104,6 +104,9 @@ pub mod session_status;
 pub mod setup;
 #[path = "../../src/setup_helper.rs"]
 pub mod setup_helper;
+#[path = "../../src/tunnel_helper.rs"]
+#[allow(dead_code)]
+pub mod tunnel_helper;
 #[path = "../../src/tls.rs"]
 pub mod tls;
 #[path = "../../src/tunnel.rs"]
