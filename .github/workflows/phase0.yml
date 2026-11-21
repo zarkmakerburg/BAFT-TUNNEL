@@ -39,6 +39,8 @@ jobs:
         run: sh lab/scripts/check-workflow-pins.sh
       - name: Test workflow action pin policy (mock fixtures)
         run: sh lab/scripts/test-workflow-pins.sh
+      - name: Test Fleet Join dedicated read-only preflight workflow contract
+        run: bash lab/real-hosts/test-fleet-join-lab-preflight-workflow.sh
       - name: Test LAB control scripts
         run: sh lab/scripts/test-scripts.sh
       - name: Test NetEm cleanup failure paths (mock Docker only)
