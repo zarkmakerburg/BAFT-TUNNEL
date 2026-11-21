@@ -13,11 +13,8 @@ echo "=== AUTO PAIRING: installed path via agent API, Direct then Reverse, from 
 stop_role iran serve; stop_role abroad serve; stop_role iran forward; stop_role abroad forward; sleep 1
 # The baseline E2E logs are no longer authoritative after those processes stop. Remove them so
 # a later pairing failure cannot accidentally report stale baseline tunnel output as AP evidence.
-for side in iran abroad; do
-  ssh_host "$side" "rm -f '$REMOTE_DIR/serve.log' '$REMOTE_DIR/forward.log' '$REMOTE_DIR/echo.log' '$REMOTE_DIR/impair.log'" || exit 1
-done
 AP_SVC=18094; AP_AG=18096; AP_TP="$E2E_PORT"
-EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGD=/var/lib/baft-tunnel-agent/lab-agent; PKG="$REMOTE_DIR/pkg"
+EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGD=/var/lib/baft-tunnel-agent; PKG="$REMOTE_DIR/pkg"
 AP_SHA="$(sha256sum "$MVP_BINARY_PATH" | awk '{print $1}')"
 AP_HOST_iran="$LAB_IRAN_HOST"; AP_HOST_abroad="$LAB_ABROAD_HOST"
 
@@ -27,62 +24,113 @@ ap_snapshot() { # side : normalized firewall rules, listeners outside the test p
     echo '# units'; systemctl list-unit-files --no-legend 'baft-tunnel*' 2>/dev/null | wc -l"
 }
 echo "--- clean-host check ---"
-AP_USER_BEFORE=(); AP_FW_DRIFT=()
+AP_FW_DRIFT=()
+AP_INSTANCES=""
+AP_INSTALLED_HOSTS=()
+AP_BACKUPS_iran=()
+AP_BACKUPS_abroad=()
 for side in iran abroad; do
-  ssh_host "$side" "! test -e $UB && ! test -e $EB && ! test -e /var/lib/baft-tunnel && [ \"\$(systemctl list-unit-files --no-legend 'baft-tunnel*' | wc -l)\" = 0 ]" ||
-    { echo "$side is not clean: an earlier BAFT-TUNNEL install is present (binary, $EB, state or units)" >&2; exit 1; }
-  if ssh_host "$side" "id baft-tunnel >/dev/null 2>&1"; then AP_USER_BEFORE+=("$side"); fi
+  ssh_host "$side" "test -d '$REMOTE_DIR' && test ! -L '$REMOTE_DIR' &&
+    [ \"\$(stat -c '%U:%G %a' '$REMOTE_DIR')\" = 'root:root 700' ] &&
+    test -f '$REMOTE_DIR/.baft-tunnel-e2e-run-owner' && test ! -L '$REMOTE_DIR/.baft-tunnel-e2e-run-owner' &&
+    [ \"\$(stat -c '%U:%G %a' '$REMOTE_DIR/.baft-tunnel-e2e-run-owner')\" = 'root:root 600' ] &&
+    [ \"\$(cat '$REMOTE_DIR/.baft-tunnel-e2e-run-owner')\" = '$REMOTE_DIR' ] &&
+    test ! -e '$UB' && test ! -L '$UB' &&
+    test ! -e '$EB' && test ! -L '$EB' &&
+    test ! -e /var/lib/baft-tunnel && test ! -L /var/lib/baft-tunnel &&
+    test ! -e /var/lib/baft-tunnel-agent && test ! -L /var/lib/baft-tunnel-agent &&
+    test ! -e /var/lib/baft-tunnel-control && test ! -L /var/lib/baft-tunnel-control &&
+    test ! -e /run/baft-tunnel && test ! -L /run/baft-tunnel &&
+    test ! -e /usr/local/lib/baft-tunnel && test ! -L /usr/local/lib/baft-tunnel &&
+    test ! -e /usr/local/lib/baft-tunnel-engines && test ! -L /usr/local/lib/baft-tunnel-engines &&
+    test ! -e /etc/tmpfiles.d/baft-tunnel-control.conf && test ! -L /etc/tmpfiles.d/baft-tunnel-control.conf &&
+    ! find /etc/systemd/system -name 'baft-tunnel*' -print -quit | grep -q . &&
+    ! getent passwd baft-tunnel >/dev/null 2>&1 &&
+    ! getent passwd baft-tunnel-agent >/dev/null 2>&1 &&
+    ! getent group baft-tunnel >/dev/null 2>&1 &&
+    ! getent group baft-tunnel-agent >/dev/null 2>&1 &&
+    ! systemctl list-unit-files --no-legend 'baft-tunnel*' 2>/dev/null | grep -q '^baft-tunnel' &&
+    ! systemctl list-units --all --no-legend 'baft-tunnel*' 2>/dev/null | grep -q '^baft-tunnel' &&
+    ! systemctl list-units --all --state=failed --no-legend 'baft-tunnel*' 2>/dev/null | grep -q '^baft-tunnel' &&
+    [ -z \"\$(find /var/backups -maxdepth 1 \\( -name 'baft-tunnel-install.*' -o -name 'baft-tunnel-backup.*' \\) -print -quit 2>/dev/null)\" ]" ||
+    { echo "$side is not clean: pre-existing BAFT-TUNNEL files, units, accounts, state or backups are present" >&2; exit 1; }
   ap_snapshot "$side" > "$LOCAL_TMP/ap-before-$side.txt"
 done
 
-ap_purge() { # side instances... : remove only what this stage created on one host
+# Only after both remote run directories are verified as owned by this E2E run,
+# remove stale baseline logs so failure evidence cannot be misattributed.
+for side in iran abroad; do
+  ssh_host "$side" "rm -f -- '$REMOTE_DIR/serve.log' '$REMOTE_DIR/forward.log' '$REMOTE_DIR/echo.log' '$REMOTE_DIR/impair.log' '$REMOTE_DIR/echo2.log' '$REMOTE_DIR/agent.log'" || exit 1
+done
+
+ap_purge() { # side instances... : invoke the host-side, path-scoped cleanup helper
   local side="$1"; shift
-  ssh_host "$side" "for i in $*; do touch /run/baft-tunnel/control/\$i.stop 2>/dev/null; systemctl stop baft-tunnel@\$i.service 2>/dev/null; bash '$PKG/scripts/install-agent-control.sh' --remove --instance \$i >/dev/null 2>&1; done;
-      [ -s '$REMOTE_DIR/agent.pid' ] && { pkill -P \$(cat '$REMOTE_DIR/agent.pid') 2>/dev/null; kill \$(cat '$REMOTE_DIR/agent.pid') 2>/dev/null; }; rm -f '$REMOTE_DIR/agent.pid';
-      [ -s '$REMOTE_DIR/echo2.pid' ] && kill \$(cat '$REMOTE_DIR/echo2.pid') 2>/dev/null; rm -f '$REMOTE_DIR/echo2.pid';
-      [ -x '$PKG/scripts/uninstall.sh' ] && bash '$PKG/scripts/uninstall.sh' --stop --purge-config --yes >/dev/null 2>&1;
-      rm -rf /var/backups/baft-tunnel-backup.* 2>/dev/null;
-      systemctl reset-failed 'baft-tunnel*' 2>/dev/null; systemctl daemon-reload; true" || true
-}
-ap_users() {
-  for side in iran abroad; do
-    if [[ " ${AP_USER_BEFORE[*]} " != *" $side "* ]]; then ssh_host "$side" "userdel baft-tunnel-agent 2>/dev/null; groupdel baft-tunnel-agent 2>/dev/null; userdel baft-tunnel 2>/dev/null; groupdel baft-tunnel 2>/dev/null; true" || true; fi
+  local backup_var="AP_BACKUPS_$side" backup_dir instance remote_command
+  local -n backup_dirs="$backup_var"
+  local -a command_parts
+  [[ " ${AP_INSTALLED_HOSTS[*]} " == *" $side "* ]] || return 0
+  command_parts=(bash "$PKG/lab/real-hosts/auto-pair-cleanup-host.sh" "$AP_SHA" "$PKG" "$AGD" "$REMOTE_DIR")
+  for backup_dir in "${backup_dirs[@]}"; do
+    [[ "$backup_dir" =~ ^/var/backups/baft-tunnel-install\.[[:alnum:]]+$ ]] || {
+      echo "refusing unrecognized install backup path on $side" >&2; return 1;
+    }
+    command_parts+=(--backup-dir "$backup_dir")
   done
+  for instance in $*; do
+    [[ "$instance" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$ ]] || {
+      echo "refusing unrecognized instance name during cleanup" >&2; return 1;
+    }
+    command_parts+=(--instance "$instance")
+  done
+  printf -v remote_command '%q ' "${command_parts[@]}"
+  ssh_host "$side" "$remote_command"
 }
-AP_INSTANCES=""
 ap_failure_evidence() {
-  local status="$1" side inst
+  local status="$1" side inst log
   (( status != 0 )) || return 0
   echo "--- automatic-pairing failure evidence (candidate=${MVP_SOURCE}) ---" >&2
   for side in iran abroad; do
     echo "--- auto-pair host=$side ---" >&2
-    ssh_host "$side" "for f in '$REMOTE_DIR/agent.log' '$REMOTE_DIR/echo2.log'; do
-        if [ -f \"\$f\" ]; then echo === \"\$f\" ===; tail -n 80 \"\$f\"; fi;
-      done;
-      for i in $AP_INSTANCES; do echo === journal baft-tunnel@\$i ===; journalctl -u baft-tunnel@\$i.service -n 80 --no-pager 2>&1; done;
-      echo '# test-port sockets'; ss -ltnp 2>/dev/null | grep -E ':(18094|18096|$AP_TP)\b' || true;
+    for log in echo2.log; do
+      ssh_host "$side" "if [ -f '$REMOTE_DIR/$log' ]; then echo '=== $side:$log ==='; tail -n 80 '$REMOTE_DIR/$log'; fi" >&2 || true
+    done
+    for inst in $AP_INSTANCES; do
+      ssh_host "$side" "journalctl -u baft-tunnel-agent@$inst.service -n 80 --no-pager 2>&1; journalctl -u baft-tunnel@$inst.service -n 80 --no-pager 2>&1" >&2 || true
+    done
+    ssh_host "$side" "echo '# test-port sockets'; ss -ltnp 2>/dev/null | grep -E ':(18094|18096|$AP_TP)\\b' || true;
       echo '# relevant processes'; ps -eo pid,ppid,user,args | grep -E '[b]aft-tunnel|[e]cho.py' | head -n 40" >&2 || true
   done
 }
 ap_cleanup() {
   local status="${1:-0}" cleanup_failed=0 side
+  local -a remaining_hosts=()
+  LAB_PRESERVE_REMOTE=1
   ap_failure_evidence "$status"
   for side in iran abroad; do
-    ap_purge "$side" $AP_INSTANCES
-    if ssh_host "$side" "! test -e '$UB' && ! test -e '$EB' && ! test -e /var/lib/baft-tunnel && ! test -e /run/baft-tunnel/control && [ \"\$(systemctl list-unit-files --no-legend 'baft-tunnel*' 2>/dev/null | wc -l)\" = 0 ]"; then
+    if ap_purge "$side" $AP_INSTANCES; then
       echo "AUTO_PAIR_CLEANUP_HOST side=$side result=pass"
+      if [[ "$side" == iran ]]; then AP_BACKUPS_iran=(); else AP_BACKUPS_abroad=(); fi
     else
       echo "AUTO_PAIR_CLEANUP_HOST side=$side result=fail" >&2
       cleanup_failed=1
+      [[ " ${AP_INSTALLED_HOSTS[*]} " == *" $side "* ]] && remaining_hosts+=("$side")
     fi
   done
-  ap_users
+  AP_INSTALLED_HOSTS=("${remaining_hosts[@]}")
+  if (( cleanup_failed == 0 )); then
+    LAB_PRESERVE_REMOTE=0
+    AP_INSTANCES=""
+    AP_BACKUPS_iran=()
+    AP_BACKUPS_abroad=()
+  else
+    LAB_PRESERVE_REMOTE=1
+  fi
   (( cleanup_failed == 0 )) || return 1
 }
 # set +e: under errexit the (exit N) that restores the status would end the trap before cleanup runs.
 trap 'ap_status=$?; set +e; ap_cleanup_status=0; ap_cleanup "$ap_status" || ap_cleanup_status=$?; if (( ap_status == 0 && ap_cleanup_status != 0 )); then ap_status=$ap_cleanup_status; fi; (exit "$ap_status"); cleanup' EXIT
 
-tar -czf "$LOCAL_TMP/ap-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd
+tar -czf "$LOCAL_TMP/ap-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd lab/real-hosts/auto-pair-install-host.sh lab/real-hosts/auto-pair-cleanup-host.sh
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-ap"
 
 ap_api() { # side METHOD path ; JSON body on stdin for POST (kept off the command line)
@@ -132,7 +180,7 @@ ap_pair_failure_diagnostics() { # side instance -> bounded, non-secret failure e
   local side="$1" inst="$2" http
   echo "--- pairing failure evidence: side=$side instance=$inst ---" >&2
   echo "helper_status=$(ap_pair_file_status "$side" "$inst" 2>&1 | tr '\n' ' ')" >&2 || true
-  http="$(ssh_host "$side" "curl -sS -o /dev/null -w '%{http_code} bytes=%{size_download}' -H 'Authorization: Bearer \$(cat $AGD/token)' http://127.0.0.1:$AP_AG/v1/pair/status 2>/dev/null || printf 'transport-error'" </dev/null 2>/dev/null || true)"
+  http="$(ssh_host "$side" "curl -sS -o /dev/null -w '%{http_code} bytes=%{size_download}' -H \"Authorization: Bearer \$(cat $AGD/token)\" http://127.0.0.1:$AP_AG/v1/pair/status 2>/dev/null || printf 'transport-error'" </dev/null 2>/dev/null || true)"
   echo "agent_pair_status_http=$http" >&2
   ssh_host "$side" "systemctl show baft-tunnel-control-pair@$inst.service -p LoadState -p ActiveState -p SubState -p Result -p ExecMainStatus --no-pager 2>/dev/null || true;
     systemctl show baft-tunnel-control-pair@$inst.path -p LoadState -p ActiveState -p SubState --no-pager 2>/dev/null || true;
@@ -198,22 +246,26 @@ PY
 }
 
 ap_round() { # name direction listener_side joiner_side joiner_location
-  local rn="$1" dir="$2" ls="$3" js="$4" jloc="$5" lloc li ji code out nonce vl vj side inst pair rot n
+  local rn="$1" dir="$2" ls="$3" js="$4" jloc="$5" lloc li ji code out nonce vl vj side inst pair rot n backup_dir install_status
   li="${rn}l"; ji="${rn}j"; AP_INSTANCES="$li $ji"
   if [[ "$ls" == abroad ]]; then lloc=abroad; else lloc=iran; fi
   echo "--- round $rn ($dir): listener=$ls ($lloc) joiner=$js ($jloc) ---"
   for side in iran abroad; do
     inst="$li"; [[ "$side" == "$js" ]] && inst="$ji"
     copy_to_host "$side" "$LOCAL_TMP/ap-pkg.tgz" "$LOCAL_TMP/baft-tunnel-ap"
-    ssh_host "$side" "set -e; mkdir -p '$PKG'; tar -xzf '$REMOTE_DIR/ap-pkg.tgz' -C '$PKG';
-      [ \"\$(sha256sum '$REMOTE_DIR/baft-tunnel-ap' | cut -d' ' -f1)\" = '$AP_SHA' ];
-      bash '$PKG/scripts/install.sh' --binary '$REMOTE_DIR/baft-tunnel-ap' >/dev/null;
-      [ \"\$(sha256sum $UB | cut -d' ' -f1)\" = '$AP_SHA' ];
-      bash '$PKG/scripts/install-agent-control.sh' --instance $inst --listen 127.0.0.1:18099 >/dev/null;
-      install -d -o baft-tunnel-agent -g baft-tunnel-agent -m 0700 $AGD;
-      setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent-token --out $AGD/token >/dev/null;
-      nohup bash -c 'while :; do setpriv --reuid=baft-tunnel-agent --regid=baft-tunnel-agent --init-groups $UB agent --config $EB/$inst.json --token-file $AGD/token --state-dir $AGD --listen 127.0.0.1:$AP_AG --instance $inst; sleep 1; done' > '$REMOTE_DIR/agent.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/agent.pid';
-      for n in \$(seq 1 40); do python3 -c 'import urllib.request;urllib.request.urlopen(\"http://127.0.0.1:$AP_AG/v1/health\",timeout=1)' 2>/dev/null && exit 0; sleep 0.25; done; tail -20 '$REMOTE_DIR/agent.log'; exit 1"
+    ssh_host "$side" "set -e; mkdir -p '$PKG'; tar -xzf '$REMOTE_DIR/ap-pkg.tgz' -C '$PKG'"
+    AP_INSTALLED_HOSTS+=("$side")
+    install_status=0
+    backup_dir="$(ssh_host "$side" "bash '$PKG/lab/real-hosts/auto-pair-install-host.sh' '$REMOTE_DIR/baft-tunnel-ap' '$AP_SHA' '$PKG' '$EB' '$AGD' '$REMOTE_DIR' '$AP_AG' '$inst'")" || install_status=$?
+    [[ "$backup_dir" =~ ^/var/backups/baft-tunnel-install\.[[:alnum:]]+$ ]] || {
+      echo "install helper did not return a scoped backup path on $side" >&2
+      return 1
+    }
+    if [[ "$side" == iran ]]; then AP_BACKUPS_iran+=("$backup_dir"); else AP_BACKUPS_abroad+=("$backup_dir"); fi
+    (( install_status == 0 )) || {
+      echo "install or agent startup failed on $side (exit=$install_status)" >&2
+      return "$install_status"
+    }
   done
   # setup mode: the agent says setup_pending until pairing wrote the configuration
   for side in iran abroad; do

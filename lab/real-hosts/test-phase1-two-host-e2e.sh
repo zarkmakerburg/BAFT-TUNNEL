@@ -119,7 +119,12 @@ fi
 
 # Failure diagnostics must not reuse baseline logs and must verify remote temporary cleanup.
 auto_pair="$root/lab/real-hosts/auto-pair-stage.sh"
-grep -F "rm -f '\$REMOTE_DIR/serve.log' '\$REMOTE_DIR/forward.log' '\$REMOTE_DIR/echo.log' '\$REMOTE_DIR/impair.log'" "$auto_pair" >/dev/null
+ownership_check_line="$(grep -nF '.baft-tunnel-e2e-run-owner' "$auto_pair" | head -1 | cut -d: -f1)"
+stale_log_cleanup_line="$(grep -nF "rm -f -- '\$REMOTE_DIR/serve.log'" "$auto_pair" | cut -d: -f1)"
+[[ -n "$ownership_check_line" && -n "$stale_log_cleanup_line" && "$stale_log_cleanup_line" -gt "$ownership_check_line" ]] || {
+  echo 'stale remote logs must only be removed after the run-ownership marker is validated' >&2
+  exit 1
+}
 grep -F "'\$REMOTE_DIR/echo2.log'" "$auto_pair" >/dev/null
 grep -F 'journalctl -u baft-tunnel@' "$auto_pair" >/dev/null
 grep -F 'AUTO_PAIR_CLEANUP_HOST side=$side result=pass' "$auto_pair" >/dev/null
