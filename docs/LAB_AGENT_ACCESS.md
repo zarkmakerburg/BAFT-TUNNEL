@@ -1,95 +1,83 @@
 # LAB Agent Access — start here, do not scan the repository
 
-This is the single entry point for an incoming agent who needs to inspect or connect to the BAFT-TUNNEL real-server LAB.
+This is the entry point for an incoming agent who needs to inspect or connect to a BAFT-TUNNEL real-server LAB. Read the latest [HQ Control Board, Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2) comments before any LAB operation.
 
-## 1. Read only these sources first
+## 1. Select exactly one LAB
 
-1. [HQ Control Board, Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2) — read the issue and the **latest comments** for current host status, active operations, exact branch/SHA, and safety constraints.
-2. This file — connection contract and the read-only entry point.
-3. [Two-host LAB inventory and environment contract](PHASE0_TWO_HOST_LAB.md) — authoritative variable/secret names.
-4. [Read-only preflight workflow](../.github/workflows/phase0-two-host-lab.yml) — exact connection behavior.
+BAFT-TUNNEL has two separate two-host LAB configurations. They have different host pairs, GitHub Actions Environments, and workflows. **Never substitute one for the other.** The old six-host matrix is not active.
 
-Do **not** recursively browse the repository, search all workflows, or infer addresses from old logs. The active LAB is exactly two hosts: **Iran** and **abroad**. The proposed six-host matrix is not active.
+| LAB | Intended use | GitHub Actions Environment | Entry-point documentation | Read-only workflow |
+|---|---|---|---|---|
+| Established Phase 0 LAB | Tasks explicitly scoped to the original two-host Phase 0 LAB | `baft-tunnel-lab` | [PHASE0_TWO_HOST_LAB.md](PHASE0_TWO_HOST_LAB.md) | [phase0-two-host-lab.yml](../.github/workflows/phase0-two-host-lab.yml) |
+| Dedicated Fleet Join LAB | Fleet Join investigation and its separately gated acceptance plan | `baft-tunnel-fleet-lab-20261121` | [FLEET_JOIN_LAB_ACCESS_PREFLIGHT.md](FLEET_JOIN_LAB_ACCESS_PREFLIGHT.md) | [fleet-join-lab-preflight.yml](../.github/workflows/fleet-join-lab-preflight.yml) |
 
-## 2. Where the connection data lives
+For Fleet Join, use only the dedicated Fleet Join documentation and workflow. Do not reuse or modify `baft-tunnel-lab`. The dedicated workflow shares a concurrency group with the Phase 0 workflow so the two real-host SSH workflows cannot overlap.
 
-GitHub repository: `zarkmakerburg/BAFT-TUNNEL` (private)
+## 2. Repository and credential handling
 
-GitHub Actions Environment: `baft-tunnel-lab`
+GitHub repository: `zarkmakerburg/BAFT-TUNNEL` (**public**, owner-controlled; repository visibility does not grant a licence).
 
-Environment variables (hostnames/IPs and SSH connection metadata):
-- `LAB_IRAN_SSH_USER`
-- `LAB_IRAN_SSH_PORT`
-- `LAB_ABROAD_SSH_USER`
-- `LAB_ABROAD_SSH_PORT`
-- `LAB_TEST_PORTS`
+Host addresses, SSH private keys, and pinned known-hosts data remain in the selected GitHub Actions Environment. Never retrieve or print secret values, ask the owner to paste them into chat, or copy host addresses/credentials into repository files, issues, artifacts, shell output, or logs.
 
-Environment secrets (the repository is public, so host addresses must be secrets: variables are printed in public workflow logs):
+For the established Phase 0 LAB, the environment contract is documented in [PHASE0_TWO_HOST_LAB.md](PHASE0_TWO_HOST_LAB.md). For the dedicated Fleet Join LAB, use the separate contract in [FLEET_JOIN_LAB_ACCESS_PREFLIGHT.md](FLEET_JOIN_LAB_ACCESS_PREFLIGHT.md). Both use these secret names:
 - `LAB_IRAN_HOST`
 - `LAB_ABROAD_HOST`
-- `LAB_SSH_PRIVATE_KEY` — dedicated LAB SSH private key.
-- `LAB_SSH_KNOWN_HOSTS` — independently verified pinned host keys for both hosts.
+- `LAB_SSH_PRIVATE_KEY`
+- `LAB_SSH_KNOWN_HOSTS`
 
-The actual values intentionally remain in the private GitHub Environment. **Do not ask the owner to paste them into chat; do not copy them into repo files, issues, artifacts, shell output, or logs.** GitHub Actions secrets are write-only to normal repository/API readers; an agent should not attempt to retrieve or print their values.
+The SSH user/port and test-port settings are Environment variables. Do not assume that values or credentials from one Environment apply to the other.
 
-## 3. The supported connection path (read-only)
+## 3. Current Fleet Join LAB evidence and limits
 
-Use the existing manual workflow as the SSH access broker. It creates short-lived runner files from the Environment secrets, enforces strict SSH host-key checking, connects to both hosts, performs read-only inspection and TCP reachability probes, then deletes the temporary key material even on failure.
+The dedicated Fleet Join read-only preflight completed successfully in [run 44915734466](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/44915734466), on `main` at `ec68e6d4f8960b601698deb139b5c62245ed3c40`. The result is recorded in the latest relevant [Issue #2 comment](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2#issuecomment-7064387237).
 
-GitHub UI steps:
-1. Open [Actions → Phase 0 two-host LAB (manual, read-only preflight)](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/workflows/phase0-two-host-lab.yml).
-2. Select **Run workflow**.
-3. Select branch `main`.
-4. Enter exactly `READ_ONLY_PREFLIGHT` in the `confirm` input.
-5. Start the workflow and inspect the run summary/logs for both host reports.
+Observed inventory:
+- Iran: Ubuntu 24.04.4 LTS.
+- Abroad: Ubuntu 22.04.4 LTS; `nft` was not present.
+- Iran-to-abroad TCP probes on 443, 8443, 2053, and 18300 reached the host but found no listener.
 
-Equivalent GitHub CLI command (if authenticated with access to this private repository):
+This was SSH/inventory/reachability evidence only. It did not inspect all managed paths, units, users, or Fleet CA state, and **did not prove either host disposable**. No package, service, filesystem, firewall, routing, sysctl, tunnel, or reboot changes were made. The OS-version mismatch must be resolved against the Ubuntu 22.04 acceptance baseline; do not install `nft` or change either host as an assumed fix. The missing `nft` binary is an inventory finding, not by itself proof that Fleet Join requires firewall tooling.
 
-```bash
-gh workflow run phase0-two-host-lab.yml \
-  --repo zarkmakerburg/BAFT-TUNNEL \
-  --ref main \
-  -f confirm=READ_ONLY_PREFLIGHT
+**No further host operation is authorized by this preflight result.** The Fleet Join acceptance plan requires freshly provisioned disposable Ubuntu 22.04 hosts (or an equivalently isolated systemd-capable environment), with a reviewed state boundary and separate task-specific owner authorization.
 
-gh run list --repo zarkmakerburg/BAFT-TUNNEL \
-  --workflow phase0-two-host-lab.yml --limit 3
-```
+## 4. Supported read-only access paths
 
-Then inspect the run ID returned by `gh run list`:
+### Established Phase 0 LAB
 
-```bash
-gh run view RUN_ID --repo zarkmakerburg/BAFT-TUNNEL
-gh run view RUN_ID --repo zarkmakerburg/BAFT-TUNNEL --log
-```
+Use [Phase 0 two-host LAB (manual, read-only preflight)](../.github/workflows/phase0-two-host-lab.yml) only when the task explicitly targets the established Phase 0 LAB:
+1. Select branch `main`.
+2. Enter exactly `READ_ONLY_PREFLIGHT` in the confirmation input.
+3. Inspect both host reports and the Iran-to-abroad TCP probe results.
 
-Do not paste raw logs into public locations. Check that the run completed successfully and that both Iran and abroad reports are present. Treat output as evidence from that run only; do not infer tunnel readiness from an SSH preflight.
+### Dedicated Fleet Join LAB
 
-## 4. What this workflow does — and does not do
+Use [Fleet Join LAB access preflight (manual, read-only)](../.github/workflows/fleet-join-lab-preflight.yml) only for the dedicated Fleet Join LAB:
+1. Select branch `main`.
+2. Enter exactly `FLEET_JOIN_READ_ONLY_PREFLIGHT` in the confirmation input.
+3. Inspect both host reports and the Iran-to-abroad TCP probe results.
 
-It reads OS/kernel/architecture/tool availability and probes configured TCP ports from Iran to abroad. It does **not** install packages, write persistent remote files, change firewall/routing/sysctl, restart services, start/stop tunnels, or reboot hosts.
+Both workflows use strict pinned host-key checking and ephemeral runner credential files with cleanup. Neither is a general-purpose remote shell. A successful preflight does not prove tunnel data flow, Fleet Join acceptance, or host disposability.
 
-This is the correct first connection for an incoming agent who only needs to identify the LAB hosts and verify SSH access.
+## 5. Before any additional real-host operation
 
-## 5. If the task requires commands beyond read-only inspection
+Before any further LAB run:
+- Re-read the latest Issue #2 comments and confirm no other LAB operation is active.
+- Verify the exact task, host pair, branch/ref, candidate SHA, and required baseline.
+- Announce the exact workflow/ref and scope on Issue #2 before execution.
+- Obtain explicit, task-specific owner authorization.
+- Use a dedicated narrowly scoped workflow with strict pinned host keys, masked host values, bounded timeouts, and unconditional ephemeral-key cleanup.
+- Make state-changing work reversible; capture before/after evidence and define abort and cleanup criteria.
+- Never upgrade an OS/systemd, reboot, alter firewall/routes/sysctl, or touch unrelated services as an implicit test step.
 
-The read-only workflow is not a general-purpose remote shell. Do not repurpose it or bypass its confirmation gate.
-
-Before any state-changing LAB operation:
-- Read the latest HQ handoff and verify the exact task, target host(s), and current state.
-- Use a dedicated, narrowly scoped, manually triggered workflow with explicit confirmation, strict pinned host keys, masked host values, bounded timeout, and unconditional ephemeral-key cleanup.
-- Make the operation reversible, capture before/after evidence, and define cleanup/abort criteria.
-- Never reboot, upgrade the OS/systemd, alter production, or touch unrelated services as an implicit part of a test.
-- For P1-000, use an isolated instance and dedicated temporary paths/ports; do not overwrite the existing BAFT-TUNNEL service or user data. The active LAB baseline is Ubuntu 22.04 / systemd 249.
-
-If no appropriate scoped workflow exists, report the precise missing capability in HQ and create that workflow first; do not improvise direct access or expose credentials.
+If the required isolated boundary or scoped workflow does not exist, report that precise blocker and create/review the missing workflow before attempting the operation. Never improvise direct access or expose credentials.
 
 ## 6. Required handoff after access
 
 Append a concise comment to [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2) recording:
 - workflow run URL and exact commit/ref;
-- which host checks completed (label hosts Iran/abroad; do not disclose addresses);
+- which host checks completed (label hosts Iran/abroad; never disclose addresses);
 - read-only vs state-changing scope;
-- actual observed results and any failures;
+- actual observed results and failures;
 - confirmation that ephemeral credentials were cleaned;
 - next executable action and any blocker.
 
