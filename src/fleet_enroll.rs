@@ -455,6 +455,7 @@ impl Enroller {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::{Enroller, State};
+    use sha2::{Digest, Sha256};
 
     pub(crate) fn certificate_pem() -> String {
         let key = rcgen::KeyPair::generate().unwrap();
@@ -470,6 +471,21 @@ pub(crate) mod test_support {
         let (tail, certificate) = x509_parser::pem::parse_x509_pem(pem.as_bytes()).unwrap();
         assert!(tail.iter().all(u8::is_ascii_whitespace));
         hex::encode(sha2::Sha256::digest(&certificate.contents))
+    }
+
+    /// Prepare a valid submitted offer for Join admission classification tests.
+    pub(crate) fn submitted_offer(
+        enroller: &mut Enroller,
+        node_id: &str,
+        now: u64,
+    ) -> super::Issued {
+        let issued = enroller.offer(node_id, now).unwrap();
+        let csr = "valid-csr-fixture".to_owned();
+        let offer = enroller.offers.get_mut(&issued.id).unwrap();
+        offer.state = State::Submitted;
+        offer.csr = Some(csr.clone());
+        offer.submit_digest = Some(Sha256::digest(csr.as_bytes()).into());
+        issued
     }
 
     /// Prepare an offer with a valid public certificate at the pre-delivery boundary.
@@ -1079,6 +1095,9 @@ mod tests {
             }
             crate::fleet_join::Admission::Retry => {
                 panic!("exact AwaitingReport retry must redeliver")
+            }
+            crate::fleet_join::Admission::Pending => {
+                panic!("AwaitingReport retry must not be classified as pending")
             }
             crate::fleet_join::Admission::Close => panic!("live exact retry must not close"),
         }
