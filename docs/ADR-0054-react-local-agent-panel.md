@@ -66,3 +66,20 @@ What was taken, and how:
 - **World geometry** is Natural Earth land (public domain) via `world-atlas` 2.0.2 (ISC), converted by `panel-react/scripts/gen-worldmap.mjs`. BCC's `world-land.js` and Earth textures were not used (textures would also need an `img-src` CSP change, which this panel does not make).
 - **Skipped on purpose:** multi-node features (node list, failover, auto-select, update center, backups, operations cards) because the local Agent has no API for them and they belong to Fleet/control-plane work (ADR-0051); the 3D welcome globe and photo textures (CSP, weight, no data value).
 - **Data rule unchanged:** real Agent data only; unknown values are shown as Unknown.
+
+
+## Addendum (2026-11-20): owner-selected Overview dashboard direction
+
+The owner supplied and selected a page-scoped visual direction for the existing Overview route: a production-oriented charcoal dashboard, a strict 12-column grid, cyan/emerald/amber status accents, KPI summary, truthful tunnel topology, session counters, throughput history and a path-status table. This selection applies to **Overview only**; it does not select a visual direction for the other eight local routes and does not waive their remaining design gates.
+
+The implementation remains presentation-only and uses the existing authenticated local Agent API. It does not add a Fleet/control-plane view, Zabbix integration, external telemetry source or browser-side privileged operation.
+
+Data semantics are binding:
+- The first KPI identifies the local Agent; it is not a fleet-wide device count.
+- Latency is the measured median, not an inferred average.
+- Throughput is the current measured rate, not a fabricated daily peak.
+- `sessions_total` and `streams_total` are cumulative counters, not active-session counts or a time series.
+- A configured peer is not directly observable from this Agent; unsupported link fields remain Unknown.
+- Firewall visibility remains Unknown under ADR-0030. No component uses `CAP_NET_ADMIN`.
+
+No demo inventory or fabricated operational metrics are shipped. Any simulated values used for visual QA are test fixtures only and are not part of the product.

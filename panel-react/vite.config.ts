@@ -24,6 +24,14 @@ export default defineConfig({
   },
   server: {
     // Dev only: proxy API and the shared i18n/font assets to a running agent.
-    proxy: { '/v1': 'http://127.0.0.1:18090', '/i18n.js': 'http://127.0.0.1:18090', '/fonts': 'http://127.0.0.1:18090' },
+    proxy: {
+      '/v1': 'http://127.0.0.1:18090',
+      '/i18n.js': 'http://127.0.0.1:18090',
+      '/fonts': 'http://127.0.0.1:18090',
+      // Vite prefixes root-relative HTML/CSS assets with base (/next/); map those dev requests
+      // back to the Agent's canonical root asset routes.
+      '/next/i18n.js': { target: 'http://127.0.0.1:18090', rewrite: (path) => path.replace(/^\/next/, '') },
+      '/next/fonts': { target: 'http://127.0.0.1:18090', rewrite: (path) => path.replace(/^\/next/, '') },
+    },
   },
 });
