@@ -288,7 +288,7 @@ fn provision_hub(request: HubProvision<'_>) -> Result<Value> {
     )
     .context("create Hub CSR from the locally generated key")?;
     let csr = String::from_utf8(csr).context("Hub CSR is not UTF-8")?;
-    let cert = crate::fleet_ca::sign_hub(ca_dir, hub_name, dial_san, &csr)?;
+    let cert = crate::fleet_ca::sign_hub(ca_dir, hub_name, &csr)?;
     let mut hub_config = json!({
         "listen": listen_addr.to_string(),
         "ca": ca_dir.join("ca.crt"),
@@ -302,7 +302,7 @@ fn provision_hub(request: HubProvision<'_>) -> Result<Value> {
             "advertise_host": advertised_host,
             "advertise_port": join_listen.port(),
             "hub_id": hub_name,
-            "hub_name": advertised_host
+            "hub_name": crate::fleet_ca::dns_name(hub_name)
         });
     }
     let fleet_config = json!({ "hub": hub_config });
@@ -360,6 +360,20 @@ fn provision_hub(request: HubProvision<'_>) -> Result<Value> {
         "credential_id": HUB_CREDENTIAL_ID,
         "restart_required": true
     }))
+}
+
+fn validate_restart_agent_config(config_path: &Path) -> Result<()> {
+    let config = crate::fleet_run::FleetConfig::load(config_path)
+        .context("Fleet Agent config is missing or invalid")?;
+    let managed_hub = config
+        .hub
+        .as_ref()
+        .is_some_and(|hub| hub.key_credential.as_deref() == Some(HUB_CREDENTIAL_ID));
+    ensure!(
+        managed_hub || config.member.is_some(),
+        "refusing Agent restart without a managed Hub credential config or valid Member config"
+    );
+    Ok(())
 }
 
 fn restart_agent_unit(instance: &str, systemd_root: &Path) -> Result<()> {
@@ -450,13 +464,7 @@ fn run_with_paths(
             }),
             Request::RestartAgent => {
                 let config_path = fleet_config_root.join(format!("{name}.json"));
-                let config: Value = serde_json::from_slice(
-                    &std::fs::read(&config_path).context("Fleet Hub config is not installed")?,
-                )?;
-                ensure!(
-                    config["hub"]["key_credential"] == HUB_CREDENTIAL_ID,
-                    "refusing Agent restart without the managed Hub credential config"
-                );
+                validate_restart_agent_config(&config_path)?;
                 restart_agent = true;
                 Ok(json!({"state": "done", "restart_queued": true}))
             }
@@ -785,7 +793,11 @@ mod tests {
         assert!(details.contains("TLS Web Server Authentication"));
         assert!(!details.contains("TLS Web Client Authentication"));
         assert!(details.contains("baft-fleet-hub://hub-1.fleet.baft.invalid"));
-        assert!(details.contains("203.0.113.7"));
+        assert!(details.contains("DNS:hub-1.fleet.baft.invalid"));
+        assert!(
+            !details.contains("203.0.113.7"),
+            "external dial address must not be embedded in the Hub certificate"
+        );
 
         let result_file = std::fs::read_to_string(control.join("edge.fleet-result")).unwrap();
         assert!(!result_file.contains("PRIVATE KEY"));
@@ -859,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn hub_provision_derives_join_host_from_dial_san() {
+    fn fleet_hub_provision_separates_advertise_host_from_tls_name() {
         let dir = tmp("hub-join-derived");
         let ca = dir.join("ca");
         crate::fleet_ca::create(&ca, "Test Fleet CA").unwrap();
@@ -885,7 +897,10 @@ mod tests {
         assert_eq!(config["hub"]["join"]["advertise_host"], "hub.example.test");
         assert_eq!(config["hub"]["join"]["advertise_port"], 18444);
         assert_eq!(config["hub"]["join"]["hub_id"], "hub-1");
-        assert_eq!(config["hub"]["join"]["hub_name"], "hub.example.test");
+        assert_eq!(
+            config["hub"]["join"]["hub_name"],
+            "hub-1.fleet.baft.invalid"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -977,6 +992,60 @@ mod tests {
         assert_eq!(agent_result["credential_id"], HUB_CREDENTIAL_ID);
         assert_eq!(agent_result["certificate"], helper_result["certificate"]);
         assert!(!agent_result.to_string().contains("PRIVATE KEY"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restart_guard_accepts_valid_member_only_config_and_rejects_unmanaged_config() {
+        let dir = tmp("restart-member-config");
+        let bundle = dir.join("generation");
+        std::fs::create_dir(&bundle).unwrap();
+        for name in ["ca.crt", "ca.crl", "member.crt", "member.key"] {
+            std::fs::write(bundle.join(name), b"test material").unwrap();
+        }
+        let config = dir.join("member.json");
+        std::fs::write(
+            &config,
+            serde_json::json!({"member": {
+                "hub_addr": "127.0.0.1:4443",
+                "hub_name": crate::fleet_ca::dns_name("hub-1"),
+                "hub_id": "hub-1",
+                "ca": bundle.join("ca.crt"),
+                "crl": bundle.join("ca.crl"),
+                "cert": bundle.join("member.crt"),
+                "key": bundle.join("member.key")
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        assert!(validate_restart_agent_config(&config).is_ok());
+
+        let hub_dir = dir.join("hub-material");
+        std::fs::create_dir(&hub_dir).unwrap();
+        for name in ["ca.crt", "ca.crl", "hub.crt"] {
+            std::fs::write(hub_dir.join(name), b"test material").unwrap();
+        }
+        let managed_hub = dir.join("managed-hub.json");
+        std::fs::write(
+            &managed_hub,
+            serde_json::json!({"hub": {
+                "listen": "127.0.0.1:4443",
+                "ca": hub_dir.join("ca.crt"),
+                "crl": hub_dir.join("ca.crl"),
+                "cert": hub_dir.join("hub.crt"),
+                "key_credential": HUB_CREDENTIAL_ID
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        assert!(
+            validate_restart_agent_config(&managed_hub).is_ok(),
+            "existing managed Hub credential configs must remain accepted"
+        );
+
+        let unmanaged = dir.join("unmanaged.json");
+        std::fs::write(&unmanaged, br#"{"hub":{"listen":"127.0.0.1:4443","ca":"/ca","crl":"/crl","cert":"/cert","key_credential":"other-key"}}"#).unwrap();
+        assert!(validate_restart_agent_config(&unmanaged).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 

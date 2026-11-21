@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 use crate::fleet;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -69,7 +69,10 @@ fn parse_status(raw: &[u8]) -> Result<u16> {
 /// F-2: the peer must be the paired hub, not just any certificate from the same CA. The leaf
 /// carries exactly the `fleet-hub` BAFT EKU (no tunnel or node EKU) and the expected hub URI.
 pub fn verify_hub_identity(leaf_der: &[u8], hub_id: &str) -> Result<()> {
-    use x509_parser::extensions::GeneralName;
+    ensure!(
+        crate::fleet_ca::valid_node_id(hub_id),
+        "invalid Fleet Hub id"
+    );
     let (rest, cert) = x509_parser::parse_x509_certificate(leaf_der)
         .map_err(|_| anyhow::anyhow!("hub certificate is not valid X.509 DER"))?;
     if !rest.is_empty() {
@@ -88,19 +91,11 @@ pub fn verify_hub_identity(leaf_der: &[u8], hub_id: &str) -> Result<()> {
     if !fleet::profile_allows(&ekus, fleet::Profile::FleetHub) {
         bail!("certificate is not a Fleet hub certificate");
     }
-    let want = format!("baft-fleet-hub://{hub_id}.fleet.baft.invalid");
-    let san = cert
-        .subject_alternative_name()
-        .context("parse hub certificate subject alternative name")?
-        .context("hub certificate has no subject alternative name")?;
-    let found = san
-        .value
-        .general_names
-        .iter()
-        .any(|n| matches!(n, GeneralName::URI(u) if *u == want));
-    if !found {
-        bail!("hub certificate does not carry the paired hub identity");
-    }
+    crate::fleet_ca::validate_identity_sans(
+        leaf_der,
+        &crate::fleet_ca::dns_name(hub_id),
+        &crate::fleet_ca::hub_uri(hub_id),
+    )?;
     Ok(())
 }
 
@@ -229,6 +224,9 @@ mod tests {
             ),
         ];
         p.use_authority_key_identifier_extension = true;
+        p.subject_alt_names.push(SanType::DnsName(
+            Ia5String::try_from(format!("{node}.fleet.baft.invalid")).unwrap(),
+        ));
         p.subject_alt_names.push(SanType::URI(
             Ia5String::try_from(format!("baft-fleet://{node}.fleet.baft.invalid")).unwrap(),
         ));
@@ -240,9 +238,11 @@ mod tests {
         (c, k)
     }
 
-    fn hub_cert(
+    fn hub_cert_with_names(
         dir: &std::path::Path,
         hub: &str,
+        dns_names: &[&str],
+        uri_names: &[&str],
         ekus: &[&str],
         issuer: &rcgen::Issuer<'static, KeyPair>,
     ) -> (PathBuf, PathBuf) {
@@ -257,12 +257,16 @@ mod tests {
         }));
         p.extended_key_usages = u;
         p.use_authority_key_identifier_extension = true;
-        p.subject_alt_names.push(SanType::DnsName(
-            Ia5String::try_from("localhost".to_owned()).unwrap(),
-        ));
-        p.subject_alt_names.push(SanType::URI(
-            Ia5String::try_from(format!("baft-fleet-hub://{hub}.fleet.baft.invalid")).unwrap(),
-        ));
+        for dns in dns_names {
+            p.subject_alt_names.push(SanType::DnsName(
+                Ia5String::try_from((*dns).to_owned()).unwrap(),
+            ));
+        }
+        for uri in uri_names {
+            p.subject_alt_names.push(SanType::URI(
+                Ia5String::try_from((*uri).to_owned()).unwrap(),
+            ));
+        }
         let key = KeyPair::generate().unwrap();
         let cert = p.signed_by(&key, issuer).unwrap();
         let tag = format!("hub-{hub}-{}", ekus.len());
@@ -275,6 +279,17 @@ mod tests {
         (c, k)
     }
 
+    fn hub_cert(
+        dir: &std::path::Path,
+        hub: &str,
+        ekus: &[&str],
+        issuer: &rcgen::Issuer<'static, KeyPair>,
+    ) -> (PathBuf, PathBuf) {
+        let dns = format!("{hub}.fleet.baft.invalid");
+        let uri = format!("baft-fleet-hub://{hub}.fleet.baft.invalid");
+        hub_cert_with_names(dir, hub, &[&dns], &[&uri], ekus, issuer)
+    }
+
     #[test]
     fn hub_identity_needs_the_hub_eku_and_the_paired_name() {
         let dir = std::env::temp_dir().join(format!("baft-fleet-hubid-{}", std::process::id()));
@@ -284,6 +299,43 @@ mod tests {
         let (ok, _) = hub_cert(&dir, "hub-1", &[fleet::EKU_FLEET_HUB], &ca.issuer);
         verify_hub_identity(&der(&ok), "hub-1").unwrap();
         assert!(verify_hub_identity(&der(&ok), "hub-2").is_err());
+        let want_uri = "baft-fleet-hub://hub-1.fleet.baft.invalid";
+        for (tag, dns_names, uri_names) in [
+            ("missing-dns", &[][..], &[want_uri][..]),
+            (
+                "wrong-dns",
+                &["other.fleet.baft.invalid"][..],
+                &[want_uri][..],
+            ),
+            (
+                "wrong-uri",
+                &["hub-1.fleet.baft.invalid"][..],
+                &["baft-fleet-hub://other.fleet.baft.invalid"][..],
+            ),
+            (
+                "duplicate-dns",
+                &["hub-1.fleet.baft.invalid", "hub-1.fleet.baft.invalid"][..],
+                &[want_uri][..],
+            ),
+            (
+                "duplicate-uri",
+                &["hub-1.fleet.baft.invalid"][..],
+                &[want_uri, want_uri][..],
+            ),
+        ] {
+            let (bad, _) = hub_cert_with_names(
+                &dir,
+                tag,
+                dns_names,
+                uri_names,
+                &[fleet::EKU_FLEET_HUB],
+                &ca.issuer,
+            );
+            assert!(
+                verify_hub_identity(&der(&bad), "hub-1").is_err(),
+                "{tag} must be rejected"
+            );
+        }
         // A node certificate, a tunnel certificate and a two-EKU certificate are never the hub.
         let (n, _) = hub_cert(&dir, "hub-1", &[EKU_FLEET_NODE], &ca.issuer);
         assert!(verify_hub_identity(&der(&n), "hub-1").is_err());
@@ -320,7 +372,7 @@ mod tests {
 
         let cfg = ReporterConfig {
             hub_addr: addr.to_string(),
-            hub_name: "localhost".into(),
+            hub_name: "hub-1.fleet.baft.invalid".into(),
             hub_id: "hub-1".into(),
             ca: ca.ca_pem.clone(),
             crl: ca.crl_pem.clone(),

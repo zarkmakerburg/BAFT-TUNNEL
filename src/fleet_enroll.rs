@@ -192,7 +192,16 @@ impl Enroller {
         now: u64,
     ) -> Result<(), Error> {
         let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
-        if matches!(o.state, State::Submitted | State::Issued) {
+        if o.state == State::AwaitingReport && now > o.expires {
+            o.state = State::Closed;
+            o.certificate = None;
+            o.delivered_fingerprint = None;
+            return Err(Error::Expired);
+        }
+        if matches!(
+            o.state,
+            State::Submitted | State::Issued | State::AwaitingReport
+        ) {
             let digest: [u8; 32] = Sha256::digest(csr_pem.as_bytes()).into();
             return if o.expires >= now
                 && ct_eq(&hash(token), &o.token_hash)
@@ -353,19 +362,21 @@ impl Enroller {
     }
 
     /// The Join TLS session retrieves the public certificate; the operator API never receives it.
+    /// Exact retries may retrieve the same leaf while AwaitingReport, but never after Enrolled.
     pub fn certificate_for_delivery(&self, id: &str) -> Result<&str, Error> {
         let o = self.offers.get(id).ok_or(Error::Unknown)?;
-        if o.state != State::Issued {
+        if !matches!(o.state, State::Issued | State::AwaitingReport) {
             return Err(Error::WrongState);
         }
         o.certificate.as_deref().ok_or(Error::WrongState)
     }
 
     /// Called only after the Join transport ACK confirms local persistence of the delivered bundle.
+    /// A repeated ACK in AwaitingReport is idempotent only for the same issued leaf fingerprint.
     /// The fingerprint is derived here from the exact issued leaf, never supplied by the caller.
     pub fn mark_delivered(&mut self, id: &str, now: u64) -> Result<(), Error> {
         let o = self.offers.get_mut(id).ok_or(Error::Unknown)?;
-        if o.state != State::Issued {
+        if !matches!(o.state, State::Issued | State::AwaitingReport) {
             return Err(Error::WrongState);
         }
         if now > o.expires {
@@ -373,6 +384,22 @@ impl Enroller {
             o.certificate = None;
             o.delivered_fingerprint = None;
             return Err(Error::Expired);
+        }
+        if o.state == State::AwaitingReport {
+            let certificate = o.certificate.as_deref().ok_or(Error::WrongState)?;
+            let fingerprint = leaf_fingerprint(certificate)?;
+            return if o
+                .delivered_fingerprint
+                .as_deref()
+                .is_some_and(|stored| ct_eq(stored.as_bytes(), fingerprint.as_bytes()))
+            {
+                Ok(())
+            } else {
+                Err(Error::WrongState)
+            };
+        }
+        if o.state != State::Issued {
+            return Err(Error::WrongState);
         }
         let certificate = o.certificate.as_deref().ok_or(Error::WrongState)?;
         let fingerprint = leaf_fingerprint(certificate)?;
@@ -858,13 +885,228 @@ mod tests {
         assert!(!e.acknowledge_first_report("edge-1", &delivered, 121));
 
         e.mark_delivered(&i.id, 122).unwrap();
-        assert_eq!(e.certificate_for_delivery(&i.id), Err(Error::WrongState));
+        // Task 1 supersedes the old one-shot delivery rule: while AwaitingReport an exact retry may
+        // re-fetch the *same* leaf (never a new one), so a lost ACK response stays recoverable.
+        assert_eq!(e.certificate_for_delivery(&i.id).unwrap(), certificate);
         assert_eq!(e.pending(122)[0].state, State::AwaitingReport);
         assert!(!e.acknowledge_first_report("edge-2", &delivered, 122));
         assert_eq!(e.pending(122)[0].state, State::AwaitingReport);
         assert!(e.acknowledge_first_report("edge-1", &delivered, 123));
         assert_eq!(e.pending(123)[0].state, State::Enrolled);
         assert_eq!(e.certificate_for_delivery(&i.id), Err(Error::WrongState));
+    }
+
+    #[test]
+    fn exact_join_retry_after_ack_redelivers_the_same_certificate() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-retry", 100).unwrap();
+        let request_csr = csr(&issued.node_id, Some(&issued.nonce));
+        e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &request_csr,
+            101,
+        )
+        .unwrap();
+        let fingerprint = e.pending(102)[0].fingerprint.clone().unwrap();
+        let certificate = test_support::certificate_pem();
+        e.confirm(
+            &issued.id,
+            &fingerprint,
+            103,
+            |_, _| Ok(certificate.clone()),
+        )
+        .unwrap();
+        e.mark_delivered(&issued.id, 104).unwrap();
+
+        assert_eq!(
+            e.submit(
+                &issued.id,
+                &issued.node_id,
+                &issued.token,
+                &issued.nonce,
+                &request_csr,
+                105,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            e.certificate_for_delivery(&issued.id),
+            Ok(certificate.as_str())
+        );
+        assert_eq!(e.mark_delivered(&issued.id, 105), Ok(()));
+        assert_eq!(
+            e.state_and_expiry(&issued.id).unwrap().0,
+            State::AwaitingReport
+        );
+    }
+
+    #[test]
+    fn awaiting_report_retry_rejects_a_changed_csr_or_credential() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-retry-guard", 100).unwrap();
+        let request_csr = csr(&issued.node_id, Some(&issued.nonce));
+        e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &request_csr,
+            101,
+        )
+        .unwrap();
+        let fingerprint = e.pending(102)[0].fingerprint.clone().unwrap();
+        let certificate = test_support::certificate_pem();
+        e.confirm(
+            &issued.id,
+            &fingerprint,
+            103,
+            |_, _| Ok(certificate.clone()),
+        )
+        .unwrap();
+        e.mark_delivered(&issued.id, 104).unwrap();
+
+        let changed_csr = csr(&issued.node_id, Some(&issued.nonce));
+        assert_eq!(
+            e.submit(
+                &issued.id,
+                &issued.node_id,
+                &issued.token,
+                &issued.nonce,
+                &changed_csr,
+                105,
+            ),
+            Err(Error::WrongState)
+        );
+        assert_eq!(
+            e.submit(
+                &issued.id,
+                &issued.node_id,
+                &"00".repeat(16),
+                &issued.nonce,
+                &request_csr,
+                105,
+            ),
+            Err(Error::WrongState)
+        );
+    }
+
+    #[test]
+    fn expired_awaiting_report_offer_cannot_be_retried_for_delivery() {
+        let mut e = Enroller::default();
+        let issued = e.offer("edge-retry-expired", 100).unwrap();
+        let request_csr = csr(&issued.node_id, Some(&issued.nonce));
+        e.submit(
+            &issued.id,
+            &issued.node_id,
+            &issued.token,
+            &issued.nonce,
+            &request_csr,
+            101,
+        )
+        .unwrap();
+        let fingerprint = e.pending(102)[0].fingerprint.clone().unwrap();
+        let certificate = test_support::certificate_pem();
+        e.confirm(
+            &issued.id,
+            &fingerprint,
+            103,
+            |_, _| Ok(certificate.clone()),
+        )
+        .unwrap();
+        e.mark_delivered(&issued.id, 104).unwrap();
+
+        assert_eq!(
+            e.submit(
+                &issued.id,
+                &issued.node_id,
+                &issued.token,
+                &issued.nonce,
+                &request_csr,
+                issued.expires + 1,
+            ),
+            Err(Error::Expired)
+        );
+        assert_eq!(e.state_and_expiry(&issued.id).unwrap().0, State::Closed);
+    }
+
+    #[test]
+    fn join_admission_redelivers_the_same_bundle_after_ack() {
+        let mut enroller = Enroller::default();
+        let issued = enroller.offer("edge-admission-retry", 100).unwrap();
+        let request_csr = csr(&issued.node_id, Some(&issued.nonce));
+        enroller
+            .submit(
+                &issued.id,
+                &issued.node_id,
+                &issued.token,
+                &issued.nonce,
+                &request_csr,
+                101,
+            )
+            .unwrap();
+        let fingerprint = enroller.pending(102)[0].fingerprint.clone().unwrap();
+        let certificate = test_support::certificate_pem();
+        enroller
+            .confirm(
+                &issued.id,
+                &fingerprint,
+                103,
+                |_, _| Ok(certificate.clone()),
+            )
+            .unwrap();
+        enroller.mark_delivered(&issued.id, 104).unwrap();
+
+        let dir =
+            std::env::temp_dir().join(format!("fleet-admission-retry-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ca = dir.join("ca.pem");
+        let crl = dir.join("ca.crl");
+        let hub = dir.join("hub.pem");
+        std::fs::write(&ca, "CA").unwrap();
+        std::fs::write(&crl, "CRL").unwrap();
+        std::fs::write(&hub, "HUB").unwrap();
+
+        let admission = crate::fleet_run::admit_join_request(
+            &mut enroller,
+            crate::fleet_join::JoinRequest {
+                offer_id: issued.id.clone(),
+                node_id: issued.node_id.clone(),
+                token: issued.token.clone(),
+                nonce: issued.nonce.clone(),
+                csr_pem: request_csr,
+            },
+            105,
+            &ca,
+            &crl,
+            &hub,
+        );
+        match admission {
+            crate::fleet_join::Admission::Deliver { response, .. } => {
+                assert_eq!(
+                    response.member_certificate_pem.as_deref(),
+                    Some(certificate.as_str())
+                );
+                assert_eq!(response.ca_certificate_pem.as_deref(), Some("CA"));
+                assert_eq!(response.crl_pem.as_deref(), Some("CRL"));
+                assert_eq!(response.hub_certificate_pem.as_deref(), Some("HUB"));
+            }
+            crate::fleet_join::Admission::Retry => {
+                panic!("exact AwaitingReport retry must redeliver")
+            }
+            crate::fleet_join::Admission::Pending => {
+                panic!("AwaitingReport retry must not be classified as pending")
+            }
+            crate::fleet_join::Admission::Close => panic!("live exact retry must not close"),
+        }
+        crate::fleet_run::acknowledge_join_delivery(&mut enroller, &issued.id, 106);
+        assert_eq!(
+            enroller.state_and_expiry(&issued.id).unwrap().0,
+            State::AwaitingReport
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
