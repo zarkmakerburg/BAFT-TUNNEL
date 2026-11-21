@@ -1,0 +1,9 @@
+[Unit]
+Description=BAFT-TUNNEL agent request to remove or edit instance %i (ADR-0055)
+
+[Path]
+PathExists=/run/baft-tunnel/control/%i.manage
+Unit=baft-tunnel-control-manage@%i.service
+
+[Install]
+WantedBy=multi-user.target

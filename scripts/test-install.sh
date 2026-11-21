@@ -119,7 +119,7 @@ cmp -s "$KEY1" "$CRED_DIR/node-key"
 write_fake 0.3.0
 # One step: binary plus agent service and control helper for an instance (--register).
 "$INSTALL" --binary "$FAKE" --register iran --agent-listen 127.0.0.1:18085 --destdir "$STAGE" >/dev/null
-for v in start stop enable disable setup pki pair fleet; do
+for v in start stop enable disable setup pki pair fleet manage; do
   [[ -f "$STAGE/etc/systemd/system/baft-tunnel-control-$v@.path" && -f "$STAGE/etc/systemd/system/baft-tunnel-control-$v@.service" ]]
 done
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel setup helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-setup@.service"
@@ -128,6 +128,8 @@ grep -qx 'PathExists=/run/baft-tunnel/control/%i.pki' "$STAGE/etc/systemd/system
 grep -qx 'TimeoutStartSec=60s' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel fleet helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-fleet@.service"
 grep -qx 'PathExists=/run/baft-tunnel/control/%i.fleet' "$STAGE/etc/systemd/system/baft-tunnel-control-fleet@.path"
+grep -qx 'ExecStart=/usr/local/bin/baft-tunnel setup manage-helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.service"
+grep -qx 'PathExists=/run/baft-tunnel/control/%i.manage' "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.path"
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel pair helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-pair@.service"
 grep -qx 'PathExists=/run/baft-tunnel/control/%i.pair' "$STAGE/etc/systemd/system/baft-tunnel-control-pair@.path"
 grep -qx 'ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"

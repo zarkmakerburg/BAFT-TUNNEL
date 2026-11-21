@@ -133,6 +133,8 @@ pub struct Ctx {
     pki: Arc<dyn crate::pki_helper::PkiHelperClient + Send + Sync>,
     /// Request/status directory of the root pairing helper (ADR-0050).
     pair_dir: PathBuf,
+    /// Root tunnel helper (ADR-0055) for remove and edit of the bound instance. Tests use a fake.
+    manage: Arc<dyn crate::tunnel_helper::ManageHelper + Send + Sync>,
 }
 
 const SAMPLE_SECONDS: u64 = 5;
@@ -181,7 +183,17 @@ impl Ctx {
             setup: Arc::new(crate::setup_helper::SystemSetupHelper::default()),
             pki: Arc::new(crate::pki_helper::SystemPkiClient::default()),
             pair_dir: PathBuf::from(crate::apply::CONTROL_DIR),
+            manage: Arc::new(crate::tunnel_helper::SystemManageHelper::default()),
         }
+    }
+
+    #[cfg(test)]
+    fn with_manage_helper(
+        mut self,
+        helper: Arc<dyn crate::tunnel_helper::ManageHelper + Send + Sync>,
+    ) -> Self {
+        self.manage = helper;
+        self
     }
 
     #[cfg(test)]
@@ -316,10 +328,26 @@ impl Ctx {
     }
 }
 
+/// Digest of `NAME.json` (ADR-0055): `None` when it is missing or unreadable.
+fn config_digest(ctx: &Ctx) -> Option<Vec<u8>> {
+    let path = ctx.instance_config()?;
+    std::fs::read(path)
+        .ok()
+        .map(|b| Sha256::digest(&b).to_vec())
+}
+
 async fn sampler(ctx: Arc<Ctx>) {
     let mut tick = tokio::time::interval(Duration::from_secs(SAMPLE_SECONDS));
+    let loaded = ctx.config.as_ref().and_then(|_| config_digest(&ctx));
     loop {
         tick.tick().await;
+        // ADR-0055: the tunnel was removed (back to setup mode) or edited (reload the new
+        // configuration). systemd (Restart=always) starts the agent again.
+        if loaded.is_some() && config_digest(&ctx) != loaded {
+            eprintln!("configuration removed or changed; restarting the agent to reload it");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            std::process::exit(0);
+        }
         if ctx.config.is_none() {
             // Setup mode: once `setup join` (panel or CLI) wrote NAME.json, exit so systemd
             // (Restart=always) starts the agent again with the configuration loaded.
@@ -707,6 +735,8 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/host/tunnels"
             | "/v1/verify"
             | "/v1/tunnel/lifecycle"
+            | "/v1/tunnel/remove"
+            | "/v1/tunnel/edit"
             | "/v1/setup/bundle"
             | "/v1/setup/bundle/inspect"
             | "/v1/pki/csr/create"
@@ -774,6 +804,8 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         ("POST", "/v1/setup/preflight") => preflight(ctx, body).await,
         ("POST", "/v1/setup/apply") => setup_apply(ctx, body).await,
         ("POST", "/v1/tunnel/lifecycle") => tunnel_lifecycle(ctx, body).await,
+        ("POST", "/v1/tunnel/remove") => tunnel_manage(ctx, body, true).await,
+        ("POST", "/v1/tunnel/edit") => tunnel_manage(ctx, body, false).await,
         ("GET", "/v1/setup/bundle") => own_bundle(ctx),
         ("POST", "/v1/setup/bundle/inspect") => inspect_bundle(ctx, body),
         ("POST", "/v1/pki/csr/create") => (
@@ -935,7 +967,9 @@ async fn setup_mode_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (
             | "/v1/traffic"
             | "/v1/diagnostics"
             | "/v1/desired"
-            | "/v1/tunnel/lifecycle",
+            | "/v1/tunnel/lifecycle"
+            | "/v1/tunnel/remove"
+            | "/v1/tunnel/edit",
         ) => (
             409,
             json!({"error": "setup pending: this instance has no configuration yet", "setup_pending": true}),
@@ -2543,6 +2577,289 @@ async fn tunnel_lifecycle(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
         );
     }
     (code, receipt)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManageBody {
+    /// Must be literally `true`.
+    confirm: bool,
+    idempotency_key: String,
+    /// Remove only: the instance name typed again by the operator.
+    #[serde(default)]
+    confirm_name: Option<String>,
+    /// Edit only: the new primary peer address (IP) of a forward (dialing) node.
+    #[serde(default)]
+    peer_host: Option<String>,
+    /// Edit only: replaces the backup peer addresses (IP, at most 3); absent or empty clears them.
+    #[serde(default)]
+    backup_peer_hosts: Option<Vec<String>>,
+}
+
+/// Key for a lifecycle step inside a remove/edit (same character rules, at most 64).
+fn sub_key(key: &str, step: &str) -> String {
+    format!("{}-{step}", &key[..key.len().min(54)])
+}
+
+/// Remove or edit the instance this agent is bound to (ADR-0055). The agent decides the order
+/// (stop, helper, restart) and the rollback; file changes happen only in the root tunnel helper.
+async fn tunnel_manage(ctx: &Ctx, body: &[u8], remove: bool) -> (u16, Value) {
+    let Some(state_dir) = &ctx.state_dir else {
+        return (
+            404,
+            json!({"error": "tunnel changes are disabled; receipts need the state directory"}),
+        );
+    };
+    let Some(name) = ctx.instance.clone() else {
+        return (
+            409,
+            json!({"error": "the agent was started without --instance; it does not manage a unit"}),
+        );
+    };
+    let req: ManageBody = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(error) => {
+            return (
+                422,
+                json!({"error": "invalid request", "detail": error.to_string()}),
+            );
+        }
+    };
+    if !req.confirm {
+        return (
+            422,
+            json!({"error": "this action requires \"confirm\": true"}),
+        );
+    }
+    if !crate::apply::valid_key(&req.idempotency_key) {
+        return (
+            422,
+            json!({"error": "idempotency_key must be 8-64 characters of A-Z a-z 0-9 - _"}),
+        );
+    }
+    let op = if remove {
+        if req.peer_host.is_some() || req.backup_peer_hosts.is_some() {
+            return (422, json!({"error": "remove takes no peer addresses"}));
+        }
+        if req.confirm_name.as_deref() != Some(name.as_str()) {
+            return (
+                422,
+                json!({"error": format!("type the tunnel name ({name}) in confirm_name to remove it")}),
+            );
+        }
+        crate::tunnel_helper::Op::Remove
+    } else {
+        if req.confirm_name.is_some() || req.peer_host.is_none() {
+            return (
+                422,
+                json!({"error": "edit takes peer_host (and optional backup_peer_hosts)"}),
+            );
+        }
+        crate::tunnel_helper::Op::Edit
+    };
+    let backups = req.backup_peer_hosts.clone().filter(|b| !b.is_empty());
+    let request = json!({"op": op.as_str(), "instance": name, "peer_host": req.peer_host,
+        "backup_peer_hosts": backups});
+    let digest = hex::encode(Sha256::digest(request.to_string().as_bytes()));
+    let key = req.idempotency_key.clone();
+    let _guard = ctx.lock.lock().await;
+    let receipts = state_dir.join("receipts");
+    if let Some(old) = crate::apply::replay_key(&receipts, &key, &digest) {
+        return old;
+    }
+    let helper_req = crate::tunnel_helper::Request {
+        op,
+        key: key.clone(),
+        peer_host: req.peer_host.clone(),
+        backup_peer_hosts: backups,
+    };
+    let (units, manage, dir) = (
+        ctx.units.clone(),
+        ctx.manage.clone(),
+        ctx.config_dir.clone(),
+    );
+    let (inst, rdir, dg) = (name.clone(), receipts.clone(), digest.clone());
+    let mut receipt = match tokio::task::spawn_blocking(move || {
+        manage_steps(
+            &inst,
+            &dir,
+            &rdir,
+            &dg,
+            helper_req,
+            units.as_ref(),
+            manage.as_ref(),
+        )
+    })
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return (500, json!({"error": format!("tunnel task failed: {e}")})),
+    };
+    crate::apply::store_receipt(&receipts, &key, &mut receipt);
+    let _ = audit(
+        state_dir,
+        ctx,
+        AuditEvent {
+            action: "tunnel_manage",
+            result: receipt["result"].as_str().unwrap_or("failed"),
+            resource: format!("tunnel/{}", op.as_str()),
+            node: None,
+            instance: Some(&name),
+            sha256: &digest,
+            detail: op.as_str(),
+            receipt_id: receipt["id"].as_str(),
+        },
+    );
+    (crate::apply::result_code(&receipt), receipt)
+}
+
+fn manage_steps(
+    name: &str,
+    dir: &Path,
+    receipts: &Path,
+    digest: &str,
+    req: crate::tunnel_helper::Request,
+    units: &dyn crate::apply::Units,
+    manage: &dyn crate::tunnel_helper::ManageHelper,
+) -> Value {
+    use crate::apply::Stage;
+    use crate::tunnel_helper::Op;
+    let key = req.key.clone();
+    let op = req.op;
+    let mut rc = json!({
+        "receipt_version": 1, "id": key, "stage": format!("tunnel-{}", op.as_str()),
+        "started_at": unix_now(), "request_sha256": digest, "replayed": false,
+        "instance": name, "steps": [],
+        "secrets": "none recorded: file names only; key material, the agent token and file contents are never written to a receipt",
+    });
+    let mut steps: Vec<Value> = Vec::new();
+    let lifecycle = |stage: Stage, step: &str, steps: &mut Vec<Value>| -> bool {
+        let (_, r) =
+            crate::apply::lifecycle(stage, name, dir, &sub_key(&key, step), receipts, units);
+        let ok = r["result"] == "applied";
+        steps.push(
+            json!({"step": step, "result": r["result"], "receipt": r["id"],
+            "reason": r.get("reason")}),
+        );
+        ok
+    };
+    let finish = |mut rc: Value, steps: Vec<Value>, result: &str, reason: Option<String>| {
+        rc["steps"] = json!(steps);
+        rc["result"] = json!(result);
+        if let Some(r) = reason {
+            rc["reason"] = json!(r);
+        }
+        rc["finished_at"] = json!(unix_now());
+        rc
+    };
+    let before = units.state(name);
+    let was_up = matches!(
+        before.active.as_str(),
+        "active" | "activating" | "reloading"
+    );
+    rc["before"] = json!({"active_state": before.active, "enabled": before.enabled});
+    match op {
+        Op::Remove => {
+            if (was_up || before.enabled == "enabled")
+                && !lifecycle(Stage::Stop, "stop", &mut steps)
+            {
+                return finish(
+                    rc,
+                    steps,
+                    "failed",
+                    Some("the tunnel could not be stopped; nothing was removed".into()),
+                );
+            }
+            let out = manage
+                .submit(name, &req)
+                .unwrap_or_else(|e| json!({"result": "failed", "reason": e}));
+            steps.push(
+                json!({"step": "remove_files", "result": out["result"], "files": out["files"],
+                "reason": out.get("reason")}),
+            );
+            if out["result"] == "applied" {
+                rc["files_removed"] = out["files"].clone();
+                rc["backup"] = out["backup"].clone();
+                rc["not_done"] = json!([
+                    "the peer node was not changed; remove the tunnel there too",
+                    "operator PKI files (node.key, node.crt, ca.crt, ca.crl) were kept",
+                    "the agent and its root helpers stay installed; the panel returns to setup",
+                ]);
+                rc["rollback"] = json!({"performed": false,
+                    "how_to_undo": "the removed files are kept in the root-only backup named above (the newest 3 per tunnel)"});
+                return finish(rc, steps, "applied", None);
+            }
+            let restored =
+                before.enabled == "enabled" && lifecycle(Stage::Start, "restore", &mut steps);
+            rc["rollback"] = json!({"performed": true, "service_restarted": restored});
+            finish(
+                rc,
+                steps,
+                if out["result"] == "refused" {
+                    "refused"
+                } else {
+                    "rolled_back"
+                },
+                Some(format!(
+                    "removal did not happen: {}",
+                    out["reason"].as_str().unwrap_or("unknown")
+                )),
+            )
+        }
+        Op::Edit | Op::Revert => {
+            let out = manage
+                .submit(name, &req)
+                .unwrap_or_else(|e| json!({"result": "failed", "reason": e}));
+            steps.push(
+                json!({"step": "edit_files", "result": out["result"], "files": out["files"],
+                "reason": out.get("reason")}),
+            );
+            if out["result"] != "applied" {
+                rc["changes"] = json!([]);
+                return finish(
+                    rc,
+                    steps,
+                    if out["result"] == "refused" {
+                        "refused"
+                    } else {
+                        "failed"
+                    },
+                    Some(format!(
+                        "nothing was changed: {}",
+                        out["reason"].as_str().unwrap_or("unknown")
+                    )),
+                );
+            }
+            rc["files_changed"] = out["files"].clone();
+            rc["backup"] = out["backup"].clone();
+            if !was_up {
+                rc["service"] =
+                    json!("not running; the new peer address is used at the next start");
+                return finish(rc, steps, "applied", None);
+            }
+            if lifecycle(Stage::Restart, "restart", &mut steps) {
+                return finish(rc, steps, "applied", None);
+            }
+            // Rollback: put the old files back and bring the unit up on them again.
+            let revert = crate::tunnel_helper::Request {
+                op: Op::Revert,
+                key: req.key.clone(),
+                peer_host: None,
+                backup_peer_hosts: None,
+            };
+            let back = manage
+                .submit(name, &revert)
+                .unwrap_or_else(|e| json!({"result": "failed", "reason": e}));
+            steps.push(json!({"step": "revert_files", "result": back["result"], "reason": back.get("reason")}));
+            let up = matches!(units.state(name).active.as_str(), "active" | "activating");
+            let again = if up { Stage::Restart } else { Stage::Start };
+            let restarted = lifecycle(again, "rollback", &mut steps);
+            rc["rollback"] = json!({"performed": true, "files_restored": back["result"] == "applied",
+                "service_restarted": restarted});
+            finish(rc, steps, "rolled_back",
+                Some("the tunnel did not come back with the new peer address; the previous configuration was restored".into()))
+        }
+    }
 }
 
 fn shell_quote(value: &str) -> Result<String> {
@@ -5756,6 +6073,141 @@ mod tests {
         let audit = std::fs::read_to_string(dir.join(AUDIT_FILE)).unwrap();
         assert!(audit.contains("\"resource\":\"tunnel/stop\""), "{audit}");
         assert!(!audit.contains(TOKEN));
+    }
+
+    struct ManageFake(crate::tunnel_helper::tests::Env);
+    impl crate::tunnel_helper::ManageHelper for ManageFake {
+        fn submit(&self, name: &str, req: &crate::tunnel_helper::Request) -> Result<Value, String> {
+            std::fs::write(
+                self.0.control.join(format!("{name}.manage")),
+                serde_json::to_vec(req).unwrap(),
+            )
+            .unwrap();
+            crate::tunnel_helper::run(name, &self.0.dirs()).map_err(|e| e.to_string())
+        }
+    }
+
+    fn manage_ctx(tag: &str, active: &str) -> (Ctx, Arc<AgentFake>, Arc<ManageFake>, PathBuf) {
+        let state = state_dir(tag);
+        let env = crate::tunnel_helper::tests::Env::new(tag);
+        env.forward("edge");
+        let conf = env.config.clone();
+        let helper = Arc::new(ManageFake(env));
+        let (ctx, fake) = lifecycle_ctx(&state, Some("edge"), active);
+        let ctx = ctx
+            .with_units(fake.clone(), conf)
+            .with_manage_helper(helper.clone());
+        (ctx, fake, helper, state)
+    }
+
+    #[tokio::test]
+    async fn remove_needs_token_confirm_and_the_typed_name() {
+        let (ctx, fake, helper, _) = manage_ctx("rm-gate", "active");
+        let ok = br#"{"confirm":true,"confirm_name":"edge","idempotency_key":"rm-gate-01"}"#;
+        let head = "POST /v1/tunnel/remove HTTP/1.1\r\nHost: 127.0.0.1";
+        assert_eq!(route(head, ok, &ctx).await.0, 401);
+        for bad in [
+            r#"{"confirm":false,"confirm_name":"edge","idempotency_key":"rm-gate-01"}"#,
+            r#"{"confirm":true,"confirm_name":"other","idempotency_key":"rm-gate-01"}"#,
+            r#"{"confirm":true,"idempotency_key":"rm-gate-01"}"#,
+            r#"{"confirm":true,"confirm_name":"edge","idempotency_key":"rm-gate-01","peer_host":"198.51.100.9"}"#,
+            r#"{"confirm":true,"confirm_name":"edge","idempotency_key":"rm-gate-01","path":"/etc"}"#,
+        ] {
+            let (code, _) = route(&post("/v1/tunnel/remove"), bad.as_bytes(), &ctx).await;
+            assert_eq!(code, 422, "{bad}");
+        }
+        assert!(fake.log.lock().unwrap().is_empty());
+        assert!(helper.0.config.join("edge.json").exists());
+    }
+
+    #[tokio::test]
+    async fn remove_stops_the_unit_moves_files_to_backup_and_audits() {
+        let (ctx, fake, helper, state) = manage_ctx("rm-run", "active");
+        let body = br#"{"confirm":true,"confirm_name":"edge","idempotency_key":"rm-run-0001"}"#;
+        let (code, out) = route(&post("/v1/tunnel/remove"), body, &ctx).await;
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["result"], "applied");
+        assert_eq!(*fake.log.lock().unwrap(), vec!["disable edge"]);
+        assert!(!helper.0.config.join("edge.json").exists());
+        assert!(!helper.0.config.join("node.noise").exists());
+        assert!(helper.0.config.join("ca.crt").exists());
+        assert!(!out.to_string().contains("secret-key-bytes"));
+        let audit = std::fs::read_to_string(state.join(AUDIT_FILE)).unwrap();
+        assert!(audit.contains("\"resource\":\"tunnel/remove\""), "{audit}");
+        assert!(!audit.contains(TOKEN));
+        // Same key and request: replayed, nothing done twice.
+        let (code, again) = route(&post("/v1/tunnel/remove"), body, &ctx).await;
+        assert_eq!(code, 200);
+        assert_eq!(again["replayed"], true);
+        assert_eq!(fake.log.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn remove_that_the_helper_refuses_restarts_the_unit() {
+        let (ctx, fake, helper, _) = manage_ctx("rm-back", "active");
+        // The helper sees the unit as still running and refuses; the agent starts it again.
+        std::fs::create_dir(helper.0.run.join("edge")).unwrap();
+        let body = br#"{"confirm":true,"confirm_name":"edge","idempotency_key":"rm-back-001"}"#;
+        let (_, out) = route(&post("/v1/tunnel/remove"), body, &ctx).await;
+        assert_eq!(out["result"], "refused", "{out}");
+        assert_eq!(out["rollback"]["performed"], true);
+        assert!(helper.0.config.join("edge.json").exists());
+        let log = fake.log.lock().unwrap().clone();
+        assert_eq!(log[0], "disable edge");
+        assert!(log.iter().any(|l| l == "enable edge"), "{log:?}");
+    }
+
+    #[tokio::test]
+    async fn edit_of_a_stopped_tunnel_changes_only_peer_addresses() {
+        let (ctx, fake, helper, _) = manage_ctx("ed-stop", "inactive");
+        let body = br#"{"confirm":true,"idempotency_key":"ed-stop-001","peer_host":"198.51.100.9","backup_peer_hosts":["198.51.100.10"]}"#;
+        let (code, out) = route(&post("/v1/tunnel/edit"), body, &ctx).await;
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["result"], "applied");
+        assert!(
+            fake.log.lock().unwrap().is_empty(),
+            "no restart of a stopped unit"
+        );
+        let cfg: Value =
+            serde_json::from_slice(&std::fs::read(helper.0.config.join("edge.json")).unwrap())
+                .unwrap();
+        assert_eq!(cfg["remote"], "198.51.100.9:8443");
+        for bad in [
+            r#"{"confirm":true,"idempotency_key":"ed-stop-002"}"#,
+            r#"{"confirm":true,"idempotency_key":"ed-stop-003","peer_host":"10.0.0.1","listen":"0.0.0.0:1"}"#,
+            r#"{"confirm":true,"idempotency_key":"ed-stop-004","peer_host":"10.0.0.1","confirm_name":"edge"}"#,
+        ] {
+            assert_eq!(
+                route(&post("/v1/tunnel/edit"), bad.as_bytes(), &ctx)
+                    .await
+                    .0,
+                422,
+                "{bad}"
+            );
+        }
+        let bad_ip = br#"{"confirm":true,"idempotency_key":"ed-stop-005","peer_host":"127.0.0.1"}"#;
+        let (code, out) = route(&post("/v1/tunnel/edit"), bad_ip, &ctx).await;
+        assert_eq!(
+            (code, out["result"].as_str()),
+            (409, Some("refused")),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_whose_restart_fails_restores_the_previous_configuration() {
+        let (ctx, _fake, helper, _) = manage_ctx("ed-back", "active");
+        let before = std::fs::read(helper.0.config.join("edge.json")).unwrap();
+        let body =
+            br#"{"confirm":true,"idempotency_key":"ed-back-001","peer_host":"198.51.100.9"}"#;
+        let (code, out) = route(&post("/v1/tunnel/edit"), body, &ctx).await;
+        assert_eq!(code, 500, "{out}");
+        assert_eq!(out["result"], "rolled_back", "{out}");
+        assert_eq!(out["rollback"]["files_restored"], true);
+        assert_eq!(
+            std::fs::read(helper.0.config.join("edge.json")).unwrap(),
+            before
+        );
     }
 
     #[tokio::test]
