@@ -12,6 +12,11 @@ on:
         required: true
         type: string
         default: ''
+      clean_test_hosts:
+        description: Type CLEAN_BAFT_TUNNEL_TEST_HOSTS to remove BAFT-TUNNEL test artifacts from both LAB hosts before the run (OS and SSH access are preserved)
+        required: true
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -31,12 +36,14 @@ jobs:
       - name: Require explicit approval and immutable RC.1 candidate
         env:
           CONFIRM: ${{ inputs.confirm }}
+          CLEAN_TEST_HOSTS: ${{ inputs.clean_test_hosts }}
           REQUESTED_SHA: ${{ inputs.candidate_sha }}
           EXPECTED_RELEASE_TAG: v0.3.1-rc.1
           EXPECTED_CANDIDATE_SHA: 4c2a5bc306030e647e4f62b009082ff7fa8fe096
         run: |
           set -euo pipefail
           [[ "$CONFIRM" == RUN_TRUSTED_PHASE1_LAB ]] || { echo 'Explicit confirmation is required' >&2; exit 2; }
+          [[ "$CLEAN_TEST_HOSTS" == CLEAN_BAFT_TUNNEL_TEST_HOSTS ]] || { echo 'Explicit test-host cleanup confirmation is required' >&2; exit 2; }
           [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate_sha must be a full lowercase 40-character SHA' >&2; exit 2; }
           [[ "$REQUESTED_SHA" == "$EXPECTED_CANDIDATE_SHA" ]] || {
             echo "::error::only the reviewed v0.3.1-rc.1 candidate is authorized by this workflow"; exit 2;
@@ -155,6 +162,7 @@ jobs:
           LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
           LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
           CANDIDATE_SHA: ${{ needs.validate-candidate.outputs.candidate_sha }}
+          CLEAN_TEST_HOSTS: ${{ inputs.clean_test_hosts }}
         run: |
           set -euo pipefail
           candidate="$RUNNER_TEMP/baft-tunnel-pairing-candidate/baft-tunnel"
@@ -173,4 +181,31 @@ jobs:
           export LAB_REVERSE=0 LAB_MVP=0 LAB_OPS=0 LAB_AGENT_SVC=0
           export LAB_AUTO_PAIR=1
           trap 'rm -f "$RUNNER_TEMP/pairing-lab-id_ed25519" "$RUNNER_TEMP/pairing-lab-known_hosts"' EXIT
+          [[ "$CLEAN_TEST_HOSTS" == CLEAN_BAFT_TUNNEL_TEST_HOSTS ]] || { echo 'Test-host cleanup confirmation is required' >&2; exit 2; }
+          [[ -f "$SSH_KEY_FILE" && -r "$SSH_KEY_FILE" && -s "$SSH_KNOWN_HOSTS_FILE" ]] || { echo "SSH credentials are missing or unreadable" >&2; exit 2; }
+          validate_host() {
+            if [[ "$1" == *:* ]]; then
+              python3 -c 'import ipaddress,sys; ipaddress.IPv6Address(sys.argv[1])' "$1"
+            else
+              [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]
+            fi
+          }
+          validate_host "$LAB_IRAN_HOST" && validate_host "$LAB_ABROAD_HOST" || { echo "Invalid LAB host value" >&2; exit 2; }
+          [[ "$LAB_IRAN_HOST" != "$LAB_ABROAD_HOST" ]] || { echo "LAB hosts must differ" >&2; exit 2; }
+          iran_user="${LAB_IRAN_SSH_USER:-root}"; abroad_user="${LAB_ABROAD_SSH_USER:-root}"
+          iran_port="${LAB_IRAN_SSH_PORT:-22}"; abroad_port="${LAB_ABROAD_SSH_PORT:-22}"
+          [[ "$iran_user" == root && "$abroad_user" == root ]] || { echo "Test-host cleanup requires root SSH on both hosts" >&2; exit 2; }
+          for port in "$iran_port" "$abroad_port"; do
+            [[ "$port" =~ ^[0-9]+$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || { echo "Invalid LAB SSH port" >&2; exit 2; }
+          done
+          ssh_common=(-i "$SSH_KEY_FILE" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o LogLevel=ERROR)
+          for side in iran abroad; do
+            if [[ "$side" == iran ]]; then
+              host="$LAB_IRAN_HOST"; user="${LAB_IRAN_SSH_USER:-root}"; port="${LAB_IRAN_SSH_PORT:-22}"
+            else
+              host="$LAB_ABROAD_HOST"; user="${LAB_ABROAD_SSH_USER:-root}"; port="${LAB_ABROAD_SSH_PORT:-22}"
+            fi
+            echo "CLEAN_BAFT_TUNNEL_TEST_HOST side=$side"
+            ssh "${ssh_common[@]}" -p "$port" "$user@$host" 'bash -s -- CLEAN_BAFT_TUNNEL_TEST_HOST' < lab/real-hosts/clean-test-host.sh
+          done
           bash lab/real-hosts/phase1-two-host-e2e.sh
