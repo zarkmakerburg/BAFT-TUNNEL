@@ -29,6 +29,12 @@ export default defineConfig({
       '/v1': 'http://127.0.0.1:18090',
       // The embedded production HTML requests the Agent's root-level /i18n.js route.
       '/i18n.js': 'http://127.0.0.1:18090',
+      // Vite rewrites root-absolute script URLs to the configured /next/ base in dev HTML.
+      // Match that rewritten URL too, otherwise the SPA fallback returns index.html as JavaScript.
+      '/next/i18n.js': {
+        target: 'http://127.0.0.1:18090',
+        rewrite: (requestPath) => requestPath.replace(/^\/next/, ''),
+      },
     },
   },
 });
