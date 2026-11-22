@@ -60,6 +60,9 @@ fi
 AUTO_PAIR="${LAB_AUTO_PAIR:-0}"
 [[ "$AUTO_PAIR" == 0 || "$AUTO_PAIR" == 1 ]] || { echo "LAB_AUTO_PAIR must be 0 or 1" >&2; exit 2; }
 if (( AUTO_PAIR == 1 )); then
+  [[ "$IRAN_USER" == root && "$ABROAD_USER" == root ]] || {
+    echo "LAB_AUTO_PAIR requires root SSH on both hosts; refusing a partial install" >&2; exit 2;
+  }
   [[ -x "$MVP_BINARY_PATH" ]] || { echo "LAB_AUTO_PAIR needs MVP_BINARY" >&2; exit 2; }
   [[ "$MVP" == 0 && "$REVERSE_ACCEPT" == 0 && "$OPS_SOAK" == 0 && "$AGENT_SVC" == 0 && "${LAB_PANEL_PAIRING:-0}" == 0 ]] || { echo "LAB_AUTO_PAIR is a separate run from the other installed-path stages" >&2; exit 2; }
 fi
@@ -177,8 +180,55 @@ cleanup() {
     done
   fi
   for side in iran abroad; do
+    if [[ "${LAB_PRESERVE_REMOTE:-0}" == 1 ]]; then
+      if ssh_host "$side" "set -e
+        test -d '$REMOTE_DIR'
+        test ! -L '$REMOTE_DIR'
+        [ \"\$(stat -c '%U:%G %a' '$REMOTE_DIR')\" = 'root:root 700' ]
+        test -f '$REMOTE_DIR/.baft-tunnel-e2e-run-owner'
+        test ! -L '$REMOTE_DIR/.baft-tunnel-e2e-run-owner'
+        [ \"\$(stat -c '%U:%G %a' '$REMOTE_DIR/.baft-tunnel-e2e-run-owner')\" = 'root:root 600' ]
+        [ \"\$(cat '$REMOTE_DIR/.baft-tunnel-e2e-run-owner')\" = '$REMOTE_DIR' ]
+        for name in iran.key abroad.key control.key revabroad.key; do
+          f='$REMOTE_DIR/'\$name
+          if [ -L \"\$f\" ]; then rm -f -- \"\$f\"
+          elif [ -f \"\$f\" ]; then
+            [ \"\$(stat -c '%U:%G %a' \"\$f\")\" = 'root:root 600' ]
+            rm -f -- \"\$f\"
+          elif [ -e \"\$f\" ]; then exit 1
+          fi
+        done
+        for name in iran.key abroad.key control.key revabroad.key; do
+          f='$REMOTE_DIR/'\$name
+          test ! -e \"\$f\"
+          test ! -L \"\$f\"
+        done"; then
+        echo "E2E_REMOTE_SECRET_SCRUB side=$side result=pass"
+      else
+        echo "E2E_REMOTE_SECRET_SCRUB side=$side result=fail" >&2
+      fi
+      echo "E2E_REMOTE_TMP_CLEANUP side=$side result=preserved reason=automatic_pair_cleanup_incomplete" >&2
+      status=1
+      continue
+    fi
     if (( LOSS > 0 || REVERSE_R3 > 0 )); then ssh_host "$side" "nft delete table inet $LOSS_TABLE 2>/dev/null || true" || true; fi
-    if ssh_host "$side" "for role in serve forward echo echo2 impair agent; do f='$REMOTE_DIR/'\$role'.pid'; if [ -s \"\$f\" ]; then kill \$(cat \"\$f\") 2>/dev/null || true; fi; done; sleep 0.2; rm -rf '$REMOTE_DIR' && test ! -e '$REMOTE_DIR'"; then
+    if ssh_host "$side" "set -e
+      test -d '$REMOTE_DIR'
+      test ! -L '$REMOTE_DIR'
+      [ \"\$(stat -c '%U:%G %a' '$REMOTE_DIR')\" = 'root:root 700' ]
+      test -f '$REMOTE_DIR/.baft-tunnel-e2e-run-owner'
+      test ! -L '$REMOTE_DIR/.baft-tunnel-e2e-run-owner'
+      [ \"\$(stat -c '%U:%G %a' '$REMOTE_DIR/.baft-tunnel-e2e-run-owner')\" = 'root:root 600' ]
+      [ \"\$(cat '$REMOTE_DIR/.baft-tunnel-e2e-run-owner')\" = '$REMOTE_DIR' ]
+      for role in serve forward echo echo2 impair agent; do
+        f='$REMOTE_DIR/'\$role'.pid'
+        if [ -s \"\$f\" ]; then kill \$(cat \"\$f\") 2>/dev/null || true; fi
+      done
+      sleep 0.2
+      rm -rf -- '$REMOTE_DIR'
+      test ! -e '$REMOTE_DIR'
+      test ! -L '$REMOTE_DIR'
+    "; then
       echo "E2E_REMOTE_TMP_CLEANUP side=$side result=pass"
     else
       echo "E2E_REMOTE_TMP_CLEANUP side=$side result=fail" >&2
@@ -380,7 +430,16 @@ print(f"E2E_PAYLOAD_OK bytes={len(payload)} sha256={hashlib.sha256(received).hex
 PY
 
 for side in iran abroad; do
-  ssh_host "$side" "mkdir -p '$REMOTE_DIR' && chmod 700 '$REMOTE_DIR'"
+  ssh_host "$side" "set -e
+    if [ -e '$REMOTE_DIR' ] || [ -L '$REMOTE_DIR' ]; then echo 'LAB run directory already exists; refusing to reuse it' >&2; exit 1; fi
+    install -d -m 700 '$REMOTE_DIR'
+    test -d '$REMOTE_DIR'
+    test ! -L '$REMOTE_DIR'
+    [ \"\$(stat -c '%U:%G %a' '$REMOTE_DIR')\" = 'root:root 700' ]
+    printf '%s\\n' '$REMOTE_DIR' > '$REMOTE_DIR/.baft-tunnel-e2e-run-owner'
+    chmod 600 '$REMOTE_DIR/.baft-tunnel-e2e-run-owner'
+    chown root:root '$REMOTE_DIR/.baft-tunnel-e2e-run-owner'
+    [ \"\$(stat -c '%U:%G %a' '$REMOTE_DIR/.baft-tunnel-e2e-run-owner')\" = 'root:root 600' ]"
   copy_to_host "$side" "$BINARY" "$LOCAL_TMP/ca.crt" "$LOCAL_TMP/ca.crl" \
     "$LOCAL_TMP/iran.crt" "$LOCAL_TMP/iran.key" "$LOCAL_TMP/abroad.crt" "$LOCAL_TMP/abroad.key" \
     "$LOCAL_TMP/control.crt" "$LOCAL_TMP/control.key" "$LOCAL_TMP/revabroad.crt" "$LOCAL_TMP/revabroad.key" \

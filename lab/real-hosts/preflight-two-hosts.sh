@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 
 : "${SSH_KEY_FILE:?Set SSH_KEY_FILE to the dedicated BAFT-TUNNEL LAB private key}"
-: "${SSH_KNOWN_HOSTS_FILE:?Set SSH_KNOWN_HOSTS_FILE to verified host keys for both hosts}"
+: "${SSH_KNOWN_HOSTS_FILE:?Set SSH_KNOWN_HOSTS_FILE to pinned host keys for both hosts}"
 command -v ssh >/dev/null || { echo 'Missing local dependency: ssh' >&2; exit 2; }
 command -v python3 >/dev/null || { echo 'Missing local dependency: python3' >&2; exit 2; }
 
@@ -56,6 +56,7 @@ ssh_opts() {
   local key="$1" port="$2"
   SSH_OPTS=(-i "$key" -p "$port" -o BatchMode=yes -o IdentitiesOnly=yes
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE"
+    -o GlobalKnownHostsFile=/dev/null
     -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o LogLevel=ERROR)
 }
 remote_facts() {
@@ -92,7 +93,7 @@ for port in (int(p) for p in raw_ports.split(',')):
         with socket.create_connection((host, port), timeout=timeout):
             state = 'tcp-open'
     except ConnectionRefusedError:
-        state = 'host-reachable-no-listener'
+        state = 'connection-refused (no listener or active reject; cause indistinguishable)'
     except socket.timeout:
         state = 'timeout-or-filtered'
     except OSError as exc:

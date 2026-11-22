@@ -39,6 +39,8 @@ jobs:
         run: sh lab/scripts/check-workflow-pins.sh
       - name: Test workflow action pin policy (mock fixtures)
         run: sh lab/scripts/test-workflow-pins.sh
+      - name: Test Fleet Join dedicated read-only preflight workflow contract
+        run: bash lab/real-hosts/test-fleet-join-lab-preflight-workflow.sh
       - name: Test LAB control scripts
         run: sh lab/scripts/test-scripts.sh
       - name: Test NetEm cleanup failure paths (mock Docker only)
@@ -47,6 +49,10 @@ jobs:
         run: bash lab/real-hosts/test-preflight-matrix.sh
       - name: Test Phase 1 two-host E2E orchestration (mock SSH/SCP only)
         run: bash lab/real-hosts/test-phase1-two-host-e2e.sh
+      - name: Test automatic pairing cleanup and signed RC.1 candidate contract (static only)
+        run: bash lab/real-hosts/test-auto-pair-cleanup-safety.sh
+      - name: Test automatic pairing integrity cooldown retry (mock API and clock only)
+        run: bash lab/real-hosts/test-auto-pair-integrity-retry.sh
       - name: Test signed operator-package extraction for the Direct operations LAB stage
         run: |
           bash -n lab/real-hosts/prepare-ops-package.sh lab/real-hosts/test-prepare-ops-package.sh

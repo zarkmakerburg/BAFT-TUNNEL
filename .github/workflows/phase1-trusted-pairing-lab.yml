@@ -4,11 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: Exact reviewed-main commit to build and test
+        description: Exact commit SHA represented by the signed v0.3.1-rc.1 release binary
         required: true
         type: string
       confirm:
         description: Type RUN_TRUSTED_PHASE1_LAB to authorize the isolated automatic pairing two-host test (Direct, then Reverse Preview)
+        required: true
+        type: string
+        default: ''
+      clean_test_hosts:
+        description: Type CLEAN_BAFT_TUNNEL_TEST_HOSTS to remove BAFT-TUNNEL test artifacts from both LAB hosts before the run (OS and SSH access are preserved)
         required: true
         type: string
         default: ''
@@ -28,67 +33,120 @@ jobs:
     outputs:
       candidate_sha: ${{ steps.candidate.outputs.sha }}
     steps:
-      - name: Require explicit approval and immutable candidate
+      - name: Require explicit approval and immutable RC.1 candidate
         env:
           CONFIRM: ${{ inputs.confirm }}
+          CLEAN_TEST_HOSTS: ${{ inputs.clean_test_hosts }}
           REQUESTED_SHA: ${{ inputs.candidate_sha }}
+          EXPECTED_RELEASE_TAG: v0.3.1-rc.1
+          EXPECTED_CANDIDATE_SHA: 4c2a5bc306030e647e4f62b009082ff7fa8fe096
         run: |
           set -euo pipefail
           [[ "$CONFIRM" == RUN_TRUSTED_PHASE1_LAB ]] || { echo 'Explicit confirmation is required' >&2; exit 2; }
+          [[ "$CLEAN_TEST_HOSTS" == CLEAN_BAFT_TUNNEL_TEST_HOSTS ]] || { echo 'Explicit test-host cleanup confirmation is required' >&2; exit 2; }
           [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate_sha must be a full lowercase 40-character SHA' >&2; exit 2; }
+          [[ "$REQUESTED_SHA" == "$EXPECTED_CANDIDATE_SHA" ]] || {
+            echo "::error::only the reviewed v0.3.1-rc.1 candidate is authorized by this workflow"; exit 2;
+          }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Pin candidate and prove product sources match trusted main
+      - name: Resolve the immutable release tag against trusted main
         id: candidate
         env:
-          REQUESTED_SHA: ${{ inputs.candidate_sha }}
+          EXPECTED_RELEASE_TAG: v0.3.1-rc.1
+          EXPECTED_CANDIDATE_SHA: 4c2a5bc306030e647e4f62b009082ff7fa8fe096
         run: |
           set -euo pipefail
-          actual="$(git rev-parse --verify "$REQUESTED_SHA^{commit}")"
-          [[ "$actual" == "$REQUESTED_SHA" ]]
-          git merge-base --is-ancestor "$actual" "$GITHUB_SHA"
-          unexpected="$(git diff --name-only "$actual" "$GITHUB_SHA" | grep -v -E '^(\.github/workflows/phase0\.yml|\.github/workflows/phase1-trusted-lab\.yml|\.github/workflows/phase1-trusted-d2-lab\.yml|\.github/workflows/phase1-trusted-pairing-lab\.yml|lab/real-hosts/auto-pair-stage\.sh|lab/real-hosts/phase1-two-host-e2e\.sh|\.github/workflows/phase1-trusted-u7-lab\.yml|lab/trusted/test-workflow-boundary\.sh|lab/real-hosts/ops-stage\.sh|lab/real-hosts/prepare-ops-package\.sh|lab/real-hosts/test-prepare-ops-package\.sh|lab/real-hosts/panel-pairing-stage\.sh|scripts/pki/test-panel-tls-lab-stage\.sh|docs/PHASE1_IMPLEMENTATION_STATUS\.md|docs/PRODUCT_ROADMAP\.md|docs/PROJECT_BOARD\.md|docs/REMAINING_WORK_PLAN\.md)$' || true)"
-          [[ -z "$unexpected" ]] || { printf 'Candidate and trusted-main product sources differ:\n%s\n' "$unexpected" >&2; exit 2; }
+          git fetch --no-tags origin "refs/tags/$EXPECTED_RELEASE_TAG:refs/tags/$EXPECTED_RELEASE_TAG"
+          actual="$(git rev-parse --verify "$EXPECTED_RELEASE_TAG^{commit}")"
+          [[ "$actual" == "$EXPECTED_CANDIDATE_SHA" ]] || {
+            echo "::error::release tag target changed: expected $EXPECTED_CANDIDATE_SHA, got $actual"; exit 2;
+          }
+          git merge-base --is-ancestor "$actual" "$GITHUB_SHA" || {
+            echo "::error::RC.1 is not contained in the trusted main commit"; exit 2;
+          }
           echo "sha=$actual" >> "$GITHUB_OUTPUT"
-          echo "PAIRING_CANDIDATE_SHA=$actual" >> "$GITHUB_STEP_SUMMARY"
-          echo 'Product source tree matches the candidate; only trusted LAB workflow plumbing differs.' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "PAIRING_CANDIDATE_TAG=$EXPECTED_RELEASE_TAG"
+            echo "PAIRING_CANDIDATE_SHA=$actual"
+            echo "The Git tag is unsigned; the release binary and checksum manifest are verified separately with Sigstore."
+          } >> "$GITHUB_STEP_SUMMARY"
 
-  build-candidate:
+  verify-signed-release:
     needs: validate-candidate
     runs-on: ubuntu-22.04
-    timeout-minutes: 35
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+      - name: Download the exact RC.1 release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v0.3.1-rc.1
+          ASSET: baft-tunnel-v0.3.1-rc.1-linux-x86_64
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/rc1-release"
+          mkdir -p "$release_dir"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$release_dir" \
+            --pattern "$ASSET" \
+            --pattern SHA256SUMS \
+            --pattern SHA256SUMS.cosign.bundle
+          for f in "$ASSET" SHA256SUMS SHA256SUMS.cosign.bundle; do
+            [[ -f "$release_dir/$f" && ! -L "$release_dir/$f" ]] || {
+              echo "::error::missing or unsafe release asset: $f"; exit 2;
+            }
+          done
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
         with:
-          ref: ${{ needs.validate-candidate.outputs.candidate_sha }}
-          persist-credentials: false
-      - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.88.0 --profile minimal
-      - name: Build candidate binary without LAB credentials
-        run: cargo +1.88.0 build --locked --release
-      - name: Upload candidate binary
+          cosign-release: v2.5.3
+      - name: Verify the release signature and exact binary digest
+        env:
+          TAG: v0.3.1-rc.1
+          ASSET: baft-tunnel-v0.3.1-rc.1-linux-x86_64
+          EXPECTED_BINARY_SHA256: 38404ee3b5317a8a6c37b84e75d0d5f9dd6fc45b50266467fb261d6d6410aa9d
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/rc1-release"
+          identity="https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/$TAG"
+          cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          manifest_entries="$(awk -v asset="$ASSET" '$2 == asset { count++ } END { print count+0 }' SHA256SUMS)"
+          [[ "$manifest_entries" == 1 ]] || {
+            echo "::error::signed SHA256SUMS must contain exactly one digest for $ASSET"; exit 2;
+          }
+          sha256sum --check --ignore-missing SHA256SUMS
+          actual_binary_sha256="$(sha256sum "$ASSET" | awk '{print $1}')"
+          [[ "$actual_binary_sha256" == "$EXPECTED_BINARY_SHA256" ]] || {
+            echo "::error::RC.1 binary digest differs from the pinned release asset"; exit 2;
+          }
+          install -D -m 0755 "$ASSET" "$RUNNER_TEMP/baft-tunnel"
+          "$RUNNER_TEMP/baft-tunnel" --version
+          echo "PAIRING_BINARY_SHA256=$(sha256sum "$RUNNER_TEMP/baft-tunnel" | awk '{print $1}')" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the verified release binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4.6.2
         with:
           name: baft-tunnel-pairing-candidate-${{ needs.validate-candidate.outputs.candidate_sha }}
-          path: target/release/baft-tunnel
+          path: ${{ runner.temp }}/baft-tunnel
           if-no-files-found: error
           retention-days: 1
 
   auto-pair-two-host-lab:
-    needs: [validate-candidate, build-candidate]
+    needs: [validate-candidate, verify-signed-release]
     runs-on: ubuntu-22.04
     environment: baft-tunnel-lab
     timeout-minutes: 40
     steps:
-      # Trusted main scripts orchestrate the test. Only the separately built candidate binary is imported.
+      # Trusted main scripts orchestrate the test. Only the separately verified release binary is imported.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Download candidate binary
+      - name: Download verified release binary
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # actions/download-artifact v4.3.0
         with:
           name: baft-tunnel-pairing-candidate-${{ needs.validate-candidate.outputs.candidate_sha }}
@@ -104,9 +162,11 @@ jobs:
           LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
           LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
           CANDIDATE_SHA: ${{ needs.validate-candidate.outputs.candidate_sha }}
+          CLEAN_TEST_HOSTS: ${{ inputs.clean_test_hosts }}
         run: |
           set -euo pipefail
           candidate="$RUNNER_TEMP/baft-tunnel-pairing-candidate/baft-tunnel"
+          [[ -f "$candidate" && ! -L "$candidate" ]] || { echo 'verified candidate binary missing' >&2; exit 2; }
           install -D -m 0755 "$candidate" target/release/baft-tunnel
           printf '%s\n' "$LAB_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/pairing-lab-id_ed25519"
           printf '%s\n' "$LAB_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/pairing-lab-known_hosts"
@@ -121,4 +181,31 @@ jobs:
           export LAB_REVERSE=0 LAB_MVP=0 LAB_OPS=0 LAB_AGENT_SVC=0
           export LAB_AUTO_PAIR=1
           trap 'rm -f "$RUNNER_TEMP/pairing-lab-id_ed25519" "$RUNNER_TEMP/pairing-lab-known_hosts"' EXIT
+          [[ "$CLEAN_TEST_HOSTS" == CLEAN_BAFT_TUNNEL_TEST_HOSTS ]] || { echo 'Test-host cleanup confirmation is required' >&2; exit 2; }
+          [[ -f "$SSH_KEY_FILE" && -r "$SSH_KEY_FILE" && -s "$SSH_KNOWN_HOSTS_FILE" ]] || { echo "SSH credentials are missing or unreadable" >&2; exit 2; }
+          validate_host() {
+            if [[ "$1" == *:* ]]; then
+              python3 -c 'import ipaddress,sys; ipaddress.IPv6Address(sys.argv[1])' "$1"
+            else
+              [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]
+            fi
+          }
+          validate_host "$LAB_IRAN_HOST" && validate_host "$LAB_ABROAD_HOST" || { echo "Invalid LAB host value" >&2; exit 2; }
+          [[ "$LAB_IRAN_HOST" != "$LAB_ABROAD_HOST" ]] || { echo "LAB hosts must differ" >&2; exit 2; }
+          iran_user="${LAB_IRAN_SSH_USER:-root}"; abroad_user="${LAB_ABROAD_SSH_USER:-root}"
+          iran_port="${LAB_IRAN_SSH_PORT:-22}"; abroad_port="${LAB_ABROAD_SSH_PORT:-22}"
+          [[ "$iran_user" == root && "$abroad_user" == root ]] || { echo "Test-host cleanup requires root SSH on both hosts" >&2; exit 2; }
+          for port in "$iran_port" "$abroad_port"; do
+            [[ "$port" =~ ^[0-9]+$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || { echo "Invalid LAB SSH port" >&2; exit 2; }
+          done
+          ssh_common=(-i "$SSH_KEY_FILE" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o LogLevel=ERROR)
+          for side in iran abroad; do
+            if [[ "$side" == iran ]]; then
+              host="$LAB_IRAN_HOST"; user="${LAB_IRAN_SSH_USER:-root}"; port="${LAB_IRAN_SSH_PORT:-22}"
+            else
+              host="$LAB_ABROAD_HOST"; user="${LAB_ABROAD_SSH_USER:-root}"; port="${LAB_ABROAD_SSH_PORT:-22}"
+            fi
+            echo "CLEAN_BAFT_TUNNEL_TEST_HOST side=$side"
+            ssh "${ssh_common[@]}" -p "$port" "$user@$host" 'bash -s -- CLEAN_BAFT_TUNNEL_TEST_HOST' < lab/real-hosts/clean-test-host.sh
+          done
           bash lab/real-hosts/phase1-two-host-e2e.sh
