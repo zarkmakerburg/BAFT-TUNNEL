@@ -4,12 +4,31 @@ import { ago, conf, fmtBytes, fmtNum, fmtTime, listenState, stats, tunnelState, 
 import { Banner, Card, Empty, Kpi, Ltr, Pill } from '../components/ui';
 import { LineChart, StatusStrip } from '../components/charts';
 import { GeoMap, Topology } from '../components/viz';
+import { NetMark } from '../components/mark';
 import { RecentOps, TrafficBody, WarnList, nv } from './parts';
 
 export function Overview() {
   const { t, lang } = useApp();
   const { data: d, fetchedAt } = useData();
-  if (!d?.status) return null;
+  const localPreview = import.meta.env.DEV && new URLSearchParams(window.location.search).get('preview') === '1';
+  // In the local visual preview, keep the animation visible without inventing Agent data.
+  if (!d?.status) {
+    if (!localPreview) return null;
+    return (
+      <div className="stack">
+        <div className="crest crest-unknown">
+          <div className="crest-canvas">
+            <NetMark state="unknown" label={t('crest.aria', { l: t('unknown') })} />
+          </div>
+          <div className="crest-body">
+            <div className="crest-top"><Pill kind="unknown">{t('unknown')}</Pill></div>
+            <p className="crest-id">{lang === 'fa' ? 'پیش‌نمایش انیمیشن پنل' : 'Panel animation preview'}</p>
+            <p className="crest-why">{lang === 'fa' ? 'انیمیشن شبکه در حال اجراست. برای نمایش وضعیت و آمار واقعی، Agent باید متصل باشد.' : 'The network animation is running. Connect the Agent to display real status and metrics.'}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
   const s = d.status;
   const c = conf(d);
   const st = stats(d);
@@ -23,11 +42,20 @@ export function Overview() {
   const histErr = d.meta.history === 'error';
   return (
     <div className="stack">
+      {localPreview && <div className="preview-notice" role="status">{lang === 'fa' ? 'پیش‌نمایش — داده‌ها آزمایشی هستند و وضعیت زندهٔ Agent نیستند.' : 'Preview — sample fixture data, not live Agent telemetry.'}</div>}
       {fresh && <Banner kind="info" title={t('ov.start.title')} action={<a className="btn primary" href="#/setup">{t('ov.start.cta')}</a>}><p>{t('ov.start.body')}</p></Banner>}
-      <div className={`hero hero-${ts.k}`} role="status">
-        <Pill kind={ts.k}>{ts.l}</Pill>
-        <p className="hero-text">{s.tunnel ? t('ts.why') : t('state.why.local')}</p>
-        {n > 0 && <a className="more-link" href="#/diagnostics">{t('ui.needs.action')}: {fmtNum(lang, n, 0)}</a>}
+      <div className={`crest crest-${ts.k}`}>
+        <div className="crest-canvas">
+          <NetMark state={ts.k === 'ok' || ts.k === 'warn' || ts.k === 'bad' ? ts.k : 'unknown'} label={t('crest.aria', { l: ts.l })} />
+        </div>
+        <div className="crest-body">
+          <div className="crest-top">
+            <Pill kind={ts.k}>{ts.l}</Pill>
+            {n > 0 && <a className="more-link" href="#/diagnostics">{t('ui.needs.action')}: {fmtNum(lang, n, 0)}</a>}
+          </div>
+          <p className="crest-id">{c.tunnel_id ? <Ltr>{c.tunnel_id}</Ltr> : t('ov.notunnel')}</p>
+          <p className="crest-why">{s.tunnel ? t('ts.why') : t('state.why.local')}</p>
+        </div>
       </div>
       {!fresh && <Topology d={d} />}
       <div className="grid kpis">

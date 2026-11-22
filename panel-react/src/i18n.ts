@@ -15,6 +15,10 @@ export const LANGS: Record<Lang, { label: string; dir: 'rtl' | 'ltr' }> = {
 
 const EXTRA: Record<Lang, Record<string, string>> = {
   fa: {
+    'unreachable.title': 'ارتباط با Agent برقرار نشد',
+    'unreachable.body': 'داشبورد باز است، اما سرویس Agent محلی پاسخ نمی‌دهد. برای نمایش وضعیت و اطلاعات واقعی، Agent باید روی همین سرور در دسترس باشد.',
+    'unreachable.next': 'وضعیت سرویس Agent و اتصال محلی آن را بررسی کنید؛ پس از فعال‌شدن سرویس، دوباره تلاش کنید.',
+    'ui.retry': 'تلاش دوباره',
     'nav.fleet': 'ناوگان',
     'fleet.hub.title': 'مرکز ناوگان',
     'fleet.hub.off': 'فعال نیست',
@@ -141,8 +145,14 @@ const EXTRA: Record<Lang, Record<string, string>> = {
     'rx.service': 'سرویس',
     'rx.settings.sensitive': 'خروج از نشست فعلی',
     'rx.settings.logout.body': 'توکن از این مرورگر حذف می‌شود و باید دوباره وارد شوید.',
+    'crest.aria': 'نمای شبکه — {l}',
+    'ov.notunnel': 'بدون تونل',
   },
   en: {
+    'unreachable.title': 'Could not reach the Agent',
+    'unreachable.body': 'The dashboard is open, but the local Agent service is not responding. The Agent must be available on this host to show real status and data.',
+    'unreachable.next': 'Check the Agent service and its local connection. Retry after the service is running.',
+    'ui.retry': 'Retry',
     'nav.fleet': 'Fleet',
     'fleet.hub.title': 'Fleet hub',
     'fleet.hub.off': 'Not enabled',
@@ -269,6 +279,8 @@ const EXTRA: Record<Lang, Record<string, string>> = {
     'rx.service': 'Service',
     'rx.settings.sensitive': 'End this session',
     'rx.settings.logout.body': 'The token is removed from this browser and you will have to sign in again.',
+    'crest.aria': 'Network view — {l}',
+    'ov.notunnel': 'No tunnel',
   },
 };
 
