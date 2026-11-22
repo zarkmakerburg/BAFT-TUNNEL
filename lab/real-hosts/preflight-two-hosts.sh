@@ -56,6 +56,7 @@ ssh_opts() {
   local key="$1" port="$2"
   SSH_OPTS=(-i "$key" -p "$port" -o BatchMode=yes -o IdentitiesOnly=yes
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE"
+    -o GlobalKnownHostsFile=/dev/null
     -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o LogLevel=ERROR)
 }
 remote_facts() {
