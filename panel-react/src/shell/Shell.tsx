@@ -123,7 +123,7 @@ export function Shell() {
   return (
     <FeedCtx.Provider value={feed}>
       <a className="skip" href="#main" onClick={(e) => { e.preventDefault(); document.getElementById('main')?.focus(); }}>{t('skip')}</a>
-      <div className={`shell ${stale ? 'is-stale' : ''}`} data-nav={nav}>
+      <div className={`shell ${stale ? 'is-stale' : ''} ${route.id === 'overview' ? 'dashboard-shell' : ''}`} data-nav={nav}>
         <aside className="sidebar">
           <div className="brand"><Mark /><span className="brand-name">{t('app')}</span></div>
           <nav className="side-nav" aria-label={t('ui.nav.main')}>{navTree()}</nav>

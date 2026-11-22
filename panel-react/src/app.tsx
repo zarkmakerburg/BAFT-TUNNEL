@@ -107,6 +107,10 @@ export interface Feed {
 /** Loads the endpoints a route needs, then refreshes every 5 s unless an operation is in flight or the tab is hidden. */
 export function useFeed(needs: EndpointKey[]): Feed {
   const { token } = useApp();
+  // A loopback-only fixture token lets the explicit DEV preview load sample data without
+  // asking for or persisting an Agent credential. Production builds cannot enter this path.
+  const localPreview = import.meta.env.DEV && new URLSearchParams(window.location.search).get('preview') === '1';
+  const feedToken = token || (localPreview ? 'local-preview' : '');
   const [data, setData] = useState<Loaded | null>(null);
   const [fetchedAt, setFetchedAt] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -114,16 +118,16 @@ export function useFeed(needs: EndpointKey[]): Feed {
   const gen = useRef(0);
 
   const run = useCallback(async (force: boolean) => {
-    if (!token) return;
+    if (!feedToken) { setLoading(false); return; }
     if (!force && ((window as any).__baftHold > 0 || document.visibilityState !== 'visible')) return;
     const mine = ++gen.current;
     const list = [...BASE, ...(key ? (key.split(',') as EndpointKey[]) : [])].filter((k, i, a) => a.indexOf(k) === i);
-    const d = await load(token, list);
+    const d = await load(feedToken, list);
     if (mine !== gen.current) return;
     setData(d);
     if (d.status) setFetchedAt(Math.floor(Date.now() / 1000));
     setLoading(false);
-  }, [token, key]);
+  }, [feedToken, key]);
 
   useEffect(() => {
     setLoading(true);

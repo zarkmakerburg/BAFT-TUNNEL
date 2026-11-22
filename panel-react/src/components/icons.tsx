@@ -32,12 +32,20 @@ export function Icon({ name }: { name: string }) {
   );
 }
 
-/** Brand mark: two interlaced strands (baft = weave) crossing between two endpoints. */
+/** Brand mark: the same mesh the overview draws, reduced to an outline that survives 30 px. */
 export function Mark() {
   return (
     <svg className="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-      <path className="a" d="M4 11c8 0 8 10 16 10h8" />
-      <path className="b" d="M4 21c8 0 8-10 16-10h8" />
+      <g className="e">
+        <path d="M7 11.5 L16 6.5 L25 11.5 L25 20.5 L16 25.5 L7 20.5 Z" />
+        <path d="M7 11.5 L25 20.5 M25 11.5 L16 25.5 M16 6.5 L7 20.5" />
+      </g>
+      <circle className="n" cx="16" cy="6.5" r="1.9" />
+      <circle className="n" cx="25" cy="11.5" r="1.3" />
+      <circle className="n" cx="25" cy="20.5" r="1.3" />
+      <circle className="n" cx="16" cy="25.5" r="1.3" />
+      <circle className="n" cx="7" cy="20.5" r="1.3" />
+      <circle className="w" cx="7" cy="11.5" r="2.1" />
     </svg>
   );
 }
