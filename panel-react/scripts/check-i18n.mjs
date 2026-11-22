@@ -57,6 +57,8 @@ for (const file of files) {
   }
 }
 for (const key of refs) for (const lang of ['fa', 'en']) if (!keys[lang].has(key)) errors.push(`Literal callsite missing ${lang}: ${key}`);
+const dynamicRoleKeys = ['role.serve', 'role.forward', 'role.rev.serve', 'role.rev.forward'];
+for (const key of dynamicRoleKeys) for (const lang of ['fa', 'en']) if (!keys[lang].has(key)) errors.push(`Dynamic role key missing ${lang}: ${key}`);
 
 if (errors.length) {
   console.error(errors.map((error) => `✗ ${error}`).join('\n'));

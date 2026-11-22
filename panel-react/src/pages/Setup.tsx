@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useApp } from '../app';
 import { useData } from '../feed-context';
-import { conf, directionsOffered, type Kind } from '../derive';
+import { conf, directionsOffered, roleLabel, type Kind } from '../derive';
 import { Banner, Card, Field, KV, Ltr, Pill } from '../components/ui';
 import { newKey } from '../api';
 import { AutoPair } from './AutoPair';
@@ -143,7 +143,7 @@ function Manual() {
           <KV rows={[
             [t('rx.wiz.installed'), <Ltr key="v">{'v' + s.version}</Ltr>],
             [t('f.engine'), s.engine ? <Ltr key="e">{s.engine}</Ltr> : '—'],
-            [t('rx.wiz.mode'), c.mode ? t((c.direction === 'reverse' ? 'role.rev.' : 'role.') + c.mode) : t('rx.wiz.none')],
+            [t('rx.wiz.mode'), c.mode ? roleLabel(c.mode, c.direction, t) : t('rx.wiz.none')],
             [t('f.node'), c.local_identity ? <Ltr key="n">{c.local_identity}</Ltr> : t('rx.wiz.none')],
           ]} />
         )}

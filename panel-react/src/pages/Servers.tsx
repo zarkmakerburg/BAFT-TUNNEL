@@ -1,6 +1,6 @@
 import { useApp } from '../app';
 import { useData } from '../feed-context';
-import { ago, conf, fmtNum, life, listenState, stats, tunnelState } from '../derive';
+import { ago, conf, fmtNum, life, listenState, roleLabel, stats, tunnelState } from '../derive';
 import { Card, KV, Ltr, Pill } from '../components/ui';
 import { CapPill, Flag, HostTunnels } from './parts';
 
@@ -24,7 +24,7 @@ export function Servers() {
         [t('f.crl'), life(sec.crl_seconds_remaining, lang, t) ?? '—'],
         [t('f.keysrc'), c.private_key_source ?? '—'],
       ]} />;
-  const role = c.mode ? t((c.direction === 'reverse' ? 'role.rev.' : 'role.') + c.mode) : '—';
+  const role = c.mode ? roleLabel(c.mode, c.direction, t) : '—';
   return (
     <div className="stack">
       <p className="muted">{t('servers.note')}</p>
