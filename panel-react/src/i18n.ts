@@ -288,8 +288,9 @@ export type Vars = Record<string, string | number | undefined>;
 
 export function translate(lang: Lang, key: string, vars?: Vars): string {
   const base = window.BAFT_I18N ?? {};
-  const s = EXTRA[lang][key] ?? base[lang]?.[key] ?? EXTRA.en[key] ?? base['en']?.[key];
-  if (s === undefined) return key;
+  // Never fall back across languages: a missing Persian string must not leak English UI.
+  const s = EXTRA[lang][key] ?? base[lang]?.[key];
+  if (s === undefined) return lang === 'fa' ? 'ترجمهٔ این عبارت در دسترس نیست' : 'Translation unavailable';
   return s.replace(/\{(\w+)\}/g, (_m, k: string) => (vars && vars[k] !== undefined ? String(vars[k]) : ''));
 }
 

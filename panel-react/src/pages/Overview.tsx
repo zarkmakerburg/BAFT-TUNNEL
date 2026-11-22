@@ -42,7 +42,7 @@ export function Overview() {
   const histErr = d.meta.history === 'error';
   return (
     <div className="stack">
-      {localPreview && <div className="preview-notice" role="status">{lang === 'fa' ? 'پیش‌نمایش — داده‌ها آزمایشی هستند و وضعیت زندهٔ Agent نیستند.' : 'Preview — sample fixture data, not live Agent telemetry.'}</div>}
+      {localPreview && <div className="preview-notice" role="status">{lang === 'fa' ? 'پیش‌نمایش — داده‌ها آزمایشی هستند و وضعیت زندهٔ عامل نیستند.' : 'Preview — sample fixture data, not live Agent telemetry.'}</div>}
       {fresh && <Banner kind="info" title={t('ov.start.title')} action={<a className="btn primary" href="#/setup">{t('ov.start.cta')}</a>}><p>{t('ov.start.body')}</p></Banner>}
       <div className={`crest crest-${ts.k}`}>
         <div className="crest-canvas">
