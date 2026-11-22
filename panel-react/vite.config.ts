@@ -1,3 +1,4 @@
+import localPreviewAssets from './preview-fonts.mjs';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -5,7 +6,7 @@ import react from '@vitejs/plugin-react';
 // (no content hashes) and everything is one JS + one CSS file served from the agent itself.
 export default defineConfig({
   base: '/next/',
-  plugins: [react()],
+  plugins: [react(), localPreviewAssets()],
   build: {
     outDir: 'dist',
     emptyOutDir: true,

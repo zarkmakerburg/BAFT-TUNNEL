@@ -7,28 +7,31 @@
 @font-face{font-family:"Vazirmatn UI";font-weight:700;font-style:normal;font-display:swap;src:url(/fonts/Vazirmatn-Bold.woff2) format("woff2")}
 
 :root,:root[data-theme=dark]{
-  --bg:#080d1b;--nav:#0b1226;--surface:#101933;--surface-2:#162145;--surface-3:#1f2c58;--line:#24305a;--line-strong:#34426f;
-  --fg:#e9eef9;--muted:#a3aec9;--accent:#5cc8ff;--accent-fg:#04202f;--accent-soft:#11304d;--accent-line:#2a6fa3;
-  --ok:#4cd08f;--warn:#f5b94c;--bad:#ff8478;--unknown:#a3aec9;--info:#9db4ff;
-  --ok-bg:#0f3126;--warn-bg:#3a2d0f;--bad-bg:#3f1b1d;--unknown-bg:#1b2447;--info-bg:#1b2958;
-  --chart-1:#5cc8ff;--chart-2:#9db4ff;--chart-grid:#24305a;--scrim:rgba(3,6,16,.66);
-  --shadow:0 1px 0 rgba(255,255,255,.03) inset,0 1px 2px rgba(0,0,0,.45);--shadow-lg:0 18px 48px rgba(0,0,0,.55);color-scheme:dark;
+  --bg:#0a0a0b;--nav:#0d0d0f;--surface:#121214;--surface-2:#17171a;--surface-3:#1e1e22;--line:#26262b;--line-strong:#3a3a41;
+  --fg:#e8ebf0;--muted:#9fb0c4;--accent:#d6dce5;--accent-fg:#0a0a0b;--accent-soft:#1d2026;--accent-line:#4b5260;
+  --ok:#7bd3a0;--warn:#e5b86a;--bad:#f08a80;--unknown:#9fb0c4;--info:#a9bce0;
+  --ok-bg:#10231a;--warn-bg:#2a2113;--bad-bg:#2c1615;--unknown-bg:#1a1c21;--info-bg:#171b24;
+  --chart-1:#d6dce5;--chart-2:#9fb0c4;--chart-grid:#24242a;--scrim:rgba(0,0,0,.68);
+  --mark-warm:#e0b264;--mark-cool:#aebbcb;--mark-edge:#7e8898;
+  --shadow:0 1px 0 rgba(255,255,255,.04) inset,0 1px 2px rgba(0,0,0,.5);--shadow-lg:0 18px 48px rgba(0,0,0,.6);color-scheme:dark;
 }
 :root[data-theme=light]{
-  --bg:#f2f5fb;--nav:#ffffff;--surface:#ffffff;--surface-2:#eef2f9;--surface-3:#e1e8f4;--line:#d6deee;--line-strong:#b9c5df;
-  --fg:#0e1629;--muted:#4a5570;--accent:#0a5fa8;--accent-fg:#ffffff;--accent-soft:#e0eefb;--accent-line:#8cb8e0;
-  --ok:#146c45;--warn:#8a4f08;--bad:#b3261e;--unknown:#4a5570;--info:#3a4fb0;
-  --ok-bg:#e1f3ea;--warn-bg:#fcefd9;--bad-bg:#fbe7e5;--unknown-bg:#eceff7;--info-bg:#e6eafb;
-  --chart-1:#0a5fa8;--chart-2:#3a4fb0;--chart-grid:#e1e8f4;--scrim:rgba(14,22,41,.45);
-  --shadow:0 1px 2px rgba(14,22,41,.08);--shadow-lg:0 18px 48px rgba(14,22,41,.22);color-scheme:light;
+  --bg:#efe9df;--nav:#fbf7f0;--surface:#fbf8f2;--surface-2:#f3ede3;--surface-3:#eae2d5;--line:#ded4c4;--line-strong:#c6b9a4;
+  --fg:#201c16;--muted:#6a6053;--accent:#7a5a1f;--accent-fg:#ffffff;--accent-soft:#f3e7ce;--accent-line:#c2a873;
+  --ok:#1f6b44;--warn:#8a5a0b;--bad:#a32a22;--unknown:#6a6053;--info:#3b5170;
+  --ok-bg:#e4efe6;--warn-bg:#f8ebd5;--bad-bg:#f8e3df;--unknown-bg:#ede6da;--info-bg:#e6eaf0;
+  --chart-1:#7a5a1f;--chart-2:#6c7686;--chart-grid:#e4dac9;--scrim:rgba(32,28,22,.42);
+  --mark-warm:#8a6a2f;--mark-cool:#6c7686;--mark-edge:#8d8477;
+  --shadow:0 1px 2px rgba(64,52,34,.10);--shadow-lg:0 18px 48px rgba(64,52,34,.20);color-scheme:light;
 }
 @media (prefers-color-scheme:light){:root[data-theme=auto]{
-  --bg:#f2f5fb;--nav:#ffffff;--surface:#ffffff;--surface-2:#eef2f9;--surface-3:#e1e8f4;--line:#d6deee;--line-strong:#b9c5df;
-  --fg:#0e1629;--muted:#4a5570;--accent:#0a5fa8;--accent-fg:#ffffff;--accent-soft:#e0eefb;--accent-line:#8cb8e0;
-  --ok:#146c45;--warn:#8a4f08;--bad:#b3261e;--unknown:#4a5570;--info:#3a4fb0;
-  --ok-bg:#e1f3ea;--warn-bg:#fcefd9;--bad-bg:#fbe7e5;--unknown-bg:#eceff7;--info-bg:#e6eafb;
-  --chart-1:#0a5fa8;--chart-2:#3a4fb0;--chart-grid:#e1e8f4;--scrim:rgba(14,22,41,.45);
-  --shadow:0 1px 2px rgba(14,22,41,.08);--shadow-lg:0 18px 48px rgba(14,22,41,.22);color-scheme:light}}
+  --bg:#efe9df;--nav:#fbf7f0;--surface:#fbf8f2;--surface-2:#f3ede3;--surface-3:#eae2d5;--line:#ded4c4;--line-strong:#c6b9a4;
+  --fg:#201c16;--muted:#6a6053;--accent:#7a5a1f;--accent-fg:#ffffff;--accent-soft:#f3e7ce;--accent-line:#c2a873;
+  --ok:#1f6b44;--warn:#8a5a0b;--bad:#a32a22;--unknown:#6a6053;--info:#3b5170;
+  --ok-bg:#e4efe6;--warn-bg:#f8ebd5;--bad-bg:#f8e3df;--unknown-bg:#ede6da;--info-bg:#e6eaf0;
+  --chart-1:#7a5a1f;--chart-2:#6c7686;--chart-grid:#e4dac9;--scrim:rgba(32,28,22,.42);
+  --mark-warm:#8a6a2f;--mark-cool:#6c7686;--mark-edge:#8d8477;
+  --shadow:0 1px 2px rgba(64,52,34,.10);--shadow-lg:0 18px 48px rgba(64,52,34,.20);color-scheme:light}}
 :root{
   --r-sm:6px;--r:10px;--r-lg:14px;--r-pill:999px;
   --s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;
@@ -39,6 +42,8 @@
   --t-fast:120ms;--t-base:200ms;--ease:cubic-bezier(.2,.7,.2,1);
 }
 @media (pointer:coarse){:root{--ctl:44px}}
+
+.preview-notice{padding:10px 14px;border:1px solid var(--warn);border-radius:var(--r);background:var(--warn-bg);color:var(--fg);font-size:var(--fs-1);line-height:1.6}
 
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%;background:var(--bg);overflow-x:clip}
@@ -93,8 +98,10 @@ kbd{border:1px solid var(--line-strong);border-radius:var(--r-sm);padding:0 var(
 .shell[data-nav=rail]{grid-template-columns:var(--rail) minmax(0,1fr)}
 .sidebar{position:sticky;inset-block-start:0;block-size:100vh;block-size:100dvh;display:flex;flex-direction:column;background:var(--nav);border-inline-end:1px solid var(--line);padding:var(--s4) var(--s3);gap:var(--s4);overflow:auto}
 .brand{display:flex;align-items:center;gap:var(--s2);font-weight:700;font-size:var(--fs-3)}
-.brand-mark{inline-size:30px;block-size:30px;fill:none;stroke-width:3;stroke-linecap:round}
-.brand-mark .a{stroke:var(--accent)}.brand-mark .b{stroke:var(--info)}
+.brand-mark{inline-size:30px;block-size:30px;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.brand-mark .e{stroke:var(--accent);stroke-width:1.5;opacity:.72}
+.brand-mark .n{fill:var(--muted);stroke:none}
+.brand-mark .w{fill:var(--mark-warm);stroke:none}
 .side-nav{flex:1}
 .nav-group{margin-block-end:var(--s4)}
 .nav-h{font-size:var(--fs-0);color:var(--muted);padding-inline:var(--s3);margin-block-end:var(--s1);letter-spacing:.04em}
@@ -157,6 +164,26 @@ kbd{border:1px solid var(--line-strong);border-radius:var(--r-sm);padding:0 var(
 .hero{display:flex;align-items:center;flex-wrap:wrap;gap:var(--s3);padding:var(--s4);border-radius:var(--r-lg);border:1px solid var(--line);background:var(--surface)}
 .hero-ok{border-color:color-mix(in srgb,var(--ok) 45%,transparent)}.hero-bad{border-color:color-mix(in srgb,var(--bad) 55%,transparent)}.hero-warn{border-color:color-mix(in srgb,var(--warn) 50%,transparent)}
 .hero-text{margin:0;flex:1;min-inline-size:200px}
+/* identity crest: the mesh is the status, the text says what it means */
+.crest{display:grid;grid-template-columns:210px minmax(0,1fr);gap:var(--s4);align-items:center;padding:var(--s3) var(--s4);border:1px solid var(--glass-edge);border-radius:var(--r-lg);background:linear-gradient(160deg,var(--glass-lo),transparent 55%),var(--glass);box-shadow:var(--glass-shadow);overflow:hidden;position:relative}
+.crest::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(70% 120% at 12% 0%,color-mix(in srgb,var(--mark-warm) 12%,transparent),transparent 70%)}
+.crest-canvas{inline-size:100%;block-size:158px;display:block;position:relative}
+.mark-canvas{inline-size:100%;block-size:100%;display:block}
+.crest-body{display:grid;gap:var(--s1);min-inline-size:0;position:relative}
+.crest-top{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap;margin-block-end:var(--s1)}
+.crest-id{margin:0;font-size:var(--fs-4);font-weight:700;line-height:1.3;overflow-wrap:anywhere}
+.crest-why{margin:0;color:var(--muted);font-size:var(--fs-1);max-inline-size:72ch}
+.crest-warn{border-color:color-mix(in srgb,var(--warn) 40%,var(--glass-edge))}
+.crest-bad{border-color:color-mix(in srgb,var(--bad) 46%,var(--glass-edge))}
+.crest-ok{border-color:color-mix(in srgb,var(--ok) 34%,var(--glass-edge))}
+@media (max-width:700px){
+  .crest{grid-template-columns:1fr;justify-items:center;text-align:center;gap:var(--s2);padding-block:var(--s4)}
+  .crest-canvas{block-size:132px;max-inline-size:250px}
+  .crest-body{justify-items:center}
+  .crest-top{justify-content:center}
+  .crest-id{font-size:var(--fs-3)}
+}
+@media (prefers-reduced-transparency:reduce){.crest{background:var(--surface)}}
 .banner{border:1px solid var(--line-strong);border-radius:var(--r-lg);padding:var(--s4);display:grid;gap:var(--s2);justify-items:start;background:var(--surface)}
 .banner.info{background:var(--info-bg);border-color:var(--accent-line)}.banner.bad{background:var(--bad-bg);border-color:var(--bad)}.banner.warn,.banner.partial{background:var(--warn-bg);border-color:var(--warn)}
 .banner p{margin:0}
@@ -250,19 +277,19 @@ details summary{cursor:pointer;color:var(--muted);margin-block:var(--s2)}
    Falls back to the solid surfaces above when backdrop-filter is unavailable or the user asks for
    reduced transparency. Text always sits on a surface with enough contrast (see --glass-* tokens). */
 :root,:root[data-theme=dark]{
-  --glass:rgba(24,36,76,.46);--glass-strong:rgba(30,44,92,.62);--glass-edge:rgba(255,255,255,.16);--glass-hi:rgba(255,255,255,.28);--glass-lo:rgba(255,255,255,.04);
-  --glass-shadow:0 10px 30px rgba(2,6,20,.38),0 1px 0 rgba(255,255,255,.06) inset;
-  --amb-1:rgba(92,200,255,.20);--amb-2:rgba(122,110,255,.18);--amb-3:rgba(76,208,143,.09);
+  --glass:rgba(30,32,38,.52);--glass-strong:rgba(36,38,45,.66);--glass-edge:rgba(255,255,255,.10);--glass-hi:rgba(255,255,255,.20);--glass-lo:rgba(255,255,255,.035);
+  --glass-shadow:0 10px 30px rgba(0,0,0,.42),0 1px 0 rgba(255,255,255,.05) inset;
+  --amb-1:rgba(214,220,229,.10);--amb-2:rgba(159,176,196,.08);--amb-3:rgba(224,178,100,.05);
 }
 :root[data-theme=light]{
-  --glass:rgba(255,255,255,.58);--glass-strong:rgba(255,255,255,.78);--glass-edge:rgba(255,255,255,.85);--glass-hi:rgba(255,255,255,.95);--glass-lo:rgba(255,255,255,.35);
-  --glass-shadow:0 10px 28px rgba(30,60,120,.14),0 1px 0 rgba(255,255,255,.9) inset;
-  --amb-1:rgba(10,95,168,.16);--amb-2:rgba(122,110,255,.14);--amb-3:rgba(76,208,143,.10);
+  --glass:rgba(255,252,246,.62);--glass-strong:rgba(255,253,249,.82);--glass-edge:rgba(255,255,255,.90);--glass-hi:rgba(255,255,255,.98);--glass-lo:rgba(255,255,255,.44);
+  --glass-shadow:0 10px 28px rgba(90,70,40,.14),0 1px 0 rgba(255,255,255,.95) inset;
+  --amb-1:rgba(200,160,90,.18);--amb-2:rgba(150,170,200,.14);--amb-3:rgba(120,150,130,.08);
 }
 @media (prefers-color-scheme:light){:root[data-theme=auto]{
-  --glass:rgba(255,255,255,.58);--glass-strong:rgba(255,255,255,.78);--glass-edge:rgba(255,255,255,.85);--glass-hi:rgba(255,255,255,.95);--glass-lo:rgba(255,255,255,.35);
-  --glass-shadow:0 10px 28px rgba(30,60,120,.14),0 1px 0 rgba(255,255,255,.9) inset;
-  --amb-1:rgba(10,95,168,.16);--amb-2:rgba(122,110,255,.14);--amb-3:rgba(76,208,143,.10)}}
+  --glass:rgba(255,252,246,.62);--glass-strong:rgba(255,253,249,.82);--glass-edge:rgba(255,255,255,.90);--glass-hi:rgba(255,255,255,.98);--glass-lo:rgba(255,255,255,.44);
+  --glass-shadow:0 10px 28px rgba(90,70,40,.14),0 1px 0 rgba(255,255,255,.95) inset;
+  --amb-1:rgba(200,160,90,.18);--amb-2:rgba(150,170,200,.14);--amb-3:rgba(120,150,130,.08)}}
 body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   background:radial-gradient(60vmax 50vmax at 12% -8%,var(--amb-1),transparent 60%),radial-gradient(55vmax 45vmax at 105% 12%,var(--amb-2),transparent 60%),radial-gradient(50vmax 40vmax at 40% 112%,var(--amb-3),transparent 60%)}
 
@@ -307,7 +334,7 @@ dialog.ov::backdrop{background:var(--scrim)}
 .tip-box,.toast{background:var(--glass-strong);border:1px solid var(--glass-edge);box-shadow:var(--glass-shadow)}
 
 @supports (backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px)){
-  .card,.kpi,.banner,.hero,.choice,.stepper li,.empty,.sidebar,.tabbar,dialog.ov,.tip-box,.toast{-webkit-backdrop-filter:blur(16px) saturate(1.5);backdrop-filter:blur(16px) saturate(1.5)}
+  .card,.kpi,.banner,.hero,.crest,.choice,.stepper li,.empty,.sidebar,.tabbar,dialog.ov,.tip-box,.toast{-webkit-backdrop-filter:blur(16px) saturate(1.5);backdrop-filter:blur(16px) saturate(1.5)}
   .topbar{-webkit-backdrop-filter:blur(20px) saturate(1.6);backdrop-filter:blur(20px) saturate(1.6)}
   button,.btn,.segmented{-webkit-backdrop-filter:blur(10px) saturate(1.4);backdrop-filter:blur(10px) saturate(1.4)}
   .card .card,.card button,.card .btn,.card .segmented,.card .pill,.card .choice,.card .empty,.kpi button,.banner button,.banner .btn,dialog.ov button,dialog.ov .btn,.sidebar button,.sidebar .btn,.tabbar button,.topbar button,.topbar .btn,.choice .pill,.stepper li{-webkit-backdrop-filter:none;backdrop-filter:none}
@@ -315,12 +342,12 @@ dialog.ov::backdrop{background:var(--scrim)}
 }
 /* no blur available, or the user prefers less transparency: solid surfaces, same layout */
 @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
-  .card,.kpi,.banner,.hero,.choice,.stepper li,.empty,.sidebar,.topbar,.tabbar,dialog.ov{background:var(--surface)}
+  .card,.kpi,.banner,.hero,.crest,.choice,.stepper li,.empty,.sidebar,.topbar,.tabbar,dialog.ov{background:var(--surface)}
   button,.btn,.segmented{background:var(--surface-2)}
 }
 @media (prefers-reduced-transparency:reduce){
   body::before{display:none}
-  .card,.kpi,.banner,.hero,.choice,.stepper li,.empty,.sidebar,.topbar,.tabbar,dialog.ov,.tip-box,.toast{background:var(--surface);-webkit-backdrop-filter:none;backdrop-filter:none}
+  .card,.kpi,.banner,.hero,.crest,.choice,.stepper li,.empty,.sidebar,.topbar,.tabbar,dialog.ov,.tip-box,.toast{background:var(--surface);-webkit-backdrop-filter:none;backdrop-filter:none}
   button,.btn,.segmented{background:var(--surface-2);-webkit-backdrop-filter:none;backdrop-filter:none}
   .primary{background:var(--accent)}
 }

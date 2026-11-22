@@ -1,14 +1,14 @@
 import { useState } from 'react';
 import { useApp } from '../app';
-import { LANGS } from '../i18n';
 import { Icon, Mark } from '../components/icons';
 
 export function LangButton() {
   const { lang, setLang, t } = useApp();
   const other = lang === 'fa' ? 'en' : 'fa';
+  const otherLabel = other === 'en' ? 'انگلیسی' : 'فارسی';
   return (
-    <button type="button" className="ghost lang-btn" lang={other} aria-label={t('ui.lang.switch', { l: LANGS[other].label })} onClick={() => setLang(other)}>
-      <Icon name="globe" /><span>{LANGS[other].label}</span>
+    <button type="button" className="ghost lang-btn" lang={other} aria-label={t('ui.lang.switch', { l: otherLabel })} onClick={() => setLang(other)}>
+      <Icon name="globe" /><span>{otherLabel}</span>
     </button>
   );
 }

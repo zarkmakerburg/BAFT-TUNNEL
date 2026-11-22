@@ -9,6 +9,12 @@ export interface StateLabel { k: Kind; l: string }
 
 export const conf = (d: Loaded): any => d.status?.config?.configuration ?? {};
 
+/** Render only the two roles accepted by the Agent config contract; unknown values stay honest. */
+export function roleLabel(mode: unknown, direction: unknown, t: TFn): string {
+  if (mode !== 'serve' && mode !== 'forward') return t('unknown');
+  return t((direction === 'reverse' ? 'role.rev.' : 'role.') + mode);
+}
+
 export function median(v: number[]): number | null {
   const s = v.filter((x) => typeof x === 'number' && !Number.isNaN(x)).sort((a, b) => a - b);
   if (!s.length) return null;

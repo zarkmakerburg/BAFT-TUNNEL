@@ -4,6 +4,7 @@ import { useData } from '../feed-context';
 import { ago, conf, fmtBytes, fmtNum, fmtTime, listenState, stats, tunnelState, warnings } from '../derive';
 import { Banner, Card, Empty, Ltr, Pill, Segmented, Table } from '../components/ui';
 import { Icon } from '../components/icons';
+import { NetMark } from '../components/mark';
 import { LineChart, StatusStrip } from '../components/charts';
 import { GeoMap, Topology } from '../components/viz';
 import { RecentOps, WarnList } from './parts';
@@ -14,7 +15,25 @@ export function Overview() {
   const { t, lang } = useApp();
   const { data: d, fetchedAt } = useData();
   const [direction, setDirection] = useState<Direction>('in');
-  if (!d?.status) return null;
+  const localPreview = import.meta.env.DEV && new URLSearchParams(window.location.search).get('preview') === '1';
+  // In the local visual preview, keep the animation visible without inventing Agent data.
+  if (!d?.status) {
+    if (!localPreview) return null;
+    return (
+      <div className="stack">
+        <div className="crest crest-unknown">
+          <div className="crest-canvas">
+            <NetMark state="unknown" label={t('crest.aria', { l: t('unknown') })} />
+          </div>
+          <div className="crest-body">
+            <div className="crest-top"><Pill kind="unknown">{t('unknown')}</Pill></div>
+            <p className="crest-id">{lang === 'fa' ? 'پیش‌نمایش انیمیشن پنل' : 'Panel animation preview'}</p>
+            <p className="crest-why">{lang === 'fa' ? 'انیمیشن شبکه در حال اجراست. برای نمایش وضعیت و آمار واقعی، Agent باید متصل باشد.' : 'The network animation is running. Connect the Agent to display real status and metrics.'}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const s = d.status;
   const c = conf(d);

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { useApp } from '../app';
-import { ago, conf, fmtBytes, fmtNum, stats, tunnelState, listenState, type Kind } from '../derive';
+import { ago, conf, fmtBytes, fmtNum, roleLabel, stats, tunnelState, listenState, type Kind } from '../derive';
 import type { Loaded } from '../api';
 import { Card, Ltr, Pill } from './ui';
 import { LAND, MAP_H, MAP_S, MAP_TOP, MAP_W } from '../worldmap';
@@ -131,7 +131,7 @@ export function Topology({ d }: { d: Loaded }) {
     }>
       <div className={`topo-stage zoom-${zoom}`}>
         <div ref={topo} className={`topo link-${lk}`} role="group" aria-label={aria}>
-          <NodeBox role={t('viz.this')} id={shortIdentity(c.local_identity)} sub={c.mode ? t((c.direction === 'reverse' ? 'role.rev.' : 'role.') + c.mode) : undefined} kind={state.k} />
+          <NodeBox role={t('viz.this')} id={shortIdentity(c.local_identity)} sub={c.mode ? roleLabel(c.mode, c.direction, t) : undefined} kind={state.k} />
           <div className="wire" aria-hidden="true">
             <span className="wire-tag">{t('dir.' + dirKey + '.t')}{dirKey === 'reverse' ? ` · ${t('dir.preview')}` : ''}</span>
             <svg viewBox="0 0 200 24" preserveAspectRatio="none"><line x1="0" y1="12" x2="200" y2="12" className="wire-line" /></svg>

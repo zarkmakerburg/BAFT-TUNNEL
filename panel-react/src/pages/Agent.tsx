@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useApp } from '../app';
 import { useData } from '../feed-context';
-import { ago, conf, fmtNum } from '../derive';
+import { ago, conf, fmtNum, roleLabel } from '../derive';
 import { Card, KV, Ltr, Pill } from '../components/ui';
 import { CapPill, OpsBody, nv } from './parts';
 
@@ -41,7 +41,7 @@ export function AgentPage() {
         <KV rows={[
           [t('kpi.tunnels'), c.tunnel_id ? <Ltr key="t">{c.tunnel_id}</Ltr> : t('rx.wiz.none')],
           [t('f.direction'), c.direction ? t('dir.' + c.direction) : '—'],
-          [t('f.role'), c.mode ? t((c.direction === 'reverse' ? 'role.rev.' : 'role.') + c.mode) : '—'],
+          [t('f.role'), c.mode ? roleLabel(c.mode, c.direction, t) : '—'],
           [t('f.peer'), c.peer_identity ? <Ltr key="p">{c.peer_identity}</Ltr> : '—'],
           [t('f.protocol'), c.protocol_version == null ? '—' : <Ltr key="pv">{'v' + c.protocol_version}</Ltr>],
         ]} />

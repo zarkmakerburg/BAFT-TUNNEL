@@ -15,6 +15,10 @@ export const LANGS: Record<Lang, { label: string; dir: 'rtl' | 'ltr' }> = {
 
 const EXTRA: Record<Lang, Record<string, string>> = {
   fa: {
+    'unreachable.title': 'ارتباط با Agent برقرار نشد',
+    'unreachable.body': 'داشبورد باز است، اما سرویس Agent محلی پاسخ نمی‌دهد. برای نمایش وضعیت و اطلاعات واقعی، Agent باید روی همین سرور در دسترس باشد.',
+    'unreachable.next': 'وضعیت سرویس Agent و اتصال محلی آن را بررسی کنید؛ پس از فعال‌شدن سرویس، دوباره تلاش کنید.',
+    'ui.retry': 'تلاش دوباره',
     'nav.fleet': 'ناوگان',
     'dash.eyebrow': 'عملیات شبکه',
     'dash.title': 'پایش شبکه و سامانه‌ها',
@@ -183,8 +187,14 @@ const EXTRA: Record<Lang, Record<string, string>> = {
     'rx.service': 'سرویس',
     'rx.settings.sensitive': 'خروج از نشست فعلی',
     'rx.settings.logout.body': 'توکن از این مرورگر حذف می‌شود و باید دوباره وارد شوید.',
+    'crest.aria': 'نمای شبکه — {l}',
+    'ov.notunnel': 'بدون تونل',
   },
   en: {
+    'unreachable.title': 'Could not reach the Agent',
+    'unreachable.body': 'The dashboard is open, but the local Agent service is not responding. The Agent must be available on this host to show real status and data.',
+    'unreachable.next': 'Check the Agent service and its local connection. Retry after the service is running.',
+    'ui.retry': 'Retry',
     'nav.fleet': 'Fleet',
     'dash.eyebrow': 'NETWORK OPERATIONS',
     'dash.title': 'Network & Systems Monitoring',
@@ -353,6 +363,8 @@ const EXTRA: Record<Lang, Record<string, string>> = {
     'rx.service': 'Service',
     'rx.settings.sensitive': 'End this session',
     'rx.settings.logout.body': 'The token is removed from this browser and you will have to sign in again.',
+    'crest.aria': 'Network view — {l}',
+    'ov.notunnel': 'No tunnel',
   },
 };
 
@@ -360,8 +372,9 @@ export type Vars = Record<string, string | number | undefined>;
 
 export function translate(lang: Lang, key: string, vars?: Vars): string {
   const base = window.BAFT_I18N ?? {};
-  const s = EXTRA[lang][key] ?? base[lang]?.[key] ?? EXTRA.en[key] ?? base['en']?.[key];
-  if (s === undefined) return key;
+  // Never fall back across languages: a missing Persian string must not leak English UI.
+  const s = EXTRA[lang][key] ?? base[lang]?.[key];
+  if (s === undefined) return lang === 'fa' ? 'ترجمهٔ این عبارت در دسترس نیست' : 'Translation unavailable';
   return s.replace(/\{(\w+)\}/g, (_m, k: string) => (vars && vars[k] !== undefined ? String(vars[k]) : ''));
 }
 

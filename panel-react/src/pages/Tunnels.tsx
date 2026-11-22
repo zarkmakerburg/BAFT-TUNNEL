@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useApp } from '../app';
 import { useData } from '../feed-context';
 import { newKey } from '../api';
-import { ago, conf, fmtNum, listenState, stats, tunnelState } from '../derive';
+import { ago, conf, fmtNum, listenState, roleLabel, stats, tunnelState } from '../derive';
 import { Card, Confirm, KV, Ltr, Pill } from '../components/ui';
 import { HostTunnels, TierPill } from './parts';
 
@@ -93,7 +93,7 @@ export function Tunnels() {
           <p className="sub">{(tn ? t('ts.why') : t('state.why.local')) + ' ' + t('checked', { ago: ago(lang, t, fetchedAt) })}</p>
           <KV rows={[
             [t('f.engine'), <Ltr key="e">{s.engine}</Ltr>],
-            [t('f.role'), c.mode ? t((dir === 'reverse' ? 'role.rev.' : 'role.') + c.mode) : '—'],
+            [t('f.role'), c.mode ? roleLabel(c.mode, dir, t) : '—'],
             [t('f.peerconn'), tn ? <TierPill key="p" result={tiers.authorized_session?.result} /> : unk],
             [t('f.peer'), tiers.authorized_session?.peer_id ? <Ltr key="pid">{tiers.authorized_session.peer_id}</Ltr> : null],
             [t('tier.data_path'), tn ? <TierPill key="dp" result={tiers.data_path?.result} /> : unk],
