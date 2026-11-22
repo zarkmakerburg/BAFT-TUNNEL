@@ -8,7 +8,7 @@ Secrets:
 - `LAB_IRAN_HOST`
 - `LAB_ABROAD_HOST`
 - `LAB_SSH_PRIVATE_KEY`
-- `LAB_SSH_KNOWN_HOSTS` — independently verified ED25519 host keys for both hosts.
+- `LAB_SSH_KNOWN_HOSTS` — pinned ED25519 host keys for both hosts. Strict `known_hosts` matching confirms that SSH presented a configured key; it does **not** independently establish the host's identity or prove that the key matches the provider-console fingerprint. Complete that out-of-band cross-check separately before treating host identity as verified.
 
 Variables:
 - `LAB_IRAN_SSH_USER`
