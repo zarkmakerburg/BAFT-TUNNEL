@@ -65,7 +65,7 @@ jobs:
           set -Eeuo pipefail
           umask 077
           test -n "$SSH_PRIVATE_KEY" || { echo 'Missing secret LAB_SSH_PRIVATE_KEY' >&2; exit 2; }
-          test -n "$SSH_KNOWN_HOSTS" || { echo 'Missing secret LAB_SSH_KNOWN_HOSTS (verified ED25519 host keys)' >&2; exit 2; }
+          test -n "$SSH_KNOWN_HOSTS" || { echo 'Missing secret LAB_SSH_KNOWN_HOSTS (pinned ED25519 host keys)' >&2; exit 2; }
           test -n "$LAB_IRAN_HOST" || { echo 'Missing secret LAB_IRAN_HOST' >&2; exit 2; }
           test -n "$LAB_ABROAD_HOST" || { echo 'Missing secret LAB_ABROAD_HOST' >&2; exit 2; }
           test -n "$LAB_TEST_PORTS" || { echo 'Missing variable LAB_TEST_PORTS' >&2; exit 2; }
