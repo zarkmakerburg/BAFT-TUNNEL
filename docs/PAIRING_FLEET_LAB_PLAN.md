@@ -21,7 +21,9 @@ The new manual workflow `pairing-fleet-read-only-inventory.yml` uses only the de
 - shares the real-host concurrency lock;
 - uses pinned SSH host keys with strict checking and disables the system-wide known-hosts file;
 - inventories OS/kernel, BAFT-TUNNEL unit/process names, selected path metadata, listener addresses, and package matches;
-- does not create remote files, inspect secret contents, stop services, clean files, install packages, or change networking.
+- does not create remote files as part of the inventory commands, inspect secret contents, stop services, clean files, install packages, or change networking.
+
+The no-remote-file statement describes the inventory commands themselves. The host operating system or SSH daemon may still record ordinary authentication/session events in its own logs or audit facilities; those platform-managed records are outside the workflow's read-only guarantee.
 
 A successful SSH match proves only that the configured known_hosts pin was accepted. Provider-console/API fingerprint cross-check remains outstanding and must be independently verified before mutation.
 
