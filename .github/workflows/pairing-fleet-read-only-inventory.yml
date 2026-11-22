@@ -74,8 +74,8 @@ jobs:
           ssh_dir="$(mktemp -d "$RUNNER_TEMP/pairing-fleet-inventory.XXXXXX")"
           cleanup() { rm -rf -- "$ssh_dir"; }
           trap cleanup EXIT
-          printf '%s\\n' "$SSH_PRIVATE_KEY" > "$ssh_dir/id_ed25519"
-          printf '%s\\n' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          printf '%s' "$SSH_PRIVATE_KEY" > "$ssh_dir/id_ed25519"
+          printf '%s' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
           chmod 600 "$ssh_dir/id_ed25519" "$ssh_dir/known_hosts"
           export SSH_KEY_FILE="$ssh_dir/id_ed25519"
           export SSH_KNOWN_HOSTS_FILE="$ssh_dir/known_hosts"
