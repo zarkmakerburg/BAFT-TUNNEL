@@ -1,7 +1,8 @@
 # ADR-0055: remove and edit a created tunnel from the Agent API
 
-Status: accepted (2026-11-21, owner's delegated decision authority; owner asked why created tunnels cannot be edited or
-deleted). Builds on ADR-0023 (control helper), ADR-0026 (root setup helper), ADR-0036 (one agent per instance).
+Status: accepted feature design; security amendment proposed 2026-11-22 in PR #416. Builds on ADR-0023 (control helper),
+ADR-0026 (root setup helper), ADR-0036 (one agent per instance). The amended privileged boundary is not merge-approved
+until independent review and real-systemd verification are complete.
 
 ## Context
 
@@ -11,8 +12,9 @@ runs unprivileged (SA-09) and must stay unable to write configuration or read ke
 
 ## Decision
 
-1. A new root helper, same mechanism as ADR-0026: the agent writes `/run/baft-tunnel/control/NAME.manage`;
-   `baft-tunnel-control-manage@NAME.path` runs exactly `baft-tunnel setup manage-helper --instance NAME` (oneshot,
+1. Original implementation (superseded by the 2026-11-22 security amendment below): the agent wrote
+   `/run/baft-tunnel/control/NAME.manage`; `baft-tunnel-control-manage@NAME.path` ran exactly
+   `baft-tunnel setup manage-helper --instance NAME` (oneshot,
    no network, `ProtectSystem=strict`, capabilities limited to `CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE`; no
    `CAP_NET_ADMIN`). The request carries only `op`, an idempotency key and, for edit, IP addresses. The agent never
    sends file contents or paths; unknown fields are refused. Installed by `install-agent-control.sh` (verb `manage`).
@@ -36,24 +38,30 @@ runs unprivileged (SA-09) and must stay unable to write configuration or read ke
    only; key material, file contents and the token are never written. The newest 3 edit backups per instance are
    kept; remove backups (the only copy of a removed key) are never deleted automatically.
 
-## Security review (2026-11-21, independent review before merge)
+## Pre-merge security findings and remediation (2026-11-22)
 
-No Critical or High. Fixed in this change: M1 an edit revert is compare-and-swap (the manifest stores the sha256 of
-every file the edit wrote; revert refuses if any current file differs, then removes the backup); M2 only edit backups
-are pruned; M3 a failed remove keeps its backup when a file cannot be moved back; L1 the agent waits longer than the
-unit timeout, checks the result's `id` and `op`, and reports `unknown` (no rollback guesses) when the outcome is not
-known; L3 the edit backs up the exact bytes it was derived from and refuses if the file changed; L6 no
-`ExecStopPost` request cleanup, so a request written during a run is not dropped.
-Accepted and documented: L2 the "unit stopped" check before remove is not serialized with a concurrent start request
-(availability only; the agent holds its lock and stops first). L4 a revert that fails between files is not itself
-rolled back (every file is checked before any write, which leaves only I/O errors). L5 inherited from ADR-0023/0026:
-all agents share one account and control directory, so the instance binding is the agent's own, not enforced by root.
+A source-level review of the original file-based implementation found a **High cross-instance confused-deputy issue**:
+all agents shared one Unix account and writable control directory, while the root helper trusted the instance encoded in
+the systemd unit name. A compromised agent A could therefore create `B.manage` and ask the root helper for B to remove,
+edit, or revert B's root-owned configuration and pairing/key files.
 
-Rejected: letting the agent write configuration (breaks SA-09); deleting without a backup (no rollback); editing ports
-or identities (needs the peer to change in step; a later pairing-level change, not a local edit).
+The proposed amendment above moves the authorization decision to the privileged boundary. It uses kernel-provided
+`SO_PEERCRED` plus the exact systemd agent cgroup; a same-UID peer from another instance is refused before any file
+operation, including `revert`. The adversarial unit test models A attempting `remove`, `edit`, and `revert` against B with the same UID and proves
+B's config and backup state remain unchanged. Cgroup v1/v2 parsing, UID/GID mismatch and near-match cgroup paths are
+also covered. The real-systemd lifecycle harness now includes a two-instance probe that runs inside A's exact agent
+service cgroup, connects to B's root socket, and verifies refusal plus unchanged B config/backup state. `sub_key()` now derives a full 256-bit SHA-256 digest from the complete caller key and lifecycle step,
+removing the previous 54-character truncation collision.
 
+**Verification boundary:** the real-systemd two-instance probe is added but has not been executed in this session. Its
+Linux CI result on Ubuntu 22.04 / systemd 249 is still required before merge; source/unit tests alone do not prove the
+privileged boundary. No LAB, production host, install, service, release, or deploy operation was performed in this
+session. No independent reviewer has approved this remediation yet.
+
+The inherited shared-account assumptions for the other file-based helpers are explicitly scoped in ADR-0023 and
+ADR-0026; this amendment does not claim to authenticate those older helper verbs.
 ## Not claimed
 
-CI only: helper unit tests on temp directories and agent route tests with fake units and an in-process helper
-(remove, refusal with restart, edit, failed-restart rollback, gates, replay). No real-systemd or LAB run yet; the peer
-node is never changed by either route. Panel UI follows in the React panel thread after this merges.
+Evidence currently available: helper unit tests on temp directories and agent route tests with fake units and an
+in-process helper (remove, refusal with restart, edit, failed-restart rollback, gates, replay). The real-systemd
+two-instance probe is scripted but not yet run; no LAB run is claimed. The peer node is never changed by either route. Panel UI follows in the React panel thread after this merges.

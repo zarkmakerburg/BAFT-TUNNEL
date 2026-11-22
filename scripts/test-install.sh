@@ -119,9 +119,11 @@ cmp -s "$KEY1" "$CRED_DIR/node-key"
 write_fake 0.3.0
 # One step: binary plus agent service and control helper for an instance (--register).
 "$INSTALL" --binary "$FAKE" --register iran --agent-listen 127.0.0.1:18085 --destdir "$STAGE" >/dev/null
-for v in start stop enable disable setup pki pair fleet manage; do
+for v in start stop enable disable setup pki pair fleet; do
   [[ -f "$STAGE/etc/systemd/system/baft-tunnel-control-$v@.path" && -f "$STAGE/etc/systemd/system/baft-tunnel-control-$v@.service" ]]
 done
+[[ -f "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.socket" && -f "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.service" ]]
+[[ ! -e "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.path" ]]
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel setup helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-setup@.service"
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel setup pki-helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"
 grep -qx 'PathExists=/run/baft-tunnel/control/%i.pki' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.path"
@@ -129,7 +131,14 @@ grep -qx 'TimeoutStartSec=60s' "$STAGE/etc/systemd/system/baft-tunnel-control-pk
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel fleet helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-fleet@.service"
 grep -qx 'PathExists=/run/baft-tunnel/control/%i.fleet' "$STAGE/etc/systemd/system/baft-tunnel-control-fleet@.path"
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel setup manage-helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.service"
-grep -qx 'PathExists=/run/baft-tunnel/control/%i.manage' "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.path"
+grep -qx 'ListenStream=/run/baft-tunnel/manage/%i.manage.sock' "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.socket"
+grep -qx 'Accept=no' "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.socket"
+grep -qx 'SocketGroup=baft-tunnel-agent' "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.socket"
+grep -qx 'SocketMode=0660' "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.socket"
+grep -qx 'FileDescriptorName=manage' "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.socket"
+grep -qx 'CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE' "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.service"
+grep -qx 'ProtectControlGroups=true' "$STAGE/etc/systemd/system/baft-tunnel-control-manage@.service"
+grep -qx 'd /run/baft-tunnel/manage 0755 root root -' "$STAGE/etc/tmpfiles.d/baft-tunnel-control.conf"
 grep -qx 'ExecStart=/usr/local/bin/baft-tunnel pair helper --instance %i' "$STAGE/etc/systemd/system/baft-tunnel-control-pair@.service"
 grep -qx 'PathExists=/run/baft-tunnel/control/%i.pair' "$STAGE/etc/systemd/system/baft-tunnel-control-pair@.path"
 grep -qx 'ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control /run/baft-tunnel/control' "$STAGE/etc/systemd/system/baft-tunnel-control-pki@.service"

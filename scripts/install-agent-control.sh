@@ -3,10 +3,10 @@
 #   - the agent service baft-tunnel-agent@NAME (its own user baft-tunnel-agent, loopback only),
 #     running from registration on (setup mode until /etc/baft-tunnel/NAME.json exists), and at boot;
 #   - the API token /var/lib/baft-tunnel-agent/token (created once, mode 0600, never printed);
-#   - the control helper: root path units that turn a request file into one fixed command for
-#     exactly baft-tunnel@NAME (start, stop, enable --now, disable --now), and the root setup
-#     helper (ADR-0026) that runs setup init/join and bounded PKI CSR/import operations (ADR-0027) for NAME
-#     in /etc/baft-tunnel only. No polkit, no sudo.
+#   - the control helpers: root path units for fixed lifecycle/setup/PKI/pair/fleet commands, plus
+#     a per-instance systemd Unix socket for destructive manage operations (ADR-0055). The manage
+#     helper authenticates SO_PEERCRED and the exact agent cgroup before touching root-owned files.
+#     No polkit, no sudo.
 #   install-agent-control.sh --instance NAME [--listen 127.0.0.1:PORT] [--destdir ROOT]
 #   install-agent-control.sh --remove --instance NAME [--destdir ROOT]
 #   install-agent-control.sh --upgrade-boundary [--destdir ROOT]
@@ -48,9 +48,13 @@ fi
 UNIT_DIR="$ROOT_PREFIX/etc/systemd/system"
 TMPF="$ROOT_PREFIX/etc/tmpfiles.d/baft-tunnel-control.conf"
 STATE="$ROOT_PREFIX/var/lib/baft-tunnel-agent"
-VERBS=(start stop enable disable setup pki pair fleet manage)
+VERBS=(start stop enable disable setup pki pair fleet)
 FILES=(); for v in "${VERBS[@]}"; do FILES+=("baft-tunnel-control-$v@.path" "baft-tunnel-control-$v@.service"); done
+FILES+=("baft-tunnel-control-manage@.socket" "baft-tunnel-control-manage@.service")
 CTL_PATHS=(); for v in "${VERBS[@]}"; do CTL_PATHS+=("baft-tunnel-control-$v@$INSTANCE.path"); done
+CTL_SOCKET="baft-tunnel-control-manage@$INSTANCE.socket"
+CTL_SERVICE="baft-tunnel-control-manage@$INSTANCE.service"
+LEGACY_MANAGE_PATH="baft-tunnel-control-manage@$INSTANCE.path"
 AGENT_UNITS=("baft-tunnel-agent@$INSTANCE.path" "baft-tunnel-agent@$INSTANCE.service")
 DROPIN_DIR="$UNIT_DIR/baft-tunnel-agent@$INSTANCE.service.d"
 CONTROL_DIR=/run/baft-tunnel/control
@@ -59,7 +63,59 @@ install_templates() {
   install -d -m 0755 "$UNIT_DIR" "$(dirname "$TMPF")"
   for f in "${FILES[@]}"; do install -m 0644 "$SRC/$f" "$UNIT_DIR/$f"; done
   for f in baft-tunnel-agent@.service baft-tunnel-agent@.path; do install -m 0644 "$AGENT_SRC/$f" "$UNIT_DIR/$f"; done
+  # Retire the old shared-directory manage path unit; the new socket is root-owned and
+  # its peer must prove membership in the exact agent@INSTANCE cgroup.
+  rm -f "$UNIT_DIR/baft-tunnel-control-manage@.path"
   install -m 0644 "$SRC/baft-tunnel-control.conf" "$TMPF"
+}
+retire_legacy_manage_for_instance() {
+  local name=$1 unit="baft-tunnel-control-manage@$1.path" service="baft-tunnel-control-manage@$1.service"
+  if [[ "$STAGING" == "0" ]]; then
+    [[ ! -e "$CONTROL_DIR/$name.manage" && ! -L "$CONTROL_DIR/$name.manage" ]] ||
+      die "legacy manage request for $name is pending; inspect it as root before upgrading"
+    if systemctl is-active --quiet "$service"; then
+      die "legacy manage helper for $name is active; retry after it finishes"
+    fi
+    systemctl disable --now "$unit" >/dev/null 2>&1 || true
+    systemctl is-active --quiet "$unit" && die "legacy manage path unit for $name could not be stopped"
+  fi
+  rm -f "$UNIT_DIR/$unit" "$UNIT_DIR/multi-user.target.wants/$unit"
+}
+retire_all_legacy_manage_paths() {
+  local link unit name listed existing found
+  local -a names=()
+  if [[ "$STAGING" == "0" ]]; then
+    for link in "$UNIT_DIR/multi-user.target.wants"/baft-tunnel-control-manage@*.path; do
+      [[ -e "$link" || -L "$link" ]] || continue
+      unit="${link##*/}"; name="${unit#baft-tunnel-control-manage@}"; name="${name%.path}"
+      [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$ ]] || die "invalid legacy manage unit name: $unit"
+      found=0; for existing in "${names[@]}"; do [[ "$existing" == "$name" ]] && found=1; done
+      (( found )) || names+=("$name")
+    done
+    listed="$(systemctl list-units --type=path --all --no-legend --plain 'baft-tunnel-control-manage@*.path')" ||
+      die "could not enumerate legacy manage path units; refusing upgrade"
+    while IFS= read -r unit; do
+      [[ -n "$unit" ]] || continue
+      name="${unit#baft-tunnel-control-manage@}"; name="${name%.path}"
+      [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$ ]] || die "invalid active legacy manage unit name: $unit"
+      found=0; for existing in "${names[@]}"; do [[ "$existing" == "$name" ]] && found=1; done
+      (( found )) || names+=("$name")
+    done < <(printf '%s\n' "$listed" | awk 'NF { print $1 }')
+    for name in "${names[@]}"; do retire_legacy_manage_for_instance "$name"; done
+  else
+    rm -f "$UNIT_DIR/baft-tunnel-control-manage@.path"
+    rm -f "$UNIT_DIR/multi-user.target.wants"/baft-tunnel-control-manage@*.path
+  fi
+  rm -f "$UNIT_DIR/baft-tunnel-control-manage@.path"
+}
+enable_manage_sockets_for_registered_agents() {
+  local link unit name
+  for link in "$UNIT_DIR/multi-user.target.wants"/baft-tunnel-agent@*.service; do
+    [[ -e "$link" || -L "$link" ]] || continue
+    unit="${link##*/}"; name="${unit#baft-tunnel-agent@}"; name="${name%.service}"
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$ ]] || die "invalid registered agent unit name: $unit"
+    systemctl enable --now "baft-tunnel-control-manage@$name.socket"
+  done
 }
 # Enforce the request-group boundary and migrate the request directory if needed (fail-closed).
 enforce_control_boundary() {
@@ -88,26 +144,34 @@ if (( UPGRADE )); then
     id "$AGENT_USER" >/dev/null 2>&1 ||
       die "agent control is installed but account $AGENT_USER is missing; re-run install-agent-control.sh --instance NAME"
   fi
+  retire_all_legacy_manage_paths
   install_templates
   if [[ "$STAGING" == "1" ]]; then
     echo "CONTROL_BOUNDARY=staged-not-verified"
     exit 0
   fi
   enforce_control_boundary
+  enable_manage_sockets_for_registered_agents
   echo "CONTROL_BOUNDARY=root:baft-tunnel-agent-0770"
   exit 0
 fi
 if [[ "$REMOVE" == "1" ]]; then
+  retire_legacy_manage_for_instance "$INSTANCE"
   if [[ "$STAGING" == "0" ]]; then
-    systemctl disable --now "${AGENT_UNITS[@]}" "${CTL_PATHS[@]}" 2>/dev/null || true
+    if systemctl is-active --quiet "$CTL_SERVICE"; then
+      die "manage helper for $INSTANCE is active; retry removal after it finishes"
+    fi
+    systemctl disable --now "${AGENT_UNITS[@]}" "${CTL_PATHS[@]}" "$CTL_SOCKET" "$CTL_SERVICE" 2>/dev/null || true
   fi
   for u in "${AGENT_UNITS[@]}" "${CTL_PATHS[@]}"; do rm -f "$UNIT_DIR/multi-user.target.wants/$u"; done
+  rm -f "$UNIT_DIR/sockets.target.wants/$CTL_SOCKET" "$UNIT_DIR/multi-user.target.wants/$LEGACY_MANAGE_PATH"
   rm -f "$DROPIN_DIR/listen.conf"; rmdir "$DROPIN_DIR" 2>/dev/null || true
   [[ "$STAGING" == "1" ]] || systemctl daemon-reload
-  echo "Removed the agent and control path units for $INSTANCE. Templates, the token and agent state are kept for other instances."
+  echo "Removed the agent, lifecycle path units and manage socket for $INSTANCE. Templates, the token and agent state are kept for other instances."
   exit 0
 fi
 
+retire_all_legacy_manage_paths
 install_templates
 if [[ -n "$LISTEN" ]]; then
   install -d -m 0755 "$DROPIN_DIR"
@@ -131,6 +195,8 @@ if [[ "$STAGING" == "0" ]]; then
   [[ "$(stat -c '%U %a' "$STATE/token")" == "$AGENT_USER 600" ]] || die "$STATE/token must be $AGENT_USER, mode 0600"
   enforce_control_boundary
   systemctl enable --now "${CTL_PATHS[@]}"
+  enable_manage_sockets_for_registered_agents
+  systemctl enable --now "$CTL_SOCKET"
   # The agent starts now: in setup mode (panel pairing) until NAME.json exists, then normally.
   systemctl enable --now "baft-tunnel-agent@$INSTANCE.path"
   if ! systemctl enable --now "baft-tunnel-agent@$INSTANCE.service" >/dev/null 2>&1; then
@@ -146,8 +212,8 @@ echo "Registered instance $INSTANCE with the local agent."
 echo "  agent:  baft-tunnel-agent@$INSTANCE (user $AGENT_USER), running now and at boot (setup mode until /etc/baft-tunnel/$INSTANCE.json exists)"
 echo "  panel:  http://${LISTEN:-127.0.0.1:18080}/ (loopback; from another machine: ssh -L 18080:127.0.0.1:18080 HOST)"
 echo "  token:  /var/lib/baft-tunnel-agent/token (read it as root: sudo cat ...; never share it)"
-echo "  helper: the agent can request start, stop, enable --now and disable --now of baft-tunnel@$INSTANCE only,"
-echo "          setup init/join and bounded PKI CSR/certificate import for $INSTANCE in /etc/baft-tunnel (panel enrollment)."
+echo "  helper: lifecycle/setup/PKI requests use the existing fixed path units; remove/edit use a root-owned Unix socket"
+echo "          and verify the connecting PID belongs to baft-tunnel-agent@$INSTANCE.service before changing files."
 echo "The tunnel itself was not started."
 if [[ "$STAGING" == "0" ]] && systemctl is-active --quiet "baft-tunnel@$INSTANCE.service"; then
   echo "  note: the tunnel is already active; restart it once to enable integrity probes."

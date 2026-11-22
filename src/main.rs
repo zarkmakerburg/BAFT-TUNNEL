@@ -386,8 +386,8 @@ enum SetupCommand {
         #[arg(long)]
         instance: String,
     },
-    /// Root-only tunnel helper (ADR-0055), run by `baft-tunnel-control-manage@NAME.service`:
-    /// remove or edit (peer addresses only) the one instance NAME. Not for interactive use.
+    /// Root-only tunnel helper (ADR-0055), socket-activated for one manage request from instance NAME.
+    /// It verifies SO_PEERCRED and the exact agent systemd cgroup before changing files.
     #[command(hide = true)]
     ManageHelper {
         #[arg(long)]
@@ -726,10 +726,10 @@ async fn run() -> Result<()> {
             if unsafe { libc::geteuid() } != 0 {
                 bail!("the tunnel helper runs as root from its systemd unit only");
             }
-            let receipt = tunnel_helper::run(
+            let receipt = tunnel_helper::serve(
                 &instance,
                 &tunnel_helper::Dirs {
-                    control: std::path::Path::new(apply::CONTROL_DIR),
+                    control: std::path::Path::new(tunnel_helper::SOCKET_DIR),
                     config: std::path::Path::new("/etc/baft-tunnel"),
                     backups: std::path::Path::new(tunnel_helper::BACKUP_ROOT),
                     run: std::path::Path::new(tunnel_helper::RUN_ROOT),

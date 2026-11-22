@@ -2598,7 +2598,7 @@ struct ManageBody {
 
 /// Key for a lifecycle step inside a remove/edit (same character rules, at most 64).
 fn sub_key(key: &str, step: &str) -> String {
-    format!("{}-{step}", &key[..key.len().min(54)])
+    hex::encode(Sha256::digest(format!("{key}\0{step}").as_bytes()))
 }
 
 /// Remove or edit the instance this agent is bound to (ADR-0055). The agent decides the order
@@ -6082,6 +6082,25 @@ mod tests {
         let audit = std::fs::read_to_string(dir.join(AUDIT_FILE)).unwrap();
         assert!(audit.contains("\"resource\":\"tunnel/stop\""), "{audit}");
         assert!(!audit.contains(TOKEN));
+    }
+
+    #[test]
+    fn manage_subkeys_hash_the_full_idempotency_key_and_step() {
+        let key_a = format!("{}{}", "a".repeat(54), "A".repeat(10));
+        let key_b = format!("{}{}", "a".repeat(54), "B".repeat(10));
+        let a_stop = super::sub_key(&key_a, "stop");
+        let b_stop = super::sub_key(&key_b, "stop");
+        assert_eq!(a_stop.len(), 64);
+        assert_eq!(b_stop.len(), 64);
+        assert_ne!(
+            a_stop, b_stop,
+            "different full caller keys must not collide"
+        );
+        assert_ne!(
+            a_stop,
+            super::sub_key(&key_a, "start"),
+            "different lifecycle steps must not collide"
+        );
     }
 
     struct ManageFake(crate::tunnel_helper::tests::Env);

@@ -48,3 +48,13 @@ started at all, so the panel could not help before the configuration existed.
 - Evidence: unit tests (`setup_helper`, agent pairing through the in-process helper), `scripts/pki/test-panel-pairing.sh`
   on real systemd in CI (tamper, symlink, oversize and scope refusals, planted result link), `scripts/panel-qa/panel-pairing.js`
   (fa/en). Two-host LAB run that sets up both nodes through the agent API only: run 42779915532 PASS (main `4887a72`, 2026-11-10).
+
+
+## Security boundary note (2026-11-22)
+
+The setup helper remains file-request based under the shared `baft-tunnel-agent` account and
+`/run/baft-tunnel/control`. Its fixed operation/schema checks and refusal to overwrite existing config are safeguards,
+but the request channel does not authenticate which agent instance created the request. A peer with the shared agent
+UID can address another instance's setup request path. ADR-0055's new socket/cgroup authorization applies only to
+remove/edit/revert and does not close this inherited setup-helper boundary. Track the broader file-helper authorization
+model separately; do not describe ADR-0026 as per-instance authenticated.

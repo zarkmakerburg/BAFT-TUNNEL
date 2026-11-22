@@ -61,13 +61,15 @@ if [[ "$STAGING" == "0" ]]; then
   if (("${#ctl[@]}" > 0)); then systemctl disable --now "${ctl[@]}" 2>/dev/null || systemctl stop "${ctl[@]}" 2>/dev/null || true; fi
 fi
 rm -f "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel-control-*.path \
+  "$ROOT_PREFIX"/etc/systemd/system/sockets.target.wants/baft-tunnel-control-manage@*.socket \
   "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@*.path \
   "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@*.service \
   "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel@*.service \
   "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-*@.path "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-*@.service \
+    "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-control-*@.socket \
   "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-agent@.path "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-agent@.service \
   "$ROOT_PREFIX/etc/tmpfiles.d/baft-tunnel-control.conf"
-rm -rf "$ROOT_PREFIX/run/baft-tunnel/control"
+rm -rf "$ROOT_PREFIX/run/baft-tunnel/control" "$ROOT_PREFIX/run/baft-tunnel/manage"
 # Agent listen drop-ins written by install-agent-control.sh (no secrets, no operator content).
 shopt -s nullglob
 for dropin in "$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-agent@*.service.d/listen.conf; do

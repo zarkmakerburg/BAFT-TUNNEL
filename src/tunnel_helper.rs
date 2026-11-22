@@ -1,8 +1,8 @@
 //! Root tunnel management helper (ADR-0055): remove or edit the one instance an agent is bound to.
 //!
-//! The agent writes `CONTROL_DIR/NAME.manage` (`op`, idempotency `key`, and for `edit` only the
-//! new peer addresses). The root path unit `baft-tunnel-control-manage@NAME.path` runs exactly
-//! `baft-tunnel setup manage-helper --instance NAME`, which reads and removes the request and:
+//! The agent connects to the per-instance root-owned Unix socket. The socket-activated
+//! `baft-tunnel-control-manage@NAME.service` authenticates kernel peer credentials and the exact
+//! agent systemd cgroup before accepting one bounded JSON request and applying it:
 //!
 //! - `remove`: refuses while `/run/baft-tunnel/NAME` exists (the unit is running), then moves
 //!   `NAME.json` and, only when `pairing-state.json` names `NAME.json`, the pairing files and the
@@ -15,26 +15,32 @@
 //!   never overwrites a file that a remove backup would restore.
 //!
 //! The agent never sends file contents or paths. A failure part-way restores what was moved. The
-//! receipt (`NAME.manage-result`, root:baft-tunnel 0640) lists file names only, never contents.
+//! socket receipt lists file names only, never contents.
 
+use std::ffi::CString;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-pub const REQUEST_SUFFIX: &str = "manage";
-pub const RESULT_SUFFIX: &str = "manage-result";
+pub const SOCKET_DIR: &str = "/run/baft-tunnel/manage";
+pub const SOCKET_SUFFIX: &str = "manage.sock";
+#[cfg(test)]
+const REQUEST_SUFFIX: &str = "manage";
 pub const BACKUP_ROOT: &str = "/var/lib/baft-tunnel-control/tunnel-backups";
 pub const RUN_ROOT: &str = "/run/baft-tunnel";
 const MAX_FILE_BYTES: u64 = 64 * 1024;
 const MANIFEST: &str = "manifest.json";
 /// Backups kept per instance; older ones are deleted after a successful operation.
 const KEEP_BACKUPS: usize = 3;
-/// Longer than the unit's `TimeoutStartSec=30s`, so a slow helper is not reported as unanswered.
+/// Shorter than the root helper unit's `TimeoutStartSec=50s`, leaving time to report a timeout.
 pub const WAIT: Duration = Duration::from_secs(40);
 /// Files that belong to an instance only when `pairing-state.json` names its config file.
 const PAIRING_FILES: [&str; 4] = [
@@ -492,92 +498,302 @@ fn op_revert(name: &str, d: &Dirs<'_>, backup: &Path) -> Result<Vec<String>> {
     Ok(files)
 }
 
-fn write_result(control_dir: &Path, name: &str, receipt: &Value) -> Result<()> {
-    let path = control_dir.join(format!("{name}.{RESULT_SUFFIX}"));
-    let tmp = control_dir.join(format!(".{name}.{RESULT_SUFFIX}.tmp"));
-    for p in [&path, &tmp] {
-        match std::fs::remove_file(p) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).with_context(|| format!("remove {}", p.display())),
-        }
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&tmp)?;
-    file.write_all(receipt.to_string().as_bytes())?;
-    file.sync_all()?;
-    if is_root() {
-        if let Some((_, gid)) = crate::setup::service_ids() {
-            std::os::unix::fs::fchown(&file, None, Some(gid))?;
-        }
-    }
-    file.set_permissions(std::fs::Permissions::from_mode(0o640))?;
-    drop(file);
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PeerIdentity {
+    pid: i32,
+    uid: u32,
+    gid: u32,
 }
 
-/// One helper run for `name` (the fixed command of `baft-tunnel-control-manage@NAME.service`).
-pub fn run(name: &str, d: &Dirs<'_>) -> Result<Value> {
+/// The root helper accepts only the dedicated agent account, then binds that peer to the exact
+/// systemd instance cgroup. The UID alone is deliberately insufficient: all agents currently
+/// share this account for compatibility with ADR-0023/0026.
+fn authorize_peer(
+    name: &str,
+    peer: PeerIdentity,
+    expected_uid: u32,
+    expected_gid: u32,
+    cgroup: &str,
+) -> Result<()> {
     if !crate::apply::valid_instance(name) {
         bail!("invalid instance name");
     }
-    let request_path = d.control.join(format!("{name}.{REQUEST_SUFFIX}"));
-    let bytes = read_bounded(&request_path);
-    // Consumed whatever happens, so a bad file cannot re-trigger the unit.
-    let _ = std::fs::remove_file(&request_path);
-    let parsed = bytes.and_then(|b| {
-        let r: Request = serde_json::from_slice(&b).context("the manage request is not valid")?;
-        if !crate::apply::valid_key(&r.key) {
-            bail!("invalid idempotency key");
-        }
-        if r.op != Op::Edit && (r.peer_host.is_some() || r.backup_peer_hosts.is_some()) {
-            bail!("only edit takes peer addresses");
-        }
-        Ok(r)
+    if peer.pid <= 0 {
+        bail!("peer PID is invalid");
+    }
+    if peer.uid != expected_uid || peer.gid != expected_gid {
+        bail!("peer UID/GID is not the dedicated BAFT-TUNNEL agent account");
+    }
+    let expected = format!("/system.slice/baft-tunnel-agent@{name}.service");
+    let belongs_to_instance = cgroup.lines().any(|line| {
+        let mut fields = line.splitn(3, ':');
+        let hierarchy = fields.next().unwrap_or_default();
+        let controllers = fields.next().unwrap_or_default();
+        let path = fields.next().unwrap_or_default();
+        let systemd_hierarchy = (hierarchy == "0" && controllers.is_empty())
+            || controllers
+                .split(',')
+                .any(|controller| controller == "name=systemd");
+        systemd_hierarchy && path == expected
     });
-    let receipt = match parsed {
-        Err(e) => json!({"receipt_version": 1, "id": null, "result": "refused",
-            "reason": format!("{e:#}"), "files": [], "source": "root tunnel helper"}),
-        Ok(req) => {
-            let instance_dir = d.backups.join(name);
-            let backup = instance_dir.join(&req.key);
-            let out = private_dir(d.backups)
-                .and_then(|()| private_dir(&instance_dir))
-                .and_then(|()| match req.op {
-                    Op::Remove => op_remove(name, &req.key, d, &backup),
-                    Op::Edit => op_edit(name, &req.key, &req, d, &backup),
-                    Op::Revert => op_revert(name, d, &backup),
-                });
-            match out {
-                Ok(files) => {
-                    if req.op != Op::Revert {
-                        prune(&instance_dir, &backup);
-                    }
-                    json!({"receipt_version": 1, "id": req.key, "op": req.op.as_str(),
-                        "result": "applied", "files": files,
-                        "backup": if req.op == Op::Revert { Value::Null } else { json!(backup.to_string_lossy()) },
-                        "source": "root tunnel helper"})
-                }
-                Err(e) => json!({"receipt_version": 1, "id": req.key, "op": req.op.as_str(),
-                    "result": "refused", "reason": format!("{e:#}"), "files": [],
-                    "source": "root tunnel helper"}),
-            }
-        }
+    if !belongs_to_instance {
+        bail!("peer is not running inside baft-tunnel-agent@{name}.service");
+    }
+    Ok(())
+}
+
+fn expected_agent_ids() -> Result<(u32, u32)> {
+    let name = CString::new("baft-tunnel-agent").expect("static account name has no NUL");
+    // SAFETY: getpwnam reads the process account database; the returned static entry is copied
+    // immediately and this helper handles one accepted connection at a time.
+    let entry = unsafe { libc::getpwnam(name.as_ptr()) };
+    if entry.is_null() {
+        bail!("the dedicated baft-tunnel-agent account does not exist");
+    }
+    // SAFETY: entry was checked non-null above.
+    let uid = unsafe { (*entry).pw_uid as u32 };
+    // SAFETY: same checked passwd entry.
+    let gid = unsafe { (*entry).pw_gid as u32 };
+    Ok((uid, gid))
+}
+
+fn peer_cgroup(pid: i32) -> Result<String> {
+    if pid <= 0 {
+        bail!("peer PID is invalid");
+    }
+    let path = PathBuf::from(format!("/proc/{pid}/cgroup"));
+    std::fs::read_to_string(&path).with_context(|| {
+        format!(
+            "cannot verify the connecting agent's cgroup ({})",
+            path.display()
+        )
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn peer_credentials(stream: &UnixStream) -> Result<PeerIdentity> {
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: credentials and length point to writable storage of the sizes required by
+    // SO_PEERCRED; stream owns a live AF_UNIX socket.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut length,
+        )
     };
-    let mut receipt = receipt;
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).context("read Unix peer credentials");
+    }
+    if length as usize != std::mem::size_of::<libc::ucred>() {
+        bail!("kernel returned an unexpected SO_PEERCRED size");
+    }
+    Ok(PeerIdentity {
+        pid: credentials.pid,
+        uid: credentials.uid,
+        gid: credentials.gid,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn peer_credentials(_stream: &UnixStream) -> Result<PeerIdentity> {
+    bail!("the privileged manage socket requires Linux SO_PEERCRED")
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_listener(expected_path: &Path) -> Result<UnixListener> {
+    let listen_pid =
+        std::env::var("LISTEN_PID").context("LISTEN_PID is missing (not socket-activated)")?;
+    if listen_pid.parse::<u32>().ok() != Some(std::process::id()) {
+        bail!("LISTEN_PID does not identify this helper process");
+    }
+    if std::env::var("LISTEN_FDS").ok().as_deref() != Some("1") {
+        bail!("expected exactly one systemd listening file descriptor");
+    }
+    if std::env::var("LISTEN_FDNAMES").ok().as_deref() != Some("manage") {
+        bail!("the systemd socket descriptor is not named manage");
+    }
+    // SAFETY: systemd passes the sole listening socket as fd 3 when LISTEN_FDS=1. Ownership is
+    // transferred to UnixListener, which closes it on drop. The checks above bind it to this unit.
+    let listener = unsafe { UnixListener::from_raw_fd(3) };
+    let actual_path = listener.local_addr()?.as_pathname().map(PathBuf::as_path);
+    if actual_path != Some(expected_path) {
+        bail!("systemd passed a socket for an unexpected instance path");
+    }
+    let mut accepting: libc::c_int = 0;
+    let mut length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: accepting and length are writable and fd 3 is the inherited socket.
+    let rc = unsafe {
+        libc::getsockopt(
+            listener.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_ACCEPTCONN,
+            (&mut accepting as *mut libc::c_int).cast(),
+            &mut length,
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).context("verify systemd listening socket");
+    }
+    if accepting != 1 {
+        bail!("systemd passed a connected socket instead of a listening socket");
+    }
+    Ok(listener)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn systemd_listener(_expected_path: &Path) -> Result<UnixListener> {
+    bail!("the privileged manage socket requires Linux systemd socket activation")
+}
+
+fn read_stream_bounded(stream: &mut UnixStream) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    stream
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .context("read manage request from Unix socket")?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        bail!("manage request is larger than {MAX_FILE_BYTES} bytes");
+    }
+    Ok(bytes)
+}
+
+fn refused_receipt(reason: String, request: Option<&Request>) -> Value {
+    let mut receipt = json!({
+        "receipt_version": 1,
+        "id": request.map(|r| r.key.clone()),
+        "result": "refused",
+        "reason": reason,
+        "files": [],
+        "source": "root tunnel helper"
+    });
+    if let Some(request) = request {
+        receipt["op"] = json!(request.op.as_str());
+    }
     receipt["secrets"] =
         json!("none recorded: file names only; key material and file contents never leave root");
-    write_result(d.control, name, &receipt)?;
+    receipt
+}
+
+fn process_request(name: &str, req: &Request, d: &Dirs<'_>) -> Value {
+    let instance_dir = d.backups.join(name);
+    let backup = instance_dir.join(&req.key);
+    let out = private_dir(d.backups)
+        .and_then(|()| private_dir(&instance_dir))
+        .and_then(|()| match req.op {
+            Op::Remove => op_remove(name, &req.key, d, &backup),
+            Op::Edit => op_edit(name, &req.key, req, d, &backup),
+            Op::Revert => op_revert(name, d, &backup),
+        });
+    match out {
+        Ok(files) => {
+            if req.op != Op::Revert {
+                prune(&instance_dir, &backup);
+            }
+            json!({"receipt_version": 1, "id": req.key, "op": req.op.as_str(),
+                "result": "applied", "files": files,
+                "backup": if req.op == Op::Revert { Value::Null } else { json!(backup.to_string_lossy()) },
+                "source": "root tunnel helper",
+                "secrets": "none recorded: file names only; key material and file contents never leave root"})
+        }
+        Err(error) => refused_receipt(format!("{error:#}"), Some(req)),
+    }
+}
+
+/// The same authorization function is used by the socket server and the adversarial tests.
+fn handle_request(
+    name: &str,
+    bytes: &[u8],
+    d: &Dirs<'_>,
+    peer: PeerIdentity,
+    auth: Result<((u32, u32), String)>,
+) -> Value {
+    if !crate::apply::valid_instance(name) {
+        return refused_receipt("invalid instance name".into(), None);
+    }
+    let request: Request = match serde_json::from_slice(bytes) {
+        Ok(request) => request,
+        Err(error) => {
+            return refused_receipt(format!("the manage request is not valid: {error}"), None);
+        }
+    };
+    if !crate::apply::valid_key(&request.key) {
+        return refused_receipt("invalid idempotency key".into(), Some(&request));
+    }
+    if request.op != Op::Edit
+        && (request.peer_host.is_some() || request.backup_peer_hosts.is_some())
+    {
+        return refused_receipt("only edit takes peer addresses".into(), Some(&request));
+    }
+    let ((expected_uid, expected_gid), cgroup) = match auth {
+        Ok(auth) => auth,
+        Err(error) => {
+            return refused_receipt(
+                format!("requester identity could not be verified: {error:#}"),
+                Some(&request),
+            );
+        }
+    };
+    if let Err(error) = authorize_peer(name, peer, expected_uid, expected_gid, &cgroup) {
+        return refused_receipt(
+            format!("unauthorized manage request: {error:#}"),
+            Some(&request),
+        );
+    }
+    process_request(name, &request, d)
+}
+
+/// Socket-activated root helper. systemd passes one listening AF_UNIX socket as fd 3; this helper
+/// accepts exactly one connection, authenticates SO_PEERCRED + the caller's exact agent cgroup,
+/// processes one bounded request, responds on that connection, then exits. The socket unit stays
+/// active and activates a fresh oneshot helper for the next request.
+pub fn serve(name: &str, d: &Dirs<'_>) -> Result<Value> {
+    if !crate::apply::valid_instance(name) {
+        bail!("invalid instance name");
+    }
+    let socket_path = d.control.join(format!("{name}.{SOCKET_SUFFIX}"));
+    let listener = systemd_listener(&socket_path)?;
+    let (mut stream, _) = listener
+        .accept()
+        .context("accept manage socket connection")?;
+    stream.set_read_timeout(Some(WAIT))?;
+    stream.set_write_timeout(Some(WAIT))?;
+    let peer = peer_credentials(&stream)?;
+    let auth = expected_agent_ids()
+        .and_then(|ids| peer_cgroup(peer.pid).map(|cgroup| (ids, cgroup)))
+        .and_then(|((uid, gid), cgroup)| {
+            authorize_peer(name, peer, uid, gid, &cgroup).map(|()| ((uid, gid), cgroup))
+        });
+    // Authenticate the exact instance before reading any client-controlled bytes. An agent from
+    // another instance must not be able to hold this root helper open by connecting and
+    // withholding its request.
+    let receipt = match auth {
+        Ok(((uid, gid), cgroup_before)) => {
+            let bytes = read_stream_bounded(&mut stream)?;
+            // Re-read the kernel cgroup after the complete request. If the peer exited and its
+            // PID was recycled while the request was in flight, a changed/missing cgroup fails
+            // closed instead of authorizing the replacement process.
+            let auth_after = peer_cgroup(peer.pid).and_then(|cgroup_after| {
+                if cgroup_after != cgroup_before {
+                    bail!("peer cgroup changed while the request was in flight");
+                }
+                Ok(((uid, gid), cgroup_after))
+            });
+            handle_request(name, &bytes, d, peer, auth_after)
+        }
+        Err(error) => refused_receipt(format!("unauthorized manage request: {error:#}"), None),
+    };
+    stream
+        .write_all(receipt.to_string().as_bytes())
+        .context("write manage socket receipt")?;
+    stream.flush().context("flush manage socket receipt")?;
     Ok(receipt)
 }
 
-/// Agent side: how a manage request reaches root. Tests use a fake that runs in-process.
-/// Prefix of a submit error after which the helper may or may not have acted.
+/// Agent-side interface. Tests use an in-process helper; production always uses the UDS client.
 pub const UNKNOWN_OUTCOME: &str = "outcome unknown";
 
 pub trait ManageHelper {
@@ -585,13 +801,13 @@ pub trait ManageHelper {
 }
 
 pub struct SystemManageHelper {
-    pub control_dir: PathBuf,
+    pub socket_dir: PathBuf,
 }
 
 impl Default for SystemManageHelper {
     fn default() -> Self {
         Self {
-            control_dir: PathBuf::from(crate::apply::CONTROL_DIR),
+            socket_dir: PathBuf::from(SOCKET_DIR),
         }
     }
 }
@@ -601,65 +817,85 @@ impl ManageHelper for SystemManageHelper {
         if !crate::apply::valid_instance(name) {
             return Err("invalid instance".into());
         }
-        let unit = Path::new("/etc/systemd/system/baft-tunnel-control-manage@.service");
-        if !self.control_dir.is_dir() || !unit.is_file() {
+        let unit = Path::new("/etc/systemd/system/baft-tunnel-control-manage@.socket");
+        let socket = self.socket_dir.join(format!("{name}.{SOCKET_SUFFIX}"));
+        let socket_is_real = std::fs::symlink_metadata(&socket)
+            .map(|meta| meta.file_type().is_socket())
+            .unwrap_or(false);
+        if !self.socket_dir.is_dir() || !unit.is_file() || !socket_is_real {
             return Err(format!(
-                "the root tunnel helper is not installed; run sudo scripts/install-agent-control.sh --instance {name}"
+                "the root manage socket is not installed or active; run sudo scripts/install-agent-control.sh --instance {name}"
             ));
         }
-        submit_in(&self.control_dir, name, request, WAIT)
+        submit_in(&self.socket_dir, name, request, WAIT)
     }
 }
 
-/// Write the request and wait for the result in `control_dir`.
+/// Send one bounded request to the instance-specific systemd socket and read its receipt.
 pub fn submit_in(
-    control_dir: &Path,
+    socket_dir: &Path,
     name: &str,
     request: &Request,
     wait: Duration,
 ) -> Result<Value, String> {
-    let req_path = control_dir.join(format!("{name}.{REQUEST_SUFFIX}"));
-    let res_path = control_dir.join(format!("{name}.{RESULT_SUFFIX}"));
-    let _ = std::fs::remove_file(&res_path);
-    let body = serde_json::to_vec(request).map_err(|e| e.to_string())?;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o660)
-        .open(&req_path)
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                "another tunnel request for this instance is still pending".to_string()
-            } else {
-                format!("cannot write the tunnel request: {e}")
-            }
+    let socket_path = socket_dir.join(format!("{name}.{SOCKET_SUFFIX}"));
+    let mut stream = UnixStream::connect(&socket_path)
+        .map_err(|error| format!("cannot connect to the root manage socket: {error}"))?;
+    stream
+        .set_write_timeout(Some(wait))
+        .map_err(|error| format!("cannot set manage socket write timeout: {error}"))?;
+    stream
+        .set_read_timeout(Some(wait))
+        .map_err(|error| format!("cannot set manage socket read timeout: {error}"))?;
+    let body = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+    stream
+        .write_all(&body)
+        .map_err(|error| format!("{UNKNOWN_OUTCOME}: cannot send the manage request: {error}"))?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .map_err(|error| format!("{UNKNOWN_OUTCOME}: cannot finish the manage request: {error}"))?;
+    let mut bytes = Vec::new();
+    stream
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            format!("{UNKNOWN_OUTCOME}: root manage helper did not answer: {error}")
         })?;
-    file.write_all(&body)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| format!("cannot write the tunnel request: {e}"))?;
-    drop(file);
-    let started = Instant::now();
-    while started.elapsed() < wait {
-        std::thread::sleep(Duration::from_millis(200));
-        if std::fs::symlink_metadata(&res_path).is_err() {
-            continue;
-        }
-        let bytes = read_bounded(&res_path).map_err(|e| format!("{e:#}"))?;
-        let _ = std::fs::remove_file(&res_path);
-        let v: Value = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("the tunnel helper's result is not valid JSON: {e}"))?;
-        // A parse refusal has no id; anything else must answer this request.
-        let ours = (v["id"] == json!(request.key) && v["op"] == json!(request.op.as_str()))
-            || (v["id"].is_null() && v["result"] == "refused");
-        if !ours {
-            return Err(UNKNOWN_OUTCOME.into());
-        }
-        return Ok(v);
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(format!(
+            "{UNKNOWN_OUTCOME}: helper receipt exceeded {MAX_FILE_BYTES} bytes"
+        ));
     }
-    let _ = std::fs::remove_file(&req_path);
-    Err(format!(
-        "{UNKNOWN_OUTCOME}: the root tunnel helper did not answer within {} s; check baft-tunnel-control-manage@{name}.path",
-        wait.as_secs()
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("{UNKNOWN_OUTCOME}: helper returned invalid JSON: {error}"))?;
+    let ours = (value["id"] == json!(request.key) && value["op"] == json!(request.op.as_str()))
+        || (value["id"].is_null() && value["result"] == "refused");
+    if !ours {
+        return Err(UNKNOWN_OUTCOME.into());
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+pub(crate) fn run(name: &str, d: &Dirs<'_>) -> Result<Value> {
+    if !crate::apply::valid_instance(name) {
+        bail!("invalid instance name");
+    }
+    let request_path = d.control.join(format!("{name}.{REQUEST_SUFFIX}"));
+    let bytes = read_bounded(&request_path);
+    let _ = std::fs::remove_file(&request_path);
+    let peer = PeerIdentity {
+        pid: 1234,
+        uid: 1001,
+        gid: 1001,
+    };
+    let cgroup = format!("0::/system.slice/baft-tunnel-agent@{name}.service");
+    Ok(handle_request(
+        name,
+        &bytes?,
+        d,
+        peer,
+        Ok(((1001, 1001), cgroup)),
     ))
 }
 
@@ -975,16 +1211,19 @@ pub(crate) mod tests {
             peer_host: Some("198.51.100.9".into()),
             backup_peer_hosts: None,
         };
-        let res = e.control.join("edge.manage-result");
-        let control = e.control.clone();
+        let listener = UnixListener::bind(e.control.join(format!("edge.{SOCKET_SUFFIX}"))).unwrap();
         let t = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(400));
-            let _ = std::fs::remove_file(control.join("edge.manage"));
-            std::fs::write(
-                &res,
-                json!({"id": "other-key-01", "op": "edit", "result": "applied"}).to_string(),
-            )
-            .unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut body = Vec::new();
+            stream.read_to_end(&mut body).unwrap();
+            let _: Request = serde_json::from_slice(&body).unwrap();
+            stream
+                .write_all(
+                    json!({"id": "other-key-01", "op": "edit", "result": "applied"})
+                        .to_string()
+                        .as_bytes(),
+                )
+                .unwrap();
         });
         let err = submit_in(&e.control, "edge", &req, Duration::from_secs(5)).unwrap_err();
         t.join().unwrap();
@@ -992,16 +1231,146 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn submit_in_times_out_and_cleans_its_request() {
-        let e = Env::new("submit");
+    fn submit_in_times_out_waiting_for_the_socket_helper() {
+        let e = Env::new("st");
         let req = Request {
             op: Op::Remove,
             key: "sb-key-0001".into(),
             peer_host: None,
             backup_peer_hosts: None,
         };
-        let err = submit_in(&e.control, "edge", &req, Duration::from_millis(300)).unwrap_err();
-        assert!(err.contains("did not answer"));
-        assert!(!e.control.join("edge.manage").exists());
+        let listener = UnixListener::bind(e.control.join(format!("edge.{SOCKET_SUFFIX}"))).unwrap();
+        let t = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut body = Vec::new();
+            stream.read_to_end(&mut body).unwrap();
+            std::thread::sleep(Duration::from_millis(250));
+            let _ = stream.write_all(
+                json!({"id": "sb-key-0001", "op": "remove", "result": "applied"})
+                    .to_string()
+                    .as_bytes(),
+            );
+        });
+        let err = submit_in(&e.control, "edge", &req, Duration::from_millis(50)).unwrap_err();
+        t.join().unwrap();
+        assert!(err.contains("did not answer"), "{err}");
+    }
+
+    #[test]
+    fn agent_a_cannot_remove_edit_or_revert_instance_b_even_with_the_shared_uid() {
+        let peer = PeerIdentity {
+            pid: 4321,
+            uid: 1001,
+            gid: 1001,
+        };
+        let cgroup_a = "0::/system.slice/baft-tunnel-agent@a.service".to_string();
+        let key = "cross-key-001";
+
+        for op in [Op::Remove, Op::Edit, Op::Revert] {
+            let e = Env::new(&format!("cross-instance-{}", op.as_str()));
+            e.forward("b");
+            let backup = e.backups.join(format!("b/{key}"));
+            if op == Op::Revert {
+                // Create a genuine B-owned edit backup so the attempted revert has a target.
+                e.put(
+                    "b",
+                    &json!({"op": "edit", "key": key, "peer_host": "198.51.100.9"}),
+                );
+                assert_eq!(run("b", &e.dirs()).unwrap()["result"], "applied");
+                assert!(backup.is_dir());
+            }
+            let config = e.config.join("b.json");
+            let before = std::fs::read(&config).unwrap();
+            let request = Request {
+                op,
+                key: key.into(),
+                peer_host: (op == Op::Edit).then(|| "198.51.100.10".into()),
+                backup_peer_hosts: None,
+            };
+            let bytes = serde_json::to_vec(&request).unwrap();
+            let receipt = handle_request(
+                "b",
+                &bytes,
+                &e.dirs(),
+                peer,
+                Ok(((1001, 1001), cgroup_a.clone())),
+            );
+            assert_eq!(receipt["result"], "refused", "{op:?}: {receipt}");
+            assert!(
+                receipt["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not running inside")
+            );
+            assert_eq!(
+                std::fs::read(&config).unwrap(),
+                before,
+                "{op:?} must not alter B config"
+            );
+            assert_eq!(
+                backup.is_dir(),
+                op == Op::Revert,
+                "{op:?} must not create or consume B backup"
+            );
+        }
+    }
+
+    #[test]
+    fn peer_authorization_requires_the_exact_systemd_instance_cgroup() {
+        let peer = PeerIdentity {
+            pid: 1234,
+            uid: 1001,
+            gid: 1001,
+        };
+        assert!(
+            authorize_peer(
+                "edge",
+                peer,
+                1001,
+                1001,
+                "0::/system.slice/baft-tunnel-agent@edge.service"
+            )
+            .is_ok()
+        );
+        assert!(
+            authorize_peer(
+                "edge",
+                peer,
+                1001,
+                1001,
+                "1:name=systemd:/system.slice/baft-tunnel-agent@edge.service"
+            )
+            .is_ok()
+        );
+        assert!(
+            authorize_peer(
+                "edge",
+                peer,
+                1001,
+                1001,
+                "0::/system.slice/baft-tunnel-agent@edge.service-evil"
+            )
+            .is_err()
+        );
+        assert!(
+            authorize_peer(
+                "edge",
+                peer,
+                1002,
+                1001,
+                "0::/system.slice/baft-tunnel-agent@edge.service"
+            )
+            .is_err()
+        );
+        assert!(
+            authorize_peer(
+                "edge",
+                peer,
+                1001,
+                1002,
+                "0::/system.slice/baft-tunnel-agent@edge.service"
+            )
+            .is_err()
+        );
     }
 }
