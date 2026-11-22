@@ -31,7 +31,7 @@ Workflow: `.github/workflows/fleet-join-lab-preflight.yml` (`Fleet Join LAB acce
 
 ## Scope and evidence limits
 
-The workflow reuses `lab/real-hosts/preflight-two-hosts.sh`. It verifies SSH access using strict pinned host-key checking, reads OS/kernel/architecture/init and required-tool availability on both hosts, then probes configured TCP ports from Iran to abroad. It creates SSH key and known-hosts files only in a unique runner-temporary directory and removes that directory with an EXIT trap.
+The workflow reuses `lab/real-hosts/preflight-two-hosts.sh`. It verifies SSH access using strict pinned host-key checking, reads OS/kernel/architecture/init and required-tool availability on both hosts, then attempts TCP connections to configured ports from Iran to abroad. It creates SSH key and known-hosts files only in a unique runner-temporary directory and removes that directory with an EXIT trap.
 
 This is an access/reachability preflight only. It does **not** inspect all BAFT-TUNNEL paths, systemd versions/units, users/groups, or Fleet CA state; it does not establish that the hosts are disposable or independently verify their SSH host keys against the provider console. The observed Ubuntu 24.04.4 / Ubuntu 22.04.4 pair is an owner-approved mixed-version test target, not a change to the product's Ubuntu 22.04 / systemd 249 baseline. See [the compatibility plan](FLEET_JOIN_MIXED_UBUNTU_COMPATIBILITY.md) for staged gates and evidence limits. It does not verify a candidate binary SHA, install software, initialize a CA, run Fleet Join, start services/tunnels, change firewall/routing/sysctl, or reboot either host. A successful run is not Fleet Join acceptance evidence.
 
