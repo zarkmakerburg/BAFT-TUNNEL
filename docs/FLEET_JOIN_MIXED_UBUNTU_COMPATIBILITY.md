@@ -26,8 +26,8 @@ The two VMs are registered in the dedicated Fleet Join GitHub Environment. Regis
 | Init | systemd | systemd | Version not collected |
 | `nft` | Present | Missing | Tool-presence check only |
 | `ss`, `python3`, `tc`, `systemctl` | Present | Present | Tool-presence check only |
-| TCP probes Iran → abroad | No listener on 443, 8443, 2053, 18300 | Same path result | Reachability only; no Fleet Join listener tested |
-| SSH host-key pinning | Passed | Passed | Workflow used strict known_hosts; provider-console fingerprint cross-check remains a separate identity-verification item |
+| TCP probes Iran → abroad | Probe source only; not tested as destination | Destination: no listener on 443, 8443, 2053, 18300 | One-way Iran → abroad reachability only; no Fleet Join listener tested |
+| SSH host-key pinning | Passed | Passed | Workflow matched configured `known_hosts`; provider-console fingerprint cross-check remains a separate identity-verification item |
 | Fleet CA / enrollment state | Unknown | Unknown | Not inspected |
 | Existing BAFT-TUNNEL units, users, paths, firewall/routing state | Unknown | Unknown | Not inspected |
 | Disposable/reset boundary | Unknown | Unknown | Not proven by SSH preflight |
