@@ -125,7 +125,7 @@ stale_log_cleanup_line="$(grep -nF "rm -f -- '\$REMOTE_DIR/serve.log'" "$auto_pa
   echo 'stale remote logs must only be removed after the run-ownership marker is validated' >&2
   exit 1
 }
-grep -F "'\$REMOTE_DIR/echo2.log'" "$auto_pair" >/dev/null
+grep -F "'\$REMOTE_DIR/ap-echo.log'" "$auto_pair" >/dev/null
 grep -F 'journalctl -u baft-tunnel@' "$auto_pair" >/dev/null
 grep -F 'AUTO_PAIR_CLEANUP_HOST side=$side result=pass' "$auto_pair" >/dev/null
 grep -F 'ap_cleanup "$ap_status"' "$auto_pair" >/dev/null

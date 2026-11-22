@@ -20,6 +20,7 @@ UNIT_DIR=/etc/systemd/system
 ENGINE_STORE=/usr/local/lib/baft-tunnel-engines
 BACKUP_DIRS=()
 INSTANCES=()
+AUTO_PAIR_ECHO_PORT=""
 
 [[ "$(id -u)" == 0 ]] || die "must run as root"
 [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{64}$ ]] || die "invalid candidate SHA-256"
@@ -55,6 +56,13 @@ while (($#)); do
       (($# >= 2)) || die "--instance needs a name"
       [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$ ]] || die "invalid instance name"
       INSTANCES+=("$2")
+      shift 2
+      ;;
+    --echo-port)
+      (($# >= 2)) || die "--echo-port needs a port"
+      [[ -z "$AUTO_PAIR_ECHO_PORT" ]] || die "--echo-port may be supplied only once"
+      [[ "$2" =~ ^[0-9]+$ ]] && (( 10#$2 >= 1 && 10#$2 <= 65535 )) || die "invalid automatic-pair echo port"
+      AUTO_PAIR_ECHO_PORT="$2"
       shift 2
       ;;
     *) die "unexpected cleanup argument: $1" ;;
@@ -214,9 +222,15 @@ for instance in "${INSTANCES[@]}"; do
   done
 done
 
-stop_pid_file "$REMOTE_DIR/echo2.pid" "$REMOTE_DIR/echo.py"
-! pgrep -f "[p]ython3 $REMOTE_DIR/echo.py" >/dev/null 2>&1 ||
-  die "echo server process remains; preserving its state"
+if [[ -n "$AUTO_PAIR_ECHO_PORT" ]]; then
+  # Only the uniquely named echo process started by this automatic-pairing phase is ours.
+  stop_pid_file "$REMOTE_DIR/ap-echo.pid" "$REMOTE_DIR/echo.py $AUTO_PAIR_ECHO_PORT"
+  ! pgrep -f "[p]ython3 $REMOTE_DIR/echo.py $AUTO_PAIR_ECHO_PORT" >/dev/null 2>&1 ||
+    die "automatic-pair echo process remains; preserving its state"
+else
+  [[ ! -e "$REMOTE_DIR/ap-echo.pid" && ! -L "$REMOTE_DIR/ap-echo.pid" ]] ||
+    die "unexpected automatic-pair echo PID file on a host without an echo assignment; preserving it"
+fi
 
 # Remove only the known OpenSSL CA files produced by pair_ca::create/sign/crl.
 if [[ -d "$EB/pair-ca" ]]; then

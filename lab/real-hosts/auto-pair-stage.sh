@@ -14,6 +14,8 @@ stop_role iran serve; stop_role abroad serve; stop_role iran forward; stop_role 
 # The baseline E2E logs are no longer authoritative after those processes stop. Remove them so
 # a later pairing failure cannot accidentally report stale baseline tunnel output as AP evidence.
 AP_SVC=18094; AP_AG=18096; AP_TP="$E2E_PORT"
+# Keep aligned with src/integrity_probe.rs::PROBE_COOLDOWN.
+AP_PROBE_COOLDOWN=60
 EB=/etc/baft-tunnel; UB=/usr/local/bin/baft-tunnel; AGD=/var/lib/baft-tunnel-agent; PKG="$REMOTE_DIR/pkg"
 AP_SHA="$(sha256sum "$MVP_BINARY_PATH" | awk '{print $1}')"
 AP_HOST_iran="$LAB_IRAN_HOST"; AP_HOST_abroad="$LAB_ABROAD_HOST"
@@ -60,7 +62,7 @@ done
 # Only after both remote run directories are verified as owned by this E2E run,
 # remove stale baseline logs so failure evidence cannot be misattributed.
 for side in iran abroad; do
-  ssh_host "$side" "rm -f -- '$REMOTE_DIR/serve.log' '$REMOTE_DIR/forward.log' '$REMOTE_DIR/echo.log' '$REMOTE_DIR/impair.log' '$REMOTE_DIR/echo2.log' '$REMOTE_DIR/agent.log'" || exit 1
+  ssh_host "$side" "rm -f -- '$REMOTE_DIR/serve.log' '$REMOTE_DIR/forward.log' '$REMOTE_DIR/echo.log' '$REMOTE_DIR/impair.log' '$REMOTE_DIR/ap-echo.log' '$REMOTE_DIR/agent.log'" || exit 1
 done
 
 ap_purge() { # side instances... : invoke the host-side, path-scoped cleanup helper
@@ -70,6 +72,7 @@ ap_purge() { # side instances... : invoke the host-side, path-scoped cleanup hel
   local -a command_parts
   [[ " ${AP_INSTALLED_HOSTS[*]} " == *" $side "* ]] || return 0
   command_parts=(bash "$PKG/lab/real-hosts/auto-pair-cleanup-host.sh" "$AP_SHA" "$PKG" "$AGD" "$REMOTE_DIR")
+  if [[ "$side" == abroad ]]; then command_parts+=(--echo-port "$AP_SVC"); fi
   for backup_dir in "${backup_dirs[@]}"; do
     [[ "$backup_dir" =~ ^/var/backups/baft-tunnel-install\.[[:alnum:]]+$ ]] || {
       echo "refusing unrecognized install backup path on $side" >&2; return 1;
@@ -91,7 +94,7 @@ ap_failure_evidence() {
   echo "--- automatic-pairing failure evidence (candidate=${MVP_SOURCE}) ---" >&2
   for side in iran abroad; do
     echo "--- auto-pair host=$side ---" >&2
-    for log in echo2.log; do
+    for log in ap-echo.log; do
       ssh_host "$side" "if [ -f '$REMOTE_DIR/$log' ]; then echo '=== $side:$log ==='; tail -n 80 '$REMOTE_DIR/$log'; fi" >&2 || true
     done
     for inst in $AP_INSTANCES; do
@@ -230,11 +233,31 @@ PY
 }
 
 ap_verify_diag() { # side label direction : run the authenticated B2 probe, then require fresh diagnostics PASS
-  local side="$1" label="$2" direction="$3" key body
+  local side="$1" label="$2" direction="$3" key body response_file retry_key
   key="apv-${label}-${side}-${RANDOM}${RANDOM}"
   body="{\"idempotency_key\":\"$key\"}"
-  ap_api "$side" POST /v1/verify <<<"$body" >"$LOCAL_TMP/ap-verify-$label-$side.json"
-  python3 - "$LOCAL_TMP/ap-verify-$label-$side.json" "$side" "$direction" <<'PY' || { cat "$LOCAL_TMP/ap-verify-$label-$side.json" >&2; echo "authenticated integrity probe failed on $side ($label)" >&2; return 1; }
+  response_file="$LOCAL_TMP/ap-verify-$label-$side.json"
+  ap_api "$side" POST /v1/verify <<<"$body" >"$response_file"
+  if python3 - "$response_file" <<'PY'
+import json, sys
+v = json.load(open(sys.argv[1]))
+raise SystemExit(0 if v.get("result") == "unknown" and v.get("reason") == "rate_limited" else 1)
+PY
+  then
+    # Preserve the first completed receipt as evidence. A retry must use a new key:
+    # the API replays completed receipts and will not rerun a probe for the same key.
+    cp -- "$response_file" "$response_file.rate-limited"
+    echo "integrity probe on $side ($label) is rate-limited; waiting $((AP_PROBE_COOLDOWN + 1))s (cooldown plus margin) before one retry" >&2
+    sleep "$((AP_PROBE_COOLDOWN + 1))"
+    retry_key="apv-${label}-${side}-${RANDOM}${RANDOM}"
+    while [[ "$retry_key" == "$key" ]]; do
+      retry_key="apv-${label}-${side}-${RANDOM}${RANDOM}"
+    done
+    key="$retry_key"
+    body="{\"idempotency_key\":\"$key\"}"
+    ap_api "$side" POST /v1/verify <<<"$body" >"$response_file"
+  fi
+  python3 - "$response_file" "$side" "$direction" <<'PY' || { cat "$response_file" >&2; echo "authenticated integrity probe failed on $side ($label)" >&2; return 1; }
 import json, sys
 v = json.load(open(sys.argv[1]))
 assert v.get("result") == "pass", v
@@ -272,7 +295,7 @@ ap_round() { # name direction listener_side joiner_side joiner_location
     inst="$li"; [[ "$side" == "$js" ]] && inst="$ji"
     [[ "$(ap_api "$side" GET /v1/status </dev/null | apjf setup_pending)" == True ]] || { echo "agent on $side is not in setup mode" >&2; return 1; }
   done
-  ssh_host abroad "nohup python3 '$REMOTE_DIR/echo.py' '$AP_SVC' > '$REMOTE_DIR/echo2.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/echo2.pid'"
+  ssh_host abroad "nohup python3 '$REMOTE_DIR/echo.py' '$AP_SVC' > '$REMOTE_DIR/ap-echo.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_DIR/ap-echo.pid'"
 
   local lhost="AP_HOST_$ls"; lhost="${!lhost}"
   local offer; offer="{\"name\":\"labpair-$rn\",\"service_port\":$AP_SVC,\"tunnel_port\":$AP_TP,\"host\":\"$lhost\",\"direction\":\"$dir\",\"confirm\":true}"

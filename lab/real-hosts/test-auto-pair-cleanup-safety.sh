@@ -7,6 +7,7 @@ phase1="$root/lab/real-hosts/phase1-two-host-e2e.sh"
 install_helper="$root/lab/real-hosts/auto-pair-install-host.sh"
 cleanup_helper="$root/lab/real-hosts/auto-pair-cleanup-host.sh"
 workflow="$root/.github/workflows/phase1-trusted-pairing-lab.yml"
+lab_config_workflow="$root/.github/workflows/phase0.yml"
 phase0_workflow="$root/.github/workflows/phase0-two-host-lab.yml"
 inventory_workflow="$root/.github/workflows/phase0-read-only-inventory.yml"
 fleet_preflight_workflow="$root/.github/workflows/fleet-join-lab-preflight.yml"
@@ -64,6 +65,19 @@ contains "$cleanup_helper" 'config root ownership or mode changed'
 contains "$cleanup_helper" 'at least one explicit --instance is required'
 contains "$cleanup_helper" 'no run-owned installer backup path was supplied or recovered'
 contains "$cleanup_helper" 'unit remains active; preserving cleanup target'
+contains "$cleanup_helper" '--echo-port'
+contains "$cleanup_helper" 'ap-echo.pid'
+contains "$cleanup_helper" '[p]ython3 $REMOTE_DIR/echo.py $AUTO_PAIR_ECHO_PORT'
+not_contains "$cleanup_helper" 'pgrep -f "[p]ython3 $REMOTE_DIR/echo.py"'
+contains "$stage" 'ap-echo.pid'
+contains "$stage" '--echo-port "$AP_SVC"'
+not_contains "$stage" 'echo2.pid'
+contains "$stage" 'AP_PROBE_COOLDOWN=60'
+contains "$stage" 'v.get("result") == "unknown" and v.get("reason") == "rate_limited"'
+contains "$stage" 'sleep "$((AP_PROBE_COOLDOWN + 1))"'
+contains "$stage" 'assert v.get("result") == "pass", v'
+contains "$stage" 'assert v.get("sha256_match") is True and v.get("bytes") == 65536, v'
+contains "$root/src/integrity_probe.rs" 'pub const PROBE_COOLDOWN: Duration = Duration::from_secs(60);'
 contains "$cleanup_helper" 'control directory ownership or mode changed'
 contains "$cleanup_helper" 'unexpected control request type; preserving'
 contains "$cleanup_helper" 'for suffix in start stop enable disable setup setup-result pki pki-result pair pair-approve pair-status fleet'
@@ -110,6 +124,7 @@ contains "$workflow" 'cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.b
 contains "$workflow" '--certificate-identity "$identity"'
 contains "$workflow" '--certificate-oidc-issuer https://token.actions.githubusercontent.com'
 contains "$workflow" 'sha256sum --check --ignore-missing SHA256SUMS'
+contains "$lab_config_workflow" 'test-auto-pair-integrity-retry.sh'
 contains "$workflow" 'baft-tunnel-v0.3.1-rc.1-linux-x86_64'
 not_contains "$workflow" 'cargo +1.88.0 build --locked --release'
 
