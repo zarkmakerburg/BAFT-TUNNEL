@@ -1,0 +1,83 @@
+name: Pairing Fleet LAB inventory (manual, read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type PAIRING_FLEET_READ_ONLY_INVENTORY to inspect the two dedicated Fleet LAB hosts
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+# Pairing and Fleet Join share one real-host lock. This workflow only inventories;
+# it never invokes either install, cleanup, enrollment, or tunnel workflow.
+concurrency:
+  group: baft-tunnel-trusted-lab-hosts
+  cancel-in-progress: false
+
+jobs:
+  validate-confirmation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require explicit confirmation and main ref
+        shell: bash
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$WORKFLOW_REF" == "refs/heads/main" ]] || {
+            echo 'This read-only inventory may run only from main; no LAB hosts were contacted.' >&2
+            exit 2
+          }
+          [[ "$CONFIRM" == "PAIRING_FLEET_READ_ONLY_INVENTORY" ]] || {
+            echo 'Invalid confirmation. No LAB hosts were contacted.' >&2
+            exit 2
+          }
+
+  inventory:
+    needs: validate-confirmation
+    runs-on: ubuntu-24.04
+    environment: baft-tunnel-fleet-lab-20261121
+    timeout-minutes: 15
+    env:
+      LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+      LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
+      LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+      LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+      LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+      LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Run read-only BAFT-TUNNEL inventory on Fleet hosts
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -n "$SSH_PRIVATE_KEY" || { echo 'Missing secret LAB_SSH_PRIVATE_KEY' >&2; exit 2; }
+          test -n "$SSH_KNOWN_HOSTS" || { echo 'Missing secret LAB_SSH_KNOWN_HOSTS (pinned host keys)' >&2; exit 2; }
+          test -n "$LAB_IRAN_HOST" || { echo 'Missing secret LAB_IRAN_HOST' >&2; exit 2; }
+          test -n "$LAB_ABROAD_HOST" || { echo 'Missing secret LAB_ABROAD_HOST' >&2; exit 2; }
+          echo "::add-mask::$LAB_IRAN_HOST"
+          echo "::add-mask::$LAB_ABROAD_HOST"
+
+          ssh_dir="$(mktemp -d "$RUNNER_TEMP/pairing-fleet-inventory.XXXXXX")"
+          cleanup() { rm -rf -- "$ssh_dir"; }
+          trap cleanup EXIT
+          printf '%s\\n' "$SSH_PRIVATE_KEY" > "$ssh_dir/id_ed25519"
+          printf '%s\\n' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/id_ed25519" "$ssh_dir/known_hosts"
+          export SSH_KEY_FILE="$ssh_dir/id_ed25519"
+          export SSH_KNOWN_HOSTS_FILE="$ssh_dir/known_hosts"
+
+          bash lab/real-hosts/read-only-inventory-two-hosts.sh
