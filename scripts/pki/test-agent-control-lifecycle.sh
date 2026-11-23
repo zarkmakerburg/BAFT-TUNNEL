@@ -270,7 +270,7 @@ sudo systemctl daemon-reload
 sudo systemctl start "baft-tunnel-agent@$SERVE.service" >/dev/null 2>&1 || true
 for n in $(seq 1 40); do sudo test -s "$CROSS_RESULT" && break; sleep 0.25; done
 sudo test -s "$CROSS_RESULT" || { sudo journalctl -u "baft-tunnel-agent@$SERVE.service" -n 60 --no-pager >&2 || true; die "cross-instance probe did not return a receipt"; }
-grep -qx 'denied=80' "$CROSS_RESULT" || die "agent A did not receive 80 kernel-level cross-instance denials"
+sudo grep -qx 'denied=80' "$CROSS_RESULT" || die "agent A did not receive 80 kernel-level cross-instance denials"
 [[ "$(sudo systemctl show -p InvocationID --value "baft-tunnel-control-manage@$FWD.service")" == "$CROSS_HELPER_INVOCATION" ]] || die "unauthorized connections activated the other instance's root helper"
 ! sudo systemctl is-active --quiet "baft-tunnel-control-manage@$FWD.service" || die "unauthorized connections left the other instance's helper active"
 for n in $(seq 1 40); do ! sudo systemctl is-active --quiet "baft-tunnel-agent@$SERVE.service" && break; sleep 0.25; done
