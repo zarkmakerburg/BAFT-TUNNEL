@@ -53,10 +53,12 @@ also covered. The real-systemd lifecycle harness now includes a two-instance pro
 service cgroup, connects to B's root socket, and verifies refusal plus unchanged B config/backup state. `sub_key()` now derives a full 256-bit SHA-256 digest from the complete caller key and lifecycle step,
 removing the previous 54-character truncation collision.
 
-**Verification boundary:** the real-systemd two-instance probe is added but has not been executed in this session. Its
-Linux CI result on Ubuntu 22.04 / systemd 249 is still required before merge; source/unit tests alone do not prove the
-privileged boundary. No LAB, production host, install, service, release, or deploy operation was performed in this
-session. No independent reviewer has approved this remediation yet.
+**Verification boundary:** the real-systemd two-instance probe now runs in CI and passed on Ubuntu 22.04 / systemd 249
+(`phase1-rust` run 45246317643, head `4eda1d0`): all 80 cross-instance connections were denied by kernel socket
+permissions before helper activation, and B's helper invocation ID, config and backup state were unchanged. Source/unit
+tests alone still do not prove the privileged boundary; this run does. Hosted-runner systemd is not the two-host LAB: no
+LAB, production host, install on real hardware, release or deploy operation was performed. No independent reviewer has
+approved this remediation yet.
 
 The inherited shared-account assumptions for the other file-based helpers are explicitly scoped in ADR-0023 and
 ADR-0026; this amendment does not claim to authenticate those older helper verbs.
@@ -64,7 +66,8 @@ ADR-0026; this amendment does not claim to authenticate those older helper verbs
 
 Evidence currently available: helper unit tests on temp directories and agent route tests with fake units and an
 in-process helper (remove, refusal with restart, edit, failed-restart rollback, gates, replay). The real-systemd
-two-instance probe is scripted but not yet run; no LAB run is claimed. The peer node is never changed by either route. Panel UI follows in the React panel thread after this merges.
+two-instance probe passes in CI on Ubuntu 22.04 / systemd 249 (run 45246317643); no LAB run is claimed. The peer node
+is never changed by either route. Panel UI follows in the React panel thread after this merges.
 
 ## 2026-11-23 amendment — per-instance manage-socket filesystem boundary
 
@@ -74,4 +77,4 @@ The root-owned socket unit template is fail-closed (SocketGroup=root, SocketMode
 
 SO_PEERCRED and exact systemd cgroup verification remain mandatory defense-in-depth checks inside the root helper. The installer verifies that a derived group has no explicit members and is not a primary group for any account before using or deleting it. When an upgrade creates or changes an instance's access drop-in, only that instance's active agent service is restarted so its supplementary group set takes effect; tunnel services are not restarted. Instance removal and uninstall remove managed drop-ins and delete only empty derived groups.
 
-The real-systemd lifecycle test now attempts 80 cross-instance socket connections from one agent's exact service cgroup and requires all to fail at the kernel socket-permission boundary without changing the other instance's helper invocation ID or configuration. This is test coverage, not yet Linux CI or LAB evidence: it must pass on the project's supported systemd runner before this amendment is accepted. No CAP_NET_ADMIN is required or granted.
+The real-systemd lifecycle test now attempts 80 cross-instance socket connections from one agent's exact service cgroup and requires all to fail at the kernel socket-permission boundary without changing the other instance's helper invocation ID or configuration. It passes on the project's supported systemd runner (Ubuntu 22.04 / systemd 249, `phase1-rust` run 45246317643, head `4eda1d0`); two-host LAB evidence for this boundary is still outstanding. No CAP_NET_ADMIN is required or granted.
