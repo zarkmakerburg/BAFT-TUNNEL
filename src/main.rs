@@ -52,6 +52,7 @@ mod target_guard;
 mod tls;
 mod transport_health;
 mod tunnel;
+mod tunnel_helper;
 
 use anyhow::{Result, bail};
 use authorization::ConnectionDirection;
@@ -385,6 +386,13 @@ enum SetupCommand {
         #[arg(long)]
         instance: String,
     },
+    /// Root-only tunnel helper (ADR-0055), socket-activated for one manage request from instance NAME.
+    /// It verifies SO_PEERCRED and the exact agent systemd cgroup before changing files.
+    #[command(hide = true)]
+    ManageHelper {
+        #[arg(long)]
+        instance: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -708,6 +716,31 @@ async fn run() -> Result<()> {
             println!(
                 "Checksum (compare with the other node out of band): {}",
                 result.checksum
+            );
+            Ok(())
+        }
+        Command::Setup {
+            command: SetupCommand::ManageHelper { instance },
+        } => {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if unsafe { libc::geteuid() } != 0 {
+                bail!("the tunnel helper runs as root from its systemd unit only");
+            }
+            let receipt = tunnel_helper::serve(
+                &instance,
+                &tunnel_helper::Dirs {
+                    control: std::path::Path::new(tunnel_helper::SOCKET_DIR),
+                    config: std::path::Path::new("/etc/baft-tunnel"),
+                    backups: std::path::Path::new(tunnel_helper::BACKUP_ROOT),
+                    run: std::path::Path::new(tunnel_helper::RUN_ROOT),
+                },
+            )?;
+            // Journal line without secrets: operation, key and result only.
+            println!(
+                "tunnel helper for {instance}: op={} id={} result={}",
+                receipt["op"].as_str().unwrap_or("-"),
+                receipt["id"].as_str().unwrap_or("-"),
+                receipt["result"].as_str().unwrap_or("-"),
             );
             Ok(())
         }

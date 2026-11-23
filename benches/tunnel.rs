@@ -111,6 +111,9 @@ mod tls;
 mod transport_health;
 #[path = "../src/tunnel.rs"]
 mod tunnel;
+#[path = "../src/tunnel_helper.rs"]
+#[allow(dead_code)]
+mod tunnel_helper;
 
 use std::{path::PathBuf, sync::LazyLock};
 

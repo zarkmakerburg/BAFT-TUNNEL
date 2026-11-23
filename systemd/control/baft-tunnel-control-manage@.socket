@@ -1,0 +1,15 @@
+[Unit]
+Description=BAFT-TUNNEL root manage socket for instance %i (ADR-0055)
+
+[Socket]
+ListenStream=/run/baft-tunnel/manage/%i.manage.sock
+SocketUser=root
+SocketGroup=root
+SocketMode=0600
+DirectoryMode=0755
+Accept=no
+FileDescriptorName=manage
+Service=baft-tunnel-control-manage@%i.service
+
+[Install]
+WantedBy=sockets.target

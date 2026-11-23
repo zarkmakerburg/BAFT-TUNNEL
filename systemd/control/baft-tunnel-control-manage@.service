@@ -1,0 +1,36 @@
+[Unit]
+Description=Remove or edit baft-tunnel@%i (root tunnel helper, ADR-0055)
+StartLimitIntervalSec=10s
+StartLimitBurst=60
+
+[Service]
+Type=oneshot
+# Socket-activated with Accept=no. The listening AF_UNIX socket is passed as fd 3; the helper
+# accepts one connection, checks SO_PEERCRED and the exact baft-tunnel-agent@%i.service cgroup,
+# then processes one bounded request. No request file or shared writable control directory is
+# involved in this privileged operation. An unauthorized peer is refused before any file change.
+ExecStart=/usr/local/bin/baft-tunnel setup manage-helper --instance %i
+TimeoutStartSec=50s
+TimeoutStopSec=5s
+UMask=0022
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE

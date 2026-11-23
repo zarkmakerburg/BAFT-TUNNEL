@@ -68,3 +68,14 @@ files), staging run of the install script. Real systemd 249 (hosted Ubuntu 22.04
   clears when the peer stops. Run 42524638625, code SHA 231ba9d, merged as e031475 (#93).
 - P0-2 two-host: P0-5 LAB run 42538458094 (main 92c4e70, signed rc.4): Apply start on setup-written configs on both hosts, `receipt_session=observed`, `receipt_ready=unknown`, 64 KiB + 2 MiB integrity measured by the stage, recovery, occupied-port rollback, cleanup.
 - Limit: one host, loopback, hosted runner. The two-host LAB proof is part of P0-5.
+
+
+## Security boundary note (2026-11-22)
+
+The path-unit lifecycle helpers still use the shared `baft-tunnel-agent` account and
+`/run/baft-tunnel/control` directory. They expose only fixed commands for the instance encoded in the unit name, but
+the shared account/directory is **not** a cryptographic or kernel-authenticated per-instance identity boundary. The
+ADR-0055 manage socket is deliberately different: it authenticates `SO_PEERCRED` and the exact agent cgroup before
+performing destructive config operations. Do not infer that the ADR-0055 amendment makes the older lifecycle, setup,
+PKI, pairing, or fleet file-helper channels instance-isolated; their shared-account assumptions remain a separate
+security-review item.

@@ -20,7 +20,7 @@ while (($#)); do
 done
 die() { echo "agent-control-migration: $*" >&2; exit 2; }
 EXPECTED='root:baft-tunnel-agent 770'
-VERBS=(start stop enable disable setup pki)
+VERBS=(start stop enable disable setup pki pair fleet manage)
 CONTROL_PARENT="${CONTROL_DIR%/*}"
 [[ "$CONTROL_PARENT" != "$CONTROL_DIR" ]] || die "control directory must have a parent directory"
 [[ ! -L "$CONTROL_PARENT" ]] || die "control directory parent must not be a symlink"
@@ -102,7 +102,7 @@ root_helpers_active() {
 valid_unit() {
   local kind=$1 unit=$2
   case "$kind" in
-    control) [[ "$unit" =~ ^baft-tunnel-control-(start|stop|enable|disable|setup|pki)@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\.path$ ]] ;;
+    control) [[ "$unit" =~ ^baft-tunnel-control-(start|stop|enable|disable|setup|pki|pair|fleet|manage)@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\.path$ ]] ;;
     agent_path) [[ "$unit" =~ ^baft-tunnel-agent@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\.path$ ]] ;;
     agent_service) [[ "$unit" =~ ^baft-tunnel-agent@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\.service$ ]] ;;
     *) return 1 ;;
@@ -180,6 +180,12 @@ restore_units() {
   local label=$1; shift
   local unit start_rc state failed=0
   for unit in "$@"; do
+    # ADR-0055: manage requests moved from the shared-directory path unit to a
+    # per-instance socket. A durable journal from an interrupted older migration
+    # may still contain the legacy path unit; never restore that retired watcher.
+    if [[ "$unit" =~ ^baft-tunnel-control-manage@[A-Za-z0-9][A-Za-z0-9_-]{0,62}\.path$ ]]; then
+      continue
+    fi
     start_rc=0
     systemctl start "$unit" || start_rc=$?
     state="$(systemctl is-active "$unit" 2>/dev/null || true)"
