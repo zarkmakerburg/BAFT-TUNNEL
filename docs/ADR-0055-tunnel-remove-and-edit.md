@@ -65,3 +65,13 @@ ADR-0026; this amendment does not claim to authenticate those older helper verbs
 Evidence currently available: helper unit tests on temp directories and agent route tests with fake units and an
 in-process helper (remove, refusal with restart, edit, failed-restart rollback, gates, replay). The real-systemd
 two-instance probe is scripted but not yet run; no LAB run is claimed. The peer node is never changed by either route. Panel UI follows in the React panel thread after this merges.
+
+## 2026-11-23 amendment — per-instance manage-socket filesystem boundary
+
+The shared baft-tunnel-agent UID is not sufficient as the filesystem authorization boundary for per-instance manage sockets. Each instance now receives a dedicated system group named btm- plus the first 16 hexadecimal characters of SHA-256(instance-name). This keeps the Linux group name short even when the valid instance name is 63 characters.
+
+The root-owned socket unit template is fail-closed (SocketGroup=root, SocketMode=0600). Registration and the upgrade-boundary migration create root-managed per-instance drop-ins that set the socket group to that instance's dedicated group and mode 0660, and add that same group only to the matching baft-tunnel-agent@INSTANCE.service through SupplementaryGroups. Other instance agents retain their own disjoint groups. The shared agent UID therefore cannot connect to another instance's socket merely because it owns the same UID.
+
+SO_PEERCRED and exact systemd cgroup verification remain mandatory defense-in-depth checks inside the root helper. The installer verifies that a derived group has no explicit members and is not a primary group for any account before using or deleting it. When an upgrade creates or changes an instance's access drop-in, only that instance's active agent service is restarted so its supplementary group set takes effect; tunnel services are not restarted. Instance removal and uninstall remove managed drop-ins and delete only empty derived groups.
+
+The real-systemd lifecycle test now attempts 80 cross-instance socket connections from one agent's exact service cgroup and requires all to fail at the kernel socket-permission boundary without changing the other instance's helper invocation ID or configuration. This is test coverage, not yet Linux CI or LAB evidence: it must pass on the project's supported systemd runner before this amendment is accepted. No CAP_NET_ADMIN is required or granted.

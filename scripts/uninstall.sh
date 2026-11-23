@@ -55,11 +55,57 @@ if [[ "$STAGING" == "0" ]]; then
 fi
 # Agent service and control helper (scripts/install-agent-control.sh): per-instance agent and path
 # units, templates, tmpfiles entry and the runtime request directory belong to this installation too.
+assert_unit_inactive() {
+  local unit=$1 state
+  if ! state="$(systemctl show "$unit" --property=ActiveState --value 2>/dev/null)"; then
+    die "could not verify systemd state for $unit; refusing to uninstall manage access"
+  fi
+  [[ "$state" == "inactive" ]] || die "$unit is not confirmed inactive (ActiveState=${state:-unknown}); refusing to uninstall manage access"
+}
 if [[ "$STAGING" == "0" ]]; then
   mapfile -t ctl < <(systemctl list-units --all --plain --no-legend 'baft-tunnel-agent@*' 'baft-tunnel-control-*' | awk '{print $1}' | sort -u
     systemctl list-unit-files --no-legend 'baft-tunnel-agent@*' | awk '$2 == "enabled" {print $1}')
-  if (("${#ctl[@]}" > 0)); then systemctl disable --now "${ctl[@]}" 2>/dev/null || systemctl stop "${ctl[@]}" 2>/dev/null || true; fi
+  if (("${#ctl[@]}" > 0)); then
+    systemctl disable --now "${ctl[@]}" 2>/dev/null || systemctl stop "${ctl[@]}" 2>/dev/null || true
+    # A failed stop must not be followed by removal of groups still used by an agent.
+    for unit in "${ctl[@]}"; do assert_unit_inactive "$unit"; done
+  fi
 fi
+# Preflight every per-instance group before deleting any access drop-in. If a group
+# is busy or cannot be queried, leave the entire access configuration intact.
+shopt -s nullglob
+access_files=("$ROOT_PREFIX"/etc/systemd/system/baft-tunnel-agent@*.service.d/manage-access.conf)
+manage_groups_to_delete=()
+if [[ "$STAGING" == "0" ]]; then
+  for access in "${access_files[@]}"; do
+    unit="${access##*/baft-tunnel-agent@}"
+    name="${unit%.service.d/manage-access.conf}"
+    group="btm-$(printf '%s' "$name" | sha256sum | awk '{print substr($1,1,16)}')"
+    group_entry="$(getent group "$group" 2>/dev/null)" || group_rc=$?
+    group_rc=${group_rc:-0}
+    if (( group_rc == 0 )); then
+      IFS=: read -r _ _ gid members <<< "$group_entry"
+      [[ -n "$gid" ]] || die "could not read per-instance group $group; refusing uninstall"
+      passwd_entries="$(getent passwd)" || die "could not enumerate passwd database; refusing to uninstall per-instance group $group"
+      primary="$(printf '%s\n' "$passwd_entries" | awk -F: -v gid="$gid" '$4 == gid { print $1 }')"
+      [[ -z "$members" && -z "$primary" ]] || die "refusing to remove non-empty per-instance group $group"
+      manage_groups_to_delete+=("$group")
+    elif (( group_rc != 2 )); then
+      die "could not query per-instance group $group (getent exit=$group_rc); refusing uninstall"
+    fi
+    unset group_rc group_entry
+  done
+  # Delete exactly the groups observed and validated above. Do not reinterpret a
+  # later NSS lookup failure as an absent group; groupdel must confirm deletion.
+  for group in "${manage_groups_to_delete[@]}"; do groupdel "$group"; done
+fi
+for access in "${access_files[@]}"; do
+  unit="${access##*/baft-tunnel-agent@}"
+  name="${unit%.service.d/manage-access.conf}"
+  rm -f "$access" "$ROOT_PREFIX/etc/systemd/system/baft-tunnel-control-manage@$name.socket.d/access.conf"
+  rmdir "$ROOT_PREFIX/etc/systemd/system/baft-tunnel-agent@$name.service.d" "$ROOT_PREFIX/etc/systemd/system/baft-tunnel-control-manage@$name.socket.d" 2>/dev/null || true
+done
+shopt -u nullglob
 rm -f "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel-control-*.path \
   "$ROOT_PREFIX"/etc/systemd/system/sockets.target.wants/baft-tunnel-control-manage@*.socket \
   "$ROOT_PREFIX"/etc/systemd/system/multi-user.target.wants/baft-tunnel-agent@*.path \

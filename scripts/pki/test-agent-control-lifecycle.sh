@@ -39,7 +39,7 @@ cleanup() {
   done
   sudo rm -f /etc/systemd/system/baft-tunnel-control-*@.path /etc/systemd/system/baft-tunnel-control-*@.service /etc/systemd/system/baft-tunnel-control-*@.socket /etc/tmpfiles.d/baft-tunnel-control.conf \
     /etc/systemd/system/baft-tunnel-agent@.path /etc/systemd/system/baft-tunnel-agent@.service
-  sudo rm -rf /etc/systemd/system/baft-tunnel-agent@*.service.d /var/lib/baft-tunnel-agent
+  sudo rm -rf /etc/systemd/system/baft-tunnel-agent@*.service.d /etc/systemd/system/baft-tunnel-control-manage@*.socket.d /var/lib/baft-tunnel-agent
   sudo rm -rf /run/baft-tunnel/control /run/baft-tunnel/manage
   if [[ "$INSTALL_DONE" == 1 ]]; then sudo "$ROOT/scripts/uninstall.sh" --stop --purge-config --yes >/dev/null 2>&1 || true; fi
   sudo rm -rf /etc/baft-tunnel /var/lib/baft-tunnel
@@ -214,49 +214,45 @@ for k in start stop enable disable; do
   sudo systemctl is-active --quiet "baft-tunnel-control-$k@$SERVE.path" || die "path unit $k for $SERVE is not active"
 done
 [[ "$(sudo stat -c '%U:%G %a' /run/baft-tunnel/control)" == "root:baft-tunnel-agent 770" ]] || die "control dir is not root:baft-tunnel-agent 0770"
-step "1b per-instance manage sockets and cross-instance denial"
+step "1b per-instance manage socket groups and kernel-level cross-instance denial"
+manage_group_for_test() { printf 'btm-%s' "$(printf '%s' "$1" | sha256sum | awk '{print substr($1,1,16)}')"; }
 for i in "$SERVE" "$FWD"; do
+  group="$(manage_group_for_test "$i")"
   sudo systemctl is-active --quiet "baft-tunnel-control-manage@$i.socket" || die "manage socket unit for $i is not active"
   [[ -S "/run/baft-tunnel/manage/$i.manage.sock" ]] || die "manage socket for $i is missing"
-  [[ "$(sudo stat -c '%U:%G %a' "/run/baft-tunnel/manage/$i.manage.sock")" == "root:baft-tunnel-agent 660" ]] || die "manage socket for $i has unsafe owner/mode"
+  [[ "$(sudo stat -c '%U:%G %a' "/run/baft-tunnel/manage/$i.manage.sock")" == "root:$group 660" ]] || die "manage socket for $i has unsafe owner/group/mode"
+  sudo systemctl show -p SupplementaryGroups --value "baft-tunnel-agent@$i.service" | grep -Fq "$group" || die "agent $i lacks its exclusive manage group"
 done
-# Run a short-lived probe inside A's exact agent service cgroup, then connect to B's socket.
-# The shared agent UID/GID must not authorize A to remove B. B's root-owned config and backup
-# state are checked byte-for-byte before and after. The service drop-in is removed immediately.
+# Run a short-lived probe inside A's exact agent service cgroup, then attempt repeated connects to B.
+# A and B share a UID but have disjoint supplementary groups. The kernel must reject A before
+# socket activation, so B's root helper invocation ID and root-owned files remain unchanged.
 CROSS_KEY=cross-instance-0001
 CROSS_DROPIN="/etc/systemd/system/baft-tunnel-agent@$SERVE.service.d/99-cross-instance-test.conf"
 CROSS_STATE="/var/lib/baft-tunnel-agent/$SERVE"
 CROSS_SCRIPT="$CROSS_STATE/cross-instance-probe.py"
 CROSS_RESULT="$CROSS_STATE/cross-instance-result.json"
 CROSS_BEFORE="$(sudo sha256sum "/etc/baft-tunnel/$FWD.json" | awk '{print $1}')"
+CROSS_HELPER_INVOCATION="$(sudo systemctl show -p InvocationID --value "baft-tunnel-control-manage@$FWD.service")"
 [[ ! -e "/var/lib/baft-tunnel-control/tunnel-backups/$FWD/$CROSS_KEY" ]] || die "cross-instance test backup key already exists"
 sudo install -d -o baft-tunnel-agent -g baft-tunnel-agent -m 0700 "$CROSS_STATE"
 sudo tee "$CROSS_SCRIPT" >/dev/null <<EOF_PROBE
-import json, socket, time
+import socket
 path = "/run/baft-tunnel/manage/$FWD.manage.sock"
-def call(payload=None):
+denied = 0
+for _ in range(80):
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.settimeout(5)
-    sock.connect(path)
-    if payload is not None:
-        sock.sendall(json.dumps(payload).encode())
-        sock.shutdown(socket.SHUT_WR)
-    chunks = []
-    while True:
-        chunk = sock.recv(65536)
-        if not chunk:
-            break
-        chunks.append(chunk)
-    sock.close()
-    return json.loads(b"".join(chunks).decode())
-# An unauthorized peer must be refused before the helper waits for request bytes.
-empty = call()
-time.sleep(0.25)  # let the first socket-activated oneshot helper exit before the next connection
-remove = call({"op": "remove", "key": "$CROSS_KEY"})
-for receipt in (empty, remove):
-    if receipt.get("result") != "refused" or "not running inside" not in receipt.get("reason", ""):
-        raise SystemExit("cross-instance request was not refused: " + repr(receipt))
-open("$CROSS_RESULT", "w").write(json.dumps([empty, remove]))
+    sock.settimeout(2)
+    try:
+        sock.connect(path)
+    except PermissionError:
+        denied += 1
+    else:
+        raise SystemExit("cross-instance socket connect unexpectedly succeeded")
+    finally:
+        sock.close()
+if denied != 80:
+    raise SystemExit("not all cross-instance connections were denied: " + str(denied))
+open("$CROSS_RESULT", "w").write("denied=80\n")
 EOF_PROBE
 sudo chown baft-tunnel-agent:baft-tunnel-agent "$CROSS_SCRIPT"
 sudo chmod 0600 "$CROSS_SCRIPT"
@@ -274,14 +270,9 @@ sudo systemctl daemon-reload
 sudo systemctl start "baft-tunnel-agent@$SERVE.service" >/dev/null 2>&1 || true
 for n in $(seq 1 40); do sudo test -s "$CROSS_RESULT" && break; sleep 0.25; done
 sudo test -s "$CROSS_RESULT" || { sudo journalctl -u "baft-tunnel-agent@$SERVE.service" -n 60 --no-pager >&2 || true; die "cross-instance probe did not return a receipt"; }
-sudo python3 - "$CROSS_RESULT" <<'PY_CROSS' || die "agent A was not refused by instance B's root helper"
-import json, sys
-receipts = json.load(open(sys.argv[1]))
-assert len(receipts) == 2, receipts
-for r in receipts:
-    assert r.get("result") == "refused", r
-    assert "not running inside" in r.get("reason", ""), r
-PY_CROSS
+grep -qx 'denied=80' "$CROSS_RESULT" || die "agent A did not receive 80 kernel-level cross-instance denials"
+[[ "$(sudo systemctl show -p InvocationID --value "baft-tunnel-control-manage@$FWD.service")" == "$CROSS_HELPER_INVOCATION" ]] || die "unauthorized connections activated the other instance's root helper"
+! sudo systemctl is-active --quiet "baft-tunnel-control-manage@$FWD.service" || die "unauthorized connections left the other instance's helper active"
 for n in $(seq 1 40); do ! sudo systemctl is-active --quiet "baft-tunnel-agent@$SERVE.service" && break; sleep 0.25; done
 ! sudo systemctl is-active --quiet "baft-tunnel-agent@$SERVE.service" || die "cross-instance probe service did not exit"
 [[ "$(sudo systemctl show -p ExecMainStatus --value "baft-tunnel-agent@$SERVE.service")" == 0 ]] || die "cross-instance probe process failed"
@@ -579,4 +570,4 @@ sudo kill "$AGENT_PID" 2>/dev/null || true; sleep 2; AGENT_PID=""; step "3 agent
 snapshot after >"$TMP/side-after.txt"
 diff "$TMP/side-before.txt" "$TMP/side-after.txt" >&2 || { diff "$TMP/fw-before.txt" "$TMP/fw-after.txt" >&2 || true; die "firewall, listeners or unrelated units changed"; }
 
-echo "AGENT_CONTROL_LIFECYCLE=PASS (systemd $v: path units active, control dir root:baft-tunnel-agent 0770, request starts and stops only baft-tunnel@NAME, no direct rights for the agent user, Apply start verified and replayed, running unit refused, failing start rolled back, real authorized session observed between two nodes with 64 KiB and 2 MiB intact, agent diagnostics/status/traffic/audit tiers matched the unit evidence, malformed/unregistered/duplicate/stale/symlink requests harmless, no firewall/listener/unit side effects)"
+echo "AGENT_CONTROL_LIFECYCLE=PASS (systemd $v: per-instance hashed groups isolate manage sockets despite shared UID, 80 cross-instance connects denied by kernel before helper activation, SO_PEERCRED+cgroup defense retained, path units and lifecycle controls verified, no firewall/listener/unit side effects)"

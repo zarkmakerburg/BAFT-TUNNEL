@@ -4,8 +4,8 @@ Description=BAFT-TUNNEL root manage socket for instance %i (ADR-0055)
 [Socket]
 ListenStream=/run/baft-tunnel/manage/%i.manage.sock
 SocketUser=root
-SocketGroup=baft-tunnel-agent
-SocketMode=0660
+SocketGroup=root
+SocketMode=0600
 DirectoryMode=0755
 Accept=no
 FileDescriptorName=manage
