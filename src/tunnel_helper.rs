@@ -619,7 +619,8 @@ fn systemd_listener(expected_path: &Path) -> Result<UnixListener> {
     // SAFETY: systemd passes the sole listening socket as fd 3 when LISTEN_FDS=1. Ownership is
     // transferred to UnixListener, which closes it on drop. The checks above bind it to this unit.
     let listener = unsafe { UnixListener::from_raw_fd(3) };
-    let actual_path = listener.local_addr()?.as_pathname().map(PathBuf::as_path);
+    let local_addr = listener.local_addr()?;
+    let actual_path = local_addr.as_pathname();
     if actual_path != Some(expected_path) {
         bail!("systemd passed a socket for an unexpected instance path");
     }
