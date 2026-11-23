@@ -15,6 +15,8 @@ Running/enabled instances must be stopped with --stop first.
 EOF
 }
 die() { echo "uninstall: $*" >&2; exit 2; }
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/systemd-unit-inventory.sh"
 ROOT_PREFIX=""
 STOP=0
 PURGE=0
@@ -42,12 +44,10 @@ else
 fi
 
 if [[ "$STAGING" == "0" ]]; then
-  mapfile -t units < <(
-    {
-      systemctl list-units --state=active --plain --no-legend 'baft-tunnel@*.service' | awk '{print $1}'
-      systemctl list-unit-files --type=service --no-legend 'baft-tunnel@*.service' | awk '$2 == "enabled" && $1 ~ /^baft-tunnel@.+\.service$/ {print $1}'
-    } | sort -u
-  )
+  units_output="$(baft_list_tunnel_instance_units)" ||
+    die "could not enumerate tunnel instance units; refusing to continue uninstall"
+  units=()
+  if [[ -n "$units_output" ]]; then mapfile -t units <<< "$units_output"; fi
   if (("${#units[@]}" > 0)); then
     [[ "$STOP" == "1" ]] || die "BAFT-TUNNEL instances exist; rerun with --stop"
     systemctl disable --now "${units[@]}"
@@ -63,8 +63,10 @@ assert_unit_inactive() {
   [[ "$state" == "inactive" ]] || die "$unit is not confirmed inactive (ActiveState=${state:-unknown}); refusing to uninstall manage access"
 }
 if [[ "$STAGING" == "0" ]]; then
-  mapfile -t ctl < <(systemctl list-units --all --plain --no-legend 'baft-tunnel-agent@*' 'baft-tunnel-control-*' | awk '{print $1}' | sort -u
-    systemctl list-unit-files --no-legend 'baft-tunnel-agent@*' | awk '$2 == "enabled" {print $1}')
+  ctl_output="$(baft_list_agent_control_units)" ||
+    die "could not enumerate agent/control units; refusing to remove per-instance manage access"
+  ctl=()
+  if [[ -n "$ctl_output" ]]; then mapfile -t ctl <<< "$ctl_output"; fi
   if (("${#ctl[@]}" > 0)); then
     systemctl disable --now "${ctl[@]}" 2>/dev/null || systemctl stop "${ctl[@]}" 2>/dev/null || true
     # A failed stop must not be followed by removal of groups still used by an agent.
