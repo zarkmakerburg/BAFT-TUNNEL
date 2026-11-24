@@ -543,10 +543,16 @@ async fn read_request(stream: &mut TcpStream) -> Result<ReadOutcome> {
     let length = match (declared.next(), declared.next()) {
         (None, _) => 0,
         (Some(_), Some(_)) => return Ok(ReadOutcome::BadRequest("duplicate content-length")),
-        (Some(value), None) => match value.parse::<usize>() {
-            Ok(length) => length,
-            Err(_) => return Ok(ReadOutcome::BadRequest("invalid content-length")),
-        },
+        (Some(value), None) => {
+            // `usize::from_str` accepts a leading sign; HTTP defines a length as digits only.
+            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return Ok(ReadOutcome::BadRequest("invalid content-length"));
+            }
+            match value.parse::<usize>() {
+                Ok(length) => length,
+                Err(_) => return Ok(ReadOutcome::BadRequest("invalid content-length")),
+            }
+        }
     };
     if length > MAX_BODY_BYTES {
         return Ok(ReadOutcome::Request {
@@ -769,7 +775,10 @@ fn header_values<'a>(head: &'a str, name: &'a str) -> impl Iterator<Item = &'a s
         .skip(1)
         .filter_map(|l| l.split_once(':'))
         .filter(move |(k, _)| k.eq_ignore_ascii_case(name))
-        .map(|(_, v)| v.trim())
+        // HTTP optional whitespace is SP and HTAB only. A bare CR or LF inside a value must
+        // stay visible so the Host and Content-Length checks reject it instead of trimming
+        // it into an otherwise valid value.
+        .map(|(_, v)| v.trim_matches([' ', '\t']))
 }
 
 fn header<'a>(head: &'a str, name: &'a str) -> Option<&'a str> {
@@ -4684,6 +4693,7 @@ mod tests {
             "GET /v1/health HTTP/1.1\r\nHost: \r\n\r\n",
             "GET /v1/health HTTP/1.1\r\nHost: localhost\r\nHost: localhost\r\n\r\n",
             "GET /v1/health HTTP/1.1\r\nHost: local host\r\n\r\n",
+            "GET /v1/health HTTP/1.1\r\nHost: localhost\n\r\n\r\n",
         ] {
             let out = raw(head).await;
             assert!(out.starts_with("HTTP/1.1 400 "), "{head:?}: {out}");
@@ -4700,6 +4710,9 @@ mod tests {
             "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0, 1\r\n\r\n",
             "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: -1\r\n\r\nX",
             "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1x\r\n\r\nX",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: +0\r\n\r\n",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: +1\r\n\r\nX",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\n\r\n\r\n",
         ] {
             let out = raw(head).await;
             assert!(out.starts_with("HTTP/1.1 400 "), "{head:?}: {out}");
