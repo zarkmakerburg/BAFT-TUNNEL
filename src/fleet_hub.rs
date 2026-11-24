@@ -187,12 +187,23 @@ where
     let mut length: Option<usize> = None;
     for line in lines {
         let (name, value) = line.split_once(':').ok_or(400u16)?;
-        match name.trim().to_ascii_lowercase().as_str() {
+        // HTTP/1.1 forbids whitespace between the field name and the colon; accepting
+        // `Content-Length : 5` would let a proxy and this listener disagree on the framing.
+        if name.is_empty() || name.bytes().any(|b| b == b' ' || b == b'\t') {
+            return Err(400);
+        }
+        match name.to_ascii_lowercase().as_str() {
             "content-length" => {
                 if length.is_some() {
                     return Err(400);
                 }
-                length = Some(value.trim().parse::<usize>().map_err(|_| 400u16)?);
+                // `str::trim` would hide a bare CR/LF and `usize::from_str` accepts a leading
+                // sign; HTTP defines a length as ASCII digits with only SP/HTAB around it.
+                let value = value.trim_matches([' ', '\t']);
+                if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(400);
+                }
+                length = Some(value.parse::<usize>().map_err(|_| 400u16)?);
             }
             "transfer-encoding" | "expect" | "content-encoding" => return Err(400),
             _ => {}
@@ -405,6 +416,45 @@ mod tests {
         let short =
             format!("POST {REPORT_PATH} HTTP/1.1\r\nContent-Length: 50\r\n\r\n{{").into_bytes();
         assert_eq!(post(short, &good, &hub, 400).await, 400);
+    }
+
+    #[tokio::test]
+    async fn content_length_must_be_plain_digits_without_header_whitespace() {
+        let hub = Mutex::new(Hub::default());
+        let good = ident(&[EKU_FLEET_NODE]);
+        let body = r#"{"schema":"node.status.v1","seq":1,"instances":[]}"#;
+        for head in [
+            // A leading sign is not a length.
+            format!(
+                "POST {REPORT_PATH} HTTP/1.1\r\nHost: h\r\nContent-Length: +{}\r\n\r\n{body}",
+                body.len()
+            ),
+            // A bare LF must not be trimmed into a valid value.
+            format!(
+                "POST {REPORT_PATH} HTTP/1.1\r\nHost: h\r\nContent-Length: {}\n\r\n\r\n{body}",
+                body.len()
+            ),
+            // Whitespace between the field name and the colon is not a header.
+            format!(
+                "POST {REPORT_PATH} HTTP/1.1\r\nHost: h\r\nContent-Length : {}\r\n\r\n{body}",
+                body.len()
+            ),
+            // Whitespace inside the value is not a length.
+            format!(
+                "POST {REPORT_PATH} HTTP/1.1\r\nHost: h\r\nContent-Length: {} {}\r\n\r\n{body}",
+                body.len(),
+                body.len()
+            ),
+        ] {
+            assert_eq!(post(head.into_bytes(), &good, &hub, 100).await, 400, "{head:?}");
+        }
+        // Legal SP/HTAB padding around the digits is still accepted.
+        let padded = format!(
+            "POST {REPORT_PATH} HTTP/1.1\r\nHost: h\r\nContent-Length:\t{} \r\n\r\n{body}",
+            body.len()
+        );
+        assert_eq!(post(padded.into_bytes(), &good, &hub, 200).await, 204);
+        assert_eq!(hub.lock().unwrap().nodes().count(), 1);
     }
 
     #[tokio::test]
