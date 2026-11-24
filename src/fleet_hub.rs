@@ -447,7 +447,11 @@ mod tests {
             ),
         ] {
             let expected = head.clone();
-            assert_eq!(post(head.into_bytes(), &good, &hub, 100).await, 400, "{expected:?}");
+            assert_eq!(
+                post(head.into_bytes(), &good, &hub, 100).await,
+                400,
+                "{expected:?}"
+            );
         }
         // Legal SP/HTAB padding around the digits is still accepted.
         let padded = format!(
