@@ -1976,6 +1976,26 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn reverse_revoked_certificate_refused_secure_channel() {
+        // R9 (REVERSE_ACCEPTANCE.md): a revoked service-node certificate is refused and the
+        // diagnostics attribute the failure to the secure channel tier.
+        //
+        // TLS 1.3 completes on the client before the server has checked the client
+        // certificate, so a revocation refusal arrives as a TLS alert during the protocol
+        // handshake. `handshake_stage` classifies such alerts as `Stage::SecureChannel`;
+        // this test pins that classification with the same error shape the live path sees.
+        let alert = std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            rustls::Error::AlertReceived(rustls::AlertDescription::CertificateRevoked),
+        );
+        let staged_err = handshake_stage(anyhow::Error::from(alert).context("read"));
+        assert!(
+            staged_err.to_string().contains("secure_channel"),
+            "a revoked-certificate TLS alert must be attributed to the secure_channel tier, got: {staged_err}"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn agent_uds_request_runs_probe_over_the_active_authenticated_v2_session() {
