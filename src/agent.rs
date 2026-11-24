@@ -425,11 +425,26 @@ pub async fn serve(listener: TcpListener, ctx: Arc<Ctx>) -> Result<()> {
     }
 }
 
+/// The single `Host` value of a request, when the request has exactly one plain host token.
+/// HTTP/1.1 requires `Host`; duplicate lines are ambiguous, and whitespace or control
+/// characters would let the name that is validated differ from the name that is read.
+fn host_name(head: &str) -> Option<&str> {
+    let mut values = header_values(head, "host");
+    let host = values.next()?;
+    let ambiguous = host.is_empty()
+        || values.next().is_some()
+        || host.chars().any(|c| c.is_whitespace() || c.is_control());
+    if ambiguous {
+        return None;
+    }
+    Some(host)
+}
+
 /// Host names a browser may use to reach the loopback agent (any port, so `ssh -L` keeps working).
 /// Anything else is refused before routing: a DNS-rebinding page names its own domain here.
 fn allowed_host(head: &str) -> bool {
-    let Some(host) = header(head, "host") else {
-        return true; // non-browser clients (HTTP/1.0, tests); browsers always send Host
+    let Some(host) = host_name(head) else {
+        return false;
     };
     let name = if let Some(rest) = host.strip_prefix('[') {
         rest.split_once(']').map_or(rest, |(n, _)| n)
@@ -449,15 +464,32 @@ async fn handle(mut stream: TcpStream, ctx: &Ctx) -> Result<()> {
     let Ok(read) = read else {
         return Ok(());
     };
-    let Some((buf, head_end, length)) = read? else {
-        return Ok(());
+    let (buf, head_end, length) = match read? {
+        ReadOutcome::Request {
+            buf,
+            head_end,
+            length,
+        } => (buf, head_end, length),
+        ReadOutcome::Closed => return Ok(()),
+        ReadOutcome::HeadTooLarge => {
+            return respond(&mut stream, 431, &json!({"error": "request too large"})).await;
+        }
+        ReadOutcome::BadRequest(message) => {
+            return respond(&mut stream, 400, &json!({"error": message})).await;
+        }
     };
     let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
-    if length == usize::MAX {
-        return respond(&mut stream, 431, &json!({"error": "request too large"})).await;
-    }
     if length > MAX_BODY_BYTES {
         return respond(&mut stream, 413, &json!({"error": "body too large"})).await;
+    }
+    // A missing, duplicated or malformed Host is refused before any routing or authentication.
+    if host_name(&head).is_none() {
+        return respond(
+            &mut stream,
+            400,
+            &json!({"error": "missing or invalid host"}),
+        )
+        .await;
     }
     if !allowed_host(&head) {
         return respond(&mut stream, 421, &json!({"error": "misdirected request"})).await;
@@ -470,9 +502,22 @@ async fn handle(mut stream: TcpStream, ctx: &Ctx) -> Result<()> {
     respond(&mut stream, status, &out).await
 }
 
-/// Read one request. `None` = the client closed early. A too-large head is reported as
-/// `length == usize::MAX`, a too-large body by its declared length (both answered by the caller).
-async fn read_request(stream: &mut TcpStream) -> Result<Option<(Vec<u8>, usize, usize)>> {
+/// What one read produced. Framing that could be interpreted two ways (a transfer coding,
+/// duplicated or malformed `Content-Length`) is refused rather than guessed at, so a proxy and
+/// this agent cannot disagree on where the body ends.
+enum ReadOutcome {
+    Request {
+        buf: Vec<u8>,
+        head_end: usize,
+        length: usize,
+    },
+    Closed,
+    HeadTooLarge,
+    BadRequest(&'static str),
+}
+
+/// Read one request. `Closed` = the client closed early.
+async fn read_request(stream: &mut TcpStream) -> Result<ReadOutcome> {
     let mut buf = Vec::with_capacity(512);
     let mut chunk = [0u8; 1024];
     let head_end = loop {
@@ -480,28 +525,54 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<(Vec<u8>, usize, 
             break i + 4;
         }
         if buf.len() >= MAX_REQUEST_BYTES {
-            return Ok(Some((buf, 0, usize::MAX)));
+            return Ok(ReadOutcome::HeadTooLarge);
         }
         let n = stream.read(&mut chunk).await?;
         if n == 0 {
-            return Ok(None);
+            return Ok(ReadOutcome::Closed);
         }
         buf.extend_from_slice(&chunk[..n]);
     };
-    let length = header(&String::from_utf8_lossy(&buf[..head_end]), "content-length")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0);
+    let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+    if header_values(&head, "transfer-encoding").next().is_some() {
+        return Ok(ReadOutcome::BadRequest(
+            "transfer-encoding is not supported",
+        ));
+    }
+    let mut declared = header_values(&head, "content-length");
+    let length = match (declared.next(), declared.next()) {
+        (None, _) => 0,
+        (Some(_), Some(_)) => return Ok(ReadOutcome::BadRequest("duplicate content-length")),
+        (Some(value), None) => {
+            // `usize::from_str` accepts a leading sign; HTTP defines a length as digits only.
+            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return Ok(ReadOutcome::BadRequest("invalid content-length"));
+            }
+            match value.parse::<usize>() {
+                Ok(length) => length,
+                Err(_) => return Ok(ReadOutcome::BadRequest("invalid content-length")),
+            }
+        }
+    };
     if length > MAX_BODY_BYTES {
-        return Ok(Some((buf, head_end, length)));
+        return Ok(ReadOutcome::Request {
+            buf,
+            head_end,
+            length,
+        });
     }
     while buf.len() < head_end + length {
         let n = stream.read(&mut chunk).await?;
         if n == 0 {
-            return Ok(None);
+            return Ok(ReadOutcome::Closed);
         }
         buf.extend_from_slice(&chunk[..n]);
     }
-    Ok(Some((buf, head_end, length)))
+    Ok(ReadOutcome::Request {
+        buf,
+        head_end,
+        length,
+    })
 }
 
 /// Fuzz entry (see fuzz/): the request parser and router with no state directory.
@@ -699,12 +770,19 @@ async fn respond_static(stream: &mut TcpStream, kind: &str, body: &[u8]) -> Resu
     Ok(())
 }
 
-fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+fn header_values<'a>(head: &'a str, name: &'a str) -> impl Iterator<Item = &'a str> {
     head.split("\r\n")
         .skip(1)
         .filter_map(|l| l.split_once(':'))
-        .find(|(k, _)| k.eq_ignore_ascii_case(name))
-        .map(|(_, v)| v.trim())
+        .filter(move |(k, _)| k.eq_ignore_ascii_case(name))
+        // HTTP optional whitespace is SP and HTAB only. A bare CR or LF inside a value must
+        // stay visible so the Host and Content-Length checks reject it instead of trimming
+        // it into an otherwise valid value.
+        .map(|(_, v)| v.trim_matches([' ', '\t']))
+}
+
+fn header<'a>(head: &'a str, name: &'a str) -> Option<&'a str> {
+    header_values(head, name).next()
 }
 
 async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
@@ -4604,7 +4682,46 @@ mod tests {
                 "{bad}"
             );
         }
-        assert!(allowed_host("GET / HTTP/1.0\r\n\r\n"));
+        // A request without Host carries no origin to check, so it is not accepted.
+        assert!(!allowed_host("GET / HTTP/1.0\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn host_is_required_and_unambiguous() {
+        for head in [
+            "GET /v1/health HTTP/1.1\r\n\r\n",
+            "GET /v1/health HTTP/1.1\r\nHost: \r\n\r\n",
+            "GET /v1/health HTTP/1.1\r\nHost: localhost\r\nHost: localhost\r\n\r\n",
+            "GET /v1/health HTTP/1.1\r\nHost: local host\r\n\r\n",
+            "GET /v1/health HTTP/1.1\r\nHost: localhost\n\r\n\r\n",
+        ] {
+            let out = raw(head).await;
+            assert!(out.starts_with("HTTP/1.1 400 "), "{head:?}: {out}");
+        }
+        let out = raw("GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1:18080\r\n\r\n").await;
+        assert!(out.starts_with("HTTP/1.1 200 "), "{out}");
+    }
+
+    #[tokio::test]
+    async fn ambiguous_body_framing_is_refused() {
+        for head in [
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\nX",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0, 1\r\n\r\n",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: -1\r\n\r\nX",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1x\r\n\r\nX",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: +0\r\n\r\n",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: +1\r\n\r\nX",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\n\r\n\r\n",
+        ] {
+            let out = raw(head).await;
+            assert!(out.starts_with("HTTP/1.1 400 "), "{head:?}: {out}");
+        }
+        // One well-formed Content-Length is still routed normally (405: health is GET-only),
+        // so the refusals above are about ambiguity, not about rejecting request bodies.
+        let out =
+            raw("POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n").await;
+        assert!(out.starts_with("HTTP/1.1 405 "), "{out}");
     }
 
     #[tokio::test]
