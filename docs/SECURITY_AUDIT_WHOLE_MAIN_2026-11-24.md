@@ -114,35 +114,42 @@ the first matching header via `header()` (`agent.rs:700–710`), and never inspe
 request without `Content-Length` is therefore treated as a zero-length body, and duplicate
 `Content-Length` headers resolve to the first value.
 
-**Impact.** Directly reachable only on loopback and only with the Bearer token, so the attacker
-already holds the agent credential; the practical risk is a parser/behaviour mismatch rather
-than an unauthenticated bypass. In front of nginx the ambiguity is currently contained:
+**Impact.** `read_request` runs before authentication, so any loopback client — including an
+unauthenticated one hitting `/v1/health`, a static asset or a 401 route — reaches the parser.
+What needs the Bearer token is any body-dependent state-changing route, so the practical risk is
+a framing/behaviour mismatch rather than an authentication bypass: an ambiguous request is
+answered 401/404/422 or handled with an empty body, and no path was found where framing lets a
+request skip `route`'s token check. In front of nginx the ambiguity is currently contained:
 `proxy_http_version 1.1` with default request buffering makes nginx de-chunk and send one
 `Content-Length`, and nginx rejects conflicting framing before it reaches the agent.
 
-**Reproduction (source-level).** With a valid token, send
-`POST /v1/setup/plan HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nAuthorization: Bearer <token>\r\n\r\n0\r\n\r\n`
-and observe the route receives an empty body, or send two `Content-Length` headers with
-different values and observe the first one is used.
+**Reproduction (source-level).** Unauthenticated, send
+`GET /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n`
+and observe the parser ignores the encoding; with a valid token, send the same on
+`POST /v1/setup/plan` and observe the route receives an empty body, or send two `Content-Length`
+headers with different values and observe the first one is used.
 
 **Suggested fix.** In `read_request`, answer 400 when any `Transfer-Encoding` is present, when
 `Content-Length` appears more than once, or when the declared length and the consumed bytes
 differ; reject `Content-Length` values with signs or surrounding whitespace. Add tests for each
 case next to the existing host and size tests.
 
-### S5-02 — Manage access is a group grant, while identity is the primary UID/GID — **Low**
+### S5-02 — Manage access needs the group, but the group alone does not authorize — **Info**
 
 **Evidence [CODE].** `install-agent-control.sh` grants the per-instance `btm-<hash>` group to the
 agent unit and sets `SocketGroup=<group>, SocketMode=0660`; `authorize_peer`
-(`tunnel_helper.rs:511–541`) then compares the peer's `SO_PEERCRED` UID **and primary GID** to
-the `baft-tunnel-agent` passwd entry. Group membership is thus an access gate but not part of
-the authenticated identity: any process that is a member of `btm-<hash>` passes the kernel check
-and then presents the agent's primary UID/GID only if it runs as that account.
+(`tunnel_helper.rs:511–541`) independently requires the peer's `SO_PEERCRED` UID **and primary
+GID** to equal the `baft-tunnel-agent` passwd entry **and** the peer's cgroup to be the exact
+`/system.slice/baft-tunnel-agent@<instance>.service`. Group membership is therefore only the
+socket access gate; it is not part of the authenticated identity.
 
-**Impact.** Low: adding a human or service to `btm-<hash>` requires root and silently widens who
-can invoke destructive, root-executed tunnel removal/edit for that instance. Nothing in the
-repository does this, and `uninstall.sh` refuses to remove a non-empty group, but the invariant
-is enforced only by convention.
+**Impact.** Adding a different-UID human or service to `btm-<hash>` requires root and lets that
+process connect and be refused by `authorize_peer`; it does **not** grant permission to invoke
+tunnel removal or editing, because the UID/GID and exact-cgroup checks still fail. The residual
+risk is small: the extra process can occupy the single-connection helper long enough to consume
+a socket activation (bounded by `StartLimitBurst=60`/10 s and `TimeoutStartSec=50`), and the
+invariant that keeps the group effectively exclusive is enforced by convention plus
+`uninstall.sh`'s refusal to delete a non-empty group.
 
 **Suggested fix.** Document the invariant next to `ensure_manage_access` and in
 `docs/SECURITY_ASSESSMENT.md` ("`btm-*` groups must stay empty; membership is manage access"),
@@ -221,7 +228,7 @@ for executing the negative tests here.
 - Scope covered: systemd units, privileged helpers, Unix sockets, `SO_PEERCRED`, cgroup binding,
   agent HTTP API, TLS/mTLS and CA/CRL handling, installer/uninstaller paths, file and permission
   handling, error paths and trust boundaries.
-- Findings: 0 Critical, 0 High, 0 Medium, 2 Low (S5-01, S5-02), 3 Info (S5-03, S5-04, S5-05).
+- Findings: 0 Critical, 0 High, 0 Medium, 1 Low (S5-01), 4 Info (S5-02, S5-03, S5-04, S5-05).
 - S5 status: **OPEN**. An independent reviewer outside the authors and implementers of the
   reviewed changes is still required; this report is input to that review, not its replacement.
 - No deploy, release, tag, Production change or LAB run was performed.
