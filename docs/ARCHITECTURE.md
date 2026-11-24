@@ -50,4 +50,4 @@ No firewall mutation is performed by the product. Unknown firewall state remains
 
 ## Deferred work and phase boundary
 
-Central enrollment/Fleet, signed remote desired state, remote Jobs, multiple tunnels per host, additional transports (QUIC/UDP, WebSocket, Relay), automatic failover, and a full pre-stable independent security review are deferred. The owner has paused the independent review; do not initiate it without renewed authorization. Do not describe these planned capabilities as implemented. No stable release or production deployment is authorized by this architecture document.
+Central enrollment/Fleet, signed remote desired state, remote Jobs, multiple tunnels per host, additional transports (QUIC/UDP, WebSocket, Relay), automatic failover, and a full pre-stable independent security review are deferred. The owner paused the independent review on 2026-11-11 and re-authorized it on 2026-11-24 (S5 active, scope the whole of current `main`). Do not describe these planned capabilities as implemented. No stable release or production deployment is authorized by this architecture document.

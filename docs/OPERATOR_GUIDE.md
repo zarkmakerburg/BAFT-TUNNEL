@@ -127,7 +127,7 @@ If encrypted delivery is selected but the host, encrypted credential file, crede
 
 ## Remaining operator work and limits
 
-The accepted U7 run now proves the installed Agent/service lifecycle, Apply start, diagnostics, backup/restore, guarded update/rollback, revocation refusal, uninstall and cleanup on the two shared Ubuntu 22.04 LAB hosts. This does not complete Stable readiness. Still open: full CA/pin rollover on real hosts, firewall-drift attribution (S10), formal accessibility and physical-phone validation, bounded hardening, and the owner's currently paused independent pre-stable review. No soak longer than 3600 seconds is planned.
+The accepted U7 run now proves the installed Agent/service lifecycle, Apply start, diagnostics, backup/restore, guarded update/rollback, revocation refusal, uninstall and cleanup on the two shared Ubuntu 22.04 LAB hosts. This does not complete Stable readiness. Still open: full CA/pin rollover on real hosts, firewall-drift attribution (S10), formal accessibility and physical-phone validation, bounded hardening, and the independent pre-stable review (S5; paused by the owner on 2026-11-11, re-authorized on 2026-11-24). No soak longer than 3600 seconds is planned.
 
 
 ## Controlled service shutdown
