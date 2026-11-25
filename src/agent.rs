@@ -534,6 +534,13 @@ async fn read_request(stream: &mut TcpStream) -> Result<ReadOutcome> {
         buf.extend_from_slice(&chunk[..n]);
     };
     let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+    // S5-AUD-01: a field line that is not `name ":" value` is refused instead of ignored. An
+    // ignored `Transfer-Encoding : chunked` would be a zero-length body here but a chunked body
+    // for an intermediary that accepts the form, which is exactly the framing disagreement
+    // S5-01 is about.
+    if !field_lines_are_well_formed(&head) {
+        return Ok(ReadOutcome::BadRequest("malformed header line"));
+    }
     if header_values(&head, "transfer-encoding").next().is_some() {
         return Ok(ReadOutcome::BadRequest(
             "transfer-encoding is not supported",
@@ -768,6 +775,20 @@ async fn respond_static(stream: &mut TcpStream, kind: &str, body: &[u8]) -> Resu
     })
     .await??;
     Ok(())
+}
+
+/// RFC 9112 §5.1: a field line is `field-name ":" OWS field-value OWS`. A field name is a
+/// token, so it never contains SP or HTAB; a line without a colon is not a field line at all.
+/// `header_values` compares the raw name, so such a line would otherwise be dropped silently.
+fn field_lines_are_well_formed(head: &str) -> bool {
+    head.trim_end_matches("\r\n")
+        .split("\r\n")
+        .skip(1)
+        .all(|line| {
+            line.split_once(':').is_some_and(|(name, _)| {
+                !name.is_empty() && !name.bytes().any(|b| b == b' ' || b == b'\t')
+            })
+        })
 }
 
 fn header_values<'a>(head: &'a str, name: &'a str) -> impl Iterator<Item = &'a str> {
@@ -4706,7 +4727,12 @@ mod tests {
     async fn ambiguous_body_framing_is_refused() {
         for head in [
             "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+            // A transfer coding alongside a length is ambiguous whichever one wins.
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n",
             "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\nX",
+            // Identical duplicates are still two field lines and still ambiguous.
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nX",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1, 1\r\n\r\nX",
             "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0, 1\r\n\r\n",
             "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: -1\r\n\r\nX",
             "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1x\r\n\r\nX",
@@ -4722,6 +4748,53 @@ mod tests {
         let out =
             raw("POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n").await;
         assert!(out.starts_with("HTTP/1.1 405 "), "{out}");
+    }
+
+    /// S5-AUD-01: whitespace before the colon and a line without a colon are refused rather than
+    /// dropped, so no framing header can be visible to a proxy and invisible to this parser.
+    #[tokio::test]
+    async fn malformed_field_lines_are_refused() {
+        for head in [
+            // SP or HTAB between the field name and the colon (RFC 9112 §5.1 forbids it).
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding : chunked\r\n\r\n0\r\n\r\n",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding\t: chunked\r\n\r\n0\r\n\r\n",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length : 1\r\n\r\nX",
+            "POST /v1/health HTTP/1.1\r\nHost : localhost\r\n\r\n",
+            // A line without a colon is not a field line.
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nX-Not-A-Header\r\n\r\n",
+            // Obsolete line folding starts with SP/HTAB and is refused for the same reason.
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nX-Folded: a\r\n b: c\r\n\r\n",
+            // An empty field name is not a token.
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\n: value\r\n\r\n",
+        ] {
+            let out = raw(head).await;
+            assert!(out.starts_with("HTTP/1.1 400 "), "{head:?}: {out}");
+        }
+        // A well-formed unknown header still reaches routing; only malformed lines are refused.
+        let out = raw("GET /v1/health HTTP/1.1\r\nHost: localhost\r\nX-Ok: value\r\n\r\n").await;
+        assert!(out.starts_with("HTTP/1.1 200 "), "{out}");
+    }
+
+    /// Bytes after the declared body must never be served as a second request: this agent has no
+    /// keep-alive loop and closes the connection after one answer (S5-AUD-01 / S5-01).
+    #[tokio::test]
+    async fn trailing_bytes_are_never_parsed_as_a_second_request() {
+        let second = "GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        for head in [
+            // Pipelined requests in one write.
+            format!("GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n{second}"),
+            // Bytes beyond the declared Content-Length.
+            format!(
+                "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{{}}{second}"
+            ),
+        ] {
+            let out = raw(&head).await;
+            assert_eq!(
+                out.matches("HTTP/1.1 ").count(),
+                1,
+                "second request was served: {out}"
+            );
+        }
     }
 
     #[tokio::test]
