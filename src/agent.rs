@@ -18,7 +18,7 @@ use rand::RngCore;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{Mutex, Semaphore},
     time::timeout,
@@ -517,7 +517,10 @@ enum ReadOutcome {
 }
 
 /// Read one request. `Closed` = the client closed early.
-async fn read_request(stream: &mut TcpStream) -> Result<ReadOutcome> {
+async fn read_request<S>(stream: &mut S) -> Result<ReadOutcome>
+where
+    S: AsyncRead + Unpin,
+{
     let mut buf = Vec::with_capacity(512);
     let mut chunk = [0u8; 1024];
     let head_end = loop {
@@ -580,6 +583,44 @@ async fn read_request(stream: &mut TcpStream) -> Result<ReadOutcome> {
         head_end,
         length,
     })
+}
+
+/// Fuzz entry (see fuzz/): the request reader alone, over arbitrary bytes.
+///
+/// The S5-AUD-01 invariant is re-checked here, independently of the parser's own validation: a
+/// head this reader accepts must consist of field lines of the form `name ":" value` whose name is
+/// non-empty and carries no SP or HTAB. Removing or bypassing the validation in `read_request`
+/// therefore fails this fuzz target instead of passing silently. Returns `(kind, body length)` so
+/// the harness can keep the outcome from being optimised away: `0` accepted, `1` closed early,
+/// `2` head too large, `3` refused, `4` I/O error.
+#[allow(dead_code)] // used by the fuzz harness only
+pub async fn fuzz_read_request<S>(stream: &mut S) -> (u8, usize)
+where
+    S: AsyncRead + Unpin,
+{
+    match read_request(stream).await {
+        Ok(ReadOutcome::Request {
+            buf,
+            head_end,
+            length,
+        }) => {
+            let head = String::from_utf8_lossy(&buf[..head_end]);
+            for line in head.split("\r\n").skip(1).filter(|l| !l.is_empty()) {
+                let Some((name, _)) = line.split_once(':') else {
+                    panic!("accepted a field line without a colon: {line:?}");
+                };
+                assert!(
+                    !name.is_empty() && !name.contains([' ', '\t']),
+                    "accepted a field line whose name has whitespace: {line:?}"
+                );
+            }
+            (0, length)
+        }
+        Ok(ReadOutcome::Closed) => (1, 0),
+        Ok(ReadOutcome::HeadTooLarge) => (2, 0),
+        Ok(ReadOutcome::BadRequest(_)) => (3, 0),
+        Err(_) => (4, 0),
+    }
 }
 
 /// Fuzz entry (see fuzz/): the request parser and router with no state directory.

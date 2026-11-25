@@ -44,6 +44,12 @@ test = false
 doc = false
 
 [[bin]]
+name = "read_request"
+path = "fuzz_targets/read_request.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "agent_http"
 path = "fuzz_targets/agent_http.rs"
 test = false

@@ -8,7 +8,7 @@ on:
       - 'fuzz/**'
       - '.github/workflows/fuzz-smoke.yml'
   schedule:
-    # Weekly longer run on main (600 s per target, 8 targets).
+    # Weekly longer run on main (600 s per target, 10 targets).
     - cron: '41 4 * * 1'
   workflow_dispatch:
     inputs:
@@ -35,7 +35,7 @@ jobs:
           SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || (github.event_name == 'schedule' && '600') || '30' }}
         run: |
           cd fuzz
-          for target in config_json pairing_bundle agent_http handshake_server agent_authed apply_body evidence_files history_file state_files; do
+          for target in config_json pairing_bundle read_request agent_http handshake_server agent_authed apply_body evidence_files history_file state_files; do
             echo "== $target"
             cargo +nightly-2026-11-07 fuzz run "$target" -- -max_total_time="$SECONDS_PER_TARGET" -max_len=4096
           done
