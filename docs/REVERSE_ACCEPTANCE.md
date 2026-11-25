@@ -16,7 +16,7 @@ All must pass on the two shared LAB hosts, on an exact `main` SHA, with run evid
 | R6 | Reconnect | SIGKILL of each node and stop + Apply restart of each node recover within 90 s |
 | R7 | Backup/restore | `backup.sh`, simulated loss, `restore.sh`: content, owners and modes identical (non-root key ownership survives), tunnel works after restart |
 | R8 | Update/rollback | `update.sh` to a new digest keeps the tunnel; a binary that fails at start is rolled back automatically and the tunnel recovers |
-| R9 | Revocation | Revoked service-node certificate is refused; diagnostics attribute it to the secure channel |
+| R9 | Revocation | Revoked service-node certificate is refused; diagnostics attribute it to the secure channel. Code-level evidence: `tunnel::tests::revoked_service_node_certificate_is_refused_end_to_end` — it revokes the service-node certificate through `pair_ca::revoke`, then asserts the next real TLS handshake is refused and attributed to `secure_channel` (Linux CI, needs `openssl`). That is not a two-host LAB result: **the live LAB run for R9 is still outstanding.** |
 | R10 | Cleanup | Uninstall leaves no BAFT-TUNNEL resources; listeners and unit files unchanged; firewall drift is reported, never hidden |
 
 Not covered (stated limits): cross-version update (no earlier release has Reverse Preview plus the hardened agent), multi-hour soak, hostile network paths beyond P0-4 R3, other operating systems.
