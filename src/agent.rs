@@ -4797,6 +4797,48 @@ mod tests {
         }
     }
 
+    /// S5-AUD-01 on a long-lived connection: the malformed field line is followed by a second
+    /// pipelined request in the same stream. The client gets exactly one 400 and the connection is
+    /// closed, so neither a keep-alive client nor a pipelining intermediary can have the second
+    /// request answered on a stream whose framing this parser refused.
+    #[tokio::test]
+    async fn malformed_field_line_closes_a_long_lived_connection() {
+        let second = "GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let request = format!(
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding : chunked\r\n\r\n0\r\n\r\n{second}"
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(serve(
+            listener,
+            Arc::new(Ctx::new(sample(), TOKEN.into(), None)),
+        ));
+        let mut s = TcpStream::connect(addr).await.unwrap();
+        s.write_all(request.as_bytes()).await.unwrap();
+        // Reading to EOF is the evidence that the server ends the connection after its one answer.
+        let mut bytes = Vec::new();
+        timeout(Duration::from_secs(5), s.read_to_end(&mut bytes))
+            .await
+            .expect("connection left open after a refused request")
+            .unwrap();
+        task.abort();
+        let out = String::from_utf8_lossy(&bytes);
+        assert!(out.starts_with("HTTP/1.1 400 "), "{out}");
+        assert_eq!(
+            out.matches("HTTP/1.1 ").count(),
+            1,
+            "second pipelined request was served: {out}"
+        );
+        // A client that ignores the close and writes another request gets no answer on that stream.
+        let _ = s.write_all(second.as_bytes()).await;
+        let mut probe = [0u8; 1];
+        let n = timeout(Duration::from_secs(2), s.read(&mut probe))
+            .await
+            .expect("connection stayed open for a further request")
+            .unwrap();
+        assert_eq!(n, 0, "further bytes were served on the refused connection");
+    }
+
     #[tokio::test]
     async fn a_rebinding_host_is_refused_before_auth_and_assets() {
         for path in ["/", "/v1/health", "/v1/status"] {
