@@ -12,6 +12,12 @@ changes (see §1 of [SECURITY_AUDIT_WHOLE_MAIN_2026-11-24.md](SECURITY_AUDIT_WHO
 | Evidence level | Source review at the exact SHA + hosted CI record; no local build or test run |
 | S5 status after this package | **OPEN** |
 
+> **2026-11-25 follow-up:** S5-F1, S5-F2, S5-F3 and the `Host` cardinality item are fixed on
+> `main` at `ffbc367` (PR #439), with regression tests for the exact-boundary head cap, the
+> ASCII-digit `Content-Length` rule and the one-`Host` rule. That changes the code, not the
+> review: this package still describes the `6c83e4e` artifact, and S5 remains OPEN until a
+> reviewer outside the implementers signs off on the final SHA.
+
 ## 1. Artifact under review
 
 | Item | Value |
@@ -110,8 +116,10 @@ ways HTTP/1.1 does not allow, so a proxy and this listener can disagree about th
 - rejects any `Transfer-Encoding`, `Expect` or `Content-Encoding` (`:197`);
 - rejects a second `Content-Length` (`:191-194`);
 - rejects a missing `Content-Length` with 411 (`:201`);
-- rejects a body longer than the declared length (`:205-207`), so pipelined bytes after the body
-  are refused rather than silently kept;
+- rejects a body longer than the declared length (`:205-207`): bytes **already buffered** after
+  the declared body refuse the request (400). Bytes that arrive later are never read, because the
+  listener serves one request per connection and closes it after the answer, so they cannot reach
+  a second request on that connection;
 - requires exactly `POST /v1/fleet/report HTTP/1.1` before reading a body (`:174-188`);
 - caps the report body (`:202-204`) and runs behind mandatory mTLS 1.3 with a Fleet-CA chain and
   CRL (`serve`, `:229-261`); the listener is default-off and decides no policy.
@@ -169,8 +177,10 @@ reads a zero-length body, while `fleet_hub` honours it.
 is the same "two components can disagree on the body boundary" property, and because a future
 reviewer should decide one rule for both parsers.
 
-**Suggested fix (not applied here).** Refuse a header line whose name contains SP/HTAB, or match
-the agent's exact-name comparison, and add one regression case.
+**Suggested fix (not applied here).** Refuse a header line whose name contains SP/HTAB, and add
+one regression case. Matching the agent's exact-name comparison is not a substitute: it would
+silently ignore `Content-Length : 5` instead of rejecting the message, which is a different way
+for the two parsers to disagree about the same input.
 
 ### S5-F3 — Head cap can be overshot by one read — **Info**
 
@@ -247,12 +257,14 @@ sed -n '155,220p' src/fleet_hub.rs  # fleet screening target
 With a Rust toolchain on Linux, the agent tests are:
 
 ```console
-cargo test --lib host_is_required_and_unambiguous
-cargo test --lib ambiguous_body_framing_is_refused
+cargo test --bin baft-tunnel host_is_required_and_unambiguous
+cargo test --bin baft-tunnel ambiguous_body_framing_is_refused
 ```
 
-and a fleet regression test for §5 does not exist yet; the four inputs named in S5-F1 are the
-minimum set to add.
+and the fleet regression tests for §5 now exist, added after this package at `ffbc367`:
+`head_cap_is_enforced_at_the_boundary_without_overshoot`,
+`content_length_must_be_plain_digits_without_header_whitespace` and
+`host_must_appear_exactly_once_without_control_bytes` in `src/fleet_hub.rs`.
 
 ## 9. Limits
 
