@@ -166,7 +166,9 @@ where
         // let one 1024-byte read carry the head past the cap before the next check, so a head
         // of up to `MAX_HEAD_BYTES + 1023` bytes was accepted. Never read more than the cap
         // plus the four-byte terminator can still need.
-        let want = (MAX_HEAD_BYTES + 4).saturating_sub(buf.len()).min(chunk.len());
+        let want = (MAX_HEAD_BYTES + 4)
+            .saturating_sub(buf.len())
+            .min(chunk.len());
         if want == 0 {
             return Err(400);
         }
