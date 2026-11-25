@@ -3,7 +3,7 @@
 **Status:** Option A owner decision recorded and pre-implementation contract-test gate satisfied on 2026-11-12. B2 runtime implementation is tracked in PR #177; B2 feature acceptance remains pending.  
 **Scope:** ADR-0028 B2 implementation-start prerequisite.  
 **Runtime baseline:** protocol-v1 source at `7bf0b9ab1ae7c905d2ae8b1c6d3b369ed2a59b0a`; test-only Option A contract vectors were later merged in PR #176 at `74b8ba33b2144c7537f710c720e70e6c25ebfca1` without changing runtime negotiation.  
-**Related:** [ADR-0028](ADR-0028-authenticated-integrity-probe.md), [ADR-0011](ADR-0011-authorization.md), [ADR-0024](ADR-0024-operations-evidence.md), [Readiness contract](READINESS_CONTRACT.md).
+**Related:** [ADR-0028](ADR-0028-authenticated-integrity-probe.md), [ADR-0011](ADR-0011-authorization.md), [ADR-0024](ADR-0024-p1-operations-evidence.md), [Readiness contract](READINESS_CONTRACT.md).
 
 ## 1. Verified current protocol baseline
 
