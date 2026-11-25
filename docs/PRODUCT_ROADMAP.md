@@ -234,6 +234,10 @@ Negative-path evidence is separate and deliberately scoped: PR #193's controlled
 
 B2 is accepted for **Direct only**. Reverse remains unavailable until its independent ADR-0021 implementation and acceptance gate passes. No release, tag, deployment, production-host mutation, or Phase 2 transition is implied. Failed run #13 remains preserved as a harness accounting failure and was corrected by PR #194 before run #14.
 
+## 2026-11-25 current-state verification addendum
+
+Live re-check on 2026-11-25: `main` is `62c0ba274c8d2843ece1ee9030feb351c5444367` (merge of PR #440), its exact-SHA checks are 10/10 `SUCCESS`, the latest Stable tag is still `v0.3.0`, and `Cargo.toml` reads 0.3.1 with `v0.3.1-rc.1` as a prerelease. S5 is **OPEN**: #433 closed S5-01 on the agent surface, #439 closed S5-F1/F2/F3 and the one-`Host` rule in `fleet_hub`, and all six regression tests pass locally at `62c0ba2`, but no independent human sign-off is recorded and green CI is not a substitute. Reverse stays **Preview**; the R9 two-host LAB run is outstanding and the LAB remains suspended by owner order, so the hosted v0.3.0 upgrade drill from #440 is not cross-version LAB evidence. Open-PR triage, the local Fleet-stack integration result and the flaky `resume_tunnel` teardown test are recorded in [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md).
+
 ## 9. Replan after Stable 0.2.0 (2026-11-16)
 
 This section is the current working order. It replaces the §5 MVP queue, which is complete except where noted. Nothing below is a claim of delivered capability; each item names the evidence it needs. Fixed constraints in §6 are unchanged.

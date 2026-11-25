@@ -2,6 +2,15 @@
 
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
+## به‌روزرسانی 2026-11-25
+
+- `main` روی `62c0ba274c8d2843ece1ee9030feb351c5444367` (ادغام PR #440) است و چک‌های دقیق همان SHA ده‌از‌ده `SUCCESS` هستند ([run 45549914213](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/45549914213)).
+- از ۲۴ نوامبر ادغام شده: #433 (اصلاح framing و قاعدهٔ یک `Host` در Agent)، #434 (بستهٔ شواهد S5)، #439 (رفع S5-F1/F2/F3 و قاعدهٔ یک `Host` در `fleet_hub`)، #440 (دریل ارتقا/بازگشت v0.3.0→فعلی روی CI میزبان). آخرین Stable همچنان `v0.3.0` است و 0.3.1 منتشر نشده.
+- **S5 باز است:** هیچ تأیید انسانی مستقل ثبت نشده. بازآزمایی محلی روی `62c0ba2`: ۴۲۱ تست پاس، صفر خطا، ۵ نادیده؛ fmt و clippy پاک؛ هر شش تست رگرسیون S5 پاس. این شاهد نویسنده است، نه بازبینی مستقل.
+- آزمون `resume_tunnel` روی `main` ناپایدار بود (سه شکست از ده اجرا، همیشه شمارندهٔ Stream سمت سرور). علت: قطع Carrier پیش از پایان تبادل Fin/Ack؛ اصلاح روی شاخهٔ `fix/resume-teardown-race-20261125` (۱۲ از ۱۲ پاس) و ادغام‌نشده.
+- PRهای باز: #441 (مستندات Reverse) `CLEAN` و ۱۳/۱۳؛ #398 و #399 روی `main` تمیز؛ #401..#406 فقط نسبت به شاخهٔ والد تمیزند و ادغام کل پشته روی `main` در شش فایل تعارض دارد (محلی حل شد، ۵۳۴ تست پاس، Push نشده)؛ #396، #397 و #417 با `main` تعارض دارند.
+- LAB دوسروره به دستور مالک معلق است؛ بدون `CAP_NET_ADMIN`، Deploy، Release، Tag یا تغییر Production.
+
 ## به‌روزرسانی 2026-11-16
 
 - آخرین نسخهٔ منتشرشده: **Stable `v0.2.0`** (تگ `76c12cb`، 2026-11-15). بلوغ محصول: **Active Development** (Reverse و BAFT در حالت Preview). آمادگی Production: **تأییدنشده**.
