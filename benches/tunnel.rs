@@ -40,6 +40,9 @@ mod fleet_helper;
 #[path = "../src/fleet_hub.rs"]
 #[allow(dead_code)]
 mod fleet_hub;
+#[path = "../src/fleet_join.rs"]
+#[allow(dead_code)]
+mod fleet_join;
 #[path = "../src/fleet_report.rs"]
 #[allow(dead_code)]
 mod fleet_report;

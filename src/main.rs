@@ -15,6 +15,8 @@ mod fleet_ca;
 mod fleet_enroll;
 mod fleet_helper;
 mod fleet_hub;
+mod fleet_join;
+mod fleet_member;
 mod fleet_report;
 mod fleet_run;
 mod geoip;
@@ -54,7 +56,7 @@ mod transport_health;
 mod tunnel;
 mod tunnel_helper;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use authorization::ConnectionDirection;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -217,8 +219,8 @@ enum Command {
         /// the unprivileged `baft-tunnel` user (see docs/SECURITY_ASSESSMENT.md, SA-01).
         #[arg(long)]
         allow_root: bool,
-        /// Fleet (ADR-0045 F1, read-only, Preview): JSON file naming the certificate files for a
-        /// hub listener and/or a member reporter. Off unless given; see docs/ADR-0045.
+        /// Fleet (ADR-0045 F1, read-only, Preview): explicit JSON config for a hub listener and/or
+        /// member reporter. If omitted, a root-managed per-instance config is auto-loaded when present.
         #[arg(long)]
         fleet_config: Option<PathBuf>,
     },
@@ -226,11 +228,152 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum FleetCommand {
+    /// Initialize the separate root-held Fleet CA for the registered LAB only. Its public CA/CRL
+    /// are Agent-readable; the private key and signing state remain root-only. For non-LAB use,
+    /// follow the offline CA ceremony in the project release/security policy.
+    Ca {
+        #[command(subcommand)]
+        command: FleetCaCommand,
+    },
     /// Run by `baft-tunnel-control-fleet@NAME.service` as root: sign one requested certificate.
     Helper {
         #[arg(long)]
         instance: String,
     },
+    /// Join a Fleet Hub using a one-time offer read from stdin, or resume a pending activation.
+    Join {
+        #[arg(long)]
+        instance: String,
+        #[arg(long)]
+        resume: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum FleetCaCommand {
+    /// Create the LAB Fleet CA at /etc/baft-tunnel/fleet-ca. Never overwrites an existing path.
+    Init {
+        /// Common name of the Fleet CA certificate.
+        #[arg(long, default_value = "BAFT Fleet CA")]
+        name: String,
+        /// Explicitly confirm creation of the long-lived Fleet CA key on this host.
+        #[arg(long)]
+        confirm: bool,
+    },
+}
+
+const MAX_JOIN_OFFER_LINE_BYTES: usize = 16 * 1024;
+
+fn validate_fleet_join_invocation(instance: &str, effective_uid: u32) -> Result<()> {
+    anyhow::ensure!(effective_uid == 0, "Fleet Join must run as root");
+    anyhow::ensure!(
+        apply::valid_instance(instance),
+        "invalid Fleet instance name"
+    );
+    Ok(())
+}
+
+fn read_join_offer<R: std::io::Read>(reader: &mut R) -> Result<String> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_JOIN_OFFER_LINE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .context("read the one-time Fleet Join offer from stdin")?;
+    anyhow::ensure!(
+        bytes.len() <= MAX_JOIN_OFFER_LINE_BYTES,
+        "Fleet Join offer exceeds the input limit"
+    );
+    let mut line = bytes.as_slice();
+    if line.last() == Some(&b'\n') {
+        line = &line[..line.len() - 1];
+    }
+    if line.last() == Some(&b'\r') {
+        line = &line[..line.len() - 1];
+    }
+    anyhow::ensure!(
+        !line.is_empty() && !line.contains(&b'\n') && !line.contains(&b'\r'),
+        "stdin must contain exactly one non-empty Fleet Join offer line"
+    );
+    let offer = std::str::from_utf8(line).context("Fleet Join offer is not UTF-8")?;
+    anyhow::ensure!(
+        offer.trim() == offer,
+        "Fleet Join offer line must not contain surrounding whitespace"
+    );
+    Ok(offer.to_owned())
+}
+
+/// Initialize the operator-owned Fleet CA. This command never exports or prints the private key.
+fn init_fleet_ca(name: &str, confirm: bool) -> Result<()> {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } != 0 {
+        bail!("Fleet CA initialization must run as root");
+    }
+    if !confirm {
+        bail!("refusing to create a Fleet CA without --confirm");
+    }
+
+    let parent = std::path::Path::new("/etc/baft-tunnel");
+    let parent_meta = std::fs::symlink_metadata(parent)
+        .context("the /etc/baft-tunnel directory must already exist")?;
+    if !parent_meta.file_type().is_dir()
+        || std::os::unix::fs::MetadataExt::uid(&parent_meta) != 0
+        || std::os::unix::fs::MetadataExt::mode(&parent_meta) & 0o022 != 0
+    {
+        bail!("/etc/baft-tunnel must be a real root-owned directory and not group/world writable");
+    }
+
+    let ca_dir = std::path::Path::new(fleet_helper::CA_DIR);
+    match std::fs::symlink_metadata(ca_dir) {
+        Ok(_) => bail!(
+            "{} already exists; refusing to replace or reuse it",
+            ca_dir.display()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).context("cannot inspect the Fleet CA path"),
+    }
+
+    let cert = fleet_ca::create(ca_dir, name)?;
+    if !cert.starts_with("-----BEGIN CERTIFICATE-----") {
+        bail!(
+            "Fleet CA creation did not return a certificate; inspect {}",
+            ca_dir.display()
+        );
+    }
+    let dir_meta = std::fs::symlink_metadata(ca_dir)?;
+    let key_path = ca_dir.join("ca.key");
+    let key_meta = std::fs::symlink_metadata(&key_path)?;
+    if !dir_meta.file_type().is_dir()
+        || std::os::unix::fs::MetadataExt::uid(&dir_meta) != 0
+        || std::os::unix::fs::MetadataExt::mode(&dir_meta) & 0o777 != 0o711
+        || !key_meta.file_type().is_file()
+        || std::os::unix::fs::MetadataExt::uid(&key_meta) != 0
+        || std::os::unix::fs::MetadataExt::mode(&key_meta) & 0o777 != 0o600
+        || !ca_dir.join("ca.crt").is_file()
+        || !ca_dir.join("ca.crl").is_file()
+        || std::os::unix::fs::MetadataExt::mode(&std::fs::symlink_metadata(ca_dir.join("ca.crt"))?)
+            & 0o777
+            != 0o644
+        || std::os::unix::fs::MetadataExt::mode(&std::fs::symlink_metadata(ca_dir.join("ca.crl"))?)
+            & 0o777
+            != 0o644
+        || std::os::unix::fs::MetadataExt::uid(&std::fs::symlink_metadata(ca_dir.join("ca.crt"))?)
+            != 0
+        || std::os::unix::fs::MetadataExt::uid(&std::fs::symlink_metadata(ca_dir.join("ca.crl"))?)
+            != 0
+    {
+        bail!(
+            "Fleet CA was created but its ownership/mode verification failed; do not use it until inspected"
+        );
+    }
+
+    println!("Fleet CA initialized at {}", ca_dir.display());
+    println!("Public trust anchor: {}", ca_dir.join("ca.crt").display());
+    println!("CRL: {}", ca_dir.join("ca.crl").display());
+    println!(
+        "Private key remains root-owned with mode 0600; do not copy it to any node or browser."
+    );
+    Ok(())
 }
 
 #[derive(Debug, Subcommand)]
@@ -858,6 +1001,29 @@ async fn run() -> Result<()> {
             .await
         }
         Command::Fleet {
+            command: FleetCommand::Ca {
+                command: FleetCaCommand::Init { name, confirm },
+            },
+        } => init_fleet_ca(&name, confirm),
+        Command::Fleet {
+            command: FleetCommand::Join { instance, resume },
+        } => {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            validate_fleet_join_invocation(&instance, unsafe { libc::geteuid() })?;
+            let outcome = if resume {
+                fleet_member::resume(&instance).await?
+            } else {
+                let encoded_offer = read_join_offer(&mut std::io::stdin().lock())?;
+                fleet_member::join_from_offer(&instance, &encoded_offer).await?
+            };
+            match outcome {
+                fleet_member::JoinOutcome::RestartQueued => {
+                    println!("state=restart_queued report_pending=true");
+                }
+            }
+            Ok(())
+        }
+        Command::Fleet {
             command: FleetCommand::Helper { instance },
         } => {
             // SAFETY: geteuid has no preconditions and cannot fail.
@@ -953,10 +1119,18 @@ async fn run() -> Result<()> {
                 Some(config)
             };
             let token = agent::read_token(&token_file)?;
-            let fleet = fleet_config
-                .as_deref()
-                .map(fleet_run::FleetConfig::load)
-                .transpose()?;
+            let fleet = if let Some(path) = fleet_config.as_deref() {
+                Some(fleet_run::FleetConfig::load(path)?)
+            } else if let Some(name) = instance.as_deref() {
+                if !apply::valid_instance(name) {
+                    anyhow::bail!("invalid --instance name");
+                }
+                let path = std::path::Path::new(fleet_helper::FLEET_CONFIG_ROOT)
+                    .join(format!("{name}.json"));
+                fleet_run::FleetConfig::load_if_present(&path)?
+            } else {
+                None
+            };
             agent::run(
                 config,
                 agent::parse_listen(&listen)?,
@@ -1007,6 +1181,70 @@ async fn run() -> Result<()> {
                 serde_json::to_string_pretty(&config.support_report())?
             );
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod fleet_join_cli_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn fleet_join_cli_parses_stdin_join_and_resume_without_offer_argv() {
+        let normal =
+            Cli::try_parse_from(["baft-tunnel", "fleet", "join", "--instance", "edge"]).unwrap();
+        assert!(
+            matches!(normal.command, Command::Fleet { command: FleetCommand::Join { instance, resume: false } } if instance == "edge")
+        );
+
+        let resume = Cli::try_parse_from([
+            "baft-tunnel",
+            "fleet",
+            "join",
+            "--instance",
+            "edge",
+            "--resume",
+        ])
+        .unwrap();
+        assert!(
+            matches!(resume.command, Command::Fleet { command: FleetCommand::Join { instance, resume: true } } if instance == "edge")
+        );
+
+        assert!(
+            Cli::try_parse_from([
+                "baft-tunnel",
+                "fleet",
+                "join",
+                "--instance",
+                "edge",
+                "secret-offer",
+            ])
+            .is_err(),
+            "offer must never be accepted as an argv value"
+        );
+    }
+
+    #[test]
+    fn fleet_join_requires_root_and_a_valid_instance() {
+        assert!(validate_fleet_join_invocation("edge", 0).is_ok());
+        assert!(validate_fleet_join_invocation("edge", 1000).is_err());
+        assert!(validate_fleet_join_invocation("../edge", 0).is_err());
+    }
+
+    #[test]
+    fn fleet_join_stdin_accepts_one_bounded_utf8_line_only() {
+        let mut input = Cursor::new(b"encoded-offer\n".to_vec());
+        assert_eq!(read_join_offer(&mut input).unwrap(), "encoded-offer");
+
+        for bytes in [
+            b"".to_vec(),
+            b"first\nsecond\n".to_vec(),
+            vec![0xff],
+            vec![b'x'; MAX_JOIN_OFFER_LINE_BYTES + 1],
+        ] {
+            let mut input = Cursor::new(bytes);
+            assert!(read_join_offer(&mut input).is_err());
         }
     }
 }

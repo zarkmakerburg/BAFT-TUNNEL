@@ -1,6 +1,6 @@
 # ADR-0051: add and configure another server from the panel
 
-Status: **Proposed** (2026-11-17). Security-sensitive: SSH enrollment must not be enabled before the independent review this ADR requests. Builds on ADR-0045 (Fleet, accepted with conditions), ADR-0050 (automatic pairing, Proposed in PR #338), ADR-0023 (control helper), ADR-0033 (panel HTTPS), ADR-0034 (offline signature verification), ADR-0030 (no `CAP_NET_ADMIN`).
+Status: **Proposed** (2026-11-17). Security-sensitive: SSH enrollment (Path B) remains disabled until its implementation, security self-review, negative tests and staged acceptance gates pass. Per the owner's 2026-11-19 decision, independent external review is not a project prerequisite. Builds on ADR-0045 (Fleet, accepted with conditions), ADR-0050 (automatic pairing, Proposed in PR #338), ADR-0023 (control helper), ADR-0033 (panel HTTPS), ADR-0034 (offline signature verification), ADR-0030 (no `CAP_NET_ADMIN`).
 
 ## Goal
 
@@ -18,7 +18,7 @@ Two enrollment paths, shipped in this order. Both end the same way: the remote s
 
 This needs no new attack surface beyond ADR-0050's listener. The one-line installer downloads from GitHub, so on a host without internet it works only if the panel serves the bundle (see L2 below).
 
-### Path B: SSH enrollment (second, off by default, behind review)
+### Path B: SSH enrollment (second, off by default, behind its own acceptance gates)
 
 The panel runs the same installation over SSH so the user only types address and credentials.
 
@@ -44,7 +44,7 @@ The panel runs the same installation over SSH so the user only types address and
 - **D1. CA.** Reuse the ADR-0050 per-tunnel CA mechanism. A Fleet-local CA is added only if this ADR shows a concrete need that the per-tunnel CA cannot meet (open: Fleet reporting identity for panel-enrolled nodes, ADR-0045 `fleet-node` profile; to be argued in the Fleet transport PR). CA keys never leave the host that owns them.
 - **D2. SSH client.** A pure Rust SSH library, no shelling out to `ssh` and no Go, with strict host-key verification. This replaces the OpenSSH-client plan above: the askpass/`memfd` mechanics are dropped, the secret stays in zeroized memory inside the enrollment unit, and the new dependency goes through `cargo deny`/audit review in the Path B PR. The unit sandbox, host-key confirmation and fixed step list stay as written.
 - **D3. sudo.** No blanket sudo. Only the signed installer is run, through a narrow fixed command; the sudo password lives in memory only and is sent only to that command.
-- **Review.** An independent security review of this ADR (Opus reviewer thread, PR #341) is required before Path B is enabled. Path A proceeds meanwhile.
+- **Owner decision (2026-11-19).** Independent external review is not required before Path B or any other project stage. Path B remains disabled until its own implementation-specific security self-review, negative tests and staged acceptance gates pass. The prior PR #341 review findings below remain useful hardening constraints, not an approval prerequisite.
 
 ## Staged plan (each a small PR, CI on the exact SHA, local/CI evidence until a LAB slot is granted)
 
@@ -57,9 +57,9 @@ The panel runs the same installation over SSH so the user only types address and
 
 ## Out of scope and fixed constraints
 
-No firewall, route, sysctl or `CAP_NET_ADMIN` change on any host; the panel tells the user which port to open. No arbitrary remote commands. No stored credentials. No real hosts beyond the two LAB hosts, and only in an approved window. Nothing here is implemented, tested or LAB-verified.
+No firewall, route, sysctl or `CAP_NET_ADMIN` change on any host; the panel tells the user which port to open. No arbitrary remote commands. No stored operator credentials. No real hosts beyond the two LAB hosts, and only in an approved window. Implementation and CI evidence are recorded in the subsequent addenda and PRs; no two-host LAB acceptance is claimed by this ADR.
 
-## Amendments from the independent review (binding before Path B stage 4 starts)
+## Security hardening amendments (from prior review; retained as design constraints)
 
 Review: PR #341 comment 6960083527 (no Critical, 4 High, 6 Medium, 4 Low). D2 (pure Rust SSH library, no shelling out) is kept; findings written for the OpenSSH client are applied in their library form.
 
@@ -85,11 +85,11 @@ Review: PR #341 comment 6960083527 (no Critical, 4 High, 6 Medium, 4 Low). D2 (p
 
 The concrete need D1 asked for: the per-tunnel CA (ADR-0050) signs exactly two node ids fixed at creation and is name constrained to their two addresses, so it cannot enroll a third, panel-added server. Reusing it would mean widening its constraints, which weakens the tunnel trust. A separate Fleet CA is therefore added, under the M5 conditions:
 
-- `src/fleet_ca.rs` (openssl through the existing `pair_ca` helpers, no new dependency). The key is created 0600 in a 0700 directory and is meant to live only in the root helper, separate from any per-pair CA.
+- `src/fleet_ca.rs` (openssl through the existing `pair_ca` helpers, no new dependency). The CA key is root-owned 0600 in a non-listable 0711 directory; only the public CA certificate and CRL are 0644 so the unprivileged Agent can verify peers. The signing database/config and `newcerts` remain root-only. The key lives only in the root helper, separate from any per-pair CA.
 - Name constrained to URI names under `.fleet.baft.invalid`; a fleet-node certificate carries `baft-fleet://<node-id>.fleet.baft.invalid` and the hub reads the node id from it (F-5). Node ids are lowercase letters, digits and hyphens, at most 63 characters.
 - One BAFT EKU only (`fleet::EKU_FLEET_NODE`) plus standard `clientAuth` (F-4); no `serverAuth`.
 - Leaf validity 30 days, CRL validity 30 days, revocation supported. Same CSR gate as the tunnel CA (shared `pair_ca::check_csr`: one PEM request, valid signature, CN equals node id, EC P-256).
-- `fleet_ca::sign_hub` issues the `fleet-hub` server certificate (F-2): `serverAuth` plus the fleet-hub EKU only, URI `baft-fleet-hub://<name>.fleet.baft.invalid` and the DNS or IP the members dial. Not wired yet: the root helper operation and the enrollment flow (F-7) come in later slices. Nothing in the agent calls this module today.
+- `fleet_ca::sign_hub` issues the `fleet-hub` server certificate (F-2): `serverAuth` plus the fleet-hub EKU only, URI `baft-fleet-hub://<name>.fleet.baft.invalid` and the DNS or IP the members dial. The Slice 1 implementation wires this through the root Fleet helper; the CA private key stays in the helper and the Hub key is delivered only through the instance-scoped systemd credential. The Join listener and enrollment flow (F-7) remain later slices. The unprivileged Agent never calls the CA signing module.
 
 Evidence: container-free unit tests with the real `openssl` (profile, EKU exclusivity, name, 30-day bound, chain verify, bad CN, wrong curve, invalid ids, revocation). Not LAB-verified.
 
@@ -99,4 +99,20 @@ Evidence: container-free unit tests with the real `openssl` (profile, EKU exclus
 
 ## Addendum: root Fleet helper (M5)
 
-`src/fleet_helper.rs` plus `baft-tunnel-control-fleet@.path/.service` follow the pairing-helper pattern (ADR-0050): the agent drops `NAME.fleet` (node id and CSR only), the root unit runs `baft-tunnel fleet helper --instance NAME` with no network and the usual hardening, signs with `fleet_ca::sign` from `/etc/baft-tunnel/fleet-ca` and writes `NAME.fleet-result` (public certificate only). The helper never creates the CA; a missing CA fails closed. `POST /v1/fleet/enroll/confirm` now signs through this helper (8 s wait) and answers 503 when there is no instance or helper. Creating the Fleet CA (an operator command) and the node join over the hub listener are the next slices.
+`src/fleet_helper.rs` plus `baft-tunnel-control-fleet@.path/.service` follow the pairing-helper pattern (ADR-0050): the agent drops `NAME.fleet` (node id and CSR only), the root unit runs `baft-tunnel fleet helper --instance NAME` with no network and the usual hardening, signs with `fleet_ca::sign` from `/etc/baft-tunnel/fleet-ca` and writes `NAME.fleet-result` (public certificate only). The helper never creates the CA; a missing CA fails closed. `POST /v1/fleet/enroll/confirm` now signs through this helper (8 s wait) and answers 503 when there is no instance or helper. The remaining Fleet slice is the node join over the hub listener and its end-to-end acceptance.
+
+The operator initialization slice exposes `sudo baft-tunnel fleet ca init --confirm` (optional `--name`) for the registered LAB only. It is root-only, requires explicit confirmation, refuses any pre-existing CA path, requires `/etc/baft-tunnel` to be a real root-owned non-group/world-writable directory, and verifies the resulting CA directory, private key and public trust-file modes before reporting success. It prints only public file paths; it never prints or exports `ca.key`. The command does not enroll nodes or open a listener. Any non-LAB deployment still requires the offline CA ceremony in O9.
+
+The Hub identity slice provisions a per-instance `fleet-hub` key inside the root helper, publishes only its server certificate, writes a root-owned Fleet config and a narrowly scoped Agent systemd drop-in, and delivers the key with `LoadCredential=fleet-hub-key`. The drop-in adds only the credential; the Agent auto-loads the root-managed per-instance config by its validated instance name, preserving the existing systemd `ExecStart` and any operator overrides. The operator explicitly activates it by restarting that Agent instance. The Fleet panel reports configured, restart-required and active states separately. No firewall, route, sysctl or `CAP_NET_ADMIN` changes are made. Real systemd/credential acceptance is required before this slice is considered complete.
+
+## Addendum 2026-11-20: Fleet CA Name Constraints compatible with standard WebPKI
+
+This addendum supersedes only the Fleet certificate Name Constraints and identity-SAN details in the 2026-11-18 D1 addendum above. The historical text is retained as the record of the original design.
+
+- The Fleet CA now uses a critical `permitted;DNS:.fleet.baft.invalid` Name Constraints subtree. URI Name Constraints are not used because the project's locked `rustls-webpki 0.103.16` standard verifier rejects URI name constraints fail-closed. No custom verifier or runtime OpenSSL TLS path is introduced.
+- Every Fleet Member leaf carries exactly one `DNS:<node-id>.fleet.baft.invalid` and exactly one `URI:baft-fleet://<node-id>.fleet.baft.invalid`. Every Fleet Hub leaf carries exactly one `DNS:<hub-id>.fleet.baft.invalid` and exactly one `URI:baft-fleet-hub://<hub-id>.fleet.baft.invalid`. The DNS SAN is the CA-constrained transport identity; the URI remains the canonical application identity.
+- Runtime identity checks reject missing, duplicate, unexpected, malformed or mismatched DNS/URI SANs and duplicate SAN extensions. Hub identity validation also requires the exact Fleet Hub EKU profile. Member bundle publication performs the same strict identity check before publishing durable material.
+- The Hub's external TCP destination remains separate from its TLS identity: `JoinOffer.host` / `MemberConfig.hub_addr` carry the dial endpoint, while `hub_name` and SNI are derived as `<hub-id>.fleet.baft.invalid`.
+- Both persistent mTLS roles remain on the standard rustls WebPKI verifier with mandatory CRL enforcement. Tests cover valid Hub/Member handshakes, out-of-namespace DNS rejection, wrong SNI, revoked Member rejection, and expired-CRL fail-closed behavior for both verifier roles.
+
+Local evidence on 2026-11-20: commit `99a06e0ef9f138a74accb027e6a312a2b886f698`; focused Fleet suite `126 passed, 0 failed` on macOS with temporary compatibility shims that were restored byte-for-byte; Hub paired-identity test `1 passed`; `cargo fmt --all -- --check` and `git diff --check` passed. This is local test evidence only. Exact-head Linux CI has not run for this commit; no two-host LAB, merge, release, deployment or real-host operation is claimed. Existing Fleet CAs/leaves issued under the prior URI-constrained profile must not be reused; any reinitialization/re-enrollment requires a separately authorized migration plan.
