@@ -4839,6 +4839,159 @@ mod tests {
         assert_eq!(n, 0, "further bytes were served on the refused connection");
     }
 
+    /// S5-AUD-01 differential check against a real nginx in front of this agent: does the proxy
+    /// agree that `Transfer-Encoding : chunked` (SP before the colon) is not chunked framing?
+    ///
+    /// The proxy is started from `BAFT_NGINX_BIN` (or `nginx` on PATH) in a throwaway prefix and
+    /// listens on loopback in front of `serve`. Both answers must be refusals: either nginx rejects
+    /// the request itself (its error log records `client sent invalid header line`), or, if a proxy
+    /// ever forwards the line verbatim, `read_request` refuses it with 400. A 2xx from either side
+    /// would mean the header was silently dropped by a server that still framed the body some other
+    /// way, which is exactly the S5-AUD-01 disagreement. The well-formed control request must still
+    /// return 200 through the same proxy, so a 400 is a rejection and not a dead proxy path.
+    ///
+    /// S5 stays OPEN: this is loopback evidence with one proxy build, not a deployment.
+    /// Run by hand:
+    /// `BAFT_NGINX_BIN=/path/to/nginx cargo test --locked --bin baft-tunnel \
+    ///      nginx_differential -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "needs a real nginx binary (BAFT_NGINX_BIN or nginx on PATH)"]
+    async fn nginx_differential_on_a_whitespace_te_header() {
+        async fn exchange(what: &str, addr: &str, req: &str) -> String {
+            let mut s = TcpStream::connect(addr).await.unwrap();
+            s.write_all(req.as_bytes()).await.unwrap();
+            let mut out = Vec::new();
+            timeout(Duration::from_secs(5), s.read_to_end(&mut out))
+                .await
+                .unwrap_or_else(|_| panic!("{what}: no EOF from {addr}"))
+                .unwrap();
+            String::from_utf8_lossy(&out).into_owned()
+        }
+
+        let bin = std::env::var("BAFT_NGINX_BIN").unwrap_or_else(|_| "nginx".into());
+        if std::process::Command::new(&bin).arg("-v").output().is_err() {
+            panic!("no nginx to test with ({bin}); set BAFT_NGINX_BIN to a local nginx binary");
+        }
+        let dir = state_dir("nginx-diff");
+        for sub in [
+            "client_body",
+            "proxy_temp",
+            "fastcgi_temp",
+            "uwsgi_temp",
+            "scgi_temp",
+        ] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        let agent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let agent_addr = agent.local_addr().unwrap();
+        let task = tokio::spawn(serve(
+            agent,
+            Arc::new(Ctx::new(sample(), TOKEN.into(), None)),
+        ));
+        // A free port for the proxy: bind one, read it, release it for nginx.
+        let proxy_port = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let conf = dir.join("nginx.conf");
+        std::fs::write(
+            &conf,
+            format!(
+                "worker_processes 1;\n\
+                 daemon off;\n\
+                 error_log {d}/error.log info;\n\
+                 pid {d}/nginx.pid;\n\
+                 events {{ worker_connections 64; }}\n\
+                 http {{\n\
+                   access_log {d}/access.log;\n\
+                   client_body_temp_path {d}/client_body;\n\
+                   proxy_temp_path {d}/proxy_temp;\n\
+                   fastcgi_temp_path {d}/fastcgi_temp;\n\
+                   uwsgi_temp_path {d}/uwsgi_temp;\n\
+                   scgi_temp_path {d}/scgi_temp;\n\
+                   server {{\n\
+                     listen 127.0.0.1:{proxy_port};\n\
+                     keepalive_timeout 0;\n\
+                     location / {{\n\
+                       proxy_pass http://{agent_addr};\n\
+                       proxy_http_version 1.1;\n\
+                     }}\n\
+                   }}\n\
+                 }}\n",
+                d = dir.display()
+            ),
+        )
+        .unwrap();
+        let mut child = std::process::Command::new(&bin)
+            .arg("-p")
+            .arg(&dir)
+            .arg("-c")
+            .arg(&conf)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("start nginx");
+        let proxy = format!("127.0.0.1:{proxy_port}");
+        let mut listening = false;
+        for _ in 0..100 {
+            if TcpStream::connect(&proxy).await.is_ok() {
+                listening = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let malformed = "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding : chunked\r\n\r\n0\r\n\r\n";
+        let mut via_nginx = String::new();
+        let mut direct = String::new();
+        let mut control = String::new();
+        if listening {
+            via_nginx = exchange("malformed via nginx", &proxy, malformed).await;
+            direct = exchange("malformed direct", &agent_addr.to_string(), malformed).await;
+            control = exchange(
+                "control via nginx",
+                &proxy,
+                "GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            .await;
+        }
+        let log = std::fs::read_to_string(dir.join("error.log")).unwrap_or_default();
+        child.kill().ok();
+        child.wait().ok();
+        task.abort();
+        assert!(listening, "nginx never listened on {proxy}; log:\n{log}");
+
+        let nginx_answered = via_nginx.contains("Server: nginx");
+        let agent_answered_via_proxy = via_nginx.contains("Content-Type: application/json");
+        eprintln!(
+            "nginx differential: via proxy -> {} | agent direct -> {} | control -> {} | \
+             nginx answered itself: {nginx_answered} | forwarded to agent: {agent_answered_via_proxy}",
+            via_nginx.lines().next().unwrap_or("<empty>"),
+            direct.lines().next().unwrap_or("<empty>"),
+            control.lines().next().unwrap_or("<empty>"),
+        );
+        if let Some(line) = log.lines().find(|l| l.contains("invalid header line")) {
+            eprintln!("nginx log: {line}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // The well-formed control proves the proxy really reaches this agent, so the 400 below is
+        // a refusal and not a broken path.
+        assert!(control.starts_with("HTTP/1.1 200 "), "control: {control}");
+        // This parser refuses the line regardless of what any proxy does with it.
+        assert!(
+            direct.starts_with("HTTP/1.1 400 "),
+            "agent direct: {direct}"
+        );
+        // Through nginx the outcome must also be a refusal, from nginx or from the agent.
+        assert!(
+            via_nginx.starts_with("HTTP/1.1 4"),
+            "proxy/parser disagreement: nginx returned {via_nginx}"
+        );
+    }
+
     #[tokio::test]
     async fn a_rebinding_host_is_refused_before_auth_and_assets() {
         for path in ["/", "/v1/health", "/v1/status"] {
