@@ -52,6 +52,12 @@ pub mod fleet_helper;
 #[path = "../../src/fleet_hub.rs"]
 #[allow(dead_code)]
 pub mod fleet_hub;
+#[path = "../../src/fleet_join.rs"]
+#[allow(dead_code)]
+pub mod fleet_join;
+#[path = "../../src/fleet_member.rs"]
+#[allow(dead_code)]
+pub mod fleet_member;
 #[path = "../../src/fleet_report.rs"]
 #[allow(dead_code)]
 pub mod fleet_report;
