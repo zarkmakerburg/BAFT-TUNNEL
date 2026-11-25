@@ -241,7 +241,10 @@ if [[ -n "$OLD_BIN" ]]; then
   sudo systemctl daemon-reload
   sudo systemctl start "$SERVICE_UNIT"
   wait_active || die "service did not come up with the new binary after the drill"
+  # A drill that ran the same build twice would prove nothing about version compatibility.
+  [[ "$old_version" != "$new_version" ]] || die "upgrade drill used the same version twice: $old_version"
   UPGRADE_RESULT=" upgrade_s=$up_s rollback_s=$rb_s from='$old_version' to='$new_version'"
+  echo "CROSS_VERSION_UPGRADE old='$old_version' new='$new_version' upgrade_s=$up_s rollback_s=$rb_s config_unchanged=1"
 fi
 
 # ADR-0025: guarded update with automatic rollback, and backup/restore, on real systemd.
