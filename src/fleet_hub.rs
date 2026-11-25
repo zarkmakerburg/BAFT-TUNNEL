@@ -162,15 +162,23 @@ where
         if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
             break p;
         }
-        if buf.len() > MAX_HEAD_BYTES {
+        // S5-F3: bound the read itself. Checking `buf.len()` only before an unbounded read
+        // let one 1024-byte read carry the head past the cap before the next check, so a head
+        // of up to `MAX_HEAD_BYTES + 1023` bytes was accepted. Never read more than the cap
+        // plus the four-byte terminator can still need.
+        let want = (MAX_HEAD_BYTES + 4).saturating_sub(buf.len()).min(chunk.len());
+        if want == 0 {
             return Err(400);
         }
-        let n = stream.read(&mut chunk).await.map_err(|_| 400u16)?;
+        let n = stream.read(&mut chunk[..want]).await.map_err(|_| 400u16)?;
         if n == 0 {
             return Err(400);
         }
         buf.extend_from_slice(&chunk[..n]);
     };
+    if head_end > MAX_HEAD_BYTES {
+        return Err(400);
+    }
     let head = std::str::from_utf8(&buf[..head_end]).map_err(|_| 400u16)?;
     let mut lines = head.split("\r\n");
     let mut first = lines.next().unwrap_or("").split(' ');
@@ -185,18 +193,42 @@ where
         return Err(405);
     }
     let mut length: Option<usize> = None;
+    let mut host = false;
     for line in lines {
         let (name, value) = line.split_once(':').ok_or(400u16)?;
-        match name.trim().to_ascii_lowercase().as_str() {
+        // HTTP/1.1 forbids whitespace between the field name and the colon; accepting
+        // `Content-Length : 5` would let a proxy and this listener disagree on the framing.
+        if name.is_empty() || name.bytes().any(|b| b == b' ' || b == b'\t') {
+            return Err(400);
+        }
+        match name.to_ascii_lowercase().as_str() {
             "content-length" => {
                 if length.is_some() {
                     return Err(400);
                 }
-                length = Some(value.trim().parse::<usize>().map_err(|_| 400u16)?);
+                // `str::trim` would hide a bare CR/LF and `usize::from_str` accepts a leading
+                // sign; HTTP defines a length as ASCII digits with only SP/HTAB around it.
+                let value = value.trim_matches([' ', '\t']);
+                if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(400);
+                }
+                length = Some(value.parse::<usize>().map_err(|_| 400u16)?);
+            }
+            // S5-F4: HTTP/1.1 requires exactly one Host. A duplicated Host is ambiguous, and a
+            // value carrying a control byte is not a field value.
+            "host" => {
+                let value = value.trim_matches([' ', '\t']);
+                if host || value.is_empty() || value.bytes().any(|b| b.is_ascii_control()) {
+                    return Err(400);
+                }
+                host = true;
             }
             "transfer-encoding" | "expect" | "content-encoding" => return Err(400),
             _ => {}
         }
+    }
+    if !host {
+        return Err(400);
     }
     let length = length.ok_or(411u16)?;
     if length > fleet::MAX_REPORT_BYTES {
@@ -394,7 +426,7 @@ mod tests {
         let chunked = format!("POST {REPORT_PATH} HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n")
             .into_bytes();
         assert_eq!(post(chunked, &good, &hub, 400).await, 400);
-        let nolen = format!("POST {REPORT_PATH} HTTP/1.1\r\n\r\n").into_bytes();
+        let nolen = format!("POST {REPORT_PATH} HTTP/1.1\r\nHost: h\r\n\r\n").into_bytes();
         assert_eq!(post(nolen, &good, &hub, 400).await, 411);
         let dup = format!(
             "POST {REPORT_PATH} HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n{{"
@@ -405,6 +437,113 @@ mod tests {
         let short =
             format!("POST {REPORT_PATH} HTTP/1.1\r\nContent-Length: 50\r\n\r\n{{").into_bytes();
         assert_eq!(post(short, &good, &hub, 400).await, 400);
+    }
+
+    #[tokio::test]
+    async fn content_length_must_be_plain_digits_without_header_whitespace() {
+        let hub = Mutex::new(Hub::default());
+        let good = ident(&[EKU_FLEET_NODE]);
+        let body = r#"{"schema":"node.status.v1","seq":1,"instances":[]}"#;
+        for head in [
+            // A leading sign is not a length.
+            format!(
+                "POST {REPORT_PATH} HTTP/1.1\r\nHost: h\r\nContent-Length: +{}\r\n\r\n{body}",
+                body.len()
+            ),
+            // A bare LF must not be trimmed into a valid value.
+            format!(
+                "POST {REPORT_PATH} HTTP/1.1\r\nHost: h\r\nContent-Length: {}\n\r\n\r\n{body}",
+                body.len()
+            ),
+            // Whitespace between the field name and the colon is not a header.
+            format!(
+                "POST {REPORT_PATH} HTTP/1.1\r\nHost: h\r\nContent-Length : {}\r\n\r\n{body}",
+                body.len()
+            ),
+            // Whitespace inside the value is not a length.
+            format!(
+                "POST {REPORT_PATH} HTTP/1.1\r\nHost: h\r\nContent-Length: {} {}\r\n\r\n{body}",
+                body.len(),
+                body.len()
+            ),
+        ] {
+            let expected = head.clone();
+            assert_eq!(
+                post(head.into_bytes(), &good, &hub, 100).await,
+                400,
+                "{expected:?}"
+            );
+        }
+        // Legal SP/HTAB padding around the digits is still accepted.
+        let padded = format!(
+            "POST {REPORT_PATH} HTTP/1.1\r\nHost: h\r\nContent-Length:\t{} \r\n\r\n{body}",
+            body.len()
+        );
+        assert_eq!(post(padded.into_bytes(), &good, &hub, 200).await, 204);
+        assert_eq!(hub.lock().unwrap().nodes().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn host_must_appear_exactly_once_without_control_bytes() {
+        let hub = Mutex::new(Hub::default());
+        let good = ident(&[EKU_FLEET_NODE]);
+        let body = r#"{"schema":"node.status.v1","seq":1,"instances":[]}"#;
+        for head in [
+            // Missing Host: HTTP/1.1 requires exactly one.
+            format!(
+                "POST {REPORT_PATH} HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+            // Two Host fields are ambiguous.
+            format!(
+                "POST {REPORT_PATH} HTTP/1.1\r\nHost: a\r\nHost: b\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+            // An empty Host is not a host.
+            format!(
+                "POST {REPORT_PATH} HTTP/1.1\r\nHost:\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+            // A control byte in the value is not a field value.
+            format!(
+                "POST {REPORT_PATH} HTTP/1.1\r\nHost: a\u{1}b\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+        ] {
+            let expected = head.clone();
+            assert_eq!(
+                post(head.into_bytes(), &good, &hub, 100).await,
+                400,
+                "{expected:?}"
+            );
+        }
+        // Exactly one Host is accepted, with legal SP/HTAB padding.
+        let ok = format!(
+            "POST {REPORT_PATH} HTTP/1.1\r\nHost:\thub \r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        assert_eq!(post(ok.into_bytes(), &good, &hub, 100).await, 204);
+        assert_eq!(hub.lock().unwrap().nodes().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn head_cap_is_enforced_at_the_boundary_without_overshoot() {
+        let prefix = format!("POST {REPORT_PATH} HTTP/1.1\r\nHost: h\r\nX-Pad: ");
+        let suffix = "\r\nContent-Length: 0\r\n\r\n";
+        let pad = MAX_HEAD_BYTES + 4 - prefix.len() - suffix.len();
+
+        // A head of exactly MAX_HEAD_BYTES bytes is accepted.
+        let exact = format!("{prefix}{}{suffix}", "a".repeat(pad));
+        assert_eq!(exact.len() - 4, MAX_HEAD_BYTES);
+        let mut at_cap = exact.as_bytes();
+        assert_eq!(read_request(&mut at_cap).await, Ok(Vec::new()));
+
+        // One byte over is refused. This is the S5-F3 regression: the cap used to be checked
+        // only before an unbounded read, so a head slightly past the cap was accepted.
+        let over = format!("{prefix}{}{suffix}", "a".repeat(pad + 1));
+        assert_eq!(over.len() - 4, MAX_HEAD_BYTES + 1);
+        let mut past_cap = over.as_bytes();
+        assert_eq!(read_request(&mut past_cap).await, Err(400));
     }
 
     #[tokio::test]
