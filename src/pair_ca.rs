@@ -236,6 +236,32 @@ pub fn crl(dir: &Path, days: u32) -> Result<String> {
     Ok(pem)
 }
 
+/// Revoke a previously issued certificate (PEM) and refresh the CRL, which is then valid for
+/// `days`. Accepts exactly one PEM certificate, like `fleet_ca::revoke`.
+pub fn revoke(dir: &Path, cert_pem: &str, days: u32) -> Result<String> {
+    ensure!(
+        cert_pem.matches("-----BEGIN CERTIFICATE-----").count() == 1 && cert_pem.len() <= 4096,
+        "expected exactly one certificate"
+    );
+    let p = dir.join(format!("revoke-{}.pem", rand::random::<u64>()));
+    write_private(&p, cert_pem.as_bytes(), 0o600)?;
+    let cnf = dir.join("openssl.cnf");
+    let result = run(
+        &[
+            "ca",
+            "-batch",
+            "-config",
+            &cnf.to_string_lossy(),
+            "-revoke",
+            &p.to_string_lossy(),
+        ],
+        None,
+    );
+    let _ = fs::remove_file(&p);
+    result?;
+    crl(dir, days)
+}
+
 /// Short human-comparable fingerprint of a CSR's public key (`ab12-cd34-ef56`). Both servers show
 /// it, so the user can see that the key being approved is the one the other server generated.
 pub fn csr_fingerprint(csr_pem: &str) -> Result<String> {

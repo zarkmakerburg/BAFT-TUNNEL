@@ -205,27 +205,7 @@ pub fn sign_hub(dir: &Path, hub_name: &str, dial_san: &str, csr_pem: &str) -> Re
 
 /// Revoke a previously issued certificate (PEM) and refresh the CRL.
 pub fn revoke(dir: &Path, cert_pem: &str) -> Result<String> {
-    ensure!(
-        cert_pem.matches("-----BEGIN CERTIFICATE-----").count() == 1 && cert_pem.len() <= 4096,
-        "expected exactly one certificate"
-    );
-    let p = dir.join(format!("revoke-{}.pem", rand::random::<u64>()));
-    write_private(&p, cert_pem.as_bytes(), 0o600)?;
-    let cnf = dir.join("openssl.cnf");
-    let r = run(
-        &[
-            "ca",
-            "-batch",
-            "-config",
-            &cnf.to_string_lossy(),
-            "-revoke",
-            &p.to_string_lossy(),
-        ],
-        None,
-    );
-    let _ = fs::remove_file(&p);
-    r?;
-    crate::pair_ca::crl(dir, CRL_DAYS)
+    crate::pair_ca::revoke(dir, cert_pem, CRL_DAYS)
 }
 
 #[cfg(test)]

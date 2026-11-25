@@ -1996,6 +1996,172 @@ mod tests {
         );
     }
 
+    /// R9 (REVERSE_ACCEPTANCE.md) end to end: the per-pair CA signs both nodes and owns the CRL,
+    /// the service node's certificate is accepted, then it is revoked with the same helpers and
+    /// the refreshed CRL makes the public node refuse the next real TLS handshake. `connect_peer`
+    /// must attribute that refusal to the secure channel tier.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn revoked_service_node_certificate_is_refused_end_to_end() {
+        use sha2::{Digest, Sha256};
+
+        let root = std::env::temp_dir().join(format!(
+            "baft-r9-revoked-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let ca_dir = root.join("pair-ca");
+        let nodes = root.join("nodes");
+        std::fs::create_dir_all(&nodes).unwrap();
+
+        // A real P-256 key and certificate request per node, signed by the pair CA.
+        fn issue(
+            ca_dir: &std::path::Path,
+            dir: &std::path::Path,
+            node: &str,
+        ) -> (PathBuf, PathBuf) {
+            let key_path = dir.join(format!("{node}.key"));
+            let key = crate::pair_ca::run(
+                &[
+                    "genpkey",
+                    "-algorithm",
+                    "EC",
+                    "-pkeyopt",
+                    "ec_paramgen_curve:P-256",
+                ],
+                None,
+            )
+            .unwrap();
+            crate::pair_ca::write_private(&key_path, &key, 0o600).unwrap();
+            let csr = crate::pair_ca::run(
+                &[
+                    "req",
+                    "-new",
+                    "-key",
+                    &key_path.to_string_lossy(),
+                    "-subj",
+                    &format!("/CN={node}"),
+                ],
+                None,
+            )
+            .unwrap();
+            let leaf =
+                crate::pair_ca::sign(ca_dir, node, std::str::from_utf8(&csr).unwrap()).unwrap();
+            let cert_path = dir.join(format!("{node}.crt"));
+            std::fs::write(&cert_path, leaf).unwrap();
+            (cert_path, key_path)
+        }
+
+        let members = [
+            crate::pair_ca::Member {
+                node_id: "public-node".into(),
+                san: "DNS:public.pair.test".into(),
+            },
+            crate::pair_ca::Member {
+                node_id: "service-node".into(),
+                san: "IP:127.0.0.1".into(),
+            },
+        ];
+        crate::pair_ca::create(&ca_dir, "BAFT R9 pair CA", &members).unwrap();
+        let ca_cert = ca_dir.join("ca.crt");
+        let crl_path = ca_dir.join("ca.crl");
+        let (public_cert, public_key) = issue(&ca_dir, &nodes, "public-node");
+        let (service_cert, service_key) = issue(&ca_dir, &nodes, "service-node");
+        let pin = |cert: &std::path::Path| {
+            let certs = crate::tls::certificates(cert).unwrap();
+            hex::encode(Sha256::digest(certs[0].as_ref()))
+        };
+        let server_pin = pin(&public_cert);
+        let service_pin = pin(&service_cert);
+
+        let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_address = reservation.local_addr().unwrap();
+        drop(reservation);
+        let server_task = tokio::spawn(serve(ServerOptions {
+            listen: server_address.to_string(),
+            target: "127.0.0.1:9".to_owned(),
+            ingress: None,
+            local_id: "public-node".to_owned(),
+            peer_id: "service-node".to_owned(),
+            tunnel_id: "r9-revoked".to_owned(),
+            direction: ConnectionDirection::Reverse,
+            peer_fingerprint: service_pin,
+            ca: ca_cert.clone(),
+            crl: crl_path.clone(),
+            cert: public_cert,
+            key: public_key,
+            noise: None,
+            max_streams: 8,
+        }));
+        let mut ready = false;
+        for _ in 0..100 {
+            if TcpStream::connect(server_address).await.is_ok() {
+                ready = true;
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        assert!(ready, "test server did not bind its TCP listener");
+
+        let service_options = || ForwardOptions {
+            listen: "127.0.0.1:0".to_owned(),
+            target: None,
+            remote: server_address.to_string(),
+            server_name: "public.pair.test".to_owned(),
+            local_id: "service-node".to_owned(),
+            peer_id: "public-node".to_owned(),
+            tunnel_id: "r9-revoked".to_owned(),
+            direction: ConnectionDirection::Reverse,
+            peer_fingerprint: server_pin.clone(),
+            ca: ca_cert.clone(),
+            crl: crl_path.clone(),
+            cert: service_cert.clone(),
+            key: service_key.clone(),
+            noise: None,
+            max_streams: 8,
+            backup_remotes: vec![],
+            session_rotate: None,
+        };
+
+        // Control: before revocation the very same handshake is accepted.
+        let session = timeout(Duration::from_secs(10), connect_peer(&service_options()))
+            .await
+            .expect("pre-revocation handshake timed out")
+            .unwrap_or_else(|error| {
+                panic!("an issued service-node certificate must be accepted: {error:#}")
+            });
+        drop(session);
+
+        // Revoke the service node's certificate in the CA database and refresh the CRL.
+        let revoked = std::fs::read_to_string(&service_cert).unwrap();
+        crate::pair_ca::revoke(&ca_dir, &revoked, crate::pair_ca::CRL_DAYS).unwrap();
+
+        let attempt = timeout(Duration::from_secs(10), connect_peer(&service_options()))
+            .await
+            .expect("revoked-certificate handshake attempt timed out");
+        let error = match attempt {
+            Err(error) => error,
+            Ok(_) => panic!("a revoked service-node certificate must be refused"),
+        };
+        // The same attribution `session_status::record_failure` writes to the diagnostics file.
+        assert_eq!(
+            error.downcast_ref::<Stage>(),
+            Some(&Stage::SecureChannel),
+            "the refusal must be attributed to the secure_channel tier, got: {error:#}"
+        );
+        assert!(
+            tls_alert(&error),
+            "the refusal must come from the TLS layer, got: {error:#}"
+        );
+
+        server_task.abort();
+        let _ = server_task.await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn agent_uds_request_runs_probe_over_the_active_authenticated_v2_session() {
