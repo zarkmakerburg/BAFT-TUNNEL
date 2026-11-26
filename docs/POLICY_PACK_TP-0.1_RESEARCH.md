@@ -98,3 +98,28 @@ New scenario `aged_session_throttled`: the bottleneck drops to a low rate once a
 | 4 MiB (product) | 1,972 ms | 1,996 ms | 1,678 ms |
 
 Loaded delay is close to window divided by bottleneck rate, so the queue behind the bottleneck is set by the Yamux window (plus small pipe buffers). Capping the window is a large lever (about 20x here) but `tokio-yamux` requires `max_stream_window_size >= 256 KiB` (initial window), so a window cap alone bottoms out near 100 ms at this rate: still about 40x the idle 2.3 ms and short of the ADR-0048 hypothesis (p95 within 10x of idle). Getting lower needs a per-class budget below the stream window (M1) or a smaller socket buffer (M3). Caveats: single run per value; simulated bottleneck without propagation delay; a smaller window also lowers the bandwidth-delay product a stream can fill on a long path, so a window cap can reduce throughput on real high-RTT links and must be tested with a delay model before it is considered.
+
+### 9.3 Experiment: ADR-0048 mechanism matrix (2026-11-26, evidence level: simulated)
+
+`mechanism_experiments` (ignored by default) runs the same bulk-competing scenario as 9.2 with each in-flight mechanism applied to the bulk flow, at three bottleneck rates, two repeats, 6 s per run. Run command: `POLICY_RATE=<rate> POLICY_REPEATS=2 POLICY_SECONDS=6 cargo test --release --features policy-pack policy_baseline::tests::mechanism_experiments -- --ignored --nocapture`. Loaded ping p50 in milliseconds (repeat medians):
+
+| Arm | 1 MB/s | 2.5 MB/s | 5 MB/s |
+|---|---|---|---|
+| Idle (no bulk) | 4.5 | 4.8 | 4.7 |
+| Baseline (product 4 MiB window) | 4,200 | 2,160 | 1,330 |
+| M1 credit budget, 2 MiB | 2,260 | 1,045 | 623 |
+| M2 receive pacing, 64 KiB | 4,210 | 2,161 | 1,349 |
+| M3 socket backpressure, 32 KiB / 16 KiB | 4,170 | 2,217 | 1,402 |
+| Window 256 KiB | 269 | 116 | 62 |
+
+At 2.5 MB/s the window arm's p95 is 133 ms (idle p95 8.0 ms), the M1 arm's 1,071 ms, Baseline's 2,170 ms.
+
+What the run establishes, all `simulated`:
+
+- **M1 cannot bound below the window.** Yamux's `StreamHandle::send_window_update` sends an update only when `delta >= max_recv_window / 2`, and the receiving side grants `max_recv_window - 256 KiB` once at stream creation. With the product's 4 MiB window a 64 KiB credit budget therefore stops at 64 KiB and never resumes: `credit_budget_below_the_window_granularity_stalls` (a 256 KiB transfer does not finish). At exactly 2 MiB the flow completes (`credit_budget_at_half_the_window_completes`) and the bound is 2 MiB — the 1,045 ms row.
+- **M2 and M3 do not move the queue.** Both measured within run-to-run variance of Baseline at all three rates: the bytes are already in the sender's Yamux window before either the socket buffer or the receiving sink matters.
+- **The window is the lever.** 256 KiB cut p50 by 18x at 2.5 MB/s and 21x at 5 MB/s. The rerun of the 9.2 experiment reproduces its numbers within about 15% (256 KiB 114 ms, 1 MiB 526 ms, 4 MiB 2,130 ms p50, single run).
+- **The aged-session throttle is unchanged.** `aged_session_under_window_cap`: fresh 545 ms / aged 5,381 ms against Baseline 544 / 5,370 ms — the bound neither hides nor worsens it.
+- **`bulk_bytes_per_s` is not goodput.** It counts bytes handed to the engine; the shaped pump fixes the delivered rate in every arm. The window arm hands over less (2.1 versus 2.8 MB/s at a 2.5 MB/s bottleneck) because it queues less, which is the point. Real-path goodput under a smaller window is not measured here.
+
+Decision: the in-flight bound is the per-stream window, 256 KiB, applied by `tunnel::yamux_config` and switchable with `BAFT_TUNNEL_POLICY_PACK=window-cap[:<bytes>]` (`src/policy_relay.rs`). M1/M2/M3 are not wired; see [ADR-0048](ADR-0048-policy-queues-and-scheduler.md) decision 4 and its results section. The remaining gap to the p95-within-10x-idle hypothesis (met at 5 MB/s, not at 2.5 or 1 MB/s) is the queue in front of the interactive flow, which the per-class scheduler (`src/policy_sched.rs`) is meant to bound and which is still not called by the relay.
