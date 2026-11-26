@@ -50,7 +50,7 @@ shown as measured.
     | Gaming | `gaming/1` | 262144 (256 KiB) | 4096 (4 KiB) | 16384 (16 KiB) | Quarter of Balanced's quantum and cap: the in-flight ceiling stays at the carrier floor, but each grant and each buffer is smaller, so a bulk burst occupies a smaller share of the queue at any moment |
     | Trading | `trading/1` | 262144 (256 KiB) | 2048 (2 KiB) | 8192 (8 KiB) | The finest interleaving the pack can produce on this carrier: smallest quantum and cap, throughput deliberately sacrificed |
     | Streaming | `streaming/1` | 524288 (512 KiB) | 32768 (32 KiB) | 131072 (128 KiB) | Twice Balanced's window and quantum: sustained medium-bitrate delivery with a larger but still bounded standing buffer |
-    | Bulk Transfer | `bulk/1` | 2097152 (2 MiB) | 65536 (64 KiB) | 262144 (256 KiB) | Four times Balanced's window: throughput for bulk transfers, still half of today's unmanaged 4 MiB window, latency accepted |
+    | Bulk Transfer | `bulk/1` | 2097152 (2 MiB) | 65536 (64 KiB) | 262144 (256 KiB) | Eight times Balanced's window: throughput for bulk transfers, still half of today's unmanaged 4 MiB window, latency accepted |
 
     **The 256 KiB window is a floor, not a choice.** `tokio-yamux` 0.3.20 defines
     `INITIAL_STREAM_WINDOW` as 256 KiB and both ends assume it at stream creation, and
@@ -320,6 +320,60 @@ What shipped, and the choices this ADR left open for TP-3.4:
   real engine handshake and rates, whether the sender-handoff advantage becomes delivered goodput on
   a path with real RTT and loss, and whether the roughly doubled loaded p50 is acceptable for the
   profile's target use.
+
+## Implementation note 2026-11-26 (TP-3.5 / #237): the Bulk row and its evidence record
+
+What shipped, and the choices this ADR left open for TP-3.5:
+
+- **No mechanics, only the row.** `bulk/1` already resolved through `policy.profile` when TP-3.1
+  shipped; TP-3.5 adds no scheduler type, no config field and no tuning knob. The row is 2 MiB window
+  / 64 KiB quantum / 256 KiB cap — exactly what decision 15 fixed for Bulk, and eight times Balanced's
+  window. Nothing was added to make it "faster" or to widen it further: widening beyond its stated
+  purpose would be a new decision, not this item. The only thing the configured profile changes
+  besides the row is the class label, and intra-session weights stay excluded (decision 16).
+- **Why its numbers are not tuned further.** The row's stated purpose is maximum efficiency for
+  large transfers, and the harness shows both sides of that trade: the sender hands off 11.9% more
+  bytes per second than `balanced/1` (sender-side counts, not delivered goodput), CPU per delivered
+  MiB is 48.9% lower with no overlap between the three repeats, and loaded p50/p95/p99 are
+  consistently about 9.4× Balanced because an interactive ping waits behind an eight-times-larger
+  buffer (still 2.0× below the unmanaged Baseline). A smaller window would buy back interactive
+  latency at the cost of the row's purpose; the split is decision 15's, now measured, and the record
+  puts the acceptability of that price to the LAB window rather than inventing a latency bound here
+  — this ADR states none, so none was added after seeing the number.
+- **Goodput versus CPU: what this box can and cannot settle.** The item's first acceptance item is
+  goodput versus Balanced and Baseline. The harness counts application-side sender handoffs, and its
+  shaped bottleneck saturates every arm, so a sink-side figure on this box would measure the shaper,
+  not the profile; TP-3.5 therefore measures CPU per GiB (the second acceptance item) and records
+  delivered goodput as not measured instead of adding a counter that could not answer the question.
+  The wider row's CPU reduction is the one measured efficiency gain, and it says nothing about
+  throughput.
+- **Evidence record.** `docs/POLICY_PACK_TP-3.5_BULK_EVIDENCE.md` is the per-tuple record decisions
+  19 and ADR-0047 ask for. It carries `simulated` numbers from the repo harness at this commit and
+  lists what the harness cannot settle — delivered goodput, real-path latency under loss, jitter,
+  path change and carrier kill, loss, RSS, the 60-minute run and the two-host window — as not
+  measured. Like TP-3.3's and TP-3.4's records it includes the idle arm, because criterion 1 names
+  idle latency.
+- **The harness measures the shipped table.** Test-only `Mechanism::for_profile` (feature build)
+  maps a `PolicyProfile` to the harness arm by reading the same accessors `policy_relay` resolves,
+  and `profile_arms_are_the_shipped_rows` now also pins the `bulk/1` literal
+  (`sched-w2097152-q65536-cap262144`) plus its difference from Balanced and Streaming. The invalid,
+  absent, switch-off and resolved paths are pinned by the new
+  `bulk_profile_path_and_its_fallbacks_are_unchanged`, on top of the TP-3.1 tests that already cover
+  every ratified row.
+- **Enabling it.** Unchanged from TP-3.1 to TP-3.4: the `policy-pack` feature and the
+  `BAFT_TUNNEL_POLICY_PACK` switch gate activation, and `policy.profile: "bulk/1"` selects the row.
+  An absent profile does not turn the pack off: with the switch set the pack runs on the switch's own
+  (`sched`, i.e. Balanced) numbers, and with the switch unset the path is today's byte for byte — a
+  configured profile never enables the pack on its own.
+- **Status.** TP-3.5 stays open on its acceptance in the pack plan §6 and in #237 (goodput and CPU per
+  GiB, the impact on co-running interactive flows, fairness, long run, evidence labels). Fairness,
+  CPU and harness latency are recorded; **delivered goodput, RSS, loss, impairment scenarios and the
+  long run are not measured**, and the one requirement that can settle the item is a real two-host
+  LAB window for the (engine, carrier, profile) tuples, suspended by owner decision. This slice ships
+  the `simulated` record and no measured profile. The record puts three questions to that window:
+  whether the 48.9% CPU reduction survives a real engine handshake and rates, whether the higher
+  sender handoff becomes delivered goodput on a path with real RTT and loss, and whether the 9.4×
+  loaded interactive p50 is an acceptable price for the widest row.
 
 ## Known limits (recorded in Phase 0)
 

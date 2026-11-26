@@ -1142,6 +1142,20 @@ mod tests {
             streaming, trading,
             "streaming/1 must not be confusable with the finest-interleaving row"
         );
+        let bulk = Mechanism::for_profile(PolicyProfile::Bulk);
+        assert_eq!(
+            bulk.label(),
+            "sched-w2097152-q65536-cap262144",
+            "bulk/1 is the widest row: eight times Balanced's window"
+        );
+        assert_ne!(
+            bulk, balanced,
+            "bulk/1 must differ from the identity in window, quantum and cap"
+        );
+        assert_ne!(
+            bulk, streaming,
+            "bulk/1 must not be confusable with the half-width streaming row"
+        );
         for profile in [
             PolicyProfile::Balanced,
             PolicyProfile::Gaming,
@@ -1244,6 +1258,42 @@ mod tests {
         assert_eq!(PolicyRelay::resolve("", None), None);
         let error = PolicyProfile::parse("cinema/1").expect_err("cinema/1 must not parse");
         assert!(error.to_string().contains("streaming/1"));
+    }
+
+    /// TP-3.5: the row the record measures is the row a configured `bulk/1` resolves to, and the
+    /// paths that must not change with it hold — no profile (today's numbers exactly), a switch
+    /// that is off (the profile cannot enable the pack on its own) and an unknown id (refused
+    /// naming the accepted values, never silently mapped to Balanced).
+    #[cfg(feature = "policy-pack")]
+    #[test]
+    fn bulk_profile_path_and_its_fallbacks_are_unchanged() {
+        use crate::policy_relay::PolicyRelay;
+
+        let resolved = PolicyRelay::resolve("sched", Some(PolicyProfile::Bulk))
+            .expect("a configured bulk/1 runs the pack");
+        assert_eq!(resolved.stream_window, 2 * 1024 * 1024);
+        assert_eq!(
+            resolved.scheduler,
+            Some(crate::policy_sched::SchedulerConfig {
+                quantum_bytes: 64 * 1024,
+                max_queued_bytes: 256 * 1024,
+            })
+        );
+        assert_eq!(
+            Mechanism::for_profile(PolicyProfile::Bulk).label(),
+            "sched-w2097152-q65536-cap262144",
+            "the evidence arm must be the row the config resolves"
+        );
+        // Absent profile: the switch's own numbers, exactly as before TP-3.1.
+        assert_eq!(
+            PolicyRelay::resolve("sched", None),
+            PolicyRelay::parse("sched")
+        );
+        assert_eq!(PolicyRelay::resolve("", None), None);
+        // A configured profile selects a row; it never turns the pack on by itself.
+        assert_eq!(PolicyRelay::resolve("off", Some(PolicyProfile::Bulk)), None);
+        let error = PolicyProfile::parse("download/1").expect_err("download/1 must not parse");
+        assert!(error.to_string().contains("bulk/1"));
     }
 
     #[test]
@@ -1713,6 +1763,23 @@ mod tests {
             "streaming_bulk_competing",
             "streaming_multi_flow",
             Some("streaming_idle"),
+        )
+        .await;
+    }
+
+    /// TP-3.5 Bulk evidence run: the harness-side record for
+    /// `docs/POLICY_PACK_TP-3.5_BULK_EVIDENCE.md`. Like TP-3.3 and TP-3.4 it includes the idle arm,
+    /// because criterion 1 names idle latency and the harness can supply it per arm.
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    #[ignore = "measurement run; use --release --features policy-pack --ignored --nocapture"]
+    async fn bulk_profile_evidence() {
+        run_profile_evidence(
+            "tp-3.5",
+            PolicyProfile::Bulk,
+            "bulk_bulk_competing",
+            "bulk_multi_flow",
+            Some("bulk_idle"),
         )
         .await;
     }
