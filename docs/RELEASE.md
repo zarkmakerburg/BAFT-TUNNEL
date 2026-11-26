@@ -114,8 +114,9 @@ installer and verifier; publish a new tag after this change is merged.
 ## Notes
 
 - **v0.3.1 release train (2026-11-26).** `main` carried five merged PRs (#442, #443, #444, #441,
-  #446). A signed prerelease `v0.3.1-rc.2` is cut from that `main` first, then the Stable tag
-  `v0.3.1` on the same commit, so the Stable binary is the rc binary. The checklist file
+  #446) plus the docs record in #447. The signed prerelease `v0.3.1-rc.2` and the Stable tag
+  `v0.3.1` point at the same commit `3b8bcde7cdcde64000aa199173437f511d3731b5`, so the Stable
+  binary is the rc binary; both releases carry the eight signed assets. The checklist file
   [STABLE_TAG_CHECKLIST.md](STABLE_TAG_CHECKLIST.md) records the v0.2.2/v0.3.0 procedure that this
   train follows; the deviations are the evidence level (hosted CI, no two-host LAB) and the
   owner-directed waiver of the independent review for S5, both recorded above.
