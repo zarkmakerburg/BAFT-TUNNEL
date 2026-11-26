@@ -273,6 +273,54 @@ What shipped, and the choices this ADR left open for TP-3.3:
   profile. The record also puts one question to that window: whether Trading is worth keeping when
   it does not beat Balanced even in the harness and costs several times the CPU per MB.
 
+## Implementation note 2026-11-26 (TP-3.4 / #236): the Streaming row and its evidence record
+
+What shipped, and the choices this ADR left open for TP-3.4:
+
+- **No mechanics, only the row.** `streaming/1` already resolved through `policy.profile` when TP-3.1
+  shipped; TP-3.4 adds no scheduler type, no config field and no tuning knob. The row is 512 KiB
+  window / 32 KiB quantum / 128 KiB cap — exactly when decision 15 fixed for Streaming. Nothing was
+  added to make it "smoother" or to pace a stream; the only thing the configured profile changes
+  besides that row is the class label, and intra-session weights stay excluded (decision 16).
+- **Why its numbers are not tuned further.** The row's stated purpose is sustained medium-bitrate
+  delivery through a larger but still bounded standing buffer, and the harness shows both sides of
+  that trade: the sender hands off 3.8% more bytes per second than `balanced/1` and 7.3% more across
+  three competing flows (sender-side counts, not delivered goodput), CPU per MB is 38.3% lower with
+  no overlap between the three repeats, and loaded p50/p95/p99 are consistently about 2.2× Balanced
+  because an interactive ping waits behind the larger buffer. That is the row decision 15 fixed,
+  measured; it shows no delivered-throughput benefit and no real-path latency, so the profile is not
+  tuned toward a result this harness cannot verify. Changing window, quantum or cap would be a new
+  decision, not this item.
+- **Evidence record.** `docs/POLICY_PACK_TP-3.4_STREAMING_EVIDENCE.md` is the per-tuple record
+  decisions 19 and ADR-0047 ask for. It carries `simulated` numbers from the repo harness at this
+  commit and lists what the harness cannot settle — real-path latency under loss, jitter, path
+  change and carrier kill, loss, RSS, the 60-minute run and delivered goodput — as not measured. Like
+  TP-3.3's record it includes the idle arm, because criterion 1 names idle latency.
+- **The harness measures the shipped table.** Test-only `Mechanism::for_profile` (feature build)
+  maps a `PolicyProfile` to the harness arm by reading the same accessors `policy_relay` resolves,
+  and `profile_arms_are_the_shipped_rows` now also pins the `streaming/1` literal
+  (`sched-w524288-q32768-cap131072`) plus its difference from Balanced and Trading. The invalid,
+  absent and resolved paths are pinned by the new
+  `streaming_profile_path_and_its_fallbacks_are_unchanged`, on top of the TP-3.1 tests that already
+  cover every ratified row (`every_ratified_profile_resolves_to_its_exact_numbers`,
+  `unsupported_names_are_rejected_and_the_error_names_the_accepted_values`,
+  `config_deserialization_rejects_an_unsupported_name_at_parse_time`, `no_profile_is_balanced`,
+  `a_configured_profile_supplies_the_ratified_numbers_and_the_switch_only_enables_them` and
+  `no_profile_keeps_the_switch_numbers_byte_for_byte`).
+- **Enabling it.** Unchanged from TP-3.1 to TP-3.3: the `policy-pack` feature and the
+  `BAFT_TUNNEL_POLICY_PACK` switch gate activation, and `policy.profile: "streaming/1"` selects the
+  row. An absent profile does not turn the pack off: with the switch set the pack runs on the
+  switch's own (`sched`, i.e. Balanced) numbers, and with the switch unset the path is today's byte
+  for byte.
+- **Status.** TP-3.4 stays open on its acceptance in the pack plan §6 (idle and bulked latency and
+  jitter, loss, throughput, CPU/RSS, fairness, impairment scenarios, long run, evidence labels).
+  The one remaining requirement is a real two-host LAB window for the (engine, carrier, profile)
+  tuples, suspended by owner decision; this slice ships the `simulated` record and no measured
+  profile. The record puts three questions to that window: whether the 38% CPU reduction survives a
+  real engine handshake and rates, whether the sender-handoff advantage becomes delivered goodput on
+  a path with real RTT and loss, and whether the roughly doubled loaded p50 is acceptable for the
+  profile's target use.
+
 ## Known limits (recorded in Phase 0)
 
 - A single TCP carrier can still cause head-of-line blocking; the Gaming/Trading benefit may be limited without a datagram path (QUIC/UDP is not implemented, roadmap Phase 5). See decision 11.
