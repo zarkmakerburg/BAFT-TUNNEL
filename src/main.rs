@@ -34,6 +34,7 @@ mod pki_helper;
 mod policy;
 #[cfg(test)]
 mod policy_baseline;
+mod policy_profile;
 #[cfg(feature = "policy-pack")]
 mod policy_relay;
 #[cfg(feature = "policy-pack")]
@@ -529,6 +530,7 @@ async fn run() -> Result<()> {
                 noise_peer_public: None,
                 max_streams,
                 baft: None,
+                policy: config::PolicySettings::default(),
             };
             config.validate()?;
             config.apply().await
@@ -572,6 +574,7 @@ async fn run() -> Result<()> {
                 baft: None,
                 backup_remotes: vec![],
                 session_rotate_secs: 0,
+                policy: config::PolicySettings::default(),
             };
             config.validate()?;
             config.apply().await

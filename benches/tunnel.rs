@@ -76,6 +76,8 @@ mod pki_helper;
 #[cfg(feature = "policy-pack")]
 #[path = "../src/policy.rs"]
 mod policy;
+#[path = "../src/policy_profile.rs"]
+mod policy_profile;
 #[cfg(feature = "policy-pack")]
 #[path = "../src/policy_relay.rs"]
 mod policy_relay;

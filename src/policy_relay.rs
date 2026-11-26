@@ -38,6 +38,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout;
 
 use crate::policy::FlowId;
+use crate::policy_profile::PolicyProfile;
 use crate::policy_sched::{Arbiter, DEFAULT_QUANTUM_BYTES, FlowHandle, SchedulerConfig};
 
 /// Runtime switch read by `tunnel::yamux_config` and `tunnel::policy_session`.
@@ -62,10 +63,32 @@ pub(crate) struct PolicyRelay {
 }
 
 impl PolicyRelay {
-    /// Reads [`ENV_POLICY`]. Absent, empty or `off` keeps the pack off.
-    pub(crate) fn from_env() -> Option<Self> {
+    /// Reads [`ENV_POLICY`] and, when the switch enables the pack, resolves the tunnel's profile
+    /// (ADR-0031 decision 19). Absent, empty or `off` keeps the pack off whatever the profile; with
+    /// no profile this is exactly the switch's own numbers, so the default path is unchanged.
+    pub(crate) fn from_env_and_profile(profile: Option<PolicyProfile>) -> Option<Self> {
         let value = std::env::var(ENV_POLICY).ok()?;
-        Self::parse(&value)
+        Self::resolve(&value, profile)
+    }
+
+    /// Pure form of [`Self::from_env_and_profile`]: the switch decides *whether* the pack runs, a
+    /// profile then supplies the ratified window, quantum and cap. `None` keeps the pack off.
+    pub(crate) fn resolve(switch: &str, profile: Option<PolicyProfile>) -> Option<Self> {
+        // The switch decides on/off; with no profile its numbers are the whole answer, exactly as
+        // before TP-3.1. With a profile its numeric arguments are ignored.
+        let from_switch = Self::parse(switch)?;
+        let Some(profile) = profile else {
+            return Some(from_switch);
+        };
+        // A profile's numbers are the ADR-0031 table, which
+        // `profile_numbers_stay_inside_the_relay_bounds` holds to the same bounds as the switch.
+        Some(Self {
+            stream_window: profile.window_bytes(),
+            scheduler: Some(SchedulerConfig {
+                quantum_bytes: profile.quantum_bytes(),
+                max_queued_bytes: profile.max_queued_bytes(),
+            }),
+        })
     }
 
     /// `off` (or an empty value) disables the pack; `window-cap[:<bytes>]` enables only the window
@@ -146,9 +169,10 @@ pub(crate) struct PolicySession {
 }
 
 impl PolicySession {
-    /// `Some` only when the switch selects `sched`; otherwise the relay keeps today's path.
-    pub(crate) fn from_env() -> Option<Arc<Self>> {
-        let relay = PolicyRelay::from_env()?;
+    /// `Some` only when the switch enables the pack and a scheduler applies; a `window-cap` switch
+    /// with no configured profile keeps today's unscheduled path (ADR-0048).
+    pub(crate) fn from_env_and_profile(profile: Option<PolicyProfile>) -> Option<Arc<Self>> {
+        let relay = PolicyRelay::from_env_and_profile(profile)?;
         let config = relay.scheduler?;
         Some(Self::with_config(config))
     }
@@ -278,7 +302,7 @@ mod tests {
         assert_eq!(PolicyRelay::parse("off"), None);
         assert_eq!(PolicyRelay::parse("OFF"), None);
         assert_eq!(
-            PolicyRelay::from_env(),
+            PolicyRelay::from_env_and_profile(None),
             None,
             "the switch is unset in tests"
         );
@@ -405,5 +429,74 @@ mod tests {
             flows = session.flows().await;
         }
         assert_eq!(flows, (0, 0), "no flow may outlive its relay");
+    }
+
+    #[test]
+    fn a_configured_profile_supplies_the_ratified_numbers_and_the_switch_only_enables_them() {
+        use crate::policy_profile::PolicyProfile;
+        for (profile, window, quantum, cap) in [
+            (PolicyProfile::Balanced, 256 * 1024, 16 * 1024, 64 * 1024),
+            (PolicyProfile::Gaming, 256 * 1024, 4 * 1024, 16 * 1024),
+            (PolicyProfile::Trading, 256 * 1024, 2 * 1024, 8 * 1024),
+            (PolicyProfile::Streaming, 512 * 1024, 32 * 1024, 128 * 1024),
+            (PolicyProfile::Bulk, 2 * 1024 * 1024, 64 * 1024, 256 * 1024),
+        ] {
+            assert_eq!(
+                PolicyRelay::resolve("sched", Some(profile)),
+                Some(PolicyRelay {
+                    stream_window: window,
+                    scheduler: Some(SchedulerConfig {
+                        quantum_bytes: quantum,
+                        max_queued_bytes: cap,
+                    }),
+                }),
+                "{profile} must resolve to the ADR-0031 row"
+            );
+            // The switch decides whether the pack runs; its arguments do not override a profile.
+            assert_eq!(
+                PolicyRelay::resolve("sched:4096:8192", Some(profile)),
+                PolicyRelay::resolve("sched", Some(profile)),
+            );
+            assert_eq!(
+                PolicyRelay::resolve("window-cap:1048576", Some(profile))
+                    .map(|relay| relay.stream_window),
+                Some(window)
+            );
+            // Switch off wins, whatever the profile: the data path stays today's.
+            assert_eq!(PolicyRelay::resolve("off", Some(profile)), None);
+            assert_eq!(PolicyRelay::resolve("", Some(profile)), None);
+        }
+    }
+
+    #[test]
+    fn no_profile_keeps_the_switch_numbers_byte_for_byte() {
+        for switch in ["sched", "sched:8192:65536", "window-cap:1048576", "off", ""] {
+            assert_eq!(
+                PolicyRelay::resolve(switch, None),
+                PolicyRelay::parse(switch),
+                "the absent-profile path must be exactly the switch's, as before TP-3.1"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_numbers_stay_inside_the_relay_bounds() {
+        use crate::policy_profile::PolicyProfile;
+        for profile in [
+            PolicyProfile::Balanced,
+            PolicyProfile::Gaming,
+            PolicyProfile::Trading,
+            PolicyProfile::Streaming,
+            PolicyProfile::Bulk,
+        ] {
+            assert!(profile.window_bytes() >= tokio_yamux::config::INITIAL_STREAM_WINDOW);
+            assert!((1024..=DEFAULT_STREAM_WINDOW as usize).contains(&profile.quantum_bytes()));
+            assert!(profile.quantum_bytes() <= profile.max_queued_bytes());
+            assert!(profile.max_queued_bytes() <= MAX_QUEUE_CAP_BYTES);
+            let scheduler = PolicyRelay::resolve("sched", Some(profile))
+                .and_then(|relay| relay.scheduler)
+                .expect("a profile always carries a scheduler");
+            assert_eq!(scheduler.quantum_bytes, profile.quantum_bytes());
+        }
     }
 }
