@@ -1,17 +1,26 @@
-//! Policy Pack queues and scheduler core (ADR-0048, TP-2.1 / #231).
+//! Policy Pack queues and scheduler core (ADR-0048, TP-2.1 / #231, TP-2.2 wiring).
 //!
-//! Compiled only with the `policy-pack` cargo feature (off by default). **Nothing calls this yet:**
-//! the relay still uses the fixed 16 KiB pump, so the data path with the pack off is unchanged.
-//! This module provides the bounded per-flow queues and the deficit round-robin scheduler that
-//! TP-2.1 specifies, plus the properties TP-2.2 must hold: every flow is visited once per round
-//! (bounded wait), a quantum bounds one visit, and a full queue is refused rather than growing.
+//! Compiled only with the `policy-pack` cargo feature (off by default). `relay_with_policy`
+//! (`policy_relay`) creates one [`Arbiter`] per relay direction per session and only when
+//! `BAFT_TUNNEL_POLICY_PACK=sched` is set; with the switch off nothing here runs, so the data path
+//! is unchanged.
+//!
+//! Two layers:
+//! * [`Scheduler`] is the pure deficit round-robin bookkeeping: bounded per-flow queues, one
+//!   quantum per visit, a full queue refused instead of grown.
+//! * [`Arbiter`] is the runtime: one task per direction owns the scheduler and hands each granted
+//!   flow its turn through a [`FlowHandle`]. A flow asks before it writes, so a granted flow is the
+//!   only writer for its turn and no payload is copied into a second queue.
 //!
 //! Class weights (TP-3.x) are not set here: with the Balanced profile every class has the same
 //! quantum, which is the documented default and the fail-safe. No benefit is claimed.
 
-#![allow(dead_code)]
-
 use std::collections::{HashMap, VecDeque};
+use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use tokio::sync::{mpsc, oneshot};
 
 use crate::policy::{Class, FlowId};
 
@@ -24,11 +33,14 @@ pub struct SchedulerConfig {
     pub max_queued_bytes: usize,
 }
 
+/// Bytes one visit may move when the switch names no size (one 16 KiB read, as today's pump).
+pub(crate) const DEFAULT_QUANTUM_BYTES: usize = 16 * 1024;
+
 impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
-            quantum_bytes: 16 * 1024,
-            max_queued_bytes: 64 * 1024,
+            quantum_bytes: DEFAULT_QUANTUM_BYTES,
+            max_queued_bytes: DEFAULT_QUANTUM_BYTES * 4,
         }
     }
 }
@@ -162,6 +174,7 @@ impl Scheduler {
         None
     }
 
+    #[cfg(test)]
     pub fn queued_bytes(&self, flow: FlowId) -> usize {
         self.flows.get(&flow).map_or(0, |state| state.queued)
     }
@@ -184,6 +197,186 @@ impl Scheduler {
 
     pub fn overflow_refusals(&self) -> u64 {
         self.overflow_refusals
+    }
+}
+
+/// Requests one arbiter accepts before senders block. A flow holds at most one request at a time,
+/// so this bounds how many flows can be contending without queueing unbounded work in the channel.
+const COMMAND_BUFFER: usize = 64;
+
+/// Snapshot of an arbiter's counters, used by tests and diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ArbiterStats {
+    pub grants: u64,
+    pub overflow_refusals: u64,
+    pub queued_bytes: usize,
+    pub flows: usize,
+}
+
+#[allow(dead_code)] // `Stats` is only reached from tests and diagnostics.
+enum Command {
+    Request {
+        flow: FlowId,
+        bytes: usize,
+        reply: oneshot::Sender<usize>,
+    },
+    Close(FlowId),
+    Stats(oneshot::Sender<ArbiterStats>),
+}
+
+/// The single arbitration point for one relay direction (ADR-0048 decision 5).
+///
+/// One task owns the [`Scheduler`] and is the only thing that decides who writes next, so the
+/// rotation is global to the direction instead of per stream. The task ends when every
+/// [`FlowHandle`] and the [`Arbiter`] are dropped, so it cannot outlive its session.
+#[derive(Debug)]
+pub(crate) struct Arbiter {
+    commands: mpsc::Sender<Command>,
+}
+
+impl Arbiter {
+    /// Starts the arbiter task. Must be called from a Tokio runtime.
+    pub(crate) fn spawn(config: SchedulerConfig) -> Arc<Self> {
+        let (commands, inbox) = mpsc::channel(COMMAND_BUFFER);
+        tokio::spawn(run(config, inbox));
+        Arc::new(Self { commands })
+    }
+
+    /// Handle for one flow in this direction. Dropping the handle closes the flow's queue.
+    pub(crate) fn flow(self: &Arc<Self>, flow: FlowId) -> FlowHandle {
+        FlowHandle {
+            flow,
+            arbiter: Arc::clone(self),
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    #[allow(dead_code)] // tests and diagnostics ask the arbiter what it is holding.
+    pub(crate) async fn stats(&self) -> Option<ArbiterStats> {
+        let (reply, answer) = oneshot::channel();
+        self.commands.send(Command::Stats(reply)).await.ok()?;
+        answer.await.ok()
+    }
+}
+
+/// One flow's handle to a direction's arbiter.
+#[derive(Debug)]
+pub(crate) struct FlowHandle {
+    flow: FlowId,
+    arbiter: Arc<Arbiter>,
+    closed: AtomicBool,
+}
+
+impl FlowHandle {
+    /// Waits until this flow's turn in the rotation, then returns how many of the `bytes` offered
+    /// may be written now. The caller writes exactly that many and offers the rest again.
+    /// `Err` means the flow was closed or the arbiter stopped, and the relay must end.
+    pub(crate) async fn acquire(&self, bytes: usize) -> io::Result<usize> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "flow closed"));
+        }
+        if bytes == 0 {
+            return Ok(0);
+        }
+        let (reply, answer) = oneshot::channel();
+        self.arbiter
+            .commands
+            .send(Command::Request {
+                flow: self.flow,
+                bytes,
+                reply,
+            })
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "flow scheduler stopped"))?;
+        let grant = answer
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "flow closed while queued"))?;
+        if grant == 0 {
+            return Err(io::Error::other(
+                "flow scheduler refused bytes over the queue cap",
+            ));
+        }
+        Ok(grant)
+    }
+
+    /// Closes the flow: its queue, its rotation slot and any acquire still waiting are released.
+    /// Later acquires on this handle fail instead of re-opening the flow.
+    pub(crate) async fn close(&self) {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let _ = self.arbiter.commands.send(Command::Close(self.flow)).await;
+    }
+}
+
+impl Drop for FlowHandle {
+    fn drop(&mut self) {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        // A relay task that is aborted never runs its `close`; the queue must still go away, or the
+        // rotation would keep granting bytes nobody writes. `try_send` keeps `Drop` non-blocking;
+        // if the channel is full the flow's pending bytes drain on their own and a drained flow
+        // leaves the rotation, so nothing wedges either way.
+        let _ = self.arbiter.commands.try_send(Command::Close(self.flow));
+    }
+}
+
+/// The arbiter task: own the scheduler, accept requests, hand out grants in rotation order.
+///
+/// A request that would push a flow past `max_queued_bytes` is answered with a zero grant, which
+/// `acquire` turns into an error: the relay ends that flow instead of buffering past the cap. With
+/// one chunk in flight per flow (the relay asks after each granted write, never before) a queue holds
+/// at most one quantum, so the cap only bites on a misconfigured quantum and the configuration
+/// refuses that case up front.
+async fn run(config: SchedulerConfig, mut commands: mpsc::Receiver<Command>) {
+    let mut scheduler = Scheduler::new(config);
+    let mut waiting: HashMap<FlowId, oneshot::Sender<usize>> = HashMap::new();
+    loop {
+        serve(&mut scheduler, &mut waiting);
+        match commands.recv().await {
+            Some(Command::Request { flow, bytes, reply }) => {
+                if scheduler.class_of(flow).is_none() {
+                    scheduler.register(flow, Class::Balanced);
+                }
+                match scheduler.enqueue(flow, bytes) {
+                    Enqueue::Accepted => {
+                        waiting.insert(flow, reply);
+                    }
+                    Enqueue::Full => {
+                        let _ = reply.send(0);
+                    }
+                    Enqueue::NotScheduled => {
+                        let _ = reply.send(0);
+                    }
+                }
+            }
+            Some(Command::Close(flow)) => {
+                scheduler.close(flow);
+                // Dropping the sender ends any acquire still waiting on this flow.
+                waiting.remove(&flow);
+            }
+            Some(Command::Stats(reply)) => {
+                let _ = reply.send(ArbiterStats {
+                    grants: scheduler.grants(),
+                    overflow_refusals: scheduler.overflow_refusals(),
+                    queued_bytes: scheduler.total_queued_bytes(),
+                    flows: scheduler.flows(),
+                });
+            }
+            None => break,
+        }
+    }
+    // Every handle is gone: dropping `waiting` releases the remaining acquires as closed.
+}
+
+/// Grants every queue that can move now. A queued flow without a waiter still has its bytes
+/// granted and discarded, which lets a stale queue drain instead of blocking the rotation.
+fn serve(scheduler: &mut Scheduler, waiting: &mut HashMap<FlowId, oneshot::Sender<usize>>) {
+    while let Some((flow, grant)) = scheduler.next_grant(scheduler.config().quantum_bytes) {
+        if let Some(reply) = waiting.remove(&flow) {
+            let _ = reply.send(grant);
+        }
     }
 }
 
@@ -320,5 +513,100 @@ mod tests {
         assert_eq!(scheduler.next_grant(1_000), None);
         assert_eq!(scheduler.enqueue(flow, 500), Enqueue::Accepted);
         assert_eq!(scheduler.next_grant(1_000), Some((flow, 500)));
+    }
+
+    fn arbiter_config() -> SchedulerConfig {
+        SchedulerConfig {
+            quantum_bytes: 1_024,
+            max_queued_bytes: 4_096,
+        }
+    }
+
+    #[tokio::test]
+    async fn arbiter_grants_every_contending_flow_equally() {
+        let arbiter = Arbiter::spawn(arbiter_config());
+        let flows = [FlowId(1), FlowId(2), FlowId(3)];
+        let mut tasks = Vec::new();
+        for flow in flows {
+            let handle = arbiter.flow(flow);
+            tasks.push(tokio::spawn(async move {
+                let mut bytes = 0;
+                for _ in 0..6 {
+                    bytes += handle.acquire(1_024).await.expect("grant");
+                }
+                bytes
+            }));
+        }
+        for task in tasks {
+            assert_eq!(task.await.expect("task"), 6 * 1_024);
+        }
+        let stats = arbiter.stats().await.expect("stats");
+        assert_eq!(
+            stats.grants, 18,
+            "one grant per visit, three flows, six visits"
+        );
+        assert_eq!(stats.queued_bytes, 0, "every granted byte left the queue");
+        assert_eq!(stats.overflow_refusals, 0);
+    }
+
+    #[tokio::test]
+    async fn arbiter_refuses_bytes_over_the_cap_instead_of_queueing_them() {
+        // A quantum larger than the cap is a misconfiguration the relay's parser refuses; the
+        // scheduler must still refuse rather than grow the queue past the bound.
+        let arbiter = Arbiter::spawn(SchedulerConfig {
+            quantum_bytes: 4_096,
+            max_queued_bytes: 2_048,
+        });
+        let handle = arbiter.flow(FlowId(5));
+        let error = handle
+            .acquire(4_096)
+            .await
+            .expect_err("over-cap bytes must be refused");
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        let stats = arbiter.stats().await.expect("stats");
+        assert_eq!(stats.queued_bytes, 0, "nothing was buffered past the cap");
+        assert_eq!(stats.overflow_refusals, 1);
+        assert_eq!(stats.grants, 0);
+    }
+
+    #[tokio::test]
+    async fn a_closed_flow_ends_its_acquire_and_leaves_no_queue() {
+        let arbiter = Arbiter::spawn(arbiter_config());
+        let handle = arbiter.flow(FlowId(6));
+        assert_eq!(handle.acquire(1_024).await.expect("grant"), 1_024);
+        handle.close().await;
+        let error = handle.acquire(1_024).await.expect_err("closed flow");
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        let mut stats = arbiter.stats().await.expect("stats");
+        for _ in 0..100 {
+            if stats.flows == 0 && stats.queued_bytes == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            stats = arbiter.stats().await.expect("stats");
+        }
+        assert_eq!(stats.flows, 0, "a closed flow must leave the rotation");
+        assert_eq!(stats.queued_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_flow_handle_closes_its_queue() {
+        let arbiter = Arbiter::spawn(arbiter_config());
+        {
+            let handle = arbiter.flow(FlowId(7));
+            assert_eq!(handle.acquire(512).await.expect("grant"), 512);
+        }
+        let mut stats = arbiter.stats().await.expect("stats");
+        for _ in 0..100 {
+            if stats.flows == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            stats = arbiter.stats().await.expect("stats");
+        }
+        assert_eq!(
+            stats.flows, 0,
+            "drop must close the flow, not leak its slot"
+        );
     }
 }

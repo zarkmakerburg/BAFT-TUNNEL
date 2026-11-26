@@ -1,11 +1,13 @@
 # ADR-0048: Policy queues and scheduler (TP-2.1)
 
-**Status:** Accepted. Decisions 1-3 and 5 are implemented behind `policy-pack`. Decision 4 is decided by the 2026-11-26 experiments: the in-flight bound is the **Yamux per-stream window (256 KiB)**, switchable at runtime; M1/M2/M3 were measured and are not chosen. The queue/scheduler core is still not called by the relay.
+**Status:** Accepted and implemented behind `policy-pack`. Decision 4 is decided by the 2026-11-26 experiments: the in-flight bound is the **Yamux per-stream window (256 KiB)**, switchable at runtime; M1/M2/M3 were measured and are not chosen. Decisions 1-3 are now wired: `BAFT_TUNNEL_POLICY_PACK=sched[:<quantum>[:<cap>]]` runs one deficit round-robin arbiter per relay direction with bounded per-flow queues (TP-2.2, measured `simulated`: no benefit over the window arm, no regression). The switch stays off by default and the off path is today's pump.
 **Date:** 2026-11-17
 
-**Implementation (2026-11-26):** `src/policy_sched.rs` provides decision 1's bounded per-flow queues and the deficit round-robin rotation. Decisions 3 and 5 (the bounded wait and the off path) are covered by 7 unit tests: a flow is visited at least once per rotation, a quantum bounds one visit, an overflow is refused and counted rather than truncated, and a drained flow leaves the rotation. Nothing calls it yet — the relay still uses the fixed 16 KiB pump, so the data path with the pack off is unchanged. Class weights (decision 2) are untouched.
+**Implementation (2026-11-26, scheduler core):** `src/policy_sched.rs` provides decision 1's bounded per-flow queues and the deficit round-robin rotation, plus an `Arbiter` task per direction that hands each flow its turn. Decisions 3 and 5 (the bounded wait and the off path) are covered by unit tests: a flow is visited at least once per rotation, a quantum bounds one visit, an overflow is refused and counted rather than truncated, a drained flow leaves the rotation, a closed or dropped flow leaves no queue behind, and the arbiter serves contending flows equally. Class weights (decision 2) are untouched and every class is `Balanced`.
 
-**Implementation (2026-11-26, mechanism and wiring):** the experiments below chose the Yamux per-stream window as decision 4's bound. `src/policy_relay.rs` reads `BAFT_TUNNEL_POLICY_PACK` (`window-cap` or `window-cap:<bytes>`, default 256 KiB) and `tunnel::yamux_config` applies that window to both session ends; the feature off or the switch unset keeps the product's 4 MiB and nothing else changes in the data path. The relay byte budget (M1) was built and measured in the harness and is *not* wired: below half the window it cannot be credited, and at half the window it is a 2 MiB bound.
+**Implementation (2026-11-26, scheduler wired):** `tunnel::relay_stream` selects `relay_with_policy` when `policy_session()` returns a session, i.e. when the switch names `sched`; otherwise it calls `relay_with_idle_timeout` unchanged. Both session loops (forward and server side) create one `PolicySession` per session; each stream registers one flow id in both directions' arbiters. A read is offered to the arbiter and written only after its grant, so exactly one flow per direction writes at a time and the rotation, not task scheduling, decides the order. Queues hold at most one quantum per flow (the relay asks after each granted write, never before), and a request that would exceed `max_queued_bytes` is refused with an error that ends that flow instead of growing memory; the switch rejects a quantum above the cap so that refusal only bites on a misconfiguration. Idle timeouts are per read as before, `close` runs on every exit path (and `Drop` covers cancellation), and `add_to_peer`/`add_from_peer` are fed at the write.
+
+**Implementation (2026-11-26, mechanism):** the experiments below chose the Yamux per-stream window as decision 4's bound. `src/policy_relay.rs` reads `BAFT_TUNNEL_POLICY_PACK` (`window-cap` or `window-cap:<bytes>`, default 256 KiB) and `tunnel::yamux_config` applies that window to both session ends; the feature off or the switch unset keeps the product's 4 MiB and nothing else changes in the data path. The relay byte budget (M1) was built and measured in the harness and is *not* wired: below half the window it cannot be credited, and at half the window it is a 2 MiB bound.
 **Related:** [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md), [ADR-0044](ADR-0044-engine-agnostic-policy-interface.md), [ADR-0047](ADR-0047-policy-status-contract.md), research [POLICY_PACK_TP-0.1_RESEARCH.md](POLICY_PACK_TP-0.1_RESEARCH.md) sections 2, 9, issues [#231](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/231), [#232](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/232)
 
 ## Context
@@ -30,16 +32,17 @@ On the harness (simulated), against the same bottleneck and Baseline: implement 
 
 ## Experiments: results (2026-11-26, evidence level: `simulated`)
 
-`cargo test --release --features policy-pack policy_baseline::tests::mechanism_experiments -- --ignored --nocapture`, with `POLICY_RATE` set to 1,000,000, 2,500,000 and 5,000,000 B/s, `POLICY_REPEATS=2`, `POLICY_SECONDS=6`. Loaded = one 64-byte interactive ping stream beside one bulk uploader through a rate-limited loopback proxy; every arm uses the product's own relay on both ends. Rows are the two repeats' medians, in milliseconds.
+`cargo test --release --features policy-pack policy_baseline::tests::mechanism_experiments -- --ignored --nocapture`, with `POLICY_RATE` set to 1,000,000, 2,500,000 and 5,000,000 B/s, `POLICY_REPEATS=2`, `POLICY_SECONDS=6`. Loaded = one 64-byte interactive ping stream beside one bulk uploader through a rate-limited loopback proxy; every arm uses the product's own relay on both ends. Rows are the two repeats' medians, in milliseconds. (Re-run 2026-11-26 with the `sched` arm added; the earlier five-arm run agreed within the spread.)
 
 | Arm | 1 MB/s p50 | 2.5 MB/s p50 | 5 MB/s p50 | 2.5 MB/s p95 |
 |---|---|---|---|---|
-| Idle (no bulk) | 4.5 | 4.8 | 4.7 | 8.0 |
-| Baseline (4 MiB window) | 4,200 | 2,160 | 1,330 | 2,170 |
-| M1 credit budget, 2 MiB | 2,260 | 1,045 | 623 | 1,071 |
-| M2 receive pacing, 64 KiB | 4,210 | 2,161 | 1,349 | 2,271 |
-| M3 socket backpressure, 32K/16K | 4,170 | 2,217 | 1,402 | 2,373 |
-| **Window 256 KiB (chosen)** | **269** | **116** | **62** | **133** |
+| Idle (no bulk) | 4.5 | 4.4 | 4.4 | 5.2 |
+| Baseline (4 MiB window) | 4,193 | 2,026 | 1,186 | 2,088 |
+| M1 credit budget, 2 MiB | 2,246 | 977 | 590 | 1,019 |
+| M2 receive pacing, 64 KiB | 4,178 | 2,017 | 1,263 | 2,053 |
+| M3 socket backpressure, 32K/16K | 4,162 | 2,094 | 1,325 | 2,163 |
+| **Window 256 KiB (chosen)** | **271** | **110** | **61** | **119** |
+| Scheduler on that window (decision 5) | 270 | 109 | 62 | 118 |
 
 Structural findings, both asserted as tests so they cannot silently regress:
 
@@ -49,42 +52,85 @@ Structural findings, both asserted as tests so they cannot silently regress:
 - `aged_session_under_window_cap`: fresh 545 ms, aged 5,381 ms versus Baseline 544 / 5,370 ms — the bound neither hides nor worsens the aged-session throttle.
 - `bulk_bytes_per_s` in the JSON is bytes handed to the engine, not goodput: the shaped bottleneck fixes delivered rate in every arm (by construction), and the window bound lowers the queued amount (2.8 → 2.1 MB/s handed at 2.5 MB/s), not the delivered rate. Real-path goodput under a smaller window (bandwidth-delay product) still needs a delay model and is not claimed.
 
-Hypothesis check (`p95` within 10x idle `p95`): met at 5 MB/s (72 ms against 8.2 ms), not met at 2.5 MB/s (133 ms against 8.0 ms) and not at 1 MB/s (274 ms against 6.0 ms). The remaining queue is the window's worth of Bulk bytes in front of the interactive flow; that is decision 1-3's job (a prioritised class served every round), not the bound's. No profile claim is made.
+Hypothesis check (`p95` within 10x idle `p95`): met at 5 MB/s (68 ms against 4.9 ms), not met at 2.5 MB/s (119 ms against 5.2 ms) and not at 1 MB/s (285 ms against 6.9 ms). The remaining queue is the window's worth of Bulk bytes in front of the interactive flow; that is decision 1-3's job (a prioritised class served every round), not the bound's. No profile claim is made.
 
 ## Acceptance (hypotheses to confirm or reject, not claims)
 
-- Loaded interactive ping p95 within 10x of idle, instead of about 3 orders of magnitude (Baseline). The window bound alone gets from about 2,170 ms to 133 ms at 2.5 MB/s: a 16x improvement, met at 5 MB/s, **not met** at 2.5 and 1 MB/s. The remaining gap needs the per-class scheduler (decisions 1-3), so the profile claim stays dropped until that is wired and measured (ADR-0031 decision 10).
+- Loaded interactive ping p95 within 10x of idle, instead of about 3 orders of magnitude (Baseline). The window bound alone gets from about 2,090 ms to 119 ms at 2.5 MB/s: a 17x improvement, met at 5 MB/s, **not met** at 2.5 and 1 MB/s. The wired scheduler does not close the remaining gap (p95 118 ms at 2.5 MB/s against a 10x-idle target of about 52 ms): DRR reorders within the window, it does not shrink the window's worth of Bulk bytes queued in front of the interactive flow. A prioritised class that is served before the bulk flow in the same rotation is TP-3.x and is not implemented; the profile claim stays dropped (ADR-0031 decision 10).
 - Bulk throughput within 10% of Baseline at the same bottleneck: not measurable in the harness as delivered goodput — the shaped pump fixes the delivered rate for every arm. Only the queued amount changes, which is the bound's purpose; real-path goodput is open.
 - No starvation: every class makes progress under sustained load; wait bounded as in decision 3. Unchanged — the bound applies to every flow equally today.
 - Evidence label `simulated` until a VM or two-host LAB run exists; no LAB claim, no real-path latency claim. All numbers above are harness/loopback.
 
-## Relay wiring plan (scheduler → relay, next change)
+## Relay wiring (scheduler → relay, implemented 2026-11-26)
 
-The mechanism is decided and the one wired lever is the window. The scheduler (`src/policy_sched.rs`) still has no caller. Its connection to the relay is specified here so the next change is mechanical and measurable.
+Selected by `relay_stream` when `policy_session()` returns a session (`BAFT_TUNNEL_POLICY_PACK=sched`,
+`sched:<quantum>` or `sched:<quantum>:<cap>`; the defaults are the 256 KiB window, a 16 KiB quantum and
+a 64 KiB per-flow cap). Otherwise `relay_with_idle_timeout` runs and the bytes are today's.
 
-Today `tunnel::relay_with_idle_timeout` splits both sides and runs two independent `pump_with_idle_timeout` loops, each reading at most 16 KiB and writing it straight through. No ordering exists between flows or classes: the interactive flow waits behind whatever the bulk flow already handed to Yamux — now at most one window (256 KiB) instead of 4 MiB.
+Shape, and how it differs from the plan above:
 
-Target shape, one writer per direction:
+1. One arbiter task per direction per session (`policy_sched::Arbiter`), created by
+   `PolicySession::with_config`. It owns the `Scheduler` and the rotation; it is the only thing that
+   decides who writes next.
+2. Each flow's read loop keeps the 16 KiB buffer, reads at most one chunk, and calls
+   `FlowHandle::acquire(n)`, which returns the same `n` once this flow's turn comes. The flow writes
+   that chunk with its own write half. **The plan's separate writer task holding every write half was
+   replaced by this grant**: because a grant is exclusive, only one flow writes at a time, and since
+   the grant always covers the whole offered chunk there is no second queue and no chunk copy. That
+   keeps the hot path at one `acquire` round trip per 16 KiB instead of a hand-off and a copy.
+3. Queues: a flow that is waiting holds one chunk, so per-flow queued bytes never exceed the quantum.
+   A request that would exceed `max_queued_bytes` is refused (`io::Error`) and the flow's relay ends;
+   nothing is buffered past the cap. The switch refuses `quantum > cap` (and a quantum above the
+   256 KiB window) so that refusal is only reachable by misconfiguration.
+4. Idle timeout stays per flow on the read side, unchanged, as does EOF shutdown of the write half.
+5. Fail-safe: class is configuration only (ADR-0031 decision 4); anything unknown is `Balanced`, and
+   `Balanced` is one class, so the arbiter is a single rotation. Pack off, feature off or a switch
+   value the parser does not know keeps `relay_with_idle_timeout` and today's bytes exactly.
 
-1. `relay_with_policy(peer, local, idle, policy)` is selected where the pack is on; the direction that writes to the peer stops writing inline.
-2. Each flow's read loop keeps its 16 KiB buffer and offers at most `quantum_bytes` (16 KiB) to the shared scheduler through a bounded channel of `max_queued_bytes` (64 KiB). A full channel applies backpressure to that flow's socket instead of growing a queue — the same refuse-never-truncate rule the unit tests assert.
-3. One writer task per direction owns the `Scheduler` and the peer write half. It takes the next granted flow (`next_grant`), writes that chunk and releases the credit. Deficit round-robin guarantees every registered flow is visited once per rotation, so a one-chunk flow's wait is bounded by `flows_in_rotation × quantum / rate`.
-4. The idle timeout stays per flow on the read side, unchanged: a flow whose peer goes quiet still fails its direction after `idle`.
-5. Fail-safe: the class comes only from explicit configuration (ADR-0031 decision 4); anything unknown or unset is `Balanced`, and `Balanced` is a single class, so the writer behaves like today's pump. Pack off, feature off or switch unset keeps `relay_with_idle_timeout` and today's bytes exactly.
+Constraints from the plan, and their tests: a chunk is never reordered or split (the flow id travels
+with the bytes; the pump writes exactly the granted length); a write error fails the direction and the
+handle's `Drop`/`close` removes the flow from the rotation (`a_dropped_flow_handle_closes_its_queue`,
+`a_closed_flow_ends_its_acquire_and_leaves_no_queue`); `close` runs on every exit path, and a flow
+whose queue is drained leaves the rotation even without a close; counters are fed at the write
+(`relay_stream_uses_the_pack_session_when_one_is_selected` keeps the idle-timeout semantics and checks
+that both arbiters hold zero flows afterwards).
 
-Constraints that the wiring change must satisfy:
+### Results (TP-2.2, 2026-11-26, evidence level: `simulated`)
 
-- a chunk is never reordered or split across flows: the flow id travels with the bytes;
-- a write error fails the direction, closes the flow and wakes every waiting flow so none is stranded;
-- `close(flow)` runs on every exit path, cancellation included, or the rotation keeps visiting a dead flow;
-- `add_to_peer` / `add_from_peer` (ADR-0024) are fed at the write, not at the enqueue, so they keep meaning "bytes handed to the peer".
+`cargo test --release --features policy-pack policy_baseline::tests::mechanism_experiments -- --ignored
+--nocapture` with `POLICY_RATE` = 1,000,000 / 2,500,000 / 5,000,000 B/s, `POLICY_REPEATS=2`,
+`POLICY_SECONDS=6`, run again with the `sched` arm in the matrix. Loaded = one 64-byte interactive ping
+stream beside one bulk uploader; both ends use the product's relay. The `sched` arm rides the same
+256 KiB window as the `window-cap` arm, so the difference is arbitration alone.
 
-Measurement for that change (TP-2.2, evidence `simulated` until a LAB window exists): the `mechanism_experiments` scenario with a prioritised interactive class, reporting loaded ping p50/p95/p99, fairness across two equal bulk flows, the writer path's per-MB cost against `relay_with_idle_timeout`, and the idle timeout unchanged. Acceptance is the ADR-0048 hypothesis (p95 within 10x idle) or a published negative result.
+| Arm | 1 MB/s p50 | 2.5 MB/s p50 | 5 MB/s p50 | 2.5 MB/s p95 | 2.5 MB/s bulk handed |
+|---|---|---|---|---|---|
+| Idle | 4.5 | 4.4 | 4.4 | 5.2 | 0 |
+| Baseline (4 MiB window) | 4,193 | 2,026 | 1,186 | 2,088 | 3.51 MB/s |
+| Window 256 KiB | 271 | 110 | 61 | 119 | 2.21 MB/s |
+| **`sched` (window + DRR)** | **270** | **109** | **62** | **118** | **2.22 MB/s** |
+
+p99: sched 300 / 144 / 69 ms against window-cap 283 / 138 / 74 ms, so the scheduler is inside the
+run-to-run spread of the window arm at every rate; it is neither a win nor a regression in this
+scenario. Idle timeouts and the aged-session throttle are unchanged: `aged_session_under_scheduler`
+fresh 538 ms / aged 5,392 ms against Baseline 545 / 5,371 and window-cap 544 / 5,404.
+
+Why there is no benefit here: with one bulk flow and one interactive flow, the window already bounds
+the queue to 256 KiB, and DRR can only reorder around 16 KiB chunks within that queue. The scheduler
+matters when several flows of different classes share the link (TP-3.x) or when a flow must not
+consume the whole window; neither is measured yet, so none is claimed. The cost is one arbiter round
+trip per 16 KiB per direction; the harness shows no throughput or latency change outside the spread
+above, but per-MB CPU was not measured, so the 5% overhead budget in decision 6 stays **unverified**.
+
+Fairness across two equal bulk flows is asserted in unit tests
+(`arbiter_grants_every_contending_flow_equally`: three flows, 18 requests, each served six times) but
+not measured through the harness; the harness has one bulk flow.
 
 ## Consequences
 
 - Positive: addresses the measured dominant delay with a bounded, reversible, unprivileged mechanism, and the mechanism that works is a configuration value rather than a hot-path wrapper.
-- Cost: a scheduler in the hot path; extra memory per flow (bounded queues). The window is per session, not per flow, until decision 1-3 land.
+- Cost: a scheduler in the hot path behind its own switch; extra memory per flow (bounded queues: one chunk in flight). The window is per session, not per flow, so the scheduler's fairness is the only per-flow lever until class weights land.
+- Positive (measured, limited): the scheduler is wired with no measured benefit and no measured regression in the two-flow scenario; it ships behind `sched`, off by default, with the numbers published rather than a benefit claim.
 - Risk: the window bound lowers the bandwidth-delay product a stream can fill on a long path; a smaller window can cost goodput at high RTT. That must be measured with a delay model before any default changes outside the switch.
 - Risk (realised): relay-level control cannot reach below the window, so M1 and M2 as specified cannot bound the queue (measured, see above).
 

@@ -26,6 +26,16 @@ use tokio_yamux::Session;
 
 use crate::tunnel::{relay_with_idle_timeout, yamux_config};
 
+/// One end's scheduler state for the `sched` arm. Without the feature the arm does not exist and the
+/// alias is only there to keep the harness's helper signatures uniform.
+#[cfg(feature = "policy-pack")]
+type ArmPolicy = std::sync::Arc<crate::policy_relay::PolicySession>;
+#[cfg(not(feature = "policy-pack"))]
+#[derive(Debug)]
+struct PackDisabled;
+#[cfg(not(feature = "policy-pack"))]
+type ArmPolicy = std::sync::Arc<PackDisabled>;
+
 const PING: usize = 64;
 const PUMP_READ: usize = 16 * 1024;
 const IDLE: Duration = Duration::from_secs(900);
@@ -120,6 +130,14 @@ pub(crate) enum Mechanism {
     /// window itself. It is not M1/M2/M3; it is the reference arm that shows where the queue can
     /// actually be bounded, and it is what decision 4's bound is implemented as.
     WindowCap { bytes: u32 },
+    /// The shipped `sched` switch (ADR-0048 decision 5): the window bound plus one DRR arbiter per
+    /// relay direction. Measured against `WindowCap` with the same window.
+    #[cfg(feature = "policy-pack")]
+    Scheduler {
+        window: u32,
+        quantum: usize,
+        cap: usize,
+    },
 }
 
 impl Mechanism {
@@ -133,6 +151,12 @@ impl Mechanism {
                 notsent_lowat,
             } => format!("m3-socket-backpressure-{send_buffer}-{notsent_lowat}"),
             Mechanism::WindowCap { bytes } => format!("window-cap-{bytes}"),
+            #[cfg(feature = "policy-pack")]
+            Mechanism::Scheduler {
+                window,
+                quantum,
+                cap,
+            } => format!("sched-w{window}-q{quantum}-cap{cap}"),
         }
     }
 }
@@ -141,8 +165,38 @@ impl Mechanism {
 fn window_for(mechanism: Mechanism) -> Option<u32> {
     match mechanism {
         Mechanism::WindowCap { bytes } => Some(bytes),
+        #[cfg(feature = "policy-pack")]
+        Mechanism::Scheduler { window, .. } => Some(window),
         _ => None,
     }
+}
+
+/// One end's scheduler session for the arm, if the arm selects the shipped `sched` switch.
+fn policy_for(_mechanism: Mechanism) -> Option<ArmPolicy> {
+    #[cfg(feature = "policy-pack")]
+    if let Mechanism::Scheduler { quantum, cap, .. } = _mechanism {
+        return Some(crate::policy_relay::PolicySession::with_config(
+            crate::policy_sched::SchedulerConfig {
+                quantum_bytes: quantum,
+                max_queued_bytes: cap,
+            },
+        ));
+    }
+    None
+}
+
+/// Relay one direction pair for an arm: the scheduler when the arm has one, today's pump otherwise.
+async fn relay_under<A, B>(peer: A, local: B, policy: Option<&ArmPolicy>) -> std::io::Result<()>
+where
+    A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    #[cfg(feature = "policy-pack")]
+    if let Some(policy) = policy {
+        return crate::policy_relay::relay_with_policy(peer, local, IDLE, policy).await;
+    }
+    let _ = policy;
+    relay_with_idle_timeout(peer, local, IDLE).await
 }
 
 /// Forward bytes no faster than the profile's rate for the connection's age (serialization
@@ -359,16 +413,19 @@ async fn run_variant(
     let window = window.or(window_for(mechanism));
     let mut server_session = Session::new_server(server_io, config_with_window(window));
     let sink_mechanism = mechanism;
+    // Each tunnel end owns its scheduler, as two real hosts would.
+    let server_policy = policy_for(mechanism);
     let server_task = tokio::spawn(async move {
         let mut index = 0_u32;
         while let Some(item) = server_session.next().await {
             let Ok(stream) = item else { break };
             let is_sink = with_bulk && index == 0;
             index += 1;
+            let relay_policy = server_policy.clone();
             tokio::spawn(async move {
                 let (local, app) = duplex(64 * 1024);
                 tokio::spawn(async move {
-                    let _ = relay_with_idle_timeout(stream, local, IDLE).await;
+                    let _ = relay_under(stream, local, relay_policy.as_ref()).await;
                 });
                 let (mut read, mut write) = tokio::io::split(app);
                 if is_sink {
@@ -406,7 +463,10 @@ async fn run_variant(
         }
     });
 
-    let open = |mut control: tokio_yamux::Control, mechanism: Mechanism| async move {
+    let client_policy = policy_for(mechanism);
+    let open = |mut control: tokio_yamux::Control,
+                mechanism: Mechanism,
+                policy: Option<ArmPolicy>| async move {
         let stream = control.open_stream().await.expect("open stream");
         let (local, app): (DuplexStream, DuplexStream) = duplex(64 * 1024);
         match mechanism {
@@ -417,7 +477,7 @@ async fn run_variant(
             }
             _ => {
                 tokio::spawn(async move {
-                    let _ = relay_with_idle_timeout(stream, local, IDLE).await;
+                    let _ = relay_under(stream, local, policy.as_ref()).await;
                 });
             }
         }
@@ -426,7 +486,7 @@ async fn run_variant(
 
     let bulk_sent = Arc::new(AtomicU64::new(0));
     let bulk_task = if with_bulk {
-        let mut app = open(control.clone(), mechanism).await;
+        let mut app = open(control.clone(), mechanism, client_policy.clone()).await;
         let sent = Arc::clone(&bulk_sent);
         Some(tokio::spawn(async move {
             let payload = vec![0x5a_u8; PUMP_READ];
@@ -441,7 +501,7 @@ async fn run_variant(
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    let mut interactive = open(control.clone(), Mechanism::Baseline).await;
+    let mut interactive = open(control.clone(), Mechanism::Baseline, client_policy.clone()).await;
     let ping = [7_u8; PING];
     let mut echo = [0_u8; PING];
     let mut samples = Vec::new();
@@ -499,13 +559,15 @@ pub(crate) async fn run_transfer_mechanism(
     let (client_io, server_io) = shaped_endpoints_with(profile, mechanism).await;
     let config = || config_with_window(window_for(mechanism));
     let mut server_session = Session::new_server(server_io, config());
+    let server_policy = policy_for(mechanism);
     let server_task = tokio::spawn(async move {
         while let Some(item) = server_session.next().await {
             let Ok(stream) = item else { break };
+            let relay_policy = server_policy.clone();
             tokio::spawn(async move {
                 let (local, app) = duplex(64 * 1024);
                 tokio::spawn(async move {
-                    let _ = relay_with_idle_timeout(stream, local, IDLE).await;
+                    let _ = relay_under(stream, local, relay_policy.as_ref()).await;
                 });
                 let (mut read, mut write) = tokio::io::split(app);
                 let mut remaining = bytes;
@@ -532,6 +594,7 @@ pub(crate) async fn run_transfer_mechanism(
     tokio::time::sleep(wait).await;
     let stream = control.open_stream().await.expect("open stream");
     let (local, mut app): (DuplexStream, DuplexStream) = duplex(64 * 1024);
+    let client_policy = policy_for(mechanism);
     match mechanism {
         Mechanism::CreditBudget { budget } => {
             tokio::spawn(async move {
@@ -540,7 +603,7 @@ pub(crate) async fn run_transfer_mechanism(
         }
         _ => {
             tokio::spawn(async move {
-                let _ = relay_with_idle_timeout(stream, local, IDLE).await;
+                let _ = relay_under(stream, local, client_policy.as_ref()).await;
             });
         }
     }
@@ -564,8 +627,10 @@ pub(crate) async fn run_transfer_mechanism(
 /// arm. M1 runs at half the product window because that is the smallest budget Yamux can credit:
 /// a receiver emits a window update only once `max_recv_window / 2` bytes are consumed (see
 /// `credit_budget_below_the_window_granularity_stalls`), so a smaller budget stalls the flow.
-pub(crate) fn mechanism_matrix() -> [Mechanism; 5] {
-    [
+pub(crate) fn mechanism_matrix() -> Vec<Mechanism> {
+    #[allow(unused_mut)]
+    // `mut` is only needed with the feature, where the scheduler arm is pushed.
+    let mut arms = vec![
         Mechanism::Baseline,
         Mechanism::CreditBudget {
             budget: PRODUCT_WINDOW as usize / 2,
@@ -576,7 +641,16 @@ pub(crate) fn mechanism_matrix() -> [Mechanism; 5] {
             notsent_lowat: 16 * 1024,
         },
         Mechanism::WindowCap { bytes: 256 * 1024 },
-    ]
+    ];
+    // TP-2.2: the shipped scheduler on the same 256 KiB window as the arm above, so the comparison
+    // isolates arbitration rather than the in-flight bound.
+    #[cfg(feature = "policy-pack")]
+    arms.push(Mechanism::Scheduler {
+        window: 256 * 1024,
+        quantum: 16 * 1024,
+        cap: 64 * 1024,
+    });
+    arms
 }
 
 #[cfg(test)]
@@ -601,6 +675,11 @@ mod tests {
         assert!(labels[2].starts_with("m2-receive-pacing-"));
         assert!(labels[3].starts_with("m3-socket-backpressure-"));
         assert_eq!(labels[4], "window-cap-262144");
+        #[cfg(feature = "policy-pack")]
+        assert_eq!(
+            labels[5], "sched-w262144-q16384-cap65536",
+            "the scheduler arm rides the same 256 KiB window as the arm it is compared with"
+        );
         let unique: std::collections::HashSet<_> = labels.iter().collect();
         assert_eq!(unique.len(), labels.len());
     }
@@ -781,6 +860,30 @@ mod tests {
         };
         let bytes = 1024 * 1024;
         let mechanism = Mechanism::WindowCap { bytes: 256 * 1024 };
+        let fresh = run_transfer_mechanism(profile, Duration::ZERO, bytes, mechanism).await;
+        let aged = run_transfer_mechanism(profile, Duration::from_secs(4), bytes, mechanism).await;
+        println!(
+            "POLICY_BASELINE {{\"scenario\":\"aged_session_throttled\",\"mechanism\":\"{}\",\"evidence\":\"simulated\",\"bytes\":{bytes},\"fresh_ms\":{fresh},\"aged_ms\":{aged},\"rate_bytes_per_s\":2500000,\"aged_rate_bytes_per_s\":200000,\"aged_after_s\":3}}",
+            mechanism.label()
+        );
+    }
+
+    /// The aged-session throttle under the shipped `sched` switch: arbitration must leave the
+    /// throttle exactly as it is on the window arm (ADR-0048 decision 5).
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    #[ignore = "measurement run; use --release --ignored --nocapture"]
+    async fn aged_session_under_scheduler() {
+        let profile = Profile {
+            rate: 2_500_000,
+            aged: Some((Duration::from_secs(3), 200_000)),
+        };
+        let bytes = 1024 * 1024;
+        let mechanism = Mechanism::Scheduler {
+            window: 256 * 1024,
+            quantum: 16 * 1024,
+            cap: 64 * 1024,
+        };
         let fresh = run_transfer_mechanism(profile, Duration::ZERO, bytes, mechanism).await;
         let aged = run_transfer_mechanism(profile, Duration::from_secs(4), bytes, mechanism).await;
         println!(
