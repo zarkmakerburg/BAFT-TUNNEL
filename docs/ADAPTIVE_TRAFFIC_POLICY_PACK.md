@@ -1,6 +1,6 @@
 # Adaptive Traffic Policy Pack: plan
 
-**Status: Proposed as a product feature (registered 2026-11-15). Phase 0 research, the Phase 2 interface, the queue/scheduler core and the ADR-0048 in-flight bound exist behind the `policy-pack` cargo feature (off by default; the bound is the one piece wired into the relay, behind the `BAFT_TUNNEL_POLICY_PACK` runtime switch). No profile is accepted, and every measurement is harness/`simulated`.**
+**Status: Proposed as a product feature (registered 2026-11-15). Phase 0 research, the Phase 2 interface, the queue/scheduler core, the ADR-0048 in-flight bound and the scheduler's wiring into the relay exist behind the `policy-pack` cargo feature (off by default; the bound and the scheduler are reachable only through the `BAFT_TUNNEL_POLICY_PACK` runtime switch). No profile is accepted, and every measurement is harness/`simulated` — the scheduler arm measured as neither a win nor a regression and stays off by default.**
 Decision: [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md). Epic: [#226](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/226). Roadmap entry: [PRODUCT_ROADMAP.md §5a](PRODUCT_ROADMAP.md).
 
 ### Current implementation state (2026-11-26)
@@ -9,12 +9,13 @@ Decision: [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md). Epic: [#226](htt
 |---|---|---|
 | TP-0.1 research (#227) | Delivered as research: hook points, TCP/UDP limits, unprivileged OS options; no measurement | [POLICY_PACK_TP-0.1_RESEARCH.md](POLICY_PACK_TP-0.1_RESEARCH.md) |
 | TP-2.0 interface (#245) | Implemented: versioned interface, capability declaration that defaults to `Unknown`, fail-safe `Guarded` wrapper | `src/policy.rs` (feature `policy-pack`), unit tests |
-| TP-2.1 queues/scheduler (#231) | Implemented core: bounded per-flow queues, deficit round-robin, bounded wait; **not called by the relay** | `src/policy_sched.rs` (feature `policy-pack`), 7 unit tests |
+| TP-2.1 queues/scheduler (#231) | Implemented and wired: one deficit round-robin arbiter per relay direction, bounded per-flow queues (one quantum in flight, 64 KiB cap), bounded wait; reachable with `BAFT_TUNNEL_POLICY_PACK=sched[:<quantum>[:<cap>]]` | `src/policy_sched.rs`, `src/policy_relay.rs` (feature `policy-pack`), unit tests |
 | TP-0.2 ADR acceptance (#228) | Open — ADR-0031 is still Proposed; profile schema, classification and engine scope are not decided | [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) |
-| TP-1.1/1.2 measurement (#229/#230) | Harness only (`simulated`): Baseline scenarios, window-cap experiment, ADR-0048 mechanism matrix (M1/M2/M3 plus the window arm, three rates), aged-session scenario | `src/policy_baseline.rs`, [POLICY_PACK_TP-0.1_RESEARCH.md](POLICY_PACK_TP-0.1_RESEARCH.md) §9.2-9.3 |
+| TP-1.1/1.2 measurement (#229/#230) | Harness only (`simulated`): Baseline scenarios, window-cap experiment, ADR-0048 mechanism matrix (M1/M2/M3, the window arm and the scheduler arm, three rates), aged-session scenario | `src/policy_baseline.rs`, [POLICY_PACK_TP-0.1_RESEARCH.md](POLICY_PACK_TP-0.1_RESEARCH.md) §9.2-9.4 |
 | TP-2.1 in-flight mechanism (M1/M2/M3) | Decided 2026-11-26 by measurement: the Yamux per-stream window (256 KiB); M1 works only at 2 MiB and cannot go lower, M2/M3 measured equal to Baseline | [ADR-0048](ADR-0048-policy-queues-and-scheduler.md) decision 4 and results |
-| Relay wiring (#244) | The in-flight bound only: `tunnel::yamux_config` uses the pack's window when `BAFT_TUNNEL_POLICY_PACK=window-cap[:<bytes>]` is set. The scheduler is still not called, and the pack-off path is byte-for-byte today's | `src/policy_relay.rs` (feature `policy-pack`), 2 unit tests |
-| TP-2.2, TP-3.x, TP-4.x, TP-5.x, TP-U (#232-#243) | Not started | issues #232-#243 |
+| Relay wiring (#244) | Both levers: `tunnel::yamux_config` applies the pack's window for `window-cap[:<bytes>]`, and `tunnel::relay_stream` runs the scheduled relay for `sched[:<quantum>[:<cap>]]`; an unset or unknown switch keeps `relay_with_idle_timeout`, i.e. today's bytes exactly | `src/policy_relay.rs`, `src/tunnel.rs` (feature `policy-pack`), unit tests |
+| TP-2.2 fairness/overhead (#232) | Measured 2026-11-26 (`simulated`): the scheduler arm on the 256 KiB window matches the window arm within the run-to-run spread at 1 / 2.5 / 5 MB/s; no benefit claimed, per-MB CPU unmeasured so the decision 6 overhead budget stays unverified; unit tests cover arbitration, the cap and closed flows | [ADR-0048](ADR-0048-policy-queues-and-scheduler.md), [POLICY_PACK_TP-0.1_RESEARCH.md](POLICY_PACK_TP-0.1_RESEARCH.md) §9.4 |
+| TP-3.x, TP-4.x, TP-5.x, TP-U (#233-#243) | Not started | issues #233-#243 |
 
 With the pack off the data path is exactly today's; nothing in this table is a benefit claim, and every number from the harness keeps the `simulated` label.
 

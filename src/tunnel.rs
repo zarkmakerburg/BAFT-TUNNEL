@@ -280,6 +280,49 @@ where
     Ok(())
 }
 
+#[cfg(feature = "policy-pack")]
+type PolicySessionHandle = std::sync::Arc<crate::policy_relay::PolicySession>;
+/// Placeholder for the pack-off build: no session can be created, and `Arc` keeps the option
+/// non-`Copy` so the two builds share the same plumbing.
+#[cfg(not(feature = "policy-pack"))]
+#[derive(Debug)]
+struct PackDisabled;
+#[cfg(not(feature = "policy-pack"))]
+type PolicySessionHandle = std::sync::Arc<PackDisabled>;
+
+/// The pack's per-session scheduler when `BAFT_TUNNEL_POLICY_PACK=sched`. `None` — feature off,
+/// switch unset, or another switch value — is today's data path, byte for byte (ADR-0048).
+fn policy_session() -> Option<PolicySessionHandle> {
+    #[cfg(feature = "policy-pack")]
+    {
+        crate::policy_relay::PolicySession::from_env()
+    }
+    #[cfg(not(feature = "policy-pack"))]
+    {
+        None
+    }
+}
+
+/// Relay a stream with the pack's scheduler when one was requested for this session, otherwise
+/// exactly as before. The idle timeout, EOF shutdown and byte counters are the same in both paths.
+async fn relay_stream<A, B>(
+    peer: A,
+    local: B,
+    idle: Duration,
+    policy: Option<&PolicySessionHandle>,
+) -> std::io::Result<()>
+where
+    A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    #[cfg(feature = "policy-pack")]
+    if let Some(policy) = policy {
+        return crate::policy_relay::relay_with_policy(peer, local, idle, policy).await;
+    }
+    let _ = policy;
+    relay_with_idle_timeout(peer, local, idle).await
+}
+
 fn next_backoff(current: Duration) -> Duration {
     current.saturating_mul(2).min(MAX_BACKOFF)
 }
@@ -743,6 +786,7 @@ async fn serve_streams_versioned<S>(
     let (_probe_guard, mut probe_rx) = probe_control.begin_session();
     let mut control = session.control();
     let mut stream_tasks = JoinSet::new();
+    let policy = policy_session();
     loop {
         let item = tokio::select! {
             probe = probe_rx.recv() => {
@@ -805,6 +849,7 @@ async fn serve_streams_versioned<S>(
                 let destination = target;
                 let stream_tunnel = tunnel.clone();
                 let stream_probe_limiter = probe_limiter.clone();
+                let stream_policy = policy.clone();
                 stream_tasks.spawn(async move {
                     let _permit = permit;
                     let result: Result<()> = async {
@@ -826,10 +871,11 @@ async fn serve_streams_versioned<S>(
                                         .await
                                         .context("destination connect timeout")??;
                                 eprintln!("fixed destination connected for yamux stream");
-                                relay_with_idle_timeout(
+                                relay_stream(
                                     &mut logical,
                                     &mut upstream,
                                     STREAM_IDLE_TIMEOUT,
+                                    stream_policy.as_ref(),
                                 )
                                 .await
                                 .context("forward TCP stream")?;
@@ -1088,6 +1134,7 @@ async fn run_forward_session_core(
     let _mark = crate::session_status::SessionMark::open(tunnel, peer, direction);
     let mut control = session.control();
     let mut stream_tasks = JoinSet::new();
+    let policy = policy_session();
     let driver_tunnel = tunnel.to_owned();
     let driver_direction = direction;
     let driver_version = protocol_version;
@@ -1204,6 +1251,7 @@ async fn run_forward_session_core(
                 };
                 let mut stream_control = control.clone();
                 let tunnel = tunnel.to_owned();
+                let stream_policy = policy.as_ref().cloned();
                 stream_tasks.spawn(async move {
                     let _permit = permit;
                     let result: Result<()> = async {
@@ -1224,9 +1272,14 @@ async fn run_forward_session_core(
                         )
                         .await
                         .context("authorize TCP forwarding stream")?;
-                        relay_with_idle_timeout(&mut stream, &mut local, STREAM_IDLE_TIMEOUT)
-                            .await
-                            .context("forward local TCP stream")?;
+                        relay_stream(
+                            &mut stream,
+                            &mut local,
+                            STREAM_IDLE_TIMEOUT,
+                            stream_policy.as_ref(),
+                        )
+                        .await
+                        .context("forward local TCP stream")?;
                         Ok(())
                     }
                     .await;
@@ -3420,6 +3473,41 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    /// ADR-0048 decision 5: when a session is selected the relay takes the scheduled path, and it
+    /// keeps both the data path and the idle timeout of the unscheduled one.
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    async fn relay_stream_uses_the_pack_session_when_one_is_selected() {
+        let session =
+            crate::policy_relay::PolicySession::with_config(crate::policy_sched::SchedulerConfig {
+                quantum_bytes: 4 * 1024,
+                max_queued_bytes: 16 * 1024,
+            });
+        let (mut client, relay_a) = duplex(1024);
+        let (relay_b, mut server) = duplex(1024);
+        let handle = std::sync::Arc::clone(&session);
+        let task = tokio::spawn(async move {
+            relay_stream(relay_a, relay_b, Duration::from_millis(300), Some(&handle)).await
+        });
+        client.write_all(b"ping").await.unwrap();
+        let mut buffer = [0u8; 4];
+        server.read_exact(&mut buffer).await.unwrap();
+        assert_eq!(&buffer, b"ping");
+        server.write_all(b"pong").await.unwrap();
+        client.read_exact(&mut buffer).await.unwrap();
+        assert_eq!(&buffer, b"pong");
+        let result = timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(
+            session.flows().await,
+            (0, 0),
+            "the scheduled relay must release both flow handles"
+        );
     }
 
     /// ADR-0039: the first link is dead, the backup is the real peer; the service node must fail

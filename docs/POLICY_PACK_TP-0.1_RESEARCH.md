@@ -105,14 +105,15 @@ Loaded delay is close to window divided by bottleneck rate, so the queue behind 
 
 | Arm | 1 MB/s | 2.5 MB/s | 5 MB/s |
 |---|---|---|---|
-| Idle (no bulk) | 4.5 | 4.8 | 4.7 |
-| Baseline (product 4 MiB window) | 4,200 | 2,160 | 1,330 |
-| M1 credit budget, 2 MiB | 2,260 | 1,045 | 623 |
-| M2 receive pacing, 64 KiB | 4,210 | 2,161 | 1,349 |
-| M3 socket backpressure, 32 KiB / 16 KiB | 4,170 | 2,217 | 1,402 |
-| Window 256 KiB | 269 | 116 | 62 |
+| Idle (no bulk) | 4.5 | 4.4 | 4.4 |
+| Baseline (product 4 MiB window) | 4,193 | 2,026 | 1,186 |
+| M1 credit budget, 2 MiB | 2,246 | 977 | 590 |
+| M2 receive pacing, 64 KiB | 4,178 | 2,017 | 1,263 |
+| M3 socket backpressure, 32 KiB / 16 KiB | 4,162 | 2,094 | 1,325 |
+| Window 256 KiB | 271 | 110 | 61 |
+| Scheduler on the 256 KiB window (`sched`, section 9.4) | 270 | 109 | 62 |
 
-At 2.5 MB/s the window arm's p95 is 133 ms (idle p95 8.0 ms), the M1 arm's 1,071 ms, Baseline's 2,170 ms.
+At 2.5 MB/s the window arm's p95 is 119 ms (idle p95 5.2 ms), the scheduler's 118 ms, the M1 arm's 1,019 ms, Baseline's 2,088 ms.
 
 What the run establishes, all `simulated`:
 
@@ -123,3 +124,22 @@ What the run establishes, all `simulated`:
 - **`bulk_bytes_per_s` is not goodput.** It counts bytes handed to the engine; the shaped pump fixes the delivered rate in every arm. The window arm hands over less (2.1 versus 2.8 MB/s at a 2.5 MB/s bottleneck) because it queues less, which is the point. Real-path goodput under a smaller window is not measured here.
 
 Decision: the in-flight bound is the per-stream window, 256 KiB, applied by `tunnel::yamux_config` and switchable with `BAFT_TUNNEL_POLICY_PACK=window-cap[:<bytes>]` (`src/policy_relay.rs`). M1/M2/M3 are not wired; see [ADR-0048](ADR-0048-policy-queues-and-scheduler.md) decision 4 and its results section. The remaining gap to the p95-within-10x-idle hypothesis (met at 5 MB/s, not at 2.5 or 1 MB/s) is the queue in front of the interactive flow, which the per-class scheduler (`src/policy_sched.rs`) is meant to bound and which is still not called by the relay.
+### 9.4 Experiment: scheduler wired to the relay, TP-2.2 (2026-11-26, evidence level: simulated)
+
+The same matrix re-run with the shipped `sched` switch as a sixth arm: one deficit round-robin arbiter per relay direction, 16 KiB quantum, 64 KiB per-flow cap, on the same 256 KiB window as the `window-cap` arm. The comparison therefore isolates arbitration, not the in-flight bound. Commands are those of 9.3; the arm is `sched-w262144-q16384-cap65536`.
+
+| Arm | 1 MB/s p50 | 2.5 MB/s p50 | 5 MB/s p50 | 2.5 MB/s p95 | 2.5 MB/s p99 | bulk handed at 2.5 MB/s |
+|---|---|---|---|---|---|---|
+| Idle | 4.5 | 4.4 | 4.4 | 5.2 | 6.3 | 0 |
+| Window 256 KiB | 271 | 110 | 61 | 119 | 138 | 2.21 MB/s |
+| `sched` on that window | 270 | 109 | 62 | 118 | 144 | 2.22 MB/s |
+
+Findings, all `simulated`:
+
+- **No benefit, no regression in this scenario.** Every arm-level difference is inside the repeat-to-repeat spread; p99 is 6 ms worse at 2.5 MB/s and 5 ms better at 5 MB/s. Nothing here justifies turning the switch on by default, so it stays off.
+- **The reason is structural.** With one bulk flow and one interactive flow the window already bounds the queue, and DRR only decides the order of 16 KiB chunks inside it; it cannot shrink the window's worth of queued bytes. Fair scheduling between classes/flows is the case it exists for, and that is TP-3.x plus a multi-flow measurement.
+- **Bounded queues verified by tests, not by numbers.** Per-flow queued bytes never exceed one quantum; an over-cap request is refused with an error that ends the flow rather than growing memory; a closed or dropped flow leaves the rotation and the arbiter reports zero flows after the relay ends (`policy_sched` and `policy_relay` tests).
+- **Idle timeouts and the aged-session throttle are unchanged.** `aged_session_under_scheduler`: fresh 538 ms / aged 5,392 ms against Baseline 545 / 5,371 and window-cap 544 / 5,404.
+- **Per-MB CPU of the arbiter path is not measured.** The ADR-0048 decision 6 overhead budget therefore remains unverified; the only cost evidence is the unchanged latency and handed-bytes above.
+- **No LAB evidence.** The two-host LAB window is still suspended, so every number here is loopback harness evidence labelled `simulated`.
+

@@ -74,8 +74,14 @@ mod pair_proto;
 #[path = "../src/pki_helper.rs"]
 mod pki_helper;
 #[cfg(feature = "policy-pack")]
+#[path = "../src/policy.rs"]
+mod policy;
+#[cfg(feature = "policy-pack")]
 #[path = "../src/policy_relay.rs"]
 mod policy_relay;
+#[cfg(feature = "policy-pack")]
+#[path = "../src/policy_sched.rs"]
+mod policy_sched;
 #[path = "../src/probe_adapters.rs"]
 #[allow(dead_code)]
 mod probe_adapters;

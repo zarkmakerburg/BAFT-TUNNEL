@@ -50,14 +50,16 @@ installer and verifier; publish a new tag after this change is merged.
 ## Next release: v0.4.0 (Adaptive Traffic Policy Pack) — not yet gated
 
 `v0.3.1` is the latest Stable. Between its tag and `main` only documentation and the
-`policy-pack` core merged (#448-#452), so no `v0.3.2` is planned: a Stable tag has to carry a
-product change. The next Stable is `v0.4.0` (roadmap §9.5). It is **not taggable yet**:
+`policy-pack` work merged (#448-#452 and the scheduler-wiring PR), so no `v0.3.2` is planned: a
+Stable tag has to carry a product change. The next Stable is `v0.4.0` (roadmap §9.5). It is **not
+taggable yet**:
 
 - the policy pack lives behind the `policy-pack` cargo feature, is off by default, and only its
-  in-flight window bound reaches the relay (`BAFT_TUNNEL_POLICY_PACK=window-cap[:<bytes>]`,
-  256 KiB); unset means today's 4 MiB window and today's data path. The scheduler
-  (`src/policy_sched.rs`) is not wired yet, the mechanism experiments are harness-level
-  (`simulated`) only, and no profile has measured evidence, so there is nothing to ship;
+  in-flight window bound (`BAFT_TUNNEL_POLICY_PACK=window-cap[:<bytes>]`, 256 KiB) and its
+  scheduler (`BAFT_TUNNEL_POLICY_PACK=sched[:<quantum>[:<cap>]]`) reach the relay; unset means
+  today's 4 MiB window, today's pump and today's data path. The scheduler was measured as neither
+  a win nor a regression in the two-flow harness scenario, per-MB CPU is unmeasured, and no
+  profile has measured evidence, so there is nothing to ship;
 - no profile has measured evidence against Balanced and Baseline; the two-host LAB stays
   suspended, so any number produced before an owner-authorized window is harness or CI level
   and must keep the `simulated` label; it is never LAB evidence;

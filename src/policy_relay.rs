@@ -1,35 +1,64 @@
-//! Relay wiring for the Adaptive Traffic Policy Pack's in-flight bound (ADR-0048 decision 4).
+//! Relay wiring for the Adaptive Traffic Policy Pack (ADR-0048 decisions 4 and 5).
 //!
 //! Compiled only with the `policy-pack` feature. With the feature off, or with the runtime switch
-//! unset, `tunnel::yamux_config` keeps the product's 4 MiB per-stream window and nothing here is
-//! consulted, so the data path is unchanged (ADR-0031 decision 13, ADR-0044 decision 6).
+//! unset, `tunnel::yamux_config` keeps the product's 4 MiB per-stream window and the relay keeps
+//! today's fixed 16 KiB pump, so the data path is unchanged (ADR-0031 decision 13, ADR-0044
+//! decision 6). `tunnel::relay_stream` picks between both paths and has no other mode.
+//!
+//! # Switch
+//!
+//! `BAFT_TUNNEL_POLICY_PACK` (see [`ENV_POLICY`]):
+//!
+//! | value | effect |
+//! |---|---|
+//! | unset, empty, `off` | pack off; today's data path, byte for byte |
+//! | `window-cap[:<bytes>]` | only the per-stream window bound (decision 4) |
+//! | `sched[:<quantum>[:<cap>]]` | window bound **and** the per-direction DRR scheduler |
+//!
+//! `sched` uses the 256 KiB window, a 16 KiB quantum and a 64 KiB per-flow queue cap. Under `sched`
+//! each relay direction gets one [`Arbiter`] per session; the relay asks it before every write, so
+//! one flow's turn is decided by rotation order rather than by whichever task reached the socket
+//! first.
+//!
+//! # Why the window is the bound, and the scheduler is fairness on top
 //!
 //! The experiments (`src/policy_baseline.rs`, evidence `simulated`) chose the Yamux per-stream
-//! window as the in-flight bound. A relay-level byte budget gated on `send_window()` (M1 as
-//! specified) cannot be credited below `max_recv_window / 2`: Yamux only emits a window update once
-//! the receiver has consumed half of its window, so a 64 KiB budget stalls after 64 KiB and a 2 MiB
-//! budget bounds nothing useful. The window is the only place the relay can bound bytes in the
-//! engine; 256 KiB cut the loaded ping p50 from about 1.9 s to about 98 ms at a 2.5 MB/s
-//! bottleneck (research section 9.2), and the mechanism matrix re-measures it beside M1/M2/M3.
-//!
-//! Per-class queues and the deficit round-robin rotation (`policy_sched`, TP-2.1) are not connected
-//! yet: one window applies to every flow, which is the Balanced fail-safe.
+//! window as the in-flight bound: a relay-level byte budget gated on `send_window()` cannot be
+//! credited below `max_recv_window / 2`, so it either stalls or bounds nothing. 256 KiB cut the
+//! loaded ping p50 from about 1.9 s to about 98 ms at a 2.5 MB/s bottleneck. The scheduler does not
+//! bound bytes in flight; it bounds *who goes next* when several flows share the link, which the
+//! window alone cannot do. Its measurement (TP-2.2) is recorded in ADR-0048 as `simulated`.
 
-use tokio_yamux::config::INITIAL_STREAM_WINDOW;
+use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
-/// Runtime switch read by `tunnel::yamux_config`. Unset means the pack is off (today's data path).
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::time::timeout;
+
+use crate::policy::FlowId;
+use crate::policy_sched::{Arbiter, DEFAULT_QUANTUM_BYTES, FlowHandle, SchedulerConfig};
+
+/// Runtime switch read by `tunnel::yamux_config` and `tunnel::policy_session`.
 pub(crate) const ENV_POLICY: &str = "BAFT_TUNNEL_POLICY_PACK";
 
 /// Per-stream window when the switch is on without a size: Yamux's initial window, about 100 ms of
 /// queue in front of a 2.5 MB/s bottleneck.
 pub(crate) const DEFAULT_STREAM_WINDOW: u32 = 256 * 1024;
 
-/// The pack's relay configuration. Only the in-flight window bound is implemented; the value comes
-/// from configuration, never from payload inspection (ADR-0031 decision 6).
+/// Largest per-flow queue cap the switch accepts; above this a single flow could hold more than the
+/// product window and the bound would stop meaning anything.
+const MAX_QUEUE_CAP_BYTES: usize = 1024 * 1024;
+
+/// The pack's relay configuration. The value comes from configuration, never from payload
+/// inspection (ADR-0031 decision 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PolicyRelay {
     /// Yamux `max_stream_window_size` for both session ends.
     pub stream_window: u32,
+    /// `Some` enables the per-direction DRR scheduler with these queue bounds.
+    pub scheduler: Option<SchedulerConfig>,
 }
 
 impl PolicyRelay {
@@ -39,10 +68,10 @@ impl PolicyRelay {
         Self::parse(&value)
     }
 
-    /// `off` (or an empty value) disables the pack; `window-cap` enables the bound with the default
-    /// window and `window-cap:<bytes>` with an explicit one. Sizes below Yamux's initial window
-    /// (256 KiB) are refused, because both ends assume that window at stream creation. Anything
-    /// else is refused rather than guessed, and the relay stays as it is today.
+    /// `off` (or an empty value) disables the pack; `window-cap[:<bytes>]` enables only the window
+    /// bound; `sched[:<quantum>[:<cap>]]` enables the window bound and the scheduler. Sizes below
+    /// Yamux's initial window (256 KiB) are refused, because both ends assume that window at stream
+    /// creation. Anything else is refused rather than guessed, and the relay stays as it is today.
     pub(crate) fn parse(value: &str) -> Option<Self> {
         let value = value.trim();
         if value.is_empty() || value.eq_ignore_ascii_case("off") {
@@ -52,20 +81,187 @@ impl PolicyRelay {
             Some((name, argument)) => (name, Some(argument)),
             None => (value, None),
         };
-        if !name.eq_ignore_ascii_case("window-cap") {
-            return None;
-        }
-        let stream_window = match argument {
-            None => DEFAULT_STREAM_WINDOW,
-            Some(argument) => {
-                let window: u32 = argument.trim().parse().ok()?;
-                if window < INITIAL_STREAM_WINDOW {
-                    return None;
+        let window_cap = |argument: Option<&str>| -> Option<u32> {
+            match argument {
+                None => Some(DEFAULT_STREAM_WINDOW),
+                Some(argument) => {
+                    let window: u32 = argument.trim().parse().ok()?;
+                    if window < tokio_yamux::config::INITIAL_STREAM_WINDOW {
+                        return None;
+                    }
+                    Some(window)
                 }
-                window
             }
         };
-        Some(Self { stream_window })
+        if name.eq_ignore_ascii_case("window-cap") {
+            return Some(Self {
+                stream_window: window_cap(argument)?,
+                scheduler: None,
+            });
+        }
+        if !name.eq_ignore_ascii_case("sched") {
+            return None;
+        }
+        let stream_window = window_cap(None)?;
+        let mut parts = argument
+            .into_iter()
+            .flat_map(|argument| argument.split(':'));
+        let quantum = match parts.next() {
+            None => DEFAULT_QUANTUM_BYTES,
+            Some(argument) => argument.trim().parse::<usize>().ok()?,
+        };
+        let cap = match parts.next() {
+            None => (quantum * 4).clamp(quantum, MAX_QUEUE_CAP_BYTES),
+            Some(argument) => argument.trim().parse::<usize>().ok()?,
+        };
+        if parts.next().is_some() {
+            return None;
+        }
+        // One chunk in flight per flow means a queue never exceeds the quantum; a quantum above the
+        // cap would make the scheduler refuse every request, so the pair is validated here.
+        if quantum < 1024 || quantum > DEFAULT_STREAM_WINDOW as usize || cap < quantum {
+            return None;
+        }
+        if cap > MAX_QUEUE_CAP_BYTES {
+            return None;
+        }
+        Some(Self {
+            stream_window,
+            scheduler: Some(SchedulerConfig {
+                quantum_bytes: quantum,
+                max_queued_bytes: cap,
+            }),
+        })
+    }
+}
+
+/// One tunnel session's scheduling state: one arbiter per relay direction and the flow ids that
+/// name a stream in both of them. Created by `tunnel`, never by payload.
+#[derive(Debug)]
+pub(crate) struct PolicySession {
+    to_peer: Arc<Arbiter>,
+    from_peer: Arc<Arbiter>,
+    chunk: usize,
+    next_flow: AtomicU64,
+}
+
+impl PolicySession {
+    /// `Some` only when the switch selects `sched`; otherwise the relay keeps today's path.
+    pub(crate) fn from_env() -> Option<Arc<Self>> {
+        let relay = PolicyRelay::from_env()?;
+        let config = relay.scheduler?;
+        Some(Self::with_config(config))
+    }
+
+    /// Session with fixed bounds, for the measurement harness.
+    pub(crate) fn with_config(config: SchedulerConfig) -> Arc<Self> {
+        Arc::new(Self {
+            to_peer: Arbiter::spawn(config),
+            from_peer: Arbiter::spawn(config),
+            chunk: config.quantum_bytes,
+            next_flow: AtomicU64::new(1),
+        })
+    }
+
+    /// Bytes one read may carry, and therefore the most a flow ever queues.
+    pub(crate) fn chunk(&self) -> usize {
+        self.chunk
+    }
+
+    /// Registers one stream in both directions under one id.
+    pub(crate) fn open(&self) -> (FlowHandle, FlowHandle) {
+        let id = FlowId(self.next_flow.fetch_add(1, Ordering::Relaxed));
+        (self.to_peer.flow(id), self.from_peer.flow(id))
+    }
+
+    /// Live flow count of both directions, for tests and diagnostics.
+    #[cfg(test)]
+    pub(crate) async fn flows(&self) -> (usize, usize) {
+        let to_peer = self.to_peer.stats().await.map_or(0, |stats| stats.flows);
+        let from_peer = self.from_peer.stats().await.map_or(0, |stats| stats.flows);
+        (to_peer, from_peer)
+    }
+}
+
+/// Relay both directions under the pack's scheduler until each side closes, failing a direction
+/// that is idle too long. Semantics match `tunnel::relay_with_idle_timeout`: the same idle timeout
+/// per direction, the same shutdown on EOF, and the same per-direction byte counters. The only
+/// difference is that a write waits for this flow's turn in the direction's rotation.
+pub(crate) async fn relay_with_policy<A, B>(
+    peer: A,
+    local: B,
+    idle: Duration,
+    session: &PolicySession,
+) -> io::Result<()>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    crate::session_status::stream_opened();
+    let (to_peer, from_peer) = session.open();
+    let (a_read, a_write) = tokio::io::split(peer);
+    let (b_read, b_write) = tokio::io::split(local);
+    let result = tokio::try_join!(
+        pump_scheduled(
+            a_read,
+            b_write,
+            idle,
+            &from_peer,
+            session.chunk(),
+            crate::session_status::add_from_peer,
+        ),
+        pump_scheduled(
+            b_read,
+            a_write,
+            idle,
+            &to_peer,
+            session.chunk(),
+            crate::session_status::add_to_peer,
+        )
+    );
+    from_peer.close().await;
+    to_peer.close().await;
+    result?;
+    Ok(())
+}
+
+/// One direction: read up to one chunk, wait for this flow's turn, write exactly that chunk.
+/// A read of zero shuts the writer down and ends the direction, as the unscheduled pump does.
+async fn pump_scheduled<R, W>(
+    mut reader: R,
+    mut writer: W,
+    idle: Duration,
+    flow: &FlowHandle,
+    chunk: usize,
+    count: fn(usize),
+) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buffer = vec![0_u8; chunk];
+    loop {
+        let read = timeout(idle, reader.read(&mut buffer))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "stream idle timeout"))??;
+        if read == 0 {
+            writer.shutdown().await?;
+            return Ok(());
+        }
+        let mut written = 0;
+        while written < read {
+            let want = read - written;
+            let grant = flow.acquire(want).await?;
+            if grant > want {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "scheduler granted more than the flow offered",
+                ));
+            }
+            writer.write_all(&buffer[written..written + grant]).await?;
+            count(grant);
+            written += grant;
+        }
     }
 }
 
@@ -93,19 +289,22 @@ mod tests {
         assert_eq!(
             PolicyRelay::parse("window-cap:1048576"),
             Some(PolicyRelay {
-                stream_window: 1024 * 1024
+                stream_window: 1024 * 1024,
+                scheduler: None,
             })
         );
         assert_eq!(
             PolicyRelay::parse("window-cap"),
             Some(PolicyRelay {
-                stream_window: DEFAULT_STREAM_WINDOW
+                stream_window: DEFAULT_STREAM_WINDOW,
+                scheduler: None,
             })
         );
         assert_eq!(
             PolicyRelay::parse("Window-Cap: 262144"),
             Some(PolicyRelay {
-                stream_window: 256 * 1024
+                stream_window: 256 * 1024,
+                scheduler: None,
             })
         );
         // Below Yamux's initial window both ends would disagree about the window at stream open.
@@ -120,5 +319,91 @@ mod tests {
         // M1's relay-level credit budget was rejected by the experiments; it is not a switch.
         assert_eq!(PolicyRelay::parse("credit-budget:65536"), None);
         assert_eq!(PolicyRelay::parse("on"), None);
+    }
+
+    #[test]
+    fn sched_switch_selects_the_scheduler_with_bounded_queues() {
+        let default = PolicyRelay::parse("sched").expect("sched");
+        assert_eq!(default.stream_window, DEFAULT_STREAM_WINDOW);
+        assert_eq!(
+            default.scheduler,
+            Some(SchedulerConfig {
+                quantum_bytes: 16 * 1024,
+                max_queued_bytes: 64 * 1024,
+            })
+        );
+        let explicit = PolicyRelay::parse("sched:8192:32768").expect("sched with bounds");
+        assert_eq!(
+            explicit.scheduler,
+            Some(SchedulerConfig {
+                quantum_bytes: 8 * 1024,
+                max_queued_bytes: 32 * 1024,
+            })
+        );
+        // A quantum above the window would hold more than the in-flight bound; the cap must hold at
+        // least one quantum or the scheduler would refuse every request.
+        assert_eq!(PolicyRelay::parse("sched:262144:65536"), None);
+        assert_eq!(PolicyRelay::parse("sched:32768:16384"), None);
+        assert_eq!(PolicyRelay::parse("sched:512:2048"), None);
+        assert_eq!(PolicyRelay::parse("sched:16384:2097152"), None);
+        assert_eq!(PolicyRelay::parse("sched:16384:nope"), None);
+        assert_eq!(PolicyRelay::parse("sched:16384:65536:extra"), None);
+        assert_eq!(PolicyRelay::parse("sched:-1"), None);
+        // The scheduler never turns the window cap off on its own.
+        assert_eq!(
+            PolicyRelay::parse("sched").map(|p| p.stream_window),
+            Some(DEFAULT_STREAM_WINDOW)
+        );
+    }
+
+    #[tokio::test]
+    async fn session_relays_both_directions_and_releases_its_flows() {
+        let session = PolicySession::with_config(SchedulerConfig {
+            quantum_bytes: 4 * 1024,
+            max_queued_bytes: 16 * 1024,
+        });
+        let (app, local) = tokio::io::duplex(8 * 1024);
+        let (peer, tunnel) = tokio::io::duplex(8 * 1024);
+        let relay = tokio::spawn({
+            let session = Arc::clone(&session);
+            async move { relay_with_policy(tunnel, local, Duration::from_secs(5), &session).await }
+        });
+        // Echo on the peer side so both directions carry bytes.
+        let peer = tokio::spawn(async move {
+            let (mut read, mut write) = tokio::io::split(peer);
+            let mut buffer = [0_u8; 1024];
+            while let Ok(read) = read.read(&mut buffer).await {
+                if read == 0 || write.write_all(&buffer[..read]).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let (mut receive, mut send) = tokio::io::split(app);
+        for round in 0..8_u8 {
+            let payload = [round; 3_000];
+            send.write_all(&payload).await.expect("write app");
+            let mut echo = vec![0_u8; payload.len()];
+            receive.read_exact(&mut echo).await.expect("echo back");
+            assert_eq!(echo, payload);
+        }
+        // Closing the app side mid-stream must end the relay instead of wedging it. `split` shares
+        // one stream between its halves, so dropping the write half would not close it.
+        send.shutdown().await.expect("close app side");
+        drop(send);
+        let result = tokio::time::timeout(Duration::from_secs(5), relay)
+            .await
+            .expect("relay must finish after the app side closes")
+            .expect("relay task");
+        peer.abort();
+        assert!(result.is_ok(), "relay ended with {result:?}");
+        let mut flows = session.flows().await;
+        for _ in 0..100 {
+            if flows == (0, 0) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            flows = session.flows().await;
+        }
+        assert_eq!(flows, (0, 0), "no flow may outlive its relay");
     }
 }
