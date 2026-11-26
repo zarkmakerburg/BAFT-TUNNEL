@@ -42,6 +42,29 @@ const IDLE: Duration = Duration::from_secs(900);
 /// Product Yamux per-stream window (`tunnel::MAX_STREAM_WINDOW_SIZE`), the in-flight ceiling.
 const PRODUCT_WINDOW: u32 = 4 * 1024 * 1024;
 
+/// CPU time (user + system, all threads) this process has used so far, in microseconds. The
+/// harness runs both tunnel ends, the loopback shaper and the test app in one process, so this is
+/// an upper bound on the relay's own cost: the arm-to-arm delta at the same bottleneck rate is the
+/// measurement, and the per-MB figures divide by the bytes the arm handed to the engine.
+#[cfg(unix)]
+fn process_cpu_us() -> u64 {
+    // SAFETY: `usage` is a zeroed `rusage` that `getrusage` fills for this process.
+    unsafe {
+        let mut usage: libc::rusage = std::mem::zeroed();
+        if libc::getrusage(libc::RUSAGE_SELF, &mut usage) != 0 {
+            return 0;
+        }
+        let user = usage.ru_utime.tv_sec as u64 * 1_000_000 + usage.ru_utime.tv_usec as u64;
+        let sys = usage.ru_stime.tv_sec as u64 * 1_000_000 + usage.ru_stime.tv_usec as u64;
+        user + sys
+    }
+}
+
+#[cfg(not(unix))]
+fn process_cpu_us() -> u64 {
+    0
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Summary {
     pub scenario: &'static str,
@@ -54,6 +77,9 @@ pub(crate) struct Summary {
     pub p99_us: u64,
     pub max_us: u64,
     pub bulk_bytes: u64,
+    /// Whole-process CPU (user + system) spent while the scenario ran, in microseconds. Includes
+    /// the harness itself, so it is an upper bound; see `process_cpu_us`.
+    pub cpu_us: u64,
     /// True when the interactive ping did not return inside the arm's deadline. An arm that
     /// stalls its interactive flow is reported, not hidden: the harness never hangs the suite.
     pub stalled: bool,
@@ -62,7 +88,7 @@ pub(crate) struct Summary {
 impl Summary {
     pub(crate) fn json(&self, rate_bytes_per_s: u64) -> String {
         format!(
-            "{{\"scenario\":\"{}\",\"mechanism\":\"{}\",\"evidence\":\"{}\",\"rate_bytes_per_s\":{},\"samples\":{},\"rtt_us\":{{\"p50\":{},\"p95\":{},\"p99\":{},\"max\":{}}},\"bulk_bytes\":{},\"stalled\":{}}}",
+            "{{\"scenario\":\"{}\",\"mechanism\":\"{}\",\"evidence\":\"{}\",\"rate_bytes_per_s\":{},\"samples\":{},\"rtt_us\":{{\"p50\":{},\"p95\":{},\"p99\":{},\"max\":{}}},\"bulk_bytes\":{},\"cpu_us\":{},\"stalled\":{}}}",
             self.scenario,
             self.mechanism,
             self.evidence,
@@ -73,6 +99,7 @@ impl Summary {
             self.p99_us,
             self.max_us,
             self.bulk_bytes,
+            self.cpu_us,
             self.stalled
         )
     }
@@ -410,6 +437,7 @@ async fn run_variant(
     mechanism: Mechanism,
 ) -> Summary {
     let (client_io, server_io) = shaped_endpoints_with(Profile::fixed(rate), mechanism).await;
+    let cpu_start = process_cpu_us();
     let window = window.or(window_for(mechanism));
     let mut server_session = Session::new_server(server_io, config_with_window(window));
     let sink_mechanism = mechanism;
@@ -527,6 +555,7 @@ async fn run_variant(
     let bulk_bytes = bulk_sent.load(Ordering::Relaxed);
     server_task.abort();
     client_task.abort();
+    let cpu_us = process_cpu_us().saturating_sub(cpu_start);
     samples.sort_unstable();
     Summary {
         scenario,
@@ -538,6 +567,7 @@ async fn run_variant(
         p99_us: percentile(&samples, 99.0),
         max_us: samples.last().copied().unwrap_or(0),
         bulk_bytes,
+        cpu_us,
         stalled,
     }
 }
@@ -623,6 +653,360 @@ pub(crate) async fn run_transfer_mechanism(
     elapsed
 }
 
+/// Multi-flow arm result (TP-2.2). Several bulk flows compete for one shaped bottleneck, each with
+/// its own echo stream, so arbitration between flows is measured instead of inferred from the
+/// single bulk + single interactive pair.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MultiFlowSummary {
+    pub scenario: &'static str,
+    pub mechanism: String,
+    pub evidence: &'static str,
+    pub flows: usize,
+    /// Bytes each bulk flow handed to its relay.
+    pub bulk_bytes: Vec<u64>,
+    /// Per-flow interactive RTT, in microseconds: flow `i`'s echo stream beside flow `i`'s bulk.
+    pub flow_p50_us: Vec<u64>,
+    pub flow_p95_us: Vec<u64>,
+    /// Whole-process CPU (upper bound, see `process_cpu_us`).
+    pub cpu_us: u64,
+    /// `Some(0)` when the churn variant closed flow 0 at half the run.
+    pub churn_closed: Option<usize>,
+    /// True when every flow that was not churned still handed bytes after the churn.
+    pub continued_after_churn: bool,
+    pub stalled: bool,
+}
+
+impl MultiFlowSummary {
+    pub(crate) fn total_bulk_bytes(&self) -> u64 {
+        self.bulk_bytes.iter().sum()
+    }
+
+    /// Smallest share divided by the largest, over the flows that ran the whole time (a churned
+    /// flow stopped by design and is excluded). 1.0 is an even split, 0.0 means a flow was starved.
+    pub(crate) fn delivery_min_over_max(&self) -> f64 {
+        let first = match self.churn_closed {
+            Some(index) => index + 1,
+            None => 0,
+        };
+        let shares = &self.bulk_bytes[first.min(self.bulk_bytes.len())..];
+        let max = shares.iter().copied().max().unwrap_or(0);
+        if max == 0 {
+            return 0.0;
+        }
+        shares.iter().copied().min().unwrap_or(0) as f64 / max as f64
+    }
+
+    pub(crate) fn json(&self) -> String {
+        let list = |values: &[u64]| {
+            values
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!(
+            "{{\"scenario\":\"{}\",\"mechanism\":\"{}\",\"evidence\":\"{}\",\"flows\":{},\"bulk_bytes\":[{}],\"total_bulk_bytes\":{},\"delivery_min_over_max\":{:.3},\"flow_p50_us\":[{}],\"flow_p95_us\":[{}],\"cpu_us\":{},\"churn_closed\":{},\"continued_after_churn\":{},\"stalled\":{}}}",
+            self.scenario,
+            self.mechanism,
+            self.evidence,
+            self.flows,
+            list(&self.bulk_bytes),
+            self.total_bulk_bytes(),
+            self.delivery_min_over_max(),
+            list(&self.flow_p50_us),
+            list(&self.flow_p95_us),
+            self.cpu_us,
+            self.churn_closed
+                .map(|index| index.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            self.continued_after_churn,
+            self.stalled
+        )
+    }
+}
+
+/// Multi-flow scenario (TP-2.2): `flows` bulk uploaders share the bottleneck, plus one 64-byte echo
+/// stream per flow for per-flow latency. `churn` closes flow 0's sender at half the run and records
+/// whether the surviving flows kept moving.
+#[allow(clippy::too_many_arguments)]
+async fn run_multi_flow(
+    scenario: &'static str,
+    flows: usize,
+    churn: bool,
+    rate: u64,
+    duration: Duration,
+    interval: Duration,
+    mechanism: Mechanism,
+) -> MultiFlowSummary {
+    let flows = flows.max(1);
+    let (client_io, server_io) = shaped_endpoints_with(Profile::fixed(rate), mechanism).await;
+    let cpu_start = process_cpu_us();
+    let window = window_for(mechanism);
+    let mut server_session = Session::new_server(server_io, config_with_window(window));
+    let server_policy = policy_for(mechanism);
+    // Streams arrive in order: the first `flows` are bulk sinks, the next `flows` echo pings.
+    let server_task = tokio::spawn(async move {
+        let mut index = 0_usize;
+        while let Some(item) = server_session.next().await {
+            let Ok(stream) = item else { break };
+            let is_sink = index < flows;
+            index += 1;
+            let relay_policy = server_policy.clone();
+            tokio::spawn(async move {
+                let (local, app) = duplex(64 * 1024);
+                tokio::spawn(async move {
+                    let _ = relay_under(stream, local, relay_policy.as_ref()).await;
+                });
+                let (mut read, mut write) = tokio::io::split(app);
+                if is_sink {
+                    let mut buffer = vec![0_u8; PUMP_READ];
+                    while let Ok(count) = read.read(&mut buffer).await {
+                        if count == 0 {
+                            return;
+                        }
+                    }
+                } else {
+                    let mut ping = [0_u8; PING];
+                    while read.read_exact(&mut ping).await.is_ok() {
+                        if write.write_all(&ping).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    let mut client_session = Session::new_client(client_io, config_with_window(window));
+    let control = client_session.control();
+    let client_task = tokio::spawn(async move {
+        while let Some(item) = client_session.next().await {
+            if item.is_err() {
+                break;
+            }
+        }
+    });
+
+    let client_policy = policy_for(mechanism);
+    let open = |mut control: tokio_yamux::Control, policy: Option<ArmPolicy>| async move {
+        let stream = control.open_stream().await.expect("open stream");
+        let (local, app): (DuplexStream, DuplexStream) = duplex(64 * 1024);
+        tokio::spawn(async move {
+            let _ = relay_under(stream, local, policy.as_ref()).await;
+        });
+        app
+    };
+
+    let counters: Vec<Arc<AtomicU64>> = (0..flows).map(|_| Arc::new(AtomicU64::new(0))).collect();
+    let mut apps = Vec::with_capacity(flows);
+    for _ in 0..flows {
+        apps.push(open(control.clone(), client_policy.clone()).await);
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let start = Instant::now();
+    let end = start + duration;
+    let churn_at = churn.then(|| start + duration / 2);
+    let mut bulk_tasks = Vec::with_capacity(flows);
+    for (index, mut app) in apps.into_iter().enumerate() {
+        let counter = Arc::clone(&counters[index]);
+        let close_at = if index == 0 { churn_at } else { None };
+        bulk_tasks.push(tokio::spawn(async move {
+            let payload = vec![0x5a_u8; PUMP_READ];
+            loop {
+                match close_at {
+                    Some(at) => {
+                        tokio::select! {
+                            result = app.write_all(&payload) => {
+                                if result.is_err() {
+                                    return;
+                                }
+                            }
+                            _ = tokio::time::sleep_until(at.into()) => {
+                                let _ = app.shutdown().await;
+                                return;
+                            }
+                        }
+                    }
+                    None => {
+                        if app.write_all(&payload).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+                counter.fetch_add(payload.len() as u64, Ordering::Relaxed);
+            }
+        }));
+    }
+
+    let mut ping_set = tokio::task::JoinSet::new();
+    for _ in 0..flows {
+        let mut app = open(control.clone(), client_policy.clone()).await;
+        ping_set.spawn(async move {
+            let mut samples = Vec::new();
+            let ping = [7_u8; PING];
+            let mut echo = [0_u8; PING];
+            while Instant::now() < end {
+                let asked = Instant::now();
+                if app.write_all(&ping).await.is_err() {
+                    break;
+                }
+                if app.read_exact(&mut echo).await.is_err() {
+                    break;
+                }
+                samples.push(asked.elapsed().as_micros() as u64);
+                tokio::time::sleep(interval).await;
+            }
+            samples
+        });
+    }
+
+    let churn_snapshot: Vec<u64> = match churn_at {
+        Some(at) => {
+            tokio::time::sleep_until(at.into()).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            counters
+                .iter()
+                .map(|counter| counter.load(Ordering::Relaxed))
+                .collect()
+        }
+        None => Vec::new(),
+    };
+
+    let grace = (end + Duration::from_secs(10)).saturating_duration_since(Instant::now());
+    let mut per_flow_samples: Vec<Vec<u64>> = Vec::new();
+    let stalled = {
+        let collect = async {
+            while let Some(result) = ping_set.join_next().await {
+                per_flow_samples.push(result.unwrap_or_default());
+            }
+        };
+        tokio::time::timeout(grace, collect).await.is_err()
+    };
+    if stalled {
+        ping_set.abort_all();
+    }
+
+    let bulk_bytes = counters
+        .iter()
+        .map(|counter| counter.load(Ordering::Relaxed))
+        .collect::<Vec<_>>();
+    let continued_after_churn = match churn_at {
+        Some(_) => (1..flows)
+            .all(|index| bulk_bytes[index] > churn_snapshot.get(index).copied().unwrap_or(0)),
+        None => true,
+    };
+    for task in bulk_tasks {
+        task.abort();
+    }
+    server_task.abort();
+    client_task.abort();
+    let cpu_us = process_cpu_us().saturating_sub(cpu_start);
+
+    let mut flow_p50_us = Vec::with_capacity(per_flow_samples.len());
+    let mut flow_p95_us = Vec::with_capacity(per_flow_samples.len());
+    for samples in per_flow_samples.iter_mut() {
+        samples.sort_unstable();
+        flow_p50_us.push(percentile(samples, 50.0));
+        flow_p95_us.push(percentile(samples, 95.0));
+    }
+    MultiFlowSummary {
+        scenario,
+        mechanism: mechanism.label(),
+        evidence: "simulated",
+        flows,
+        bulk_bytes,
+        flow_p50_us,
+        flow_p95_us,
+        cpu_us,
+        churn_closed: churn.then_some(0),
+        continued_after_churn,
+        stalled,
+    }
+}
+
+/// Two loopback TCP endpoints with nothing in between: the relay CPU probe's path. No bottleneck
+/// and no sleeps, so process CPU is the relay's own cost per byte relayed.
+async fn direct_endpoints() -> (TcpStream, TcpStream) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let accept = tokio::spawn(async move { listener.accept().await.expect("accept").0 });
+    let client = TcpStream::connect(addr).await.expect("dial");
+    let server = accept.await.expect("accept task");
+    let _ = (client.set_nodelay(true), server.set_nodelay(true));
+    (client, server)
+}
+
+/// Per-MB CPU of one arm on an unshaped loopback session: `bytes` pushed through one stream with
+/// both ends in the process and no rate limiter. Returns `(cpu_us, delivered_bytes)`. This is the
+/// figure ADR-0048 decision 6's overhead budget is about: the relay's own cost per byte, without
+/// the shaper's constant work in the denominator.
+async fn relay_cpu_probe(mechanism: Mechanism, bytes: u64) -> (u64, u64) {
+    let (client_io, server_io) = direct_endpoints().await;
+    let window = window_for(mechanism);
+    let mut server_session = Session::new_server(server_io, config_with_window(window));
+    let server_policy = policy_for(mechanism);
+    let delivered = Arc::new(AtomicU64::new(0));
+    let sink_total = Arc::clone(&delivered);
+    let server_task = tokio::spawn(async move {
+        while let Some(item) = server_session.next().await {
+            let Ok(stream) = item else { break };
+            let relay_policy = server_policy.clone();
+            let sink_total = Arc::clone(&sink_total);
+            tokio::spawn(async move {
+                let (local, mut app) = duplex(64 * 1024);
+                tokio::spawn(async move {
+                    let _ = relay_under(stream, local, relay_policy.as_ref()).await;
+                });
+                let mut buffer = vec![0_u8; PUMP_READ];
+                let mut total = 0_u64;
+                while let Ok(count) = app.read(&mut buffer).await {
+                    if count == 0 {
+                        break;
+                    }
+                    total += count as u64;
+                }
+                sink_total.store(total, Ordering::SeqCst);
+            });
+        }
+    });
+    let mut client_session = Session::new_client(client_io, config_with_window(window));
+    let mut control = client_session.control();
+    let client_task = tokio::spawn(async move {
+        while let Some(item) = client_session.next().await {
+            if item.is_err() {
+                break;
+            }
+        }
+    });
+    let stream = control.open_stream().await.expect("open stream");
+    let (local, mut app) = duplex(64 * 1024);
+    let client_policy = policy_for(mechanism);
+    tokio::spawn(async move {
+        let _ = relay_under(stream, local, client_policy.as_ref()).await;
+    });
+
+    let cpu_start = process_cpu_us();
+    let payload = vec![0x5a_u8; PUMP_READ];
+    let mut sent = 0_u64;
+    while sent < bytes {
+        let count = payload.len().min((bytes - sent) as usize);
+        app.write_all(&payload[..count]).await.expect("write");
+        sent += count as u64;
+    }
+    let _ = app.shutdown().await;
+    // Keep the CPU window open until the sink has drained the relayed bytes, so every arm's window
+    // covers the same work; the bound keeps a broken arm from hanging the probe.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while delivered.load(Ordering::SeqCst) < bytes && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let cpu_us = process_cpu_us().saturating_sub(cpu_start);
+    let total = delivered.load(Ordering::SeqCst);
+    server_task.abort();
+    client_task.abort();
+    (cpu_us, total)
+}
+
 /// The arms of the ADR-0048 comparison: today's relay, the three candidate bounds, and the window
 /// arm. M1 runs at half the product window because that is the smallest budget Yamux can credit:
 /// a receiver emits a window update only once `max_recv_window / 2` bytes are consumed (see
@@ -658,6 +1042,20 @@ mod tests {
     use super::*;
 
     const RATE: u64 = 2_500_000; // about 20 Mbit/s
+
+    /// The comparison run's knobs: `POLICY_RATE`, `POLICY_REPEATS` and `POLICY_SECONDS`.
+    fn experiment_settings(default_seconds: u64) -> (u64, usize, u64) {
+        let read = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse().ok())
+        };
+        (
+            read("POLICY_RATE").unwrap_or(RATE),
+            read("POLICY_REPEATS").unwrap_or(2) as usize,
+            read("POLICY_SECONDS").unwrap_or(default_seconds),
+        )
+    }
 
     #[test]
     fn percentile_uses_nearest_rank() {
@@ -920,18 +1318,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "measurement run; use --release --ignored --nocapture"]
     async fn mechanism_experiments() {
-        let rate: u64 = std::env::var("POLICY_RATE")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(RATE);
-        let repeats: usize = std::env::var("POLICY_REPEATS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(2);
-        let seconds: u64 = std::env::var("POLICY_SECONDS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(8);
+        let (rate, repeats, seconds) = experiment_settings(8);
         let duration = Duration::from_secs(seconds);
         let interval = Duration::from_millis(20);
 
@@ -953,6 +1340,284 @@ mod tests {
                     summary.mechanism,
                     summary.bulk_bytes / seconds.max(1),
                     summary.json(rate)
+                );
+            }
+        }
+    }
+
+    /// The CPU accounting the overhead budget (ADR-0048 decision 6) rests on: it must be a real
+    /// clock, not a constant, or the per-MB figures would be meaningless.
+    #[test]
+    fn process_cpu_time_advances_while_work_runs() {
+        let start = process_cpu_us();
+        let until = Instant::now() + Duration::from_millis(30);
+        let mut acc = 0_u64;
+        while Instant::now() < until {
+            acc = acc.wrapping_mul(6364136223846793005).wrapping_add(1);
+        }
+        assert_ne!(acc, 0, "the busy loop must run");
+        let elapsed = process_cpu_us().saturating_sub(start);
+        assert!(elapsed > 0, "process CPU must advance, got {elapsed} us");
+    }
+
+    /// The probe behind the per-MB CPU figures: one unshaped loopback stream, both ends in-process,
+    /// every byte must arrive so the CPU window covered the same relayed work in every arm.
+    #[tokio::test]
+    async fn relay_cpu_probe_relays_every_byte() {
+        let bytes = 8 * 1024 * 1024;
+        let (cpu_us, delivered) =
+            relay_cpu_probe(Mechanism::WindowCap { bytes: 256 * 1024 }, bytes).await;
+        assert_eq!(delivered, bytes, "the probe must relay every byte");
+        assert!(cpu_us > 0, "the probe must see CPU time");
+    }
+
+    /// ADR-0048 decision 6, first half, clean figure: CPU per MB relayed on an unshaped loopback
+    /// (no shaper work in the denominator), three arms, `POLICY_REPEATS` times. One JSON line per
+    /// repeat, `simulated`.
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    #[ignore = "measurement run; use --release --ignored --nocapture"]
+    async fn relay_cpu_probe_experiments() {
+        let (_, repeats, _) = experiment_settings(6);
+        let bytes: u64 = std::env::var("POLICY_BYTES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(128 * 1024 * 1024);
+        let arms = [
+            Mechanism::Baseline,
+            Mechanism::WindowCap { bytes: 256 * 1024 },
+            Mechanism::Scheduler {
+                window: 256 * 1024,
+                quantum: 16 * 1024,
+                cap: 64 * 1024,
+            },
+        ];
+        for mechanism in arms {
+            for repeat in 1..=repeats {
+                let (cpu_us, delivered) = relay_cpu_probe(mechanism, bytes).await;
+                println!(
+                    "POLICY_EXPERIMENT {{\"scenario\":\"relay_cpu_probe\",\"mechanism\":\"{}\",\"evidence\":\"simulated\",\"repeat\":{},\"bytes\":{},\"delivered_bytes\":{},\"cpu_us\":{},\"cpu_us_per_mb\":{:.1}}}",
+                    mechanism.label(),
+                    repeat,
+                    bytes,
+                    delivered,
+                    cpu_us,
+                    cpu_us as f64 / (delivered as f64 / (1024.0 * 1024.0)).max(f64::MIN_POSITIVE)
+                );
+            }
+        }
+    }
+
+    /// The multi-flow harness itself, on an arm that exists without the feature: every flow must
+    /// move bytes, the split must be visible in the per-flow counters, and per-flow latency must
+    /// be reported for each flow.
+    #[tokio::test]
+    async fn multi_flow_scenario_moves_every_flow() {
+        let summary = run_multi_flow(
+            "multi_flow_smoke",
+            2,
+            false,
+            2_000_000,
+            Duration::from_millis(600),
+            Duration::from_millis(20),
+            Mechanism::WindowCap { bytes: 256 * 1024 },
+        )
+        .await;
+        assert!(!summary.stalled, "the multi-flow run must not stall");
+        assert_eq!(summary.flows, 2);
+        assert_eq!(summary.bulk_bytes.len(), 2);
+        assert!(summary.bulk_bytes.iter().all(|bytes| *bytes > 0));
+        assert!(
+            summary.delivery_min_over_max() > 0.5,
+            "an unarbitrated pair still shares the bottleneck, got {}",
+            summary.delivery_min_over_max()
+        );
+        assert_eq!(summary.flow_p50_us.len(), 2);
+        assert_eq!(summary.flow_p95_us.len(), 2);
+        assert!(summary.json().contains("\"evidence\":\"simulated\""));
+    }
+
+    /// A flow that closes mid-run must not stop the others and must not wedge the relay: the
+    /// surviving flows keep handing bytes after the close, and the run finishes inside its deadline.
+    #[tokio::test]
+    async fn multi_flow_churn_keeps_surviving_flows_moving() {
+        let summary = run_multi_flow(
+            "multi_flow_churn_smoke",
+            2,
+            true,
+            2_000_000,
+            Duration::from_millis(900),
+            Duration::from_millis(20),
+            Mechanism::WindowCap { bytes: 256 * 1024 },
+        )
+        .await;
+        assert!(!summary.stalled, "churn must not stall the run");
+        assert_eq!(summary.churn_closed, Some(0));
+        assert!(
+            summary.continued_after_churn,
+            "the surviving flow must keep moving after the other closes: {:?}",
+            summary.bulk_bytes
+        );
+        assert!(summary.bulk_bytes[1] > 0);
+    }
+
+    /// The scheduler's claim is arbitration between competing flows. Three bulk flows must all get
+    /// a share of the same bottleneck, each with its own latency reported, and a churned flow must
+    /// leave the rotation instead of stalling the survivors.
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    async fn scheduler_arbitrates_between_multi_flows_evenly() {
+        let mechanism = Mechanism::Scheduler {
+            window: 256 * 1024,
+            quantum: 16 * 1024,
+            cap: 64 * 1024,
+        };
+        let summary = run_multi_flow(
+            "multi_flow_smoke",
+            3,
+            false,
+            2_000_000,
+            Duration::from_millis(800),
+            Duration::from_millis(20),
+            mechanism,
+        )
+        .await;
+        assert!(!summary.stalled, "the scheduler must not stall the flows");
+        assert!(
+            summary.bulk_bytes.iter().all(|bytes| *bytes > 0),
+            "every flow must be served: {:?}",
+            summary.bulk_bytes
+        );
+        assert!(
+            summary.delivery_min_over_max() > 0.5,
+            "three equal flows must split the bottleneck, smallest/largest = {}",
+            summary.delivery_min_over_max()
+        );
+        assert!(
+            summary.flow_p95_us.iter().all(|value| *value > 0),
+            "every flow must report a latency: {:?}",
+            summary.flow_p95_us
+        );
+
+        let churned = run_multi_flow(
+            "multi_flow_churn_smoke",
+            2,
+            true,
+            2_000_000,
+            Duration::from_millis(900),
+            Duration::from_millis(20),
+            mechanism,
+        )
+        .await;
+        assert!(!churned.stalled, "churn must not stall the arbitration");
+        assert!(churned.continued_after_churn);
+        assert!(churned.bulk_bytes[1] > 0);
+    }
+
+    /// ADR-0048 decision 6, first half: the CPU cost per MB the arm hands to the engine, against
+    /// Baseline and the window pump, at the matrix rates and repeats. Also runs each arm idle to
+    /// check the decision's "no more than 1 ms median added latency on an idle tunnel". One JSON
+    /// line per arm and repeat, all `simulated`.
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    #[ignore = "measurement run; use --release --ignored --nocapture"]
+    async fn cpu_cost_experiments() {
+        let (rate, repeats, seconds) = experiment_settings(6);
+        let duration = Duration::from_secs(seconds);
+        let interval = Duration::from_millis(20);
+        let arms = [
+            Mechanism::Baseline,
+            Mechanism::WindowCap { bytes: 256 * 1024 },
+            Mechanism::Scheduler {
+                window: 256 * 1024,
+                quantum: 16 * 1024,
+                cap: 64 * 1024,
+            },
+        ];
+        for mechanism in arms {
+            let idle =
+                run_scenario_mechanism("idle", false, rate, duration, interval, mechanism).await;
+            println!("POLICY_EXPERIMENT idle {}", idle.json(rate));
+        }
+        for mechanism in arms {
+            for repeat in 1..=repeats {
+                let summary = run_scenario_mechanism(
+                    "bulk_competing_cpu",
+                    true,
+                    rate,
+                    duration,
+                    interval,
+                    mechanism,
+                )
+                .await;
+                let handed_mb = summary.bulk_bytes as f64 / (1024.0 * 1024.0);
+                let delivered_mb = (rate * seconds) as f64 / (1024.0 * 1024.0);
+                println!(
+                    "POLICY_EXPERIMENT {{\"repeat\":{repeat},\"mechanism\":\"{}\",\"cpu_us_per_mb_handed\":{:.1},\"cpu_us_per_mb_delivered\":{:.1}}} {}",
+                    summary.mechanism,
+                    summary.cpu_us as f64 / handed_mb.max(f64::MIN_POSITIVE),
+                    summary.cpu_us as f64 / delivered_mb.max(f64::MIN_POSITIVE),
+                    summary.json(rate)
+                );
+            }
+        }
+    }
+
+    /// TP-2.2 multi-flow arm: the scheduler's actual claim (arbitration between competing flows)
+    /// measured against the window pump and Baseline at the matrix rates and repeats. Two flow
+    /// counts, plus a churn variant that closes one flow at half the run, all `simulated`.
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    #[ignore = "measurement run; use --release --ignored --nocapture"]
+    async fn multi_flow_experiments() {
+        let (rate, repeats, seconds) = experiment_settings(6);
+        let duration = Duration::from_secs(seconds);
+        let interval = Duration::from_millis(20);
+        let arms = [
+            Mechanism::Baseline,
+            Mechanism::WindowCap { bytes: 256 * 1024 },
+            Mechanism::Scheduler {
+                window: 256 * 1024,
+                quantum: 16 * 1024,
+                cap: 64 * 1024,
+            },
+        ];
+        for mechanism in arms {
+            for flows in [2_usize, 3] {
+                for repeat in 1..=repeats {
+                    let summary = run_multi_flow(
+                        "multi_flow",
+                        flows,
+                        false,
+                        rate,
+                        duration,
+                        interval,
+                        mechanism,
+                    )
+                    .await;
+                    println!(
+                        "POLICY_EXPERIMENT {{\"repeat\":{repeat},\"rate_bytes_per_s\":{rate}}} {}",
+                        summary.json()
+                    );
+                }
+            }
+        }
+        // Churn: flow 0 closes at half the run; the survivors must keep moving.
+        for mechanism in arms {
+            for repeat in 1..=repeats {
+                let summary = run_multi_flow(
+                    "multi_flow_churn",
+                    2,
+                    true,
+                    rate,
+                    duration,
+                    interval,
+                    mechanism,
+                )
+                .await;
+                println!(
+                    "POLICY_EXPERIMENT {{\"repeat\":{repeat},\"rate_bytes_per_s\":{rate}}} {}",
+                    summary.json()
                 );
             }
         }

@@ -1,6 +1,6 @@
 # ADR-0048: Policy queues and scheduler (TP-2.1)
 
-**Status:** Accepted and implemented behind `policy-pack`. Decision 4 is decided by the 2026-11-26 experiments: the in-flight bound is the **Yamux per-stream window (256 KiB)**, switchable at runtime; M1/M2/M3 were measured and are not chosen. Decisions 1-3 are now wired: `BAFT_TUNNEL_POLICY_PACK=sched[:<quantum>[:<cap>]]` runs one deficit round-robin arbiter per relay direction with bounded per-flow queues (TP-2.2, measured `simulated`: no benefit over the window arm, no regression). The switch stays off by default and the off path is today's pump.
+**Status:** Accepted and implemented behind `policy-pack`. Decision 4 is decided by the 2026-11-26 experiments: the in-flight bound is the **Yamux per-stream window (256 KiB)**, switchable at runtime; M1/M2/M3 were measured and are not chosen. Decisions 1-3 are now wired: `BAFT_TUNNEL_POLICY_PACK=sched[:<quantum>[:<cap>]]` runs one deficit round-robin arbiter per relay direction with bounded per-flow queues. TP-2.2 is closed (measured `simulated`): no benefit over the window arm in the single-flow or the multi-flow scenario, no regression, arbitration level with the window pump, safe under mid-run flow churn, and decision 6's CPU and idle-latency budget met with the margin stated below. The switch stays off by default and the off path is today's pump.
 **Date:** 2026-11-17
 
 **Implementation (2026-11-26, scheduler core):** `src/policy_sched.rs` provides decision 1's bounded per-flow queues and the deficit round-robin rotation, plus an `Arbiter` task per direction that hands each flow its turn. Decisions 3 and 5 (the bounded wait and the off path) are covered by unit tests: a flow is visited at least once per rotation, a quantum bounds one visit, an overflow is refused and counted rather than truncated, a drained flow leaves the rotation, a closed or dropped flow leaves no queue behind, and the arbiter serves contending flows equally. Class weights (decision 2) are untouched and every class is `Balanced`.
@@ -58,7 +58,8 @@ Hypothesis check (`p95` within 10x idle `p95`): met at 5 MB/s (68 ms against 4.9
 
 - Loaded interactive ping p95 within 10x of idle, instead of about 3 orders of magnitude (Baseline). The window bound alone gets from about 2,090 ms to 119 ms at 2.5 MB/s: a 17x improvement, met at 5 MB/s, **not met** at 2.5 and 1 MB/s. The wired scheduler does not close the remaining gap (p95 118 ms at 2.5 MB/s against a 10x-idle target of about 52 ms): DRR reorders within the window, it does not shrink the window's worth of Bulk bytes queued in front of the interactive flow. A prioritised class that is served before the bulk flow in the same rotation is TP-3.x and is not implemented; the profile claim stays dropped (ADR-0031 decision 10).
 - Bulk throughput within 10% of Baseline at the same bottleneck: not measurable in the harness as delivered goodput — the shaped pump fixes the delivered rate for every arm. Only the queued amount changes, which is the bound's purpose; real-path goodput is open.
-- No starvation: every class makes progress under sustained load; wait bounded as in decision 3. Unchanged — the bound applies to every flow equally today.
+- No starvation: every class makes progress under sustained load; wait bounded as in decision 3. Met for equal-class flows (`delivery_min_over_max` 1.000 with two and three flows, and after a mid-run close); class weights are not implemented, so the claim is limited to `Balanced`.
+- Decision 6's overhead budget (≤5% CPU, ≤1 ms median idle latency against Baseline): met as measured — +1.4% / +4.3% / −8.2% CPU per delivered MB, +0.7% on the unshaped probe, idle p50 −56 / +43 / −73 µs. Margin stated, not certified below the harness's ±12-40% per-run spread (section "Overhead").
 - Evidence label `simulated` until a VM or two-host LAB run exists; no LAB claim, no real-path latency claim. All numbers above are harness/loopback.
 
 ## Relay wiring (scheduler → relay, implemented 2026-11-26)
@@ -119,18 +120,115 @@ Why there is no benefit here: with one bulk flow and one interactive flow, the w
 the queue to 256 KiB, and DRR can only reorder around 16 KiB chunks within that queue. The scheduler
 matters when several flows of different classes share the link (TP-3.x) or when a flow must not
 consume the whole window; neither is measured yet, so none is claimed. The cost is one arbiter round
-trip per 16 KiB per direction; the harness shows no throughput or latency change outside the spread
-above, but per-MB CPU was not measured, so the 5% overhead budget in decision 6 stays **unverified**.
+trip per 16 KiB per direction; the next two sections measure that cost and arbitration between
+competing flows.
 
-Fairness across two equal bulk flows is asserted in unit tests
-(`arbiter_grants_every_contending_flow_equally`: three flows, 18 requests, each served six times) but
-not measured through the harness; the harness has one bulk flow.
+### Overhead (decision 6, 2026-11-26, evidence level: `simulated`)
+
+Two measurements, same machine, same release build.
+
+**Whole-process CPU on the shaped matrix** (`cpu_cost_experiments`): the same scenario and matrix as
+the table above, with `getrusage(RUSAGE_SELF)` taken around each run. Both tunnel ends, the loopback
+shaper and the test app share the process, so this is an upper bound on the relay; the comparable
+figure between arms at one rate is CPU per *delivered* megabyte, because the shaper's work is the
+same for every arm and the delivered rate is fixed by construction. Microseconds of CPU per delivered
+MB, medians of the two repeats:
+
+| Arm | 1 MB/s | 2.5 MB/s | 5 MB/s |
+|---|---|---|---|
+| Baseline | 87.4 | 71.3 | 54.5 |
+| Window 256 KiB | 62.0 | 68.2 | 51.0 |
+| `sched` | 62.9 | 74.4 | 50.0 |
+
+Against Baseline, the budget's reference, the scheduler is +1.4% / +4.3% / −8.2%: inside the 5%
+budget at all three rates, worst case +4.3% at 2.5 MB/s. Against the window arm, which isolates
+arbitration, it is +1.4% / +9.1% / −2.0%; the +9.1% cell is inside that arm's own repeat spread
+(64.3-72.0 µs/MB, 12%), so it is recorded as noise rather than a confirmed regression.
+
+**Relay CPU probe** (`relay_cpu_probe_experiments`): one unshaped loopback session with both ends
+in-process, 512 MiB per run, six runs per arm, CPU per megabyte *relayed*. No shaper in the
+denominator, so this is the arbiter's own cost per byte:
+
+| Arm | CPU µs per MB relayed (median) | Range over six runs |
+|---|---|---|
+| Baseline | 6,235 | 5,840-6,602 |
+| Window 256 KiB | 7,295 | 6,738-7,813 |
+| `sched` | 6,279 | 4,961-10,273 |
+
+The scheduler is +0.7% against Baseline and −14% against the window pump by median, with single-run
+spread up to 40%: the arbiter adds no overhead the harness can resolve.
+
+Idle latency, decision 6's second half: on the idle tunnel `sched` p50 is 4,575 / 4,588 / 4,464 µs at
+1 / 2.5 / 5 MB/s against Baseline 4,631 / 4,545 / 4,537, i.e. −56 / +43 / −73 µs, and `sched` p95 is at
+most +0.72 ms above Baseline. Both halves are inside the budget: **decision 6 is met as measured**,
+with the reservation that arm-to-arm spread on this sandbox (±12-40% per repeat) is wider than the
+5% threshold, so the numbers bound the overhead but cannot certify a smaller margin. The budget is
+about CPU per delivered or relayed byte, not a wall-clock CPU percentage of a real deployment; that
+still needs a two-host LAB run.
+
+### Multi-flow and churn (TP-2.2, 2026-11-26, evidence level: `simulated`)
+
+The scheduler's actual claim is arbitration between competing flows, so the harness gained
+`run_multi_flow`: `flows` bulk uploaders share the shaped bottleneck, each with its own 64-byte echo
+stream for per-flow latency, plus a churn variant that closes flow 0 at half the run. Same rates,
+repeats and duration as the matrix (`multi_flow_experiments`). Two flows, medians of two repeats,
+per-flow p50 / p95 in ms:
+
+| Rate | Arm | flow A p50 / p95 | flow B p50 / p95 | handed in 6 s |
+|---|---|---|---|---|
+| 1 MB/s | Baseline | 1,935 / 7,394 | 3,534 / 5,788 | 16.9 MB |
+| 1 MB/s | Window | 559 / 602 | 559 / 604 | 6.46 MB |
+| 1 MB/s | `sched` | 561 / 575 | 565 / 605 | 6.46 MB |
+| 2.5 MB/s | Baseline | 3,400 / 4,233 | 2,669 / 4,233 | 25.3 MB |
+| 2.5 MB/s | Window | 252 / 264 | 252 / 256 | 12.2-12.7 MB |
+| 2.5 MB/s | `sched` | 247 / 255 | 248 / 255 | 12.7 MB |
+| 5 MB/s | Baseline | 2,119 / 2,660 | 1,663 / 2,660 | 33.7 MB |
+| 5 MB/s | Window | 142 / 150 | 143 / 162 | 19.6-20.1 MB |
+| 5 MB/s | `sched` | 144 / 151 | 144 / 150 | 20.1 MB |
+
+Three flows agree: at 2.5 MB/s p50 385 µs (window) against 378 µs (`sched`), at 5 MB/s 224 against
+229, and at 1 MB/s 851 against 849.
+
+Findings, stated plainly:
+
+- **Delivery split is exactly even in every arm** (`delivery_min_over_max` = 1.000): the bottleneck
+  serialises the flows and Yamux credits each stream the same window, so the split does not
+  discriminate between arms. The scheduler neither starves nor is starved.
+- **Per-flow latency is set by the window, not by arbitration**: Baseline's flows queue behind a
+  4 MiB window each (1.7-7.4 s), both bounded arms sit at the 256 KiB window (0.14-0.56 s depending
+  on rate), and `sched` is within 1% of the window pump at every rate and flow count.
+- **Churn is safe**: closing flow 0 at half the run leaves its handed bytes at about half the
+  survivor's (5.19 MB against 14.63 MB at 5 MB/s; 3.23 against 8.73 at 2.5), the surviving flows keep
+  moving (`continued_after_churn` true in every run), and no arm stalls.
+- **Class-based arbitration is not measured**: `SchedulerConfig` carries only a quantum and a cap and
+  every flow is `Balanced` (decision 2 leaves weights to TP-3.x), so a multi-class scenario would need
+  API that does not exist yet; adding it for the measurement would not have measured shipped code.
+
+### Default decision (re-derived 2026-11-26)
+
+Full body of evidence: single-flow p50/p95/p99, per-MB CPU, multi-flow fairness/latency/throughput,
+churn, and the aged-session throttle. The scheduler changes no number outside the run-to-run spread,
+and the CPU measurements do not resolve even its arbiter round trip. **The switch stays off by
+default.** A default needs a reproducible benefit; there is none in a harness where the per-stream
+window already bounds each flow's queue, and the benefit case is class-aware scheduling (TP-3.x),
+which is not implemented. This is a measured wash and a measured fit to the CPU budget, not an
+absence of measurement.
+
+What would change it: a real bottleneck shared by flows of different classes, and a path with
+non-trivial RTT where the window's bandwidth-delay product matters. Both need a delay model and are
+open, `simulated`-only questions.
+
+Tests backing the new scenarios: `relay_cpu_probe_relays_every_byte`,
+`process_cpu_time_advances_while_work_runs`, `multi_flow_scenario_moves_every_flow`,
+`multi_flow_churn_keeps_surviving_flows_moving`, and with the feature
+`scheduler_arbitrates_between_multi_flows_evenly` (three flows split the bottleneck; a churned flow
+leaves the rotation without stopping the survivors).
 
 ## Consequences
 
 - Positive: addresses the measured dominant delay with a bounded, reversible, unprivileged mechanism, and the mechanism that works is a configuration value rather than a hot-path wrapper.
 - Cost: a scheduler in the hot path behind its own switch; extra memory per flow (bounded queues: one chunk in flight). The window is per session, not per flow, so the scheduler's fairness is the only per-flow lever until class weights land.
-- Positive (measured, limited): the scheduler is wired with no measured benefit and no measured regression in the two-flow scenario; it ships behind `sched`, off by default, with the numbers published rather than a benefit claim.
+- Positive (measured, limited): the scheduler is wired with no measured benefit and no measured regression in the single-flow, two-flow or three-flow scenarios, meets decision 6's CPU and idle-latency budget, and is safe when a flow closes mid-run; it ships behind `sched`, off by default, with the numbers published rather than a benefit claim.
 - Risk: the window bound lowers the bandwidth-delay product a stream can fill on a long path; a smaller window can cost goodput at high RTT. That must be measured with a delay model before any default changes outside the switch.
 - Risk (realised): relay-level control cannot reach below the window, so M1 and M2 as specified cannot bound the queue (measured, see above).
 
