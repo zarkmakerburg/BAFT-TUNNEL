@@ -32,10 +32,13 @@ cannot measure. **No benefit is claimed and no profile is `measured`.**
 - Environment: four-core Linux `4.19.0-gvisor` sandbox (`x86_64`), one process, no other load,
   2026-11-26.
 - Run identity: run `tp-3.4-local-2026-11-26`, one local invocation on 2026-11-26 at about
-  20:44-20:47 UTC (168 s), `POLICY_REPEATS=3`, harness revision = this record's commit. `git diff
-  48b69cf <head> -- src` touches only `#[cfg(test)] mod policy_baseline` (the shared evidence helper's
-  new caller, the ignored evidence test and the additional pinning assertions), so the product code
-  under test is identical to `main` at `48b69cf`. The console lines that invocation printed are
+  20:44-20:47 UTC (168 s), `POLICY_REPEATS=3`,
+  **harness revision `ad691d82da76ce6f4a50d842d80204306ead7dee`** (this record's first commit, whose
+  `src` diff is exactly the tree the invocation ran; no other uncommitted source change was present.
+  Its review-fix follow-up changes only this document). Its `git diff 48b69cf1bee49f6a0ee4a2fd4d64e659e9ae9560 -- src` touches only
+  `#[cfg(test)] mod policy_baseline` (the ignored evidence test and the additional pinning
+  assertions), so the **product code under test is identical to `main` at
+  `48b69cf1bee49f6a0ee4a2fd4d64e659e9ae9560`**. The console lines that invocation printed are
   reproduced unedited in Appendix A.
 - Every line below is labelled `simulated`. It is not `vm` and it is not `lab`.
 
@@ -159,7 +162,8 @@ harness, both tunnel ends and the test app share the process:
 at the medians, and the ordering holds across repeats: every `streaming/1` repeat (2,734-2,969) is
 below every `balanced/1` repeat (3,828-5,625). That is what fewer wake-ups per MB at a 32 KiB quantum
 would predict, and it is a measured cost *reduction*, not a throughput benefit. The absolute windows
-are short (about 2.7-5.6 s of CPU for the probe) and the harness's own per-run spread is large
+are very short (0.35-0.72 s of CPU for the 128 MiB probe, i.e. `cpu_us` 350,000-720,000 µs) and the
+harness's own per-run spread is large
 (`balanced/1` spans 1,797 µs/MB between its repeats), and Baseline's median here is 18% above its
 3,046.9 in the TP-3.3 run — so compare within this invocation only; the between-arm ordering is the
 usable part.
