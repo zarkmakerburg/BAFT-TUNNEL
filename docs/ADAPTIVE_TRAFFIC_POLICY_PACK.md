@@ -1,7 +1,21 @@
 # Adaptive Traffic Policy Pack: plan
 
-**Status: Proposed (registered 2026-11-15). Nothing below is implemented or measured.**
+**Status: Proposed as a product feature (registered 2026-11-15). Phase 0 research, the Phase 2 interface and the queue/scheduler core now exist behind the `policy-pack` cargo feature (off by default, not wired into the relay); no profile is accepted and nothing is measured.**
 Decision: [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md). Epic: [#226](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/226). Roadmap entry: [PRODUCT_ROADMAP.md §5a](PRODUCT_ROADMAP.md).
+
+### Current implementation state (2026-11-26)
+
+| Item | State | Where |
+|---|---|---|
+| TP-0.1 research (#227) | Delivered as research: hook points, TCP/UDP limits, unprivileged OS options; no measurement | [POLICY_PACK_TP-0.1_RESEARCH.md](POLICY_PACK_TP-0.1_RESEARCH.md) |
+| TP-2.0 interface (#245) | Implemented: versioned interface, capability declaration that defaults to `Unknown`, fail-safe `Guarded` wrapper | `src/policy.rs` (feature `policy-pack`), unit tests |
+| TP-2.1 queues/scheduler (#231) | Implemented core: bounded per-flow queues, deficit round-robin, bounded wait; **not called by the relay** | `src/policy_sched.rs` (feature `policy-pack`), 7 unit tests |
+| TP-0.2 ADR acceptance (#228) | Open — ADR-0031 is still Proposed; profile schema, classification and engine scope are not decided | [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) |
+| TP-1.1/1.2 measurement (#229/#230) | Harness only (`simulated`): Baseline scenarios, window-cap experiment, aged-session scenario | `src/policy_baseline.rs`, [ADR-0048](ADR-0048-policy-queues-and-scheduler.md) |
+| TP-2.1 in-flight mechanism (M1/M2/M3) | Undecided by design: ADR-0048 requires the experiments first | [ADR-0048](ADR-0048-policy-queues-and-scheduler.md) |
+| Relay wiring, TP-2.2, TP-3.x, TP-4.x, TP-5.x, TP-U (#244) | Not started | issues #232-#244 |
+
+With the pack off the data path is exactly today's; nothing in this table is a benefit claim, and every number from the harness keeps the `simulated` label.
 
 ## 1. Scope
 

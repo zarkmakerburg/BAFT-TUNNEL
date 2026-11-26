@@ -1,6 +1,13 @@
 # Remaining work: assessment and prioritized plan
 
-> **Current verified state — 2026-11-26 (post-release closure pass).** `main` = `8c64988` plus the docs commit of this pass. This pass closed the release file rather than adding scope:
+> **Current verified state — 2026-11-26 (next-mission pass).** `main` = `4cdb8c2`, the merge of docs PR #451 (head `4550a5c`, 13/13 checks `SUCCESS`, rollup `SUCCESS` at merge time). #451 replaced the "unexplained #445 failure" paragraph with the root cause and the `2f61c58` evidence.
+>
+> - **Nothing product-facing has merged since Stable `v0.3.1`.** The five commits after the tag are documentation only (#448, #449, #450, #451), so no `v0.3.2` is planned; the next Stable is `v0.4.0`.
+> - **Next mission: `v0.4.0`, the Adaptive Traffic Policy Pack** (epic #226). Delivered so far, all behind the `policy-pack` cargo feature (off by default, **not wired into the relay**): TP-0.1 research ([POLICY_PACK_TP-0.1_RESEARCH.md](POLICY_PACK_TP-0.1_RESEARCH.md)), TP-2.0 interface (`src/policy.rs`), TP-2.1 queue/scheduler core (`src/policy_sched.rs`, 7 unit tests for bounded wait, quantum bounds, refusal instead of queue growth). [ADR-0048](ADR-0048-policy-queues-and-scheduler.md) is accepted for that core; the M1/M2/M3 mechanism choice, relay wiring and TP-2.2 overhead/fairness tests remain. No profile is accepted, nothing is measured, no benefit is claimed.
+> - **Release gate for `v0.4.0`:** pack wired and documented, TP-0.2 (ADR-0031 accepted, profile schema and engine scope decided), measurement per (engine, carrier, profile) tuple with its evidence label, then the normal train (signed rc on reviewed `main`, verified assets, Stable). The two-host LAB remains suspended, so measurement stays harness/CI (`simulated`) until an owner-authorized window; a hosted-CI-only Stable would be recorded as residual risk exactly as for `v0.3.1`, never as LAB evidence.
+> - **#445 stays open** on its two-host gates (end-to-end enrollment, restart durability, real Add-server flow, SSH Path B). Its non-LAB gates are green on `2f61c58` (rollup `SUCCESS`) and the blocker is stated in the PR; it is not part of 0.4.0.
+>
+> **Earlier block — 2026-11-26 (post-release closure pass).** `main` = `8c64988` plus the docs commit of this pass. This pass closed the release file rather than adding scope:
 >
 > - **Release page.** The GitHub release body for `v0.3.1` now states the evidence level (hosted CI only), the three green checks, the independent verification commands and results, and the known issues (S5 OPEN, `ready` Unknown, Preview surfaces, #445 absent, S10, paused security review, one-hour soak cap).
 > - **Signature verified for real.** Downloading the published assets and running `sha256sum -c SHA256SUMS` (6/6 `OK`) and `cosign verify-blob` with the `release.yml@refs/tags/v0.3.1` identity printed `Verified OK`, exit 0. Recorded in [RELEASE.md](RELEASE.md).

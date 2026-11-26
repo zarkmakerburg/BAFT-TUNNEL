@@ -47,6 +47,27 @@ requires the selected tag to point to a commit already contained in `main` (SA-0
 Legacy releases signed from `refs/heads/main` are intentionally rejected by the hardened
 installer and verifier; publish a new tag after this change is merged.
 
+## Next release: v0.4.0 (Adaptive Traffic Policy Pack) — not yet gated
+
+`v0.3.1` is the latest Stable. Between its tag and `main` `4cdb8c2` only documentation
+merged (#448, #449, #450, #451), so no `v0.3.2` is planned: a Stable tag has to carry a
+product change. The next Stable is `v0.4.0` (roadmap §9.5). It is **not taggable yet**:
+
+- the policy pack lives behind the `policy-pack` cargo feature, is off by default, and the
+  scheduler (`src/policy_sched.rs`) is not wired into the relay, so nothing in the data path
+  changed and there is nothing new to ship;
+- no profile has measured evidence against Balanced and Baseline; the two-host LAB stays
+  suspended, so any number produced before an owner-authorized window is harness or CI level
+  and must keep the `simulated` label; it is never LAB evidence;
+- the gate is the acceptance table in
+  [ADAPTIVE_TRAFFIC_POLICY_PACK.md](ADAPTIVE_TRAFFIC_POLICY_PACK.md). A profile that cannot
+  beat Balanced is dropped or documented as limited, not shipped as a claim.
+
+When those gates are met the release follows the same train as `v0.3.1`: a signed release
+candidate on a reviewed `main`, independent verification of the published assets, then Stable.
+A hosted-CI-only evidence level is acceptable only as a recorded residual risk, exactly as for
+`v0.3.1`, and never as a substitute for LAB evidence.
+
 ## Known issues (Stable)
 
 ### v0.3.1 (Stable, released 26 November 2026)
