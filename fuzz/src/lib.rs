@@ -30,6 +30,8 @@ pub mod integrity_probe;
 pub mod key_custody;
 #[path = "../../src/link_policy.rs"]
 pub mod link_policy;
+#[path = "../../src/policy_profile.rs"]
+pub mod policy_profile;
 #[path = "../../src/noise.rs"]
 pub mod noise;
 #[path = "../../src/observe.rs"]
