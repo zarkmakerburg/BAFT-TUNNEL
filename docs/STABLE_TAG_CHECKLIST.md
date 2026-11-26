@@ -1,6 +1,6 @@
 # Stable tag checklist (v0.2.2 and v0.3.0)
 
-Purpose: when the owner is on an admin machine, the tag step is one approval and a short command list. Nothing here is done yet. No Stable tag exists for 0.2.2 or 0.3.0.
+Purpose: when the owner is on an admin machine, the tag step is one approval and a short command list. `v0.2.2`, `v0.3.0` and `v0.3.1` are now released; the sections below are kept as the procedure and the record for those tags.
 
 Rules that apply to both: the Stable tag goes on exactly the commit of the last signed rc; the tag push needs the owner's own-word approval in the tag device thread; `release.yml` signs only from a `v*` tag and checks tag == Cargo.toml version; the tag commit must be contained in `main`.
 
