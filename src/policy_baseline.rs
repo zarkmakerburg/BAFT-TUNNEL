@@ -188,6 +188,20 @@ impl Mechanism {
     }
 }
 
+/// The TP-3.2 evidence arms are the shipped profiles, not copies of their numbers: this reads the
+/// same table `policy_relay` resolves a configured `policy.profile` from, so an evidence record
+/// cannot drift from the code it claims to measure (ADR-0031 decisions 15 and 19).
+#[cfg(feature = "policy-pack")]
+impl Mechanism {
+    pub(crate) fn for_profile(profile: crate::policy_profile::PolicyProfile) -> Self {
+        Mechanism::Scheduler {
+            window: profile.window_bytes(),
+            quantum: profile.quantum_bytes(),
+            cap: profile.max_queued_bytes(),
+        }
+    }
+}
+
 /// The Yamux per-stream window an arm runs with: the arm's own cap, or the product value.
 fn window_for(mechanism: Mechanism) -> Option<u32> {
     match mechanism {
@@ -1082,6 +1096,63 @@ mod tests {
         assert_eq!(unique.len(), labels.len());
     }
 
+    /// TP-3.2: the evidence arms must be the shipped rows (ADR-0031 decision 19), so a record
+    /// measures the profile the tunnel config resolves rather than a hand-copied set of numbers.
+    #[cfg(feature = "policy-pack")]
+    #[test]
+    fn profile_arms_are_the_shipped_rows() {
+        use crate::policy_profile::PolicyProfile;
+
+        let balanced = Mechanism::for_profile(PolicyProfile::Balanced);
+        assert_eq!(
+            balanced.label(),
+            "sched-w262144-q16384-cap65536",
+            "balanced/1 is the identity and must reproduce the TP-2.2 scheduler arm"
+        );
+        let gaming = Mechanism::for_profile(PolicyProfile::Gaming);
+        assert_eq!(gaming.label(), "sched-w262144-q4096-cap16384");
+        assert_ne!(
+            gaming, balanced,
+            "gaming/1 must differ from the identity in quantum and cap"
+        );
+        for profile in [
+            PolicyProfile::Balanced,
+            PolicyProfile::Gaming,
+            PolicyProfile::Trading,
+            PolicyProfile::Streaming,
+            PolicyProfile::Bulk,
+        ] {
+            let arm = Mechanism::for_profile(profile);
+            assert_eq!(
+                window_for(arm),
+                Some(profile.window_bytes()),
+                "{} must run its row's window",
+                profile.id()
+            );
+            match arm {
+                Mechanism::Scheduler {
+                    window,
+                    quantum,
+                    cap,
+                } => assert_eq!(
+                    (window, quantum, cap),
+                    (
+                        profile.window_bytes(),
+                        profile.quantum_bytes(),
+                        profile.max_queued_bytes()
+                    ),
+                    "{} must run exactly its row's numbers",
+                    profile.id()
+                ),
+                other => panic!(
+                    "{} must map to a scheduler arm, got {}",
+                    profile.id(),
+                    other.label()
+                ),
+            }
+        }
+    }
+
     #[test]
     fn window_arms_sit_inside_the_product_window() {
         for mechanism in mechanism_matrix() {
@@ -1397,6 +1468,87 @@ mod tests {
                 let (cpu_us, delivered) = relay_cpu_probe(mechanism, bytes).await;
                 println!(
                     "POLICY_EXPERIMENT {{\"scenario\":\"relay_cpu_probe\",\"mechanism\":\"{}\",\"evidence\":\"simulated\",\"repeat\":{},\"bytes\":{},\"delivered_bytes\":{},\"cpu_us\":{},\"cpu_us_per_mb\":{:.1}}}",
+                    mechanism.label(),
+                    repeat,
+                    bytes,
+                    delivered,
+                    cpu_us,
+                    cpu_us as f64 / (delivered as f64 / (1024.0 * 1024.0)).max(f64::MIN_POSITIVE)
+                );
+            }
+        }
+    }
+
+    /// TP-3.2 Gaming evidence run: Baseline, `balanced/1` and `gaming/1` under bulk competition,
+    /// then two competing flows with a mid-run close, then the per-MB CPU probe. The arms come from
+    /// `Mechanism::for_profile`, i.e. the shipped table, and every line is labelled `simulated`.
+    /// This is the harness-side record for `docs/POLICY_PACK_TP-3.2_GAMING_EVIDENCE.md`; it is not
+    /// a LAB run and does not settle the profile's acceptance (ADR-0031 decision 19).
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    #[ignore = "measurement run; use --release --features policy-pack --ignored --nocapture"]
+    async fn gaming_profile_evidence() {
+        use crate::policy_profile::PolicyProfile;
+
+        let (rate, repeats, seconds) = experiment_settings(8);
+        let duration = Duration::from_secs(seconds);
+        let interval = Duration::from_millis(20);
+        let arms = [
+            Mechanism::Baseline,
+            Mechanism::for_profile(PolicyProfile::Balanced),
+            Mechanism::for_profile(PolicyProfile::Gaming),
+        ];
+
+        for mechanism in arms {
+            for repeat in 1..=repeats {
+                let summary = run_scenario_mechanism(
+                    "gaming_bulk_competing",
+                    true,
+                    rate,
+                    duration,
+                    interval,
+                    mechanism,
+                )
+                .await;
+                println!(
+                    "POLICY_EXPERIMENT {{\"profile_run\":\"tp-3.2\",\"repeat\":{repeat},\"bulk_bytes_per_s\":{}}} {}",
+                    summary.bulk_bytes / seconds.max(1),
+                    summary.json(rate)
+                );
+            }
+        }
+
+        // Two competing flows and three competing flows, each closing the first flow mid-run. With
+        // two flows one survives, so its split is trivial; the three-flow run is the one that shows
+        // whether two survivors share the bottleneck evenly (TP-2.2's measurement).
+        for flows in [2, 3] {
+            for mechanism in arms {
+                let summary = run_multi_flow(
+                    "gaming_multi_flow",
+                    flows,
+                    true,
+                    rate,
+                    duration,
+                    interval,
+                    mechanism,
+                )
+                .await;
+                println!(
+                    "POLICY_EXPERIMENT {{\"profile_run\":\"tp-3.2\",\"repeat\":1,\"flows\":{flows}}} {}",
+                    summary.json()
+                );
+            }
+        }
+
+        let bytes: u64 = std::env::var("POLICY_BYTES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(128 * 1024 * 1024);
+        for mechanism in arms {
+            for repeat in 1..=repeats {
+                let (cpu_us, delivered) = relay_cpu_probe(mechanism, bytes).await;
+                println!(
+                    "POLICY_EXPERIMENT {{\"profile_run\":\"tp-3.2\",\"scenario\":\"relay_cpu_probe\",\"mechanism\":\"{}\",\"evidence\":\"simulated\",\"repeat\":{},\"bytes\":{},\"delivered_bytes\":{},\"cpu_us\":{},\"cpu_us_per_mb\":{:.1}}}",
                     mechanism.label(),
                     repeat,
                     bytes,
