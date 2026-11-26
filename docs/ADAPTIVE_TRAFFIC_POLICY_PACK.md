@@ -1,6 +1,6 @@
 # Adaptive Traffic Policy Pack: plan
 
-**Status: Proposed as a product feature (registered 2026-11-15). Phase 0 research, the Phase 2 interface, the queue/scheduler core, the ADR-0048 in-flight bound and the scheduler's wiring into the relay exist behind the `policy-pack` cargo feature (off by default; the bound and the scheduler are reachable only through the `BAFT_TUNNEL_POLICY_PACK` runtime switch). No profile is accepted, and every measurement is harness/`simulated` — the scheduler arm measured as neither a win nor a regression and stays off by default.**
+**Status: Accepted design, profiles not yet accepted (ADR-0031 accepted 2026-11-26). Phase 0 is closed**, the Phase 2 interface, the queue/scheduler core, the ADR-0048 in-flight bound and the scheduler's wiring into the relay exist behind the `policy-pack` cargo feature (off by default; the bound and the scheduler are reachable only through the `BAFT_TUNNEL_POLICY_PACK` runtime switch). **No profile is accepted as measured, and every measurement is harness/`simulated` — the scheduler arm measured as neither a win nor a regression and stays off by default. Next executable step: TP-3.1 (#233), the profile schema plus Balanced.**
 Decision: [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md). Epic: [#226](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/226). Roadmap entry: [PRODUCT_ROADMAP.md §5a](PRODUCT_ROADMAP.md).
 
 ### Current implementation state (2026-11-26)
@@ -10,12 +10,13 @@ Decision: [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md). Epic: [#226](htt
 | TP-0.1 research (#227) | Delivered as research: hook points, TCP/UDP limits, unprivileged OS options; no measurement | [POLICY_PACK_TP-0.1_RESEARCH.md](POLICY_PACK_TP-0.1_RESEARCH.md) |
 | TP-2.0 interface (#245) | Implemented: versioned interface, capability declaration that defaults to `Unknown`, fail-safe `Guarded` wrapper | `src/policy.rs` (feature `policy-pack`), unit tests |
 | TP-2.1 queues/scheduler (#231) | Implemented and wired: one deficit round-robin arbiter per relay direction, bounded per-flow queues (one quantum in flight, 64 KiB cap), bounded wait; reachable with `BAFT_TUNNEL_POLICY_PACK=sched[:<quantum>[:<cap>]]` | `src/policy_sched.rs`, `src/policy_relay.rs` (feature `policy-pack`), unit tests |
-| TP-0.2 ADR acceptance (#228) | Open — ADR-0031 is still Proposed; profile schema, classification and engine scope are not decided | [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) |
+| TP-0.2 ADR acceptance (#228) | Closed 2026-11-26. ADR-0031 is **Accepted** with schema version 1: five profiles with exact window/quantum/cap/bounded-wait values, class = the tunnel's configured `policy.profile` (one class per session, so arbitration weights stay identity), engine scope = `tcp-tls` + `noise-tcp` on TCP/Yamux (`baft` and the UDP carrier excluded) | [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) decisions 15-20 |
 | TP-1.1/1.2 measurement (#229/#230) | Harness only (`simulated`): Baseline scenarios, window-cap experiment, ADR-0048 mechanism matrix (M1/M2/M3, the window arm and the scheduler arm, three rates), aged-session scenario | `src/policy_baseline.rs`, [POLICY_PACK_TP-0.1_RESEARCH.md](POLICY_PACK_TP-0.1_RESEARCH.md) §9.2-9.4 |
 | TP-2.1 in-flight mechanism (M1/M2/M3) | Decided 2026-11-26 by measurement: the Yamux per-stream window (256 KiB); M1 works only at 2 MiB and cannot go lower, M2/M3 measured equal to Baseline | [ADR-0048](ADR-0048-policy-queues-and-scheduler.md) decision 4 and results |
 | Relay wiring (#244) | Both levers: `tunnel::yamux_config` applies the pack's window for `window-cap[:<bytes>]`, and `tunnel::relay_stream` runs the scheduled relay for `sched[:<quantum>[:<cap>]]`; an unset or unknown switch keeps `relay_with_idle_timeout`, i.e. today's bytes exactly | `src/policy_relay.rs`, `src/tunnel.rs` (feature `policy-pack`), unit tests |
 | TP-2.2 fairness/overhead (#232) | Closed 2026-11-26 (`simulated`). Single flow: level with the window arm at 1 / 2.5 / 5 MB/s. Multi-flow (2 and 3 flows, plus a mid-run close): delivery split 1.000 in every arm, per-flow p50/p95 within 1% of the window pump, survivors keep moving. CPU: +1.4% / +4.3% / −8.2% per delivered MB against Baseline and +0.7% on the unshaped per-MB probe, idle p50 within 73 µs — decision 6's budget met with the margin stated, not certified below the harness's per-run spread. **No reproducible benefit, so the switch stays off by default.** Classes are not measured (every flow is `Balanced`; TP-3.x). Unit tests cover arbitration, the cap, closed flows, multi-flow fairness and churn | [ADR-0048](ADR-0048-policy-queues-and-scheduler.md), [POLICY_PACK_TP-0.1_RESEARCH.md](POLICY_PACK_TP-0.1_RESEARCH.md) §9.4-9.6 |
-| TP-3.x, TP-4.x, TP-5.x, TP-U (#233-#243) | Not started; TP-3.x (class profiles/weights) is what would give the wired scheduler a benefit to measure | issues #233-#243 |
+| TP-3.1 profile schema and Balanced (#233) | **Next executable step.** Implements the accepted table: one versioned `policy.profile` in the tunnel config, validated and resolved into `SchedulerConfig` + the session window, `balanced/1` as identity and fail-safe | issue #233 |
+| TP-3.2-TP-3.5, TP-4.x, TP-5.x, TP-U (#234-#244) | Proposed. Each profile adds one row of the same table plus its per-tuple evidence record; adaptive control, API/CLI/panel/docs and the UDP carrier follow | issues #234-#244 |
 
 With the pack off the data path is exactly today's; nothing in this table is a benefit claim, and every number from the harness keeps the `simulated` label.
 
@@ -31,7 +32,7 @@ Strictly after Stable 0.2.0 and the Phase 6 hardening gates. It is not part of t
 
 ## 3. Phases, work items, status
 
-All items are **Proposed**. Nothing is In Progress or Done.
+Item status lives in the table above (§ Current implementation state); the phase list below keeps the fixed order. TP-0.1, TP-0.2, TP-2.0, TP-2.1 and TP-2.2 are closed; TP-3.1 is the next executable item; the rest are Proposed.
 
 | Phase | Item | Issue | Needs |
 |---|---|---|---|
@@ -75,14 +76,14 @@ The suggested order is unchanged from the request (0 to 5), with TP-2.0 first in
 | Risk | Handling |
 |---|---|
 | TCP carrier head-of-line blocking limits Gaming/Trading gains; no UDP path yet | TP-0.1 quantifies it; evidence gate may conclude "no gain over Balanced" and the profile is dropped or documented as limited |
-| Policy layer adds CPU/latency in the hot path | overhead budget set in TP-0.2, measured in TP-2.2, off by default |
+| Policy layer adds CPU/latency in the hot path | overhead budget met as measured in TP-2.2 (+1.4%/+4.3%/−8.2% per delivered MB, idle p50 within 73 µs), off by default |
 | Prioritisation harms other flows | mandatory bounded-wait and share limits; fairness tests |
 | Adaptive loop oscillates | hysteresis, dwell time, rate limit, fail-safe to Balanced (TP-4.x) |
 | Benchmarks mislead (simulation passed off as real) | evidence labels per result; simulation never counts as LAB |
 | BAFT Go engine not covered | stated limit; separate decision if wanted |
 | Scope creep into user management | ADR-0031 rule 4 and out-of-scope list |
 
-Decisions needed before code: classification method, engine coverage, schema, overhead budget, impairment method. All go through TP-0.2 and ADRs.
+Decisions needed before code: classification method, engine coverage, schema, overhead budget, impairment method. TP-0.2 settled classification, engine coverage and the schema (ADR-0031 decisions 15-20) and TP-2.2 measured the overhead budget; the impairment method stays open with TP-1.2 because the two-host LAB is suspended.
 
 ## 6. Acceptance criteria (every profile, all required)
 
