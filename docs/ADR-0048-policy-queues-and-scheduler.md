@@ -110,7 +110,7 @@ stream beside one bulk uploader; both ends use the product's relay. The `sched` 
 | Window 256 KiB | 271 | 110 | 61 | 119 | 2.21 MB/s |
 | **`sched` (window + DRR)** | **270** | **109** | **62** | **118** | **2.22 MB/s** |
 
-pp99: sched 300 / 144 / 69 ms against window-cap 283 / 138 / 74 ms, so the scheduler is inside the
+p99: sched 300 / 144 / 69 ms against window-cap 283 / 138 / 74 ms, so the scheduler is inside the
 run-to-run spread of the window arm at every rate; it is neither a win nor a regression in this
 scenario. Idle timeouts and the aged-session throttle are unchanged: `aged_session_under_scheduler`
 fresh 538 ms / aged 5,392 ms against Baseline 545 / 5,371 and window-cap 544 / 5,404.
