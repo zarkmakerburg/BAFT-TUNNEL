@@ -375,6 +375,27 @@ What shipped, and the choices this ADR left open for TP-3.5:
   sender handoff becomes delivered goodput on a path with real RTT and loss, and whether the 9.4×
   loaded interactive p50 is an acceptable price for the widest row.
 
+## Implementation note 2026-11-26 (TP-4.1 / #238): adaptive control settled by ADR-0056
+
+Decision 9's bullet list is now specified rather than left to implementation. [ADR-0056](ADR-0056-adaptive-optimization-controller.md) fixes the slow loop:
+
+- **Tunable.** The controller chooses one of the five rows of decision 15 and never computes a
+  number; the window is not adaptable (Yamux assumes it at stream creation, ADR-0048 decision 4),
+  so only the scheduler pair moves, one rung at a time down the ladder
+  `trading/1 < gaming/1 < balanced/1 < streaming/1 < bulk/1` and never above the configured row.
+- **Inputs and guards.** 1 Hz samples of the pack's own counters (a queued-bytes/grant-rate
+  queueing-delay estimate, `overflow_refusals`, `Guarded::violations`), 3-sample persistence,
+  50 ms down / 20 ms up hysteresis, 30 s dwell, 3 changes per 300 s, a 60 s verification with a
+  10% improvement floor and a 600 s cooldown for a failed row, immediate guard/overflow fail-safe
+  to the configured row, and the configured row restored after three missed samples. Every change
+  is one log line naming its cause and the estimate that triggered it.
+- **Off by default.** `policy-pack` and `BAFT_TUNNEL_POLICY_PACK` still gate the pack, and
+  adaptation additionally needs a `policy.adaptive` opt-in (default false) that the wiring slice
+  will add; decision 2's fail-safe target and this ADR's profile rows are unchanged. No profile is
+  measured and no benefit is claimed by adaptation.
+- **Shipped so far.** The pure decision core in `src/policy_adaptive.rs` and its unit tests, with
+  no caller and no config field; the wiring, benchmark and LAB items stay open in TP-4.1.
+
 ## Known limits (recorded in Phase 0)
 
 - A single TCP carrier can still cause head-of-line blocking; the Gaming/Trading benefit may be limited without a datagram path (QUIC/UDP is not implemented, roadmap Phase 5). See decision 11.
