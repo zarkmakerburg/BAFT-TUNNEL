@@ -23,7 +23,7 @@ Operators want transport behaviour tuned to the kind of use (interactive/gaming,
 
 ## Amendment 2026-11-15: UDP carrier and other engines (owner follow-up)
 
-11. **UDP/datagram carrier is a prerequisite for Gaming/Trading benefit claims, and a separate work item** ([#244](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/244)). It needs its own ADR, independent security audit, acceptance matrix and real two-host LAB. It is not part of this pack. Order: after Stable 0.2.0; not needed for the policy engine (Phase 2), Balanced, Streaming or Bulk, which run on TCP/Yamux; it must land before Gaming/Trading acceptance (TP-3.2, TP-3.3). Until then those two profiles may be built and measured on TCP but make no benefit claim that depends on avoiding head-of-line blocking.
+11. **UDP/datagram carrier is a prerequisite for Gaming/Trading benefit claims, and a separate work item** ([#244](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/244)). It needs its own ADR, independent security audit, acceptance matrix and real two-host LAB. It is not part of this pack. Order: after Stable 0.2.0; not needed for the policy engine (Phase 2), Balanced, Streaming or Bulk, which run on TCP/Yamux; it must land before any Gaming/Trading claim that depends on avoiding TCP head-of-line blocking. The profile definitions and their TCP measurements do not wait for it: those two profiles may be built and measured on TCP, and claim only tunnel-internal queueing effects until it lands.
 12. **Engine-agnostic policy interface** ([#245](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/245), first item of Phase 2). A stable, versioned interface; each engine/carrier declares capabilities (priority enforcement, write pacing, RTT/queue observation, datagram support). The interface must be carrier-agnostic so a datagram path can be added later without redesign.
 13. **What the policy layer can and cannot control.** It controls admission, queueing, scheduling and pacing of data before it is handed to an engine, plus backpressure. For an engine with its own congestion control or buffering (the BAFT engine, a separate binary per ADR-0019; a future QUIC engine) it cannot control internal queues, congestion window, retransmission, FEC or wire behaviour. Effect there depends on how small and honest the engine's inner buffering is and must be measured; it may be nil. The BAFT engine stays out of scope until a later ADR; this does not change ADR-0019.
 14. **Per-engine acceptance rule.** A profile claim belongs to one tuple (engine, carrier, profile). No engine inherits another engine's results. Each tuple needs its own benchmarks against Balanced and Baseline with an evidence level. A tuple without evidence is shown Unsupported/Unknown in API, CLI and panel, never "ready".
@@ -59,10 +59,18 @@ shown as measured.
     their claims are therefore limited to tunnel-internal queueing and burst sharing, never to
     fewer in-flight bytes. This is recorded rather than papered over.
 
-    All five rows satisfy the relay parser's existing bounds (`window_bytes >=
+    All five rows satisfy the numeric bounds `PolicyRelay::parse` enforces (`window_bytes >=
     INITIAL_STREAM_WINDOW` = 256 KiB, `quantum_bytes >= 1024`, `quantum_bytes <= 256 KiB`,
     `max_queued_bytes >= quantum_bytes`, `max_queued_bytes <= 1 MiB`), so TP-3.x implements them
     through `SchedulerConfig` as it exists and adds no scheduler type.
+
+    **These tuples are realised through the tunnel config, not the env grammar.** TP-3.1 resolves
+    a profile into the two fields of the `PolicyRelay` struct (`stream_window`, `scheduler`) that
+    `parse` already populates, after checking the numeric bounds above. The `BAFT_TUNNEL_POLICY_PACK`
+    spelling is not extended: `window-cap` sets a window without a scheduler and `sched` sets a
+    scheduler at the default window, which is exactly what reproduces the TP-2.1/TP-2.2 arms, and a
+    profile above the default window with scheduler parameters has no reason to exist as an env
+    value. Extending the grammar is therefore not a prerequisite for schema version `1`.
 
     **Bounded wait is not a profile parameter in schema version `1`.** Every profile is bounded by
     the existing mechanics: the arbiter's deficit round-robin rotation visits every registered
@@ -112,8 +120,8 @@ shown as measured.
 
 18. **What TP-3.x implements, and its first step.** The first concrete step is **TP-3.1 (#233),
     the profile schema plus Balanced**: a versioned profile object parsed from the tunnel config,
-    validated against the table in decision 15, resolved into `SchedulerConfig` and the session
-    window through the existing `PolicyRelay::parse` bounds, with `balanced/1` as the identity
+    validated against the table in decision 15, resolved into that same `PolicyRelay` struct's
+    `stream_window` and `scheduler` fields, with `balanced/1` as the identity
     profile and any invalid or unknown value falling back to Balanced with a logged cause
     (decision 9). TP-3.1 changes no mechanics: it selects one of the three existing parameters and
     the class label, nothing else. TP-3.2 Gaming, TP-3.3 Trading, TP-3.4

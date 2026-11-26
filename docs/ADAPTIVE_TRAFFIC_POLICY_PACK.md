@@ -53,11 +53,11 @@ Item status lives in the table above (§ Current implementation state); the phas
 | 5 Integration and UX | TP-5.1 API and CLI | [#240](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/240) | ADR |
 | 5 | TP-5.2 panel (fa/en) | [#241](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/241) | UI QA |
 | 5 | TP-5.3 documentation | [#242](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/242) | results |
-| Prerequisite track | TP-U UDP/datagram carrier (separate transport feature; needed for Gaming/Trading benefit claims) | [#244](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/244) | ADR, security audit, benchmark, LAB |
+| Prerequisite track | TP-U UDP/datagram carrier (separate transport feature; needed for Gaming/Trading claims that depend on avoiding TCP head-of-line blocking) | [#244](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/244) | ADR, security audit, benchmark, LAB |
 
 ### UDP, other engines and per-engine rules (amendment 2026-11-15)
 
-- **UDP/datagram carrier (#244):** its own ADR, independent audit, acceptance matrix and real two-host LAB. After Stable 0.2.0. Not needed for Phase 2, Balanced, Streaming or Bulk. It must land before Gaming/Trading acceptance (TP-3.2, TP-3.3); until then those profiles make no benefit claim that depends on avoiding TCP head-of-line blocking.
+- **UDP/datagram carrier (#244):** its own ADR, independent audit, acceptance matrix and real two-host LAB. After Stable 0.2.0. Not needed for Phase 2, Balanced, Streaming or Bulk. It must land before any Gaming/Trading claim that depends on avoiding TCP head-of-line blocking; until then those profiles make only tunnel-internal queueing claims on TCP.
 - **Engine-agnostic interface (#245):** engines declare capabilities (priority enforcement, write pacing, RTT/queue observation, datagram). Missing capability means Unsupported/Unknown.
 - **What policy can control:** admission, queueing, scheduling and pacing before data reaches the engine, plus backpressure. **What it cannot:** internal queues, congestion window, retransmission, FEC and wire behaviour of engines with their own congestion control (BAFT engine, ADR-0019 separate binary; a future QUIC engine). Effect there is measured and may be nil. BAFT engine stays out of scope until a later ADR.
 - **Per-engine acceptance:** a claim belongs to (engine, carrier, profile). No engine inherits another's results; each tuple needs its own benchmarks vs Balanced and Baseline with an evidence level; otherwise it shows Unsupported/Unknown.
