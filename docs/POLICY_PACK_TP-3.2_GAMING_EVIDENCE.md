@@ -25,8 +25,12 @@ measured. **No benefit is claimed and no profile is `measured`.**
 - Bottleneck rate 2,500,000 B/s (about 2.5 MB/s, the TP-2.2 rate), 8 s per arm run, 3 repeats per
   arm, ping interval 20 ms, 128 MiB per CPU probe.
 - Environment: four-core Linux `4.19.0-gvisor` sandbox (`x86_64`), one process, no other load,
-  2026-11-26. Source: `main` at `06aa420`; the only change under test is this test-only harness
-  addition, no product code differs from that commit.
+  2026-11-26.
+- Run identity: run `tp-3.2-local-2026-11-26`, one local invocation at 18:59 UTC with
+  `POLICY_REPEATS=3`, harness revision `233e440c` (the commit this record ships in).
+  `git diff 06aa420 233e440 -- src` is 152 added lines inside `#[cfg(test)] mod policy_baseline`
+  only, so the product code under test is identical to `main` at `06aa420`. The console lines that
+  invocation printed are reproduced unedited in Appendix A.
 - Every line below is labelled `simulated`. It is not `vm` and it is not `lab`.
 
 ## 2. Interactive RTT under bulk competition (`gaming_bulk_competing`)
@@ -82,15 +86,22 @@ Three bulk flows share the bottleneck and the first is closed mid-run; the two s
 moving and share evenly (`delivery_min_over_max` compares the surviving flows only, so the two-flow
 variant's 1.000 is trivial and is not used as evidence).
 
-| Arm | flow bytes (closed, survivor, survivor) | survivor p50 (µs) | survivor p95 (µs) | split | continued after churn |
+| Arm | flow bytes (closed, survivor, survivor) | echo p50 (µs), three flows | echo p95 (µs), three flows | split | continued after churn |
 |---|---|---|---|---|---|
-| baseline | 6,373,376 / 12,664,832 / 12,664,832 | 4,669,405 / 3,819,792 | 5,452,523 / 5,452,526 | 1.000 | yes |
-| `balanced/1` | 2,965,504 / 6,766,592 / 6,766,592 | 255,769 / 251,625 | 394,725 / 390,799 | 1.000 | yes |
-| `gaming/1` | 2,949,120 / 6,619,136 / 6,619,136 | 264,036 / 257,449 | 394,472 / 394,472 | 1.000 | yes |
+| baseline | 6,373,376 / 12,664,832 / 12,664,832 | 5,452,511 / 4,669,405 / 3,819,792 | 5,493,937 / 5,452,523 / 5,452,526 | 1.000 | yes |
+| `balanced/1` | 2,965,504 / 6,766,592 / 6,766,592 | 255,771 / 255,769 / 251,625 | 394,724 / 394,725 / 390,799 | 1.000 | yes |
+| `gaming/1` | 2,949,120 / 6,619,136 / 6,619,136 | 264,038 / 264,036 / 257,449 | 394,474 / 394,472 / 394,472 | 1.000 | yes |
+
+The bulk columns are indexed: position 0 is the flow closed at the churn point, positions 1 and 2
+are the survivors, and `delivery_min_over_max` and `continued_after_churn` use those indices. The
+echo columns are **not** indexed — the harness collects each flow's ping task in completion order
+and prints no flow id, so those three figures are the three echo streams' percentiles and cannot be
+attributed to a named survivor: every one of the three kept completing, and they are not used to
+compare arms.
 
 All arms kept both survivors moving, delivered the closed flow's bytes up to the close, split the
-survivors evenly and reported no stall. `gaming/1`'s survivor p50 is 3.2% above `balanced/1`'s,
-within the per-run spread; no starvation and no fairness advantage over Balanced is shown.
+survivors evenly and reported no stall; the bulk indices are what that statement rests on. No
+starvation and no fairness advantage over Balanced is shown.
 
 ## 5. CPU (`relay_cpu_probe`, unshaped loopback, 128 MiB per repeat)
 
@@ -150,6 +161,7 @@ bulk, impairment scenarios (loss, jitter, path change, carrier kill), and a run 
 ## 9. Reproduce
 
 ```
+# on harness revision 233e440 (or any later commit that keeps this test)
 POLICY_REPEATS=3 cargo test --release --features policy-pack -- \
   --ignored --nocapture gaming_profile_evidence
 ```
@@ -157,3 +169,37 @@ POLICY_REPEATS=3 cargo test --release --features policy-pack -- \
 Each `POLICY_EXPERIMENT …` line is one arm run, JSON after the first object, all labelled
 `simulated`. `POLICY_RATE`, `POLICY_SECONDS` and `POLICY_BYTES` change the rate, the per-arm
 duration and the CPU probe size; the defaults are the figures above.
+
+## Appendix A. Raw run output, unedited
+
+The 24 `POLICY_EXPERIMENT` lines run `tp-3.2-local-2026-11-26` printed, followed by the test summary.
+`Mechanism::label()` prints the resolved parameters, so `sched-w262144-q16384-cap65536` is
+`balanced/1`'s arm and `sched-w262144-q4096-cap16384` is `gaming/1`'s; `baseline` is the pack off.
+
+```
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":1,"bulk_bytes_per_s":2631680} {"scenario":"gaming_bulk_competing","mechanism":"baseline","evidence":"simulated","rate_bytes_per_s":2500000,"samples":4,"rtt_us":{"p50":2090030,"p95":2147812,"p99":2147812,"max":2147812},"bulk_bytes":21053440,"cpu_us":1130000,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":2,"bulk_bytes_per_s":2631680} {"scenario":"gaming_bulk_competing","mechanism":"baseline","evidence":"simulated","rate_bytes_per_s":2500000,"samples":4,"rtt_us":{"p50":2080693,"p95":2136313,"p99":2136313,"max":2136313},"bulk_bytes":21053440,"cpu_us":980000,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":3,"bulk_bytes_per_s":2631680} {"scenario":"gaming_bulk_competing","mechanism":"baseline","evidence":"simulated","rate_bytes_per_s":2500000,"samples":4,"rtt_us":{"p50":2101010,"p95":2136034,"p99":2136034,"max":2136034},"bulk_bytes":21053440,"cpu_us":1000000,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":1,"bulk_bytes_per_s":2123776} {"scenario":"gaming_bulk_competing","mechanism":"sched-w262144-q16384-cap65536","evidence":"simulated","rate_bytes_per_s":2500000,"samples":60,"rtt_us":{"p50":111982,"p95":118325,"p99":123807,"max":123807},"bulk_bytes":16990208,"cpu_us":1190000,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":2,"bulk_bytes_per_s":2123776} {"scenario":"gaming_bulk_competing","mechanism":"sched-w262144-q16384-cap65536","evidence":"simulated","rate_bytes_per_s":2500000,"samples":60,"rtt_us":{"p50":112642,"p95":120149,"p99":124870,"max":124870},"bulk_bytes":16990208,"cpu_us":1430000,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":3,"bulk_bytes_per_s":2123776} {"scenario":"gaming_bulk_competing","mechanism":"sched-w262144-q16384-cap65536","evidence":"simulated","rate_bytes_per_s":2500000,"samples":60,"rtt_us":{"p50":111575,"p95":118709,"p99":122755,"max":122755},"bulk_bytes":16990208,"cpu_us":1440000,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":1,"bulk_bytes_per_s":2154496} {"scenario":"gaming_bulk_competing","mechanism":"sched-w262144-q4096-cap16384","evidence":"simulated","rate_bytes_per_s":2500000,"samples":61,"rtt_us":{"p50":110934,"p95":117617,"p99":119438,"max":119438},"bulk_bytes":17235968,"cpu_us":1170000,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":2,"bulk_bytes_per_s":2121728} {"scenario":"gaming_bulk_competing","mechanism":"sched-w262144-q4096-cap16384","evidence":"simulated","rate_bytes_per_s":2500000,"samples":60,"rtt_us":{"p50":112113,"p95":118788,"p99":128400,"max":128400},"bulk_bytes":16973824,"cpu_us":1160000,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":3,"bulk_bytes_per_s":2187264} {"scenario":"gaming_bulk_competing","mechanism":"sched-w262144-q4096-cap16384","evidence":"simulated","rate_bytes_per_s":2500000,"samples":62,"rtt_us":{"p50":108700,"p95":116492,"p99":117837,"max":117837},"bulk_bytes":17498112,"cpu_us":960000,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":1,"flows":2} {"scenario":"gaming_multi_flow","mechanism":"baseline","evidence":"simulated","flows":2,"bulk_bytes":[6373376,16859136],"total_bulk_bytes":23232512,"delivery_min_over_max":1.000,"flow_p50_us":[2067892,2067890],"flow_p95_us":[3257078,3100173],"cpu_us":1190000,"churn_closed":0,"continued_after_churn":true,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":1,"flows":2} {"scenario":"gaming_multi_flow","mechanism":"sched-w262144-q16384-cap65536","evidence":"simulated","flows":2,"bulk_bytes":[4276224,12009472],"total_bulk_bytes":16285696,"delivery_min_over_max":1.000,"flow_p50_us":[113184,113693],"flow_p95_us":[248333,247456],"cpu_us":1280000,"churn_closed":0,"continued_after_churn":true,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":1,"flows":2} {"scenario":"gaming_multi_flow","mechanism":"sched-w262144-q4096-cap16384","evidence":"simulated","flows":2,"bulk_bytes":[4259840,11862016],"total_bulk_bytes":16121856,"delivery_min_over_max":1.000,"flow_p50_us":[113991,113989],"flow_p95_us":[249710,249709],"cpu_us":1160000,"churn_closed":0,"continued_after_churn":true,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":1,"flows":3} {"scenario":"gaming_multi_flow","mechanism":"baseline","evidence":"simulated","flows":3,"bulk_bytes":[6373376,12664832,12664832],"total_bulk_bytes":31703040,"delivery_min_over_max":1.000,"flow_p50_us":[5452511,4669405,3819792],"flow_p95_us":[5493937,5452523,5452526],"cpu_us":1360000,"churn_closed":0,"continued_after_churn":true,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":1,"flows":3} {"scenario":"gaming_multi_flow","mechanism":"sched-w262144-q16384-cap65536","evidence":"simulated","flows":3,"bulk_bytes":[2965504,6766592,6766592],"total_bulk_bytes":16498688,"delivery_min_over_max":1.000,"flow_p50_us":[255771,255769,251625],"flow_p95_us":[394724,394725,390799],"cpu_us":1280000,"churn_closed":0,"continued_after_churn":true,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","repeat":1,"flows":3} {"scenario":"gaming_multi_flow","mechanism":"sched-w262144-q4096-cap16384","evidence":"simulated","flows":3,"bulk_bytes":[2949120,6619136,6619136],"total_bulk_bytes":16187392,"delivery_min_over_max":1.000,"flow_p50_us":[264038,264036,257449],"flow_p95_us":[394474,394472,394472],"cpu_us":1510000,"churn_closed":0,"continued_after_churn":true,"stalled":false}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","scenario":"relay_cpu_probe","mechanism":"baseline","evidence":"simulated","repeat":1,"bytes":134217728,"delivered_bytes":134217728,"cpu_us":430000,"cpu_us_per_mb":3359.4}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","scenario":"relay_cpu_probe","mechanism":"baseline","evidence":"simulated","repeat":2,"bytes":134217728,"delivered_bytes":134217728,"cpu_us":680000,"cpu_us_per_mb":5312.5}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","scenario":"relay_cpu_probe","mechanism":"baseline","evidence":"simulated","repeat":3,"bytes":134217728,"delivered_bytes":134217728,"cpu_us":670000,"cpu_us_per_mb":5234.4}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","scenario":"relay_cpu_probe","mechanism":"sched-w262144-q16384-cap65536","evidence":"simulated","repeat":1,"bytes":134217728,"delivered_bytes":134217728,"cpu_us":950000,"cpu_us_per_mb":7421.9}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","scenario":"relay_cpu_probe","mechanism":"sched-w262144-q16384-cap65536","evidence":"simulated","repeat":2,"bytes":134217728,"delivered_bytes":134217728,"cpu_us":640000,"cpu_us_per_mb":5000.0}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","scenario":"relay_cpu_probe","mechanism":"sched-w262144-q16384-cap65536","evidence":"simulated","repeat":3,"bytes":134217728,"delivered_bytes":134217728,"cpu_us":930000,"cpu_us_per_mb":7265.6}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","scenario":"relay_cpu_probe","mechanism":"sched-w262144-q4096-cap16384","evidence":"simulated","repeat":1,"bytes":134217728,"delivered_bytes":134217728,"cpu_us":1550000,"cpu_us_per_mb":12109.4}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","scenario":"relay_cpu_probe","mechanism":"sched-w262144-q4096-cap16384","evidence":"simulated","repeat":2,"bytes":134217728,"delivered_bytes":134217728,"cpu_us":1450000,"cpu_us_per_mb":11328.1}
+POLICY_EXPERIMENT {"profile_run":"tp-3.2","scenario":"relay_cpu_probe","mechanism":"sched-w262144-q4096-cap16384","evidence":"simulated","repeat":3,"bytes":134217728,"delivered_bytes":134217728,"cpu_us":1810000,"cpu_us_per_mb":14140.6}
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 479 filtered out; finished in 143.49s
+```

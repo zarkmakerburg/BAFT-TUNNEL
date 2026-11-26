@@ -215,9 +215,12 @@ What shipped, and the choices this ADR left open for TP-3.2:
   maps a `PolicyProfile` to the harness arm by reading the same accessors `policy_relay` resolves,
   so the record cannot drift from the code; `profile_arms_are_the_shipped_rows` asserts that
   `balanced/1` reproduces the TP-2.2 arm and every row maps to its exact numbers.
-- **Enabling it.** Unchanged from TP-3.1: `policy-pack` at build time, `BAFT_TUNNEL_POLICY_PACK`
-  set at run time, and `policy.profile: "gaming/1"` in the tunnel config. Any one of the three
-  missing leaves today's path.
+- **Enabling it.** Unchanged from TP-3.1, and the three inputs do different jobs: the `policy-pack`
+  feature and the `BAFT_TUNNEL_POLICY_PACK` switch gate activation, and `policy.profile: "gaming/1"`
+  selects the row. All three are needed to select Gaming. Without the switch (and without the
+  feature) nothing activates and the path is today's. With the switch set but no profile, the pack
+  still runs on that switch's own numbers (`sched`, i.e. Balanced's) — an absent profile does not
+  turn the pack off and does not restore the pack-off path.
 - **Status.** TP-3.2 stays open on its acceptance in the pack plan §6 (latency and jitter under
   bulk competition, loss, throughput, CPU/RSS, fairness, impairment scenarios, long run, evidence
   labels). The one remaining requirement is a real two-host LAB window for the (engine, carrier,
