@@ -32,6 +32,8 @@ mod pair_proto;
 mod pki_helper;
 #[cfg(feature = "policy-pack")]
 mod policy;
+#[cfg(feature = "policy-pack")]
+mod policy_adaptive;
 #[cfg(test)]
 mod policy_baseline;
 mod policy_profile;
