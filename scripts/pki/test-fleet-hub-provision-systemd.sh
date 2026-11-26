@@ -136,6 +136,8 @@ if grep -q 'PRIVATE KEY' "$TMP/provision-result.json" "$CONFIG" "$DROPIN"; then 
 systemctl is-active --quiet "baft-tunnel-agent@$NAME.service" || fail "helper unexpectedly stopped the running Agent"
 
 step "4 activate through the authenticated Agent API and verify systemd delivered the per-instance credential"
+PID_BEFORE="$(systemctl show -p MainPID --value "baft-tunnel-agent@$NAME.service")"
+[[ "$PID_BEFORE" =~ ^[1-9][0-9]*$ ]] || fail "Agent has no main PID before activation"
 HTTP="$(curl -sS -o "$TMP/restart-result.json" -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data '{}' "http://$API/v1/fleet/hub/restart" || true)"
 RESTART_BODY="$(cat "$TMP/restart-result.json" 2>/dev/null || true)"
 if [[ "$HTTP" != 202 ]]; then
@@ -143,25 +145,40 @@ if [[ "$HTTP" != 202 ]]; then
   systemctl is-active --quiet "baft-tunnel-agent@$NAME.service" ||
     fail "Hub activation request was not accepted (HTTP ${HTTP:-none}): $RESTART_BODY"
 fi
-for n in $(seq 1 60); do
-  systemctl is-active --quiet "baft-tunnel-agent@$NAME.service" &&
-    journalctl -u "baft-tunnel-agent@$NAME.service" --no-pager -n 80 | grep -Fq "Fleet hub listening on $LISTEN" && break
+# The helper queues `systemctl --no-block restart`, so the request returns before the unit has
+# replaced its process. During that window the unit still reports the pre-restart MainPID (or 0),
+# and that process environment predates the LoadCredential drop-in; polling the journal and reading
+# MainPID straight away therefore described the wrong process. Wait for the replacement process
+# itself, and only accept it once systemd has put the credential in its environment.
+PID=""
+CREDENTIALS_DIR=""
+for n in $(seq 1 120); do
+  if systemctl is-active --quiet "baft-tunnel-agent@$NAME.service"; then
+    candidate="$(systemctl show -p MainPID --value "baft-tunnel-agent@$NAME.service")"
+    if [[ "$candidate" =~ ^[1-9][0-9]*$ && "$candidate" != "$PID_BEFORE" ]]; then
+      env_dir="$(tr '\0' '\n' <"/proc/$candidate/environ" 2>/dev/null | sed -n 's/^CREDENTIALS_DIRECTORY=//p' || true)"
+      if [[ -n "$env_dir" && -f "$env_dir/fleet-hub-key" ]]; then
+        PID="$candidate"
+        CREDENTIALS_DIR="$env_dir"
+        break
+      fi
+    fi
+  fi
   sleep 0.25
 done
-systemctl is-active --quiet "baft-tunnel-agent@$NAME.service" || fail "Agent failed after Fleet config activation"
-PID="$(systemctl show -p MainPID --value "baft-tunnel-agent@$NAME.service")"
-[[ "$PID" =~ ^[1-9][0-9]*$ ]] || fail "Agent has no main PID"
-CREDENTIALS_DIR="$(tr '\0' '\n' <"/proc/$PID/environ" | sed -n 's/^CREDENTIALS_DIRECTORY=//p')"
-if [[ -z "$CREDENTIALS_DIR" || ! -f "$CREDENTIALS_DIR/fleet-hub-key" ]]; then
+if [[ -z "$PID" ]]; then
   # Report what the request and systemd actually did before failing: a silent failure here used to
   # cost a full CI round trip to diagnose.
   echo "restart request: HTTP=${HTTP:-none} body=${RESTART_BODY:-none}" >&2
-  echo "agent MainPID=$PID CREDENTIALS_DIRECTORY=${CREDENTIALS_DIR:-none}" >&2
+  echo "MainPID before=${PID_BEFORE} now=$(systemctl show -p MainPID --value "baft-tunnel-agent@$NAME.service") state=$(systemctl show -p ActiveState -p SubState --value "baft-tunnel-agent@$NAME.service" | tr '\n' '/')" >&2
   ls -la /run/baft-tunnel/control >&2 || true
   systemctl cat "baft-tunnel-agent@$NAME.service" >&2 || true
+  journalctl -u "baft-tunnel-agent@$NAME.service" -n 80 --no-pager >&2 || true
   journalctl -u "baft-tunnel-control-fleet@$NAME.service" -n 40 --no-pager >&2 || true
   fail "systemd did not deliver fleet-hub-key"
 fi
+journalctl -u "baft-tunnel-agent@$NAME.service" --no-pager -n 200 | grep -Fq "Fleet hub listening on $LISTEN" ||
+  fail "restarted Agent did not report the Fleet Hub listener on $LISTEN"
 cmp -s "$KEY" "$CREDENTIALS_DIR/fleet-hub-key" || fail "delivered credential differs from the root-held key"
 curl -fs "http://$API/v1/health" >/dev/null || fail "Agent API did not recover after restart"
 ss -ltnH | awk '{print $4}' | grep -qx "$LISTEN" || fail "Fleet Hub listener is not bound to the configured address"
