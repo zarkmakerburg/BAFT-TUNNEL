@@ -627,6 +627,23 @@ mod tests {
         writer.await.unwrap();
         assert_eq!(echoed.len(), src.len());
         assert_eq!(echoed, src, "echoed bytes equal sent bytes after two cuts");
+        // Both pumps end the stream themselves: the application closed its side, so each direction
+        // sends Fin and waits for the peer's Ack. The carrier must stay up while that exchange
+        // happens — dropping it first detaches the substream and holds the stream for the whole
+        // 20 s grace period, which is a transport-loss path, not the clean teardown this test
+        // asserts. Wait for the exchange (bounded), then tear the carrier down and re-assert that
+        // nothing lingers.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while server.live_streams() != 0 || client.live_streams() != 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the stream did not finish on the live carrier within 5 s: server_live={}, \
+                 client_live={}",
+                server.live_streams(),
+                client.live_streams()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         drop(cut);
         drop(control);
         tokio::time::sleep(Duration::from_millis(300)).await;
