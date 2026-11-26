@@ -87,11 +87,11 @@ Reading it honestly:
 
 - Both profile arms are far below Baseline on every percentile (p50 2.11 s → 0.11-1.05 s). That is
   the in-flight bound, reproduced in this harness, not on a real path.
-- `bulk/1` costs the interactive flow a great deal relative to Balanced, consistently: **8.36× at the
-  p50 medians** (+835.6%), 8.93× at p95 and 8.35× at p99, and the per-repeat p50 gap is +850.6%,
-  +834.9% and +835.6% — never below eight times. The row holds eight times Balanced's window (2 MiB
-  against 256 KiB) and four times its cap, so a competing ping waits behind a much larger standing
-  buffer. That is the design cost of the widest row, measured; no latency benefit is claimed.
+- `bulk/1` costs the interactive flow a great deal relative to Balanced, consistently: **9.36× at the
+  p50 medians** (+835.6% relative increase), 8.93× at p95 and 8.35× at p99, and the per-repeat p50
+  gap is +850.6%, +834.9% and +835.6% — never below nine times. The row holds eight times Balanced's
+  window (2 MiB against 256 KiB) and four times its cap, so a competing ping waits behind a much
+  larger standing buffer. That is the design cost of the widest row, measured; no latency benefit is claimed.
 - `bulk/1` still keeps loaded p50 2.0× below Baseline. Its 8 samples per run are coarse: the p50 is
   usable because the gap is an order of magnitude, but the p95/p99/max columns coincide, so the tail
   shape of this arm is not resolved by this harness.
@@ -188,7 +188,7 @@ wording of #237, for `bulk/1` versus Balanced and Baseline:
 | 6 | Congestion / impairment (loss, jitter, path change, carrier kill) | Not modelled | **not measured** |
 | 7 | Long run (60 minutes per policy) | Longest run 8 s per arm, 166 s for the whole test | **not measured** |
 | 8 | Results published with an evidence label | This file; every number above is `simulated` | done for this slice |
-| — | Impact on co-running interactive flows "within a bound" (#237) | Measured at 8.36× Balanced loaded p50 (section 3); **no numeric bound exists in ADR-0031, the pack plan or the roadmap**, so this is neither a pass nor a fail and is put to the LAB/ADR | `simulated` (number), bound **undefined** |
+| — | Impact on co-running interactive flows "within a bound" (#237) | Measured at 9.36× Balanced loaded p50 (section 3); **no numeric bound exists in ADR-0031, the pack plan or the roadmap**, so this is neither a pass nor a fail and is put to the LAB/ADR | `simulated` (number), bound **undefined** |
 
 ## 8. Per-tuple claim (ADR-0047)
 
@@ -216,7 +216,7 @@ run up to the 60-minute project cap. Until that window is authorized, TP-3.5 sta
 becomes `measured`, and nothing here may be quoted as a Bulk benefit. Questions this harness puts to
 that window, because it cannot answer them: whether the 48.9% lower CPU per delivered MiB survives a
 real engine handshake and real rates; whether the 11.9% higher sender handoff becomes delivered
-goodput on a path with real RTT and loss; whether the 8.36× loaded interactive p50 is an acceptable
+goodput on a path with real RTT and loss; whether the 9.36× loaded interactive p50 is an acceptable
 price for the widest row, and if not, what the bound should be — the documents currently state none,
 so that decision belongs to the LAB result and an ADR amendment rather than to this record.
 

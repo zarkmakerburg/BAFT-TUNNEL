@@ -50,7 +50,7 @@ shown as measured.
     | Gaming | `gaming/1` | 262144 (256 KiB) | 4096 (4 KiB) | 16384 (16 KiB) | Quarter of Balanced's quantum and cap: the in-flight ceiling stays at the carrier floor, but each grant and each buffer is smaller, so a bulk burst occupies a smaller share of the queue at any moment |
     | Trading | `trading/1` | 262144 (256 KiB) | 2048 (2 KiB) | 8192 (8 KiB) | The finest interleaving the pack can produce on this carrier: smallest quantum and cap, throughput deliberately sacrificed |
     | Streaming | `streaming/1` | 524288 (512 KiB) | 32768 (32 KiB) | 131072 (128 KiB) | Twice Balanced's window and quantum: sustained medium-bitrate delivery with a larger but still bounded standing buffer |
-    | Bulk Transfer | `bulk/1` | 2097152 (2 MiB) | 65536 (64 KiB) | 262144 (256 KiB) | Four times Balanced's window: throughput for bulk transfers, still half of today's unmanaged 4 MiB window, latency accepted |
+    | Bulk Transfer | `bulk/1` | 2097152 (2 MiB) | 65536 (64 KiB) | 262144 (256 KiB) | Eight times Balanced's window: throughput for bulk transfers, still half of today's unmanaged 4 MiB window, latency accepted |
 
     **The 256 KiB window is a floor, not a choice.** `tokio-yamux` 0.3.20 defines
     `INITIAL_STREAM_WINDOW` as 256 KiB and both ends assume it at stream creation, and
@@ -327,7 +327,7 @@ What shipped, and the choices this ADR left open for TP-3.5:
 
 - **No mechanics, only the row.** `bulk/1` already resolved through `policy.profile` when TP-3.1
   shipped; TP-3.5 adds no scheduler type, no config field and no tuning knob. The row is 2 MiB window
-  / 64 KiB quantum / 256 KiB cap — exactly what decision 15 fixed for Bulk, and four times Balanced's
+  / 64 KiB quantum / 256 KiB cap — exactly what decision 15 fixed for Bulk, and eight times Balanced's
   window. Nothing was added to make it "faster" or to widen it further: widening beyond its stated
   purpose would be a new decision, not this item. The only thing the configured profile changes
   besides the row is the class label, and intra-session weights stay excluded (decision 16).
@@ -335,7 +335,7 @@ What shipped, and the choices this ADR left open for TP-3.5:
   large transfers, and the harness shows both sides of that trade: the sender hands off 11.9% more
   bytes per second than `balanced/1` (sender-side counts, not delivered goodput), CPU per delivered
   MiB is 48.9% lower with no overlap between the three repeats, and loaded p50/p95/p99 are
-  consistently about 8.4× Balanced because an interactive ping waits behind an eight-times-larger
+  consistently about 9.4× Balanced because an interactive ping waits behind an eight-times-larger
   buffer (still 2.0× below the unmanaged Baseline). A smaller window would buy back interactive
   latency at the cost of the row's purpose; the split is decision 15's, now measured, and the record
   puts the acceptability of that price to the LAB window rather than inventing a latency bound here
@@ -372,7 +372,7 @@ What shipped, and the choices this ADR left open for TP-3.5:
   LAB window for the (engine, carrier, profile) tuples, suspended by owner decision. This slice ships
   the `simulated` record and no measured profile. The record puts three questions to that window:
   whether the 48.9% CPU reduction survives a real engine handshake and rates, whether the higher
-  sender handoff becomes delivered goodput on a path with real RTT and loss, and whether the 8.4×
+  sender handoff becomes delivered goodput on a path with real RTT and loss, and whether the 9.4×
   loaded interactive p50 is an acceptable price for the widest row.
 
 ## Known limits (recorded in Phase 0)

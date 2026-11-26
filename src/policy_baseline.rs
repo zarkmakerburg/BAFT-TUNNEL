@@ -1146,7 +1146,7 @@ mod tests {
         assert_eq!(
             bulk.label(),
             "sched-w2097152-q65536-cap262144",
-            "bulk/1 is the widest row: four times Balanced's window"
+            "bulk/1 is the widest row: eight times Balanced's window"
         );
         assert_ne!(
             bulk, balanced,
