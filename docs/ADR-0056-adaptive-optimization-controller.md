@@ -50,7 +50,7 @@ An ADR that ignored those facts would design a controller nothing can feed. The 
    | step-down threshold | queueing estimate > 50 ms | ADR-0048's acceptance uses "loaded p95 within 10x idle", which at 2.5 MB/s (idle p50 about 5 ms) is about 50 ms; the plan's risk table asks for hysteresis rather than a single trigger. |
    | step-up threshold | estimate < 20 ms | 40% of the step-down threshold; the 30 ms gap is the deadband that prevents flapping around one value. |
    | minimum dwell | 30 s | Longer than any verification window's half; a state is held long enough to be observed. |
-   | rate limit | 3 changes per 300 s | Bounds the worst case even if dwell and verification are satisfied repeatedly. |
+   | rate limit | 3 voluntary changes per 300 s | Bounds the worst case even if dwell and verification are satisfied repeatedly; a forced restore or rollback is immediate and still counts against the budget. |
    | verification window | 60 s after a down-step | The step must show its effect before another is allowed; 60 s is 60 samples, ample for the 1 s loop. |
    | minimum improvement | 10% of the pre-step estimate | A step that cannot move the estimate by more than the harness's per-run spread is treated as ineffective (the TP-2.2/ADR-0048 runs report ±12-40% spread, so 10% is a floor, not a significance claim). |
    | bad-row cooldown | 600 s | A row that failed verification is not retried immediately. |
@@ -59,9 +59,11 @@ An ADR that ignored those facts would design a controller nothing can feed. The 
 
    These values are the design's starting point. The benchmark (decision 12) may amend them through an ADR amendment; until then they are neither evidence nor a claim.
 7. **Bounded, verified, reversible steps.** A down-step is taken on the third consecutive sample above the step-down threshold if dwell and rate limit allow; it records the pre-step estimate as its baseline. At the end of the verification window the step is kept only if the estimate improved by at least 10%; otherwise the controller reverts exactly that step (to the row that was already verified, not all the way to the configured row), marks the failed row for the cooldown and logs the cause. A second step cannot start while one is under verification.
+
+   The dwell and rate limit gate **voluntary** steps only. A verification rollback and a fail-safe restore are forced: they happen immediately, may cross several rungs, and are exempt from both gates, but they are still recorded in the change budget, so adaptation cannot use them to slip extra voluntary changes in. The cooldown a failed row earns is not shortened by a later suspension.
 8. **Fail-safe.** These are not adapted around:
-   - an increase in `violations` or in `overflow_refusals` restores the configured row immediately, clears any pending verification and suspends adaptation for 300 s;
-   - three consecutive missed samples restore the configured row and adaptation resumes only once fresh samples have rebuilt a full persistence streak;
+   - an increase in `violations` or in `overflow_refusals` restores the configured row immediately, clears any pending verification and suspends adaptation for 300 s; the failed-row cooldown of decision 7 survives the suspension, so a row that failed verification is still not retried early;
+   - three consecutive missed samples restore the configured row, and every missed sample clears both persistence streaks, so fresh samples must rebuild a full one before any change;
    - the configured row is the anchor: if the configured profile is `balanced/1`, the restore target is already ADR-0031's fail-safe; if it is another row, its own row is the operator's stated intent and the anchor. Falling below `trading/1` is impossible (the floor), so there is always a bounded state to fall back to.
 9. **Every change is one log line with its cause.** The controller returns a change record `{at, from, to, cause, queue_delay}` rendered as `policy adaptive: <from> -> <to> cause=<cause> queue_delay_ms=<n>`; causes are the closed set `queue_delay_high`, `queue_delay_low`, `no_improvement`, `guard_violation`, `overflow`, `stale_signals`. There is no per-sample logging, and a change with no attributable signal cannot be produced.
 10. **How it stays off by default.** Three independent gates, in addition to nothing being wired:
@@ -82,18 +84,18 @@ The pure core `src/policy_adaptive.rs` (feature `policy-pack`, not called from t
 2. A fresh controller starts at the configured row and a calm stream (estimate below the step-up threshold) never changes it.
 3. Three consecutive samples above the step-down threshold produce exactly one change, one rung down, with `queue_delay_high` and the sampled estimate recorded.
 4. Every change moves exactly one rung and never above the configured row; the floor row never steps below itself; the deadband value between the two thresholds never changes anything.
-5. Changes are never closer than the dwell, and no more than three occur inside a 300 s window.
-6. A down-step that improves the estimate by at least 10% inside 60 s is kept and does not itself produce a change; a step that does not improve is reverted to the previously verified row with `no_improvement`, and its row is not retried inside the 600 s cooldown.
+5. Voluntary changes are never closer than the dwell, and no more than three occur inside a 300 s window; a forced restore or rollback is immediate, exempt from those gates, and still counted in the budget.
+6. A down-step that improves the estimate by at least 10% inside 60 s is kept and does not itself produce a change; a step that does not improve is reverted to the previously verified row with `no_improvement`, and its row is not retried inside the 600 s cooldown, including across a later 300 s guard suspension (which keeps the cooldown but still restores and suspends immediately).
 7. Calm samples restore towards the configured row one rung at a time and stop there.
-8. Three missed samples restore the configured row with `stale_signals`.
-9. A `violations` or `overflow_refusals` increase restores the configured row with its cause and suspends further changes for 300 s; adaptation resumes afterwards within the dwell and rate limit.
+8. Three missed samples restore the configured row with `stale_signals`, and a gap resets the streaks so the next change needs three fresh samples.
+9. A `violations` or `overflow_refusals` increase restores the configured row with its cause and the triggering estimate, and suspends further changes for 300 s; adaptation resumes afterwards within the dwell and rate limit.
 10. The rendered log line carries the from/to rows, the cause and the triggering estimate.
 
 ## What shipped with this ADR (implementation note, 2026-11-26)
 
 - `src/policy_adaptive.rs`: the constants above, `LADDER`, `Signals`, `Cause`, `Change` (`Display`), the private `Pending` verification record and `Controller::{new, configured, current, update}`. Pure and deterministic: time is a `Duration` argument and every rule is a function of the sample sequence, so tests need no clock, task, socket or I/O. `#![allow(dead_code)]` for the same reason `policy.rs` carries it at TP-2.0: the relay does not call the module yet.
 - `mod policy_adaptive` is declared behind `#[cfg(feature = "policy-pack")]` in `src/main.rs`; the default build does not compile it.
-- Fifteen unit tests in the module cover acceptance 1-10 and the revert/cooldown, verification, suspension and formatting edges beyond them.
+- Seventeen unit tests in the module cover acceptance 1-10 and the revert/cooldown, verification, suspension and formatting edges beyond them.
 - **Not in this slice:** signal sampling, the `policy.adaptive` config field, any relay or scheduler call, any timer or task, logging to the tunnel log, the status view, the benchmark, and any LAB measurement. The default data path is unchanged: the module is never invoked, and an unset switch keeps today's bytes exactly.
 
 ## What TP-4.1 still needs

@@ -178,8 +178,12 @@ impl Controller {
     /// time since the controller started. Returns the change to log, if one happened.
     pub(crate) fn update(&mut self, now: Duration, signals: Option<Signals>) -> Option<Change> {
         let Some(signals) = signals else {
+            // A gap breaks the streak: fresh samples must rebuild it in full.
+            self.down_streak = 0;
+            self.up_streak = 0;
             self.missing = self.missing.saturating_add(1);
             if self.missing >= STALE_SAMPLES && self.current != self.configured {
+                // No fresh sample means no estimate to record; the cause names the gap.
                 return self.restore(now, Cause::StaleSignals, Duration::ZERO);
             }
             return None;
@@ -192,10 +196,10 @@ impl Controller {
         self.violations = signals.violations;
         self.overflow_refusals = signals.overflow_refusals;
         if guard {
-            return self.fail_safe(now, Cause::GuardViolation, Duration::ZERO);
+            return self.fail_safe(now, Cause::GuardViolation, signals.queue_delay);
         }
         if overflow {
-            return self.fail_safe(now, Cause::Overflow, Duration::ZERO);
+            return self.fail_safe(now, Cause::Overflow, signals.queue_delay);
         }
 
         if let Some(until) = self.suspended_until {
@@ -313,8 +317,10 @@ impl Controller {
         matches!(self.bad_row, Some((bad, until)) if bad == row && now < until)
     }
 
-    /// Dwell and rate limit. Both are enforced; the dwell also guarantees a change is never
-    /// closer than `MIN_DWELL` to the previous one.
+    /// Dwell and rate limit for a voluntary step. Both are enforced; the dwell also guarantees a
+    /// voluntary change is never closer than `MIN_DWELL` to the previous one. Forced restores and
+    /// verification rollbacks bypass this gate (they must be immediate) but still consume the
+    /// budget through [`Self::note_change`].
     fn allowed(&mut self, now: Duration) -> bool {
         if let Some(last) = self.last_change {
             if now.saturating_sub(last) < MIN_DWELL {
@@ -357,10 +363,10 @@ impl Controller {
         })
     }
 
-    /// Fail-safe: restore the configured row and suspend adaptation for a full guard window.
+    /// Fail-safe: restore the configured row and suspend adaptation for a full guard window. A
+    /// failed row's cooldown survives, so a suspension cannot shorten it.
     fn fail_safe(&mut self, now: Duration, cause: Cause, queue_delay: Duration) -> Option<Change> {
         self.suspended_until = Some(now.saturating_add(GUARD_SUSPENSION));
-        self.bad_row = None;
         self.restore(now, cause, queue_delay)
     }
 }
@@ -594,6 +600,60 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_gap_resets_the_persistence_streak() {
+        let mut controller = Controller::new(PolicyProfile::Bulk);
+        assert_eq!(controller.update(at(0), sample(200)), None);
+        assert_eq!(controller.update(at(1), sample(200)), None);
+        for second in 2..5 {
+            assert_eq!(controller.update(at(second), None), None);
+        }
+        assert_eq!(
+            controller.update(at(5), sample(200)),
+            None,
+            "fresh samples rebuild the streak from zero after a gap"
+        );
+        assert_eq!(controller.update(at(6), sample(200)), None);
+        let change = controller
+            .update(at(7), sample(200))
+            .expect("three fresh samples after the gap step down");
+        assert_eq!(change.to, PolicyProfile::Streaming);
+    }
+
+    #[test]
+    fn a_guard_suspension_does_not_shorten_a_failed_row_cooldown() {
+        let mut controller = Controller::new(PolicyProfile::Bulk);
+        step_down(&mut controller, 0, 200);
+        let revert = controller
+            .update(at(62), sample(195))
+            .expect("a 2.5% improvement is below the 10% bound");
+        assert_eq!(revert.to, PolicyProfile::Bulk);
+
+        let violation = Some(Signals {
+            queue_delay: Duration::from_millis(200),
+            overflow_refusals: 0,
+            violations: 1,
+        });
+        assert_eq!(
+            controller.update(at(65), violation),
+            None,
+            "the configured row is already restored"
+        );
+
+        for second in 370..655 {
+            assert_eq!(
+                controller.update(at(second), sample(200)),
+                None,
+                "the failed row is not retried inside its cooldown"
+            );
+        }
+        assert_eq!(controller.update(at(660), sample(200)), None);
+        let retried = controller
+            .update(at(663), sample(200))
+            .expect("the cooldown, not the suspension, is what still blocks the row");
+        assert_eq!(retried.to, PolicyProfile::Streaming);
+    }
+
+    #[test]
     fn a_guard_violation_restores_the_configured_row_and_suspends_adaptation() {
         let mut controller = Controller::new(PolicyProfile::Balanced);
         step_down(&mut controller, 0, 200);
@@ -608,6 +668,11 @@ mod tests {
             .expect("guard fail-safe");
         assert_eq!(fallback.to, PolicyProfile::Balanced);
         assert_eq!(fallback.cause, Cause::GuardViolation);
+        assert_eq!(
+            fallback.queue_delay,
+            Duration::from_millis(200),
+            "the change record keeps the estimate that triggered it"
+        );
 
         for second in 4..200 {
             assert_eq!(controller.update(at(second), violation), None);
