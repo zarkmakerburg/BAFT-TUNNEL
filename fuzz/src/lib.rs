@@ -128,6 +128,29 @@ pub fn pairing_bundle(data: &[u8]) {
     }
 }
 
+/// Bytes arriving on the local API port, read by the real request reader (`read_request`).
+///
+/// Unlike `agent_http`, which starts at routing, this drives framing and header validation
+/// themselves: the bytes are written into an in-memory duplex stream and read back by
+/// `read_request`, which asserts the S5-AUD-01 invariant (no accepted field line carries SP or
+/// HTAB in its name) for every head it accepts.
+pub fn read_request(data: &[u8]) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        use tokio::io::AsyncWriteExt;
+        // Capacity is at least the whole input, so the write cannot block on an unread buffer:
+        // the reader may stop as soon as it has a head and the declared body.
+        let (mut ours, mut theirs) = tokio::io::duplex(data.len() + 1);
+        let _ = theirs.write_all(data).await;
+        let _ = theirs.shutdown().await;
+        drop(theirs);
+        let outcome = agent::fuzz_read_request(&mut ours).await;
+        std::hint::black_box(outcome);
+    });
+}
+
 /// Raw HTTP head and body arriving on the local API port.
 pub fn agent_http(data: &[u8]) {
     let split = data.iter().position(|b| *b == 0).unwrap_or(data.len());

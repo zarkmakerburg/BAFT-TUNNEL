@@ -18,7 +18,7 @@ use rand::RngCore;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{Mutex, Semaphore},
     time::timeout,
@@ -517,7 +517,10 @@ enum ReadOutcome {
 }
 
 /// Read one request. `Closed` = the client closed early.
-async fn read_request(stream: &mut TcpStream) -> Result<ReadOutcome> {
+async fn read_request<S>(stream: &mut S) -> Result<ReadOutcome>
+where
+    S: AsyncRead + Unpin,
+{
     let mut buf = Vec::with_capacity(512);
     let mut chunk = [0u8; 1024];
     let head_end = loop {
@@ -534,6 +537,13 @@ async fn read_request(stream: &mut TcpStream) -> Result<ReadOutcome> {
         buf.extend_from_slice(&chunk[..n]);
     };
     let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+    // S5-AUD-01: a field line that is not `name ":" value` is refused instead of ignored. An
+    // ignored `Transfer-Encoding : chunked` would be a zero-length body here but a chunked body
+    // for an intermediary that accepts the form, which is exactly the framing disagreement
+    // S5-01 is about.
+    if !field_lines_are_well_formed(&head) {
+        return Ok(ReadOutcome::BadRequest("malformed header line"));
+    }
     if header_values(&head, "transfer-encoding").next().is_some() {
         return Ok(ReadOutcome::BadRequest(
             "transfer-encoding is not supported",
@@ -573,6 +583,44 @@ async fn read_request(stream: &mut TcpStream) -> Result<ReadOutcome> {
         head_end,
         length,
     })
+}
+
+/// Fuzz entry (see fuzz/): the request reader alone, over arbitrary bytes.
+///
+/// The S5-AUD-01 invariant is re-checked here, independently of the parser's own validation: a
+/// head this reader accepts must consist of field lines of the form `name ":" value` whose name is
+/// non-empty and carries no SP or HTAB. Removing or bypassing the validation in `read_request`
+/// therefore fails this fuzz target instead of passing silently. Returns `(kind, body length)` so
+/// the harness can keep the outcome from being optimised away: `0` accepted, `1` closed early,
+/// `2` head too large, `3` refused, `4` I/O error.
+#[allow(dead_code)] // used by the fuzz harness only
+pub async fn fuzz_read_request<S>(stream: &mut S) -> (u8, usize)
+where
+    S: AsyncRead + Unpin,
+{
+    match read_request(stream).await {
+        Ok(ReadOutcome::Request {
+            buf,
+            head_end,
+            length,
+        }) => {
+            let head = String::from_utf8_lossy(&buf[..head_end]);
+            for line in head.split("\r\n").skip(1).filter(|l| !l.is_empty()) {
+                let Some((name, _)) = line.split_once(':') else {
+                    panic!("accepted a field line without a colon: {line:?}");
+                };
+                assert!(
+                    !name.is_empty() && !name.contains([' ', '\t']),
+                    "accepted a field line whose name has whitespace: {line:?}"
+                );
+            }
+            (0, length)
+        }
+        Ok(ReadOutcome::Closed) => (1, 0),
+        Ok(ReadOutcome::HeadTooLarge) => (2, 0),
+        Ok(ReadOutcome::BadRequest(_)) => (3, 0),
+        Err(_) => (4, 0),
+    }
 }
 
 /// Fuzz entry (see fuzz/): the request parser and router with no state directory.
@@ -768,6 +816,20 @@ async fn respond_static(stream: &mut TcpStream, kind: &str, body: &[u8]) -> Resu
     })
     .await??;
     Ok(())
+}
+
+/// RFC 9112 §5.1: a field line is `field-name ":" OWS field-value OWS`. A field name is a
+/// token, so it never contains SP or HTAB; a line without a colon is not a field line at all.
+/// `header_values` compares the raw name, so such a line would otherwise be dropped silently.
+fn field_lines_are_well_formed(head: &str) -> bool {
+    head.trim_end_matches("\r\n")
+        .split("\r\n")
+        .skip(1)
+        .all(|line| {
+            line.split_once(':').is_some_and(|(name, _)| {
+                !name.is_empty() && !name.bytes().any(|b| b == b' ' || b == b'\t')
+            })
+        })
 }
 
 fn header_values<'a>(head: &'a str, name: &'a str) -> impl Iterator<Item = &'a str> {
@@ -4706,7 +4768,12 @@ mod tests {
     async fn ambiguous_body_framing_is_refused() {
         for head in [
             "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+            // A transfer coding alongside a length is ambiguous whichever one wins.
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n",
             "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\nX",
+            // Identical duplicates are still two field lines and still ambiguous.
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nX",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1, 1\r\n\r\nX",
             "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0, 1\r\n\r\n",
             "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: -1\r\n\r\nX",
             "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1x\r\n\r\nX",
@@ -4722,6 +4789,248 @@ mod tests {
         let out =
             raw("POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n").await;
         assert!(out.starts_with("HTTP/1.1 405 "), "{out}");
+    }
+
+    /// S5-AUD-01: whitespace before the colon and a line without a colon are refused rather than
+    /// dropped, so no framing header can be visible to a proxy and invisible to this parser.
+    #[tokio::test]
+    async fn malformed_field_lines_are_refused() {
+        for head in [
+            // SP or HTAB between the field name and the colon (RFC 9112 §5.1 forbids it).
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding : chunked\r\n\r\n0\r\n\r\n",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding\t: chunked\r\n\r\n0\r\n\r\n",
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length : 1\r\n\r\nX",
+            "POST /v1/health HTTP/1.1\r\nHost : localhost\r\n\r\n",
+            // A line without a colon is not a field line.
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nX-Not-A-Header\r\n\r\n",
+            // Obsolete line folding starts with SP/HTAB and is refused for the same reason.
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nX-Folded: a\r\n b: c\r\n\r\n",
+            // An empty field name is not a token.
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\n: value\r\n\r\n",
+        ] {
+            let out = raw(head).await;
+            assert!(out.starts_with("HTTP/1.1 400 "), "{head:?}: {out}");
+        }
+        // A well-formed unknown header still reaches routing; only malformed lines are refused.
+        let out = raw("GET /v1/health HTTP/1.1\r\nHost: localhost\r\nX-Ok: value\r\n\r\n").await;
+        assert!(out.starts_with("HTTP/1.1 200 "), "{out}");
+    }
+
+    /// Bytes after the declared body must never be served as a second request: this agent has no
+    /// keep-alive loop and closes the connection after one answer (S5-AUD-01 / S5-01).
+    #[tokio::test]
+    async fn trailing_bytes_are_never_parsed_as_a_second_request() {
+        let second = "GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        for head in [
+            // Pipelined requests in one write.
+            format!("GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n{second}"),
+            // Bytes beyond the declared Content-Length.
+            format!(
+                "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{{}}{second}"
+            ),
+        ] {
+            let out = raw(&head).await;
+            assert_eq!(
+                out.matches("HTTP/1.1 ").count(),
+                1,
+                "second request was served: {out}"
+            );
+        }
+    }
+
+    /// S5-AUD-01 on a long-lived connection: the malformed field line is followed by a second
+    /// pipelined request in the same stream. The client gets exactly one 400 and the connection is
+    /// closed, so neither a keep-alive client nor a pipelining intermediary can have the second
+    /// request answered on a stream whose framing this parser refused.
+    #[tokio::test]
+    async fn malformed_field_line_closes_a_long_lived_connection() {
+        let second = "GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let request = format!(
+            "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding : chunked\r\n\r\n0\r\n\r\n{second}"
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(serve(
+            listener,
+            Arc::new(Ctx::new(sample(), TOKEN.into(), None)),
+        ));
+        let mut s = TcpStream::connect(addr).await.unwrap();
+        s.write_all(request.as_bytes()).await.unwrap();
+        // Reading to EOF is the evidence that the server ends the connection after its one answer.
+        let mut bytes = Vec::new();
+        timeout(Duration::from_secs(5), s.read_to_end(&mut bytes))
+            .await
+            .expect("connection left open after a refused request")
+            .unwrap();
+        task.abort();
+        let out = String::from_utf8_lossy(&bytes);
+        assert!(out.starts_with("HTTP/1.1 400 "), "{out}");
+        assert_eq!(
+            out.matches("HTTP/1.1 ").count(),
+            1,
+            "second pipelined request was served: {out}"
+        );
+        // A client that ignores the close and writes another request gets no answer on that stream.
+        let _ = s.write_all(second.as_bytes()).await;
+        let mut probe = [0u8; 1];
+        let n = timeout(Duration::from_secs(2), s.read(&mut probe))
+            .await
+            .expect("connection stayed open for a further request")
+            .unwrap();
+        assert_eq!(n, 0, "further bytes were served on the refused connection");
+    }
+
+    /// S5-AUD-01 differential check against a real nginx in front of this agent: does the proxy
+    /// agree that `Transfer-Encoding : chunked` (SP before the colon) is not chunked framing?
+    ///
+    /// The proxy is started from `BAFT_NGINX_BIN` (or `nginx` on PATH) in a throwaway prefix and
+    /// listens on loopback in front of `serve`. Both answers must be refusals: either nginx rejects
+    /// the request itself (its error log records `client sent invalid header line`), or, if a proxy
+    /// ever forwards the line verbatim, `read_request` refuses it with 400. A 2xx from either side
+    /// would mean the header was silently dropped by a server that still framed the body some other
+    /// way, which is exactly the S5-AUD-01 disagreement. The well-formed control request must still
+    /// return 200 through the same proxy, so a 400 is a rejection and not a dead proxy path.
+    ///
+    /// S5 stays OPEN: this is loopback evidence with one proxy build, not a deployment.
+    /// Run by hand:
+    /// `BAFT_NGINX_BIN=/path/to/nginx cargo test --locked --bin baft-tunnel \
+    ///      nginx_differential -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "needs a real nginx binary (BAFT_NGINX_BIN or nginx on PATH)"]
+    async fn nginx_differential_on_a_whitespace_te_header() {
+        async fn exchange(what: &str, addr: &str, req: &str) -> String {
+            let mut s = TcpStream::connect(addr).await.unwrap();
+            s.write_all(req.as_bytes()).await.unwrap();
+            let mut out = Vec::new();
+            timeout(Duration::from_secs(5), s.read_to_end(&mut out))
+                .await
+                .unwrap_or_else(|_| panic!("{what}: no EOF from {addr}"))
+                .unwrap();
+            String::from_utf8_lossy(&out).into_owned()
+        }
+
+        let bin = std::env::var("BAFT_NGINX_BIN").unwrap_or_else(|_| "nginx".into());
+        if std::process::Command::new(&bin).arg("-v").output().is_err() {
+            panic!("no nginx to test with ({bin}); set BAFT_NGINX_BIN to a local nginx binary");
+        }
+        let dir = state_dir("nginx-diff");
+        for sub in [
+            "client_body",
+            "proxy_temp",
+            "fastcgi_temp",
+            "uwsgi_temp",
+            "scgi_temp",
+        ] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        let agent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let agent_addr = agent.local_addr().unwrap();
+        let task = tokio::spawn(serve(
+            agent,
+            Arc::new(Ctx::new(sample(), TOKEN.into(), None)),
+        ));
+        // A free port for the proxy: bind one, read it, release it for nginx.
+        let proxy_port = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let conf = dir.join("nginx.conf");
+        std::fs::write(
+            &conf,
+            format!(
+                "worker_processes 1;\n\
+                 daemon off;\n\
+                 error_log {d}/error.log info;\n\
+                 pid {d}/nginx.pid;\n\
+                 events {{ worker_connections 64; }}\n\
+                 http {{\n\
+                   access_log {d}/access.log;\n\
+                   client_body_temp_path {d}/client_body;\n\
+                   proxy_temp_path {d}/proxy_temp;\n\
+                   fastcgi_temp_path {d}/fastcgi_temp;\n\
+                   uwsgi_temp_path {d}/uwsgi_temp;\n\
+                   scgi_temp_path {d}/scgi_temp;\n\
+                   server {{\n\
+                     listen 127.0.0.1:{proxy_port};\n\
+                     keepalive_timeout 0;\n\
+                     location / {{\n\
+                       proxy_pass http://{agent_addr};\n\
+                       proxy_http_version 1.1;\n\
+                     }}\n\
+                   }}\n\
+                 }}\n",
+                d = dir.display()
+            ),
+        )
+        .unwrap();
+        let mut child = std::process::Command::new(&bin)
+            .arg("-p")
+            .arg(&dir)
+            .arg("-c")
+            .arg(&conf)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("start nginx");
+        let proxy = format!("127.0.0.1:{proxy_port}");
+        let mut listening = false;
+        for _ in 0..100 {
+            if TcpStream::connect(&proxy).await.is_ok() {
+                listening = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let malformed = "POST /v1/health HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding : chunked\r\n\r\n0\r\n\r\n";
+        let mut via_nginx = String::new();
+        let mut direct = String::new();
+        let mut control = String::new();
+        if listening {
+            via_nginx = exchange("malformed via nginx", &proxy, malformed).await;
+            direct = exchange("malformed direct", &agent_addr.to_string(), malformed).await;
+            control = exchange(
+                "control via nginx",
+                &proxy,
+                "GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            .await;
+        }
+        let log = std::fs::read_to_string(dir.join("error.log")).unwrap_or_default();
+        child.kill().ok();
+        child.wait().ok();
+        task.abort();
+        assert!(listening, "nginx never listened on {proxy}; log:\n{log}");
+
+        let nginx_answered = via_nginx.contains("Server: nginx");
+        let agent_answered_via_proxy = via_nginx.contains("Content-Type: application/json");
+        eprintln!(
+            "nginx differential: via proxy -> {} | agent direct -> {} | control -> {} | \
+             nginx answered itself: {nginx_answered} | forwarded to agent: {agent_answered_via_proxy}",
+            via_nginx.lines().next().unwrap_or("<empty>"),
+            direct.lines().next().unwrap_or("<empty>"),
+            control.lines().next().unwrap_or("<empty>"),
+        );
+        if let Some(line) = log.lines().find(|l| l.contains("invalid header line")) {
+            eprintln!("nginx log: {line}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // The well-formed control proves the proxy really reaches this agent, so the 400 below is
+        // a refusal and not a broken path.
+        assert!(control.starts_with("HTTP/1.1 200 "), "control: {control}");
+        // This parser refuses the line regardless of what any proxy does with it.
+        assert!(
+            direct.starts_with("HTTP/1.1 400 "),
+            "agent direct: {direct}"
+        );
+        // Through nginx the outcome must also be a refusal, from nginx or from the agent.
+        assert!(
+            via_nginx.starts_with("HTTP/1.1 4"),
+            "proxy/parser disagreement: nginx returned {via_nginx}"
+        );
     }
 
     #[tokio::test]
