@@ -25,8 +25,15 @@
 **/serial
 **/crlnumber
 /offline-ca/
+/fuzz/corpus/*
+!/fuzz/corpus/read_request/
+/fuzz/corpus/read_request/*
+!/fuzz/corpus/read_request/01_valid_request
+!/fuzz/corpus/read_request/02_missing_colon
+!/fuzz/corpus/read_request/03_whitespace_in_name
+!/fuzz/corpus/read_request/04_htab_in_name
+!/fuzz/corpus/read_request/05_minimal
 /fuzz/target/
-/fuzz/corpus/
 /fuzz/artifacts/
 __pycache__/
 *.pyc

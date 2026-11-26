@@ -49,6 +49,25 @@ installer and verifier; publish a new tag after this change is merged.
 
 ## Known issues (Stable)
 
+### v0.3.1 (Stable, released 26 November 2026)
+
+- **Evidence level for this tag: hosted CI only.** It was cut from reviewed `main` whose required
+  checks (`rust`, `ubuntu-2204-baseline`, `lab-config`) were green on the tagged commit. The
+  two-host Iran/Turkey LAB remains **suspended by owner order**, so no new two-host LAB acceptance
+  is claimed for `v0.3.1`. The N-1 upgrade drill (`v0.3.0` to the current build) runs inside the
+  hosted `ubuntu-2204-baseline` job (PR #440) and is not a substitute for two-host evidence.
+- **S5 is still OPEN.** S5-AUD-01 (whitespace between a header field name and the colon) is fixed
+  and merged in PR #446, together with a `read_request` fuzz target and its seed corpus. The
+  whole-`main` S5 audit still has **no independent human sign-off**; the owner directed this
+  release to proceed without the external review for now. That is a recorded residual risk, not a
+  review result, and no document claims S5 is closed.
+- Aged Direct flows without `session_rotate_secs` are unchanged from the v0.3.0 known item; rotation
+  stays opt-in and 10 s is the tested setting.
+- Reverse, the BAFT engine and stream resume remain **Preview**; `ready` and ordinary diagnostics
+  `integrity` remain Unknown by design.
+- Fleet CA / Join / Pairing (PR #445) is **not** part of this release. It stays open with its own
+  acceptance gates and no two-host LAB.
+
 ### v0.2.2
 
 - **Long 2 MiB flows on the Iran LAB path (LAB evidence, cause not fully proven).** In the
@@ -94,6 +113,13 @@ installer and verifier; publish a new tag after this change is merged.
 
 ## Notes
 
+- **v0.3.1 release train (2026-11-26).** `main` carried five merged PRs (#442, #443, #444, #441,
+  #446) plus the docs record in #447. The signed prerelease `v0.3.1-rc.2` and the Stable tag
+  `v0.3.1` point at the same commit `3b8bcde7cdcde64000aa199173437f511d3731b5`, so the Stable
+  binary is the rc binary; both releases carry the eight signed assets. The checklist file
+  [STABLE_TAG_CHECKLIST.md](STABLE_TAG_CHECKLIST.md) records the v0.2.2/v0.3.0 procedure that this
+  train follows; the deviations are the evidence level (hosted CI, no two-host LAB) and the
+  owner-directed waiver of the independent review for S5, both recorded above.
 - Keyless signing records the repo/workflow identity in the public Sigstore
   transparency log (Rekor). If that metadata must stay private, switch to
   minisign with the key stored only as an Environment secret.
