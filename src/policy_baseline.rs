@@ -1054,6 +1054,8 @@ pub(crate) fn mechanism_matrix() -> Vec<Mechanism> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "policy-pack")]
+    use crate::policy_profile::PolicyProfile;
 
     const RATE: u64 = 2_500_000; // about 20 Mbit/s
 
@@ -1115,6 +1117,17 @@ mod tests {
             gaming, balanced,
             "gaming/1 must differ from the identity in quantum and cap"
         );
+        let trading = Mechanism::for_profile(PolicyProfile::Trading);
+        assert_eq!(
+            trading.label(),
+            "sched-w262144-q2048-cap8192",
+            "trading/1 is the finest interleaving: its quantum and cap must be the row's"
+        );
+        assert_ne!(
+            trading, gaming,
+            "trading/1 must differ from gaming/1 in quantum and cap"
+        );
+        assert_ne!(trading, balanced);
         for profile in [
             PolicyProfile::Balanced,
             PolicyProfile::Gaming,
@@ -1151,6 +1164,39 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// TP-3.3: the row the record measures is the row a configured `trading/1` resolves to, and the
+    /// two paths that must not change with it hold — no profile (today's numbers) and an unknown id
+    /// (refused with the accepted values, never silently mapped to Balanced).
+    #[cfg(feature = "policy-pack")]
+    #[test]
+    fn trading_profile_path_and_its_fallbacks_are_unchanged() {
+        use crate::policy_relay::PolicyRelay;
+
+        let resolved = PolicyRelay::resolve("sched", Some(PolicyProfile::Trading))
+            .expect("a configured trading/1 runs the pack");
+        assert_eq!(resolved.stream_window, 256 * 1024);
+        assert_eq!(
+            resolved.scheduler,
+            Some(crate::policy_sched::SchedulerConfig {
+                quantum_bytes: 2 * 1024,
+                max_queued_bytes: 8 * 1024,
+            })
+        );
+        assert_eq!(
+            Mechanism::for_profile(PolicyProfile::Trading).label(),
+            "sched-w262144-q2048-cap8192",
+            "the evidence arm must be the row the config resolves"
+        );
+        // Absent profile: the switch's own numbers, exactly as before TP-3.1.
+        assert_eq!(
+            PolicyRelay::resolve("sched", None),
+            PolicyRelay::parse("sched")
+        );
+        assert_eq!(PolicyRelay::resolve("", None), None);
+        let error = PolicyProfile::parse("turbo/1").expect_err("turbo/1 must not parse");
+        assert!(error.to_string().contains("trading/1"));
     }
 
     #[test]
@@ -1479,30 +1525,44 @@ mod tests {
         }
     }
 
-    /// TP-3.2 Gaming evidence run: Baseline, `balanced/1` and `gaming/1` under bulk competition,
-    /// then two competing flows with a mid-run close, then the per-MB CPU probe. The arms come from
-    /// `Mechanism::for_profile`, i.e. the shipped table, and every line is labelled `simulated`.
-    /// This is the harness-side record for `docs/POLICY_PACK_TP-3.2_GAMING_EVIDENCE.md`; it is not
-    /// a LAB run and does not settle the profile's acceptance (ADR-0031 decision 19).
+    /// One profile's evidence run: Baseline, `balanced/1` and `profile` under bulk competition,
+    /// then two competing flows with a mid-run close, then the per-MB CPU probe, plus an idle
+    /// measurement when the record needs one. The arms come from `Mechanism::for_profile`, i.e. the
+    /// shipped table, and every line is labelled `simulated`. This is not a LAB run and does not
+    /// settle a profile's acceptance (ADR-0031 decision 19).
     #[cfg(feature = "policy-pack")]
-    #[tokio::test]
-    #[ignore = "measurement run; use --release --features policy-pack --ignored --nocapture"]
-    async fn gaming_profile_evidence() {
-        use crate::policy_profile::PolicyProfile;
-
+    async fn run_profile_evidence(
+        run_id: &str,
+        profile: PolicyProfile,
+        bulk_scenario: &'static str,
+        multi_scenario: &'static str,
+        idle_scenario: Option<&'static str>,
+    ) {
         let (rate, repeats, seconds) = experiment_settings(8);
         let duration = Duration::from_secs(seconds);
         let interval = Duration::from_millis(20);
         let arms = [
             Mechanism::Baseline,
             Mechanism::for_profile(PolicyProfile::Balanced),
-            Mechanism::for_profile(PolicyProfile::Gaming),
+            Mechanism::for_profile(profile),
         ];
+
+        if let Some(scenario) = idle_scenario {
+            for mechanism in arms {
+                let summary =
+                    run_scenario_mechanism(scenario, false, rate, duration, interval, mechanism)
+                        .await;
+                println!(
+                    "POLICY_EXPERIMENT {{\"profile_run\":\"{run_id}\",\"repeat\":1}} {}",
+                    summary.json(rate)
+                );
+            }
+        }
 
         for mechanism in arms {
             for repeat in 1..=repeats {
                 let summary = run_scenario_mechanism(
-                    "gaming_bulk_competing",
+                    bulk_scenario,
                     true,
                     rate,
                     duration,
@@ -1511,7 +1571,7 @@ mod tests {
                 )
                 .await;
                 println!(
-                    "POLICY_EXPERIMENT {{\"profile_run\":\"tp-3.2\",\"repeat\":{repeat},\"bulk_bytes_per_s\":{}}} {}",
+                    "POLICY_EXPERIMENT {{\"profile_run\":\"{run_id}\",\"repeat\":{repeat},\"bulk_bytes_per_s\":{}}} {}",
                     summary.bulk_bytes / seconds.max(1),
                     summary.json(rate)
                 );
@@ -1524,7 +1584,7 @@ mod tests {
         for flows in [2, 3] {
             for mechanism in arms {
                 let summary = run_multi_flow(
-                    "gaming_multi_flow",
+                    multi_scenario,
                     flows,
                     true,
                     rate,
@@ -1534,7 +1594,7 @@ mod tests {
                 )
                 .await;
                 println!(
-                    "POLICY_EXPERIMENT {{\"profile_run\":\"tp-3.2\",\"repeat\":1,\"flows\":{flows}}} {}",
+                    "POLICY_EXPERIMENT {{\"profile_run\":\"{run_id}\",\"repeat\":1,\"flows\":{flows}}} {}",
                     summary.json()
                 );
             }
@@ -1548,7 +1608,7 @@ mod tests {
             for repeat in 1..=repeats {
                 let (cpu_us, delivered) = relay_cpu_probe(mechanism, bytes).await;
                 println!(
-                    "POLICY_EXPERIMENT {{\"profile_run\":\"tp-3.2\",\"scenario\":\"relay_cpu_probe\",\"mechanism\":\"{}\",\"evidence\":\"simulated\",\"repeat\":{},\"bytes\":{},\"delivered_bytes\":{},\"cpu_us\":{},\"cpu_us_per_mb\":{:.1}}}",
+                    "POLICY_EXPERIMENT {{\"profile_run\":\"{run_id}\",\"scenario\":\"relay_cpu_probe\",\"mechanism\":\"{}\",\"evidence\":\"simulated\",\"repeat\":{},\"bytes\":{},\"delivered_bytes\":{},\"cpu_us\":{},\"cpu_us_per_mb\":{:.1}}}",
                     mechanism.label(),
                     repeat,
                     bytes,
@@ -1558,6 +1618,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// TP-3.2 Gaming evidence run: the harness-side record for
+    /// `docs/POLICY_PACK_TP-3.2_GAMING_EVIDENCE.md`. No idle arm: that record shipped without one.
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    #[ignore = "measurement run; use --release --features policy-pack --ignored --nocapture"]
+    async fn gaming_profile_evidence() {
+        run_profile_evidence(
+            "tp-3.2",
+            PolicyProfile::Gaming,
+            "gaming_bulk_competing",
+            "gaming_multi_flow",
+            None,
+        )
+        .await;
+    }
+
+    /// TP-3.3 Trading evidence run: the harness-side record for
+    /// `docs/POLICY_PACK_TP-3.3_TRADING_EVIDENCE.md`. It adds the idle arm because criterion 1
+    /// names idle latency and the harness can supply it per arm.
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    #[ignore = "measurement run; use --release --features policy-pack --ignored --nocapture"]
+    async fn trading_profile_evidence() {
+        run_profile_evidence(
+            "tp-3.3",
+            PolicyProfile::Trading,
+            "trading_bulk_competing",
+            "trading_multi_flow",
+            Some("trading_idle"),
+        )
+        .await;
     }
 
     /// The multi-flow harness itself, on an arm that exists without the feature: every flow must
