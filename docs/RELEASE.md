@@ -67,6 +67,17 @@ installer and verifier; publish a new tag after this change is merged.
   `integrity` remain Unknown by design.
 - Fleet CA / Join / Pairing (PR #445) is **not** part of this release. It stays open with its own
   acceptance gates and no two-host LAB.
+- **Independent verification record (2026-11-26, outside CI).** The published assets of `v0.3.1`
+  were downloaded from the release page and checked locally, not trusted from the workflow log:
+  `sha256sum -c SHA256SUMS` reported `OK` for all six listed artifacts, and
+  `cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle --certificate-identity
+  https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/tags/v0.3.1
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com` printed `Verified OK`
+  with exit status 0. `SHA256SUMS` and `SHA256SUMS.cosign.bundle` are the two remaining assets.
+  This confirms provenance of the bytes published for this tag; it does not replace the missing
+  two-host LAB acceptance or the S5 review.
+- The GitHub release page for `v0.3.1` now carries the same evidence level and known-issue list in
+  its body, so the release page alone is not more optimistic than this document.
 
 ### v0.2.2
 
