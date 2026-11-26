@@ -19,7 +19,7 @@ All must pass on the two shared LAB hosts, on an exact `main` SHA, with run evid
 | R9 | Revocation | Revoked service-node certificate is refused; diagnostics attribute it to the secure channel. Code-level evidence: `tunnel::tests::revoked_service_node_certificate_is_refused_end_to_end` — it revokes the service-node certificate through `pair_ca::revoke`, then asserts the next real TLS handshake is refused and attributed to `secure_channel` (Linux CI, needs `openssl`). That is not a two-host LAB result: **the live LAB run for R9 is still outstanding.** |
 | R10 | Cleanup | Uninstall leaves no BAFT-TUNNEL resources; listeners and unit files unchanged; firewall drift is reported, never hidden |
 
-Not covered (stated limits): cross-version update (no earlier release has Reverse Preview plus the hardened agent), multi-hour soak, hostile network paths beyond P0-4 R3, other operating systems.
+Not covered (stated limits): cross-version update in this two-host gate (the upgrade path itself now has hosted evidence from the released `v0.3.0` to the current build, PR #440; running it here needs the shared LAB hosts), multi-hour soak, hostile network paths beyond P0-4 R3, other operating systems.
 
 ## Verdict
 
@@ -58,7 +58,7 @@ Cause: the local agent samples the tunnel port every 5 s with a bare TCP connect
 ### Still open (why not Stable)
 
 - No multi-hour soak (1800 s here, 1200 s in R3).
-- Cross-version update not tested (`cross_version_update=0`).
+- No cross-version update inside this two-host gate (`cross_version_update=0`). The hosted `ubuntu-2204-baseline` drill does upgrade from the released `v0.3.0` to the current build with config and key digests unchanged and a verified rollback (PR #440). That is CI evidence, not a two-host LAB result, so the marker stays 0.
 - Single LAB pair; no real packet-loss run in this gate (covered in R3).
 - Unrelated firewall drift on the abroad host during the run (3 lines of an nft set, not BAFT-TUNNEL rules; `baft_fw_rules=0`).
 - Wizard role labels: fixed. In Reverse the Wizard now says "Public node (receives users)" for `serve` and "Service node (dials out)" for `forward`, labels the public node's port as the user-facing port, and shows Reverse as Preview (never Stable or Ready).
@@ -68,4 +68,4 @@ Cause: the local agent samples the tunnel port every 5 s with a bare TCP connect
 Trusted run 43937260711 (`phase1-trusted-reverse-lab.yml`, candidate `3757bdcb9d52`, binary sha256 `9d1a43cd7ca09e1196d2a864448cd0fc7d78ed24621ad5cc878a38228e9c8916`): PASS, including
 `integrity_probe_public=pass integrity_probe_service=pass`, soak 1800 s (138 rounds, 0 failed, max 4 s), fd/RSS flat, 0 restarts,
 backup/restore, update and automatic rollback, revocation refused, uninstall clean. Verdict unchanged: **Preview**, not Stable.
-Open: multi-hour soak, cross-version update, `receipt_ready=unknown` by design.
+Open: multi-hour soak, cross-version update in the two-host gate (hosted upgrade path proven in PR #440), `receipt_ready=unknown` by design.
