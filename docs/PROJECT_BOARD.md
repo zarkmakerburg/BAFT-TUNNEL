@@ -2,6 +2,11 @@
 
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
+## به‌روزرسانی 2026-11-25
+
+- `main` روی `62c0ba274c8d2843ece1ee9030feb351c5444367` (ادغام PR #440) است و چک‌های دقیق همان SHA ده از ده `SUCCESS` هستند ([run 45549914213](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/45549914213)). آخرین Stable همچنان `v0.3.0` است و **S5 باز است** (تأیید انسانی مستقل ثبت نشده).
+- متن کامل بازآزمایی، ادغام‌های اخیر، تست ناپایدار `resume_tunnel`، تفکیک PRهای باز و محدودیت‌های LAB فقط در [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md) نگهداری می‌شود؛ اینجا تکرار نمی‌شود.
+
 ## به‌روزرسانی 2026-11-16
 
 - آخرین نسخهٔ منتشرشده: **Stable `v0.2.0`** (تگ `76c12cb`، 2026-11-15). بلوغ محصول: **Active Development** (Reverse و BAFT در حالت Preview). آمادگی Production: **تأییدنشده**.
