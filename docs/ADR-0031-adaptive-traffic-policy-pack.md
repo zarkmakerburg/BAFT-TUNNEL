@@ -188,6 +188,45 @@ coding-level choices this ADR left open:
   no-profile path equal to the switch, the table inside the relay bounds), all run by
   `cargo test --all-targets` in both feature configurations.
 
+## Implementation note 2026-11-26 (TP-3.2 / #234): the Gaming row and its evidence record
+
+What shipped, and the choices this ADR left open for TP-3.2:
+
+- **No mechanics, only the row.** `gaming/1` already resolved through `policy.profile` when TP-3.1
+  shipped; TP-3.2 adds no scheduler type, no config field and no tuning knob. "Interactive
+  priority, small queues, bufferbloat control" is realised on this carrier as the row's 4 KiB
+  quantum and 16 KiB hard per-flow cap being applied to every flow of a single-class session — the
+  smallest thing decisions 15 and 16 permit. Intra-session prioritisation would need per-class
+  weights and a multi-service ingress the tunnel config cannot express (decision 16), so no
+  priority weights were added and the issue title's "priority" is not claimed as queue-jumping
+  between flows.
+- **Why Gaming keeps Balanced's window.** 256 KiB is the carrier floor (`INITIAL_STREAM_WINDOW`),
+  so Gaming differs from Balanced only in quantum and cap, exactly as decision 15 recorded. A
+  profile cannot put fewer bytes in flight; it can only hold less per flow in the relay's queues.
+- **Evidence record.** `docs/POLICY_PACK_TP-3.2_GAMING_EVIDENCE.md` is the per-tuple record
+  decisions 19 and ADR-0047 ask for. It carries `simulated` numbers from the repo harness at this
+  commit and lists what the harness cannot settle — real-path latency under loss, jitter, path
+  change and carrier kill, RSS, the 60-minute run, and any head-of-line-blocking claim (needs the
+  UDP carrier, #244) — as not measured. The `(tcp-tls, TCP, gaming/1)` and `(noise-tcp, TCP,
+  gaming/1)` tuples therefore stay `unknown`: the harness runs the product relay and Yamux over
+  loopback TCP with no engine handshake, so its lines are neither tuple. Nothing is `measured`, no
+  benefit is claimed, and no profile is "ready".
+- **The harness measures the shipped table.** Test-only `Mechanism::for_profile` (feature build)
+  maps a `PolicyProfile` to the harness arm by reading the same accessors `policy_relay` resolves,
+  so the record cannot drift from the code; `profile_arms_are_the_shipped_rows` asserts that
+  `balanced/1` reproduces the TP-2.2 arm and every row maps to its exact numbers.
+- **Enabling it.** Unchanged from TP-3.1, and the three inputs do different jobs: the `policy-pack`
+  feature and the `BAFT_TUNNEL_POLICY_PACK` switch gate activation, and `policy.profile: "gaming/1"`
+  selects the row. All three are needed to select Gaming. Without the switch (and without the
+  feature) nothing activates and the path is today's. With the switch set but no profile, the pack
+  still runs on that switch's own numbers (`sched`, i.e. Balanced's) — an absent profile does not
+  turn the pack off and does not restore the pack-off path.
+- **Status.** TP-3.2 stays open on its acceptance in the pack plan §6 (latency and jitter under
+  bulk competition, loss, throughput, CPU/RSS, fairness, impairment scenarios, long run, evidence
+  labels). The one remaining requirement is a real two-host LAB window for the (engine, carrier,
+  profile) tuples, which is suspended by owner decision; this slice ships the implementation and
+  the `simulated` record, not a measured profile.
+
 ## Known limits (recorded in Phase 0)
 
 - A single TCP carrier can still cause head-of-line blocking; the Gaming/Trading benefit may be limited without a datagram path (QUIC/UDP is not implemented, roadmap Phase 5). See decision 11.
