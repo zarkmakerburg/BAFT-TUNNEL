@@ -239,9 +239,10 @@ What shipped, and the choices this ADR left open for TP-3.3:
   interactive"; intra-session weights stay excluded (decision 16), so the class label is still the
   only thing the configured profile changes besides those two numbers.
 - **Why its numbers are not tuned further.** The ADR documents Trading as "throughput deliberately
-  sacrificed". The harness shows the 2 KiB quantum does not in fact cost throughput against
-  `balanced/1` at 2.5 MB/s (1.6% less bulk at the median) but does cost about 4.4× the CPU per
-  delivered MB, and does not improve the loaded p99 (it is 1-10% above Balanced in every repeat).
+  sacrificed". The harness shows the 2 KiB quantum does not in fact reduce the sender's handoff
+  rate against `balanced/1` at 2.5 MB/s (1.6% fewer bytes handed off at the median, a sender-side
+  count that is not delivered goodput) but does cost about 4.4× the CPU per delivered MB, and does
+  not improve the loaded p99 (it is 1.5-21.2% above Balanced in every repeat, 10.3% at the median).
   That is the row decision 15 fixed, measured; changing quantum or cap to chase a result would be a
   new decision, not this item.
 - **Evidence record.** `docs/POLICY_PACK_TP-3.3_TRADING_EVIDENCE.md` is the per-tuple record

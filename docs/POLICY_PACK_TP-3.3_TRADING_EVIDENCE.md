@@ -84,17 +84,22 @@ Reading it honestly:
   (p50 2.03 s → about 0.11 s). That is the in-flight bound and the small per-flow queue, and it is
   reproduced in this harness, not on a real path.
 - `trading/1` does **not** beat `balanced/1`: p50 +0.6%, p95 +2.4%, and p99 +10.3% at the median.
-  The p99 difference is consistent across the three repeats (trading 145,638-161,472 µs versus
-  balanced 133,273-145,530 µs), so unlike Gaming it is not obviously noise, but it also is not a
-  measured trading benefit — the finest quantum did not lower the loaded tail here.
+  Per repeat the p99 gap is +21.2%, +8.7% and +1.5%, i.e. Trading is 1.5-21.2% above Balanced in
+  every repeat (trading 145,638-161,472 µs versus balanced 133,273-145,530 µs). So unlike Gaming it
+  is not obviously noise, but it also is not a measured trading benefit — the finest quantum did
+  not lower the loaded tail here.
 - The Baseline arm collected only 4-5 samples per run because each ping waits out the queue, so its
   percentiles are coarse; the profile arms collected 60-61.
 - "Jitter" here is the within-run p95−p50 / p99−p50 spread of the same samples. It is not a separate
   jitter measurement, and no propagation delay, loss or reordering is modelled.
 
-## 4. Bulk goodput in the same runs
+## 4. Sender handoffs in the same runs (`trading_bulk_competing`)
 
-Bytes per second handed to the engine by the bulk flow, same three repeats:
+Bytes the bulk sender handed to its application-side stream per requested second, same three
+repeats. This is **not** delivered goodput: the harness counts writes into the application-side
+duplex, starting from the bulk task's spawn (before the 500 ms pre-measurement sleep) and dividing
+by the requested 8 s, so buffered data and the counted window both affect the figure. No sink-side
+counter over an exact elapsed interval exists in this harness.
 
 | Arm | repeat 1 | repeat 2 | repeat 3 | median |
 |---|---|---|---|---|
@@ -102,11 +107,14 @@ Bytes per second handed to the engine by the bulk flow, same three repeats:
 | `balanced/1` | 2,156,544 | 2,156,544 | 2,123,776 | 2,156,544 |
 | `trading/1` | 2,121,728 | 2,154,496 | 2,121,728 | 2,121,728 |
 
-`trading/1` carried 1.6% less bulk than `balanced/1` at the median and 33% less than Baseline; the
-shaped rate is the same in every arm, so this is the share the arm's queueing left for bulk, not a
-capacity change. The ADR describes Trading as "throughput deliberately sacrificed"; at 2.5 MB/s the
-2 KiB quantum does not show that sacrifice against Balanced, and this harness cannot show it at
-higher rates. No throughput benefit is shown either way.
+`trading/1` handed off 1.6% fewer bytes than `balanced/1` at the median and 33% fewer than
+Baseline. The Baseline row's 3,155,968 B/s already exceeds the 2.5 MB/s shaped rate, which confirms
+these are sender handoffs rather than bytes that crossed the bottleneck; no delivered-goodput or
+bulk-share conclusion is drawn from them. The ADR describes Trading as "throughput deliberately
+sacrificed"; at this rate the 2 KiB quantum does not show that sacrifice against Balanced in the
+handoff count, and this harness cannot show it at higher rates or in delivered bytes. No throughput
+benefit is shown either way. TP-3.2's record used the same counter under a "goodput" heading, so its
+section 3 figures carry the same sender-side limitation.
 
 ## 5. Fairness and starvation (`trading_multi_flow`)
 
@@ -158,7 +166,7 @@ Against the list in [ADAPTIVE_TRAFFIC_POLICY_PACK.md](ADAPTIVE_TRAFFIC_POLICY_PA
 |---|---|---|---|
 | 1 | Latency p50/p95/p99 and jitter, idle and under bulk load | Idle RTT (section 2) and bulk-competing percentiles (section 3) measured in the harness; **real-path latency not measured** | `simulated` (partial) |
 | 2 | Packet loss, or a loss proxy labelled as such | Not modelled: the shaper applies serialization rate only, no loss | **not measured** |
-| 3 | Throughput / goodput | Bulk goodput measured in the shaped scenario (section 4) | `simulated` |
+| 3 | Throughput / goodput | Sender handoff rate measured (section 4); **delivered goodput not measured** — the harness counts writes into the application-side duplex, not bytes at the sink over an exact interval | `simulated` (partial) |
 | 4 | CPU and memory overhead | CPU per MB measured (section 6); **RSS not measured** — one process hosts every arm, so per-arm RSS is not separable | `simulated` (CPU only) |
 | 5 | Fairness, no starvation | Three-flow share with a mid-run close (section 5) | `simulated` |
 | 6 | Congestion / impairment (loss, jitter, path change, carrier kill) | Not modelled | **not measured** |
@@ -177,7 +185,8 @@ The claim belongs to `(engine, carrier, profile)`, and no engine inherits anothe
 | any | UDP/datagram | `trading/1` | **`unsupported`** (no carrier) | The datagram carrier is #244, not implemented. Any claim that depends on avoiding TCP head-of-line blocking needs it first (decision 11) |
 
 The `simulated` harness numbers in sections 2-6 are a reference point for the future tuple runs, not
-a claim for any of them.
+a claim for any of them. Section 4 is a sender-side count and is not usable as a delivered-throughput
+claim even at that level.
 
 ## 9. What is still missing, precisely
 
