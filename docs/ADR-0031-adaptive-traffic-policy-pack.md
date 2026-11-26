@@ -1,6 +1,6 @@
 # ADR-0031: Adaptive Traffic Policy Pack
 
-**Status:** Accepted (2026-11-26, TP-0.2 / #228). The runtime stays gated: everything is behind the `policy-pack` cargo feature and the `BAFT_TUNNEL_POLICY_PACK` runtime switch, both off by default. Acceptance fixes the design and the taxonomy; it accepts no profile as measured and claims no benefit.
+**Status:** Accepted (2026-11-26, TP-0.2 / #228); the schema is implemented (TP-3.1 / #233, 2026-11-26, see the implementation note). The runtime stays gated: everything is behind the `policy-pack` cargo feature and the `BAFT_TUNNEL_POLICY_PACK` runtime switch, both off by default. Acceptance fixes the design and the taxonomy; it accepts no profile as measured and claims no benefit.
 **Date:** 2026-11-15
 **Related:** [ADR-0018](ADR-0018-engine-framework.md), [ADR-0024](ADR-0024-p1-operations-evidence.md), [ADR-0030](ADR-0030-read-only-firewall-visibility.md), plan [ADAPTIVE_TRAFFIC_POLICY_PACK.md](ADAPTIVE_TRAFFIC_POLICY_PACK.md), epic [#226](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/226)
 
@@ -142,6 +142,48 @@ shown as measured.
     the TP-2.2 evidence. Owner-gated items stay outside this acceptance: the two-host LAB window
     for real-path evidence, acceptance of ADR-0046 (UDP) before any Gaming/Trading
     head-of-line-blocking claim, and any tag or release.
+
+## Implementation note 2026-11-26 (TP-3.1 / #233): the profile schema as shipped
+
+The schema of decision 15 is in the code, behind the same two gates. What shipped, and the
+coding-level choices this ADR left open:
+
+- **Field.** `policy` is an object on both the `serve` and `forward` tunnel configs with exactly
+  one member, `policy.profile`, holding a versioned id: `balanced/1`, `gaming/1`, `trading/1`,
+  `streaming/1`, `bulk/1`. Any other member inside `policy` is refused by `deny_unknown_fields`,
+  like the rest of the tunnel config. `src/policy_profile.rs` owns the ids and the table;
+  `config::PolicySettings` is the config type.
+- **Validation, and one supersession.** The "missing or unknown means `balanced/1` ... with a
+  logged cause" wording of decisions 16, 18 and 19 is split in the implementation: **absent**
+  means the identity profile, and **a named but unsupported or unknown id is a hard config error**
+  whose message lists the five accepted values and the schema version. Falling back on a typo
+  would silently apply numbers the operator did not ask for; failing before any tunnel starts is
+  the fail-closed reading of decisions 2 and 9 and is what TP-3.1's acceptance asks for. Nothing
+  else in those decisions changes.
+- **Engine scope enforced, not implied.** A profile on `engine: "baft"` is refused with a message
+  naming the two Rust engines (decision 17) instead of being accepted and ignored.
+- **Resolution.** `PolicyRelay::from_env_and_profile` (feature build) is the only place a profile
+  becomes numbers: it fills the same `stream_window` and `SchedulerConfig` fields `parse` already
+  fills. `BAFT_TUNNEL_POLICY_PACK` still decides whether the pack runs at all; when it is on and a
+  profile is configured, the profile supplies the window, quantum and cap and the switch's numeric
+  arguments are ignored (they reproduce the TP-2.1/TP-2.2 arms). With no profile the switch's
+  numbers are used unchanged, so the default data path is byte-identical to the commit before
+  TP-3.1 — and `balanced/1` equals `BAFT_TUNNEL_POLICY_PACK=sched`.
+- **Plumbing.** `ServerOptions`/`ForwardOptions` carry `profile: Option<PolicyProfile>`; the session
+  window comes from `yamux_config_for(max, profile)` and the scheduler from
+  `policy_session(profile)`, on both session ends and on the resume path. No new module, task or
+  config path is added.
+- **Class label.** The profile id *is* the class id; no separate `Class` mapping is wired yet,
+  because class weights stay identity in schema version 1 (decision 16). The mapping lands with the
+  weights that need it.
+- **Not in this slice.** No CLI flag or panel field for the profile (TP-5.1), no change to the env
+  grammar, no per-profile wait deadline, no arbitration weights, no measurement: every profile
+  stays a definition and the scheduler arm keeps its `simulated` label.
+- **Tests.** `src/policy_profile.rs` (the five rows, the default, the rejection message, config
+  deserialization), `src/config.rs` (field parsed, absent, unknown id, unknown member, baft
+  refusal) and `src/policy_relay.rs` (each profile's exact numbers, switch-off wins, the
+  no-profile path equal to the switch, the table inside the relay bounds), all run by
+  `cargo test --all-targets` in both feature configurations.
 
 ## Known limits (recorded in Phase 0)
 

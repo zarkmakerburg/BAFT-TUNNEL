@@ -1,6 +1,6 @@
 # Adaptive Traffic Policy Pack: plan
 
-**Status: Accepted design, profiles not yet accepted (ADR-0031 accepted 2026-11-26). Phase 0 is closed**, the Phase 2 interface, the queue/scheduler core, the ADR-0048 in-flight bound and the scheduler's wiring into the relay exist behind the `policy-pack` cargo feature (off by default; the bound and the scheduler are reachable only through the `BAFT_TUNNEL_POLICY_PACK` runtime switch). **No profile is accepted as measured, and every measurement is harness/`simulated` — the scheduler arm measured as neither a win nor a regression and stays off by default. Next executable step: TP-3.1 (#233), the profile schema plus Balanced.**
+**Status: Accepted design, profiles not yet accepted (ADR-0031 accepted 2026-11-26). Phase 0 is closed**, the Phase 2 interface, the queue/scheduler core, the ADR-0048 in-flight bound and the scheduler's wiring into the relay exist behind the `policy-pack` cargo feature (off by default; the bound and the scheduler are reachable only through the `BAFT_TUNNEL_POLICY_PACK` runtime switch). **No profile is accepted as measured, and every measurement is harness/`simulated` — the scheduler arm measured as neither a win nor a regression and stays off by default. TP-3.1 (#233) is closed: the tunnel config accepts an optional `policy.profile` with the five versioned ids, each resolving to its ADR-0031 row in the existing window/`SchedulerConfig` fields; absent keeps today's numbers, an unknown id is refused with the accepted values. Next executable step: TP-3.2 (#234), `gaming/1` plus its evidence record.**
 Decision: [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md). Epic: [#226](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/226). Roadmap entry: [PRODUCT_ROADMAP.md §5a](PRODUCT_ROADMAP.md).
 
 ### Current implementation state (2026-11-26)
@@ -15,8 +15,8 @@ Decision: [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md). Epic: [#226](htt
 | TP-2.1 in-flight mechanism (M1/M2/M3) | Decided 2026-11-26 by measurement: the Yamux per-stream window (256 KiB); M1 works only at 2 MiB and cannot go lower, M2/M3 measured equal to Baseline | [ADR-0048](ADR-0048-policy-queues-and-scheduler.md) decision 4 and results |
 | Relay wiring (#244) | Both levers: `tunnel::yamux_config` applies the pack's window for `window-cap[:<bytes>]`, and `tunnel::relay_stream` runs the scheduled relay for `sched[:<quantum>[:<cap>]]`; an unset or unknown switch keeps `relay_with_idle_timeout`, i.e. today's bytes exactly | `src/policy_relay.rs`, `src/tunnel.rs` (feature `policy-pack`), unit tests |
 | TP-2.2 fairness/overhead (#232) | Closed 2026-11-26 (`simulated`). Single flow: level with the window arm at 1 / 2.5 / 5 MB/s. Multi-flow (2 and 3 flows, plus a mid-run close): delivery split 1.000 in every arm, per-flow p50/p95 within 1% of the window pump, survivors keep moving. CPU: +1.4% / +4.3% / −8.2% per delivered MB against Baseline and +0.7% on the unshaped per-MB probe, idle p50 within 73 µs — decision 6's budget met with the margin stated, not certified below the harness's per-run spread. **No reproducible benefit, so the switch stays off by default.** Classes are not measured (every flow is `Balanced`; TP-3.x). Unit tests cover arbitration, the cap, closed flows, multi-flow fairness and churn | [ADR-0048](ADR-0048-policy-queues-and-scheduler.md), [POLICY_PACK_TP-0.1_RESEARCH.md](POLICY_PACK_TP-0.1_RESEARCH.md) §9.4-9.6 |
-| TP-3.1 profile schema and Balanced (#233) | **Next executable step.** Implements the accepted table: one versioned `policy.profile` in the tunnel config, validated and resolved into `SchedulerConfig` + the session window, `balanced/1` as identity and fail-safe | issue #233 |
-| TP-3.2-TP-3.5, TP-4.x, TP-5.x, TP-U (#234-#244) | Proposed. Each profile adds one row of the same table plus its per-tuple evidence record; adaptive control, API/CLI/panel/docs and the UDP carrier follow | issues #234-#244 |
+| TP-3.1 profile schema and Balanced (#233) | Closed 2026-11-26. One versioned `policy.profile` in the tunnel config, validated at parse and resolved into `SchedulerConfig` + the session window: `balanced/1` identity (equals `BAFT_TUNNEL_POLICY_PACK=sched`), absent keeps today's path, unknown ids refused with the accepted values listed, `baft` refused. Still behind both gates; no measurement, no benefit | [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) implementation note, `src/policy_profile.rs` |
+| TP-3.2-TP-3.5, TP-4.x, TP-5.x, TP-U (#234-#244) | Proposed. **TP-3.2 (#234), Gaming: `gaming/1` plus its per-tuple evidence record, is the next executable step**; each later profile adds one row of the same table, then adaptive control, API/CLI/panel/docs and the UDP carrier follow | issues #234-#244 |
 
 With the pack off the data path is exactly today's; nothing in this table is a benefit claim, and every number from the harness keeps the `simulated` label.
 
@@ -32,7 +32,7 @@ Strictly after Stable 0.2.0 and the Phase 6 hardening gates. It is not part of t
 
 ## 3. Phases, work items, status
 
-Item status lives in the table above (§ Current implementation state); the phase list below keeps the fixed order. TP-0.1, TP-0.2, TP-2.0, TP-2.1 and TP-2.2 are closed; TP-3.1 is the next executable item; the rest are Proposed.
+Item status lives in the table above (§ Current implementation state); the phase list below keeps the fixed order. TP-0.1, TP-0.2, TP-2.0, TP-2.1, TP-2.2 and TP-3.1 are closed; TP-3.2 is the next executable item; the rest are Proposed.
 
 | Phase | Item | Issue | Needs |
 |---|---|---|---|
@@ -44,7 +44,7 @@ Item status lives in the table above (§ Current implementation state); the phas
 | 2 | TP-2.1 queues, scheduler, fairness | [#231](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/231) | ADR, benchmark |
 | 2 | TP-2.2 starvation, fairness, overhead tests | [#232](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/232) | benchmark |
 | 3 Static profiles | TP-3.1 schema and Balanced | [#233](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/233) | ADR |
-| 3 | TP-3.2 Gaming | [#234](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/234) | benchmark, LAB |
+| 3 | TP-3.2 Gaming (next) | [#234](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/234) | benchmark, LAB |
 | 3 | TP-3.3 Trading | [#235](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/235) | benchmark, LAB |
 | 3 | TP-3.4 Streaming | [#236](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/236) | benchmark, LAB |
 | 3 | TP-3.5 Bulk Transfer | [#237](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/237) | benchmark, LAB |
