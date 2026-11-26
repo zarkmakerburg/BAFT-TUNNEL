@@ -1128,6 +1128,20 @@ mod tests {
             "trading/1 must differ from gaming/1 in quantum and cap"
         );
         assert_ne!(trading, balanced);
+        let streaming = Mechanism::for_profile(PolicyProfile::Streaming);
+        assert_eq!(
+            streaming.label(),
+            "sched-w524288-q32768-cap131072",
+            "streaming/1 is the row with twice Balanced's window and quantum"
+        );
+        assert_ne!(
+            streaming, balanced,
+            "streaming/1 must differ from the identity in window, quantum and cap"
+        );
+        assert_ne!(
+            streaming, trading,
+            "streaming/1 must not be confusable with the finest-interleaving row"
+        );
         for profile in [
             PolicyProfile::Balanced,
             PolicyProfile::Gaming,
@@ -1197,6 +1211,39 @@ mod tests {
         assert_eq!(PolicyRelay::resolve("", None), None);
         let error = PolicyProfile::parse("turbo/1").expect_err("turbo/1 must not parse");
         assert!(error.to_string().contains("trading/1"));
+    }
+
+    /// TP-3.4: the row the record measures is the row a configured `streaming/1` resolves to, and
+    /// the two paths that must not change with it hold — no profile (today's numbers exactly) and
+    /// an unknown id (refused naming the accepted values, never silently mapped to Balanced).
+    #[cfg(feature = "policy-pack")]
+    #[test]
+    fn streaming_profile_path_and_its_fallbacks_are_unchanged() {
+        use crate::policy_relay::PolicyRelay;
+
+        let resolved = PolicyRelay::resolve("sched", Some(PolicyProfile::Streaming))
+            .expect("a configured streaming/1 runs the pack");
+        assert_eq!(resolved.stream_window, 512 * 1024);
+        assert_eq!(
+            resolved.scheduler,
+            Some(crate::policy_sched::SchedulerConfig {
+                quantum_bytes: 32 * 1024,
+                max_queued_bytes: 128 * 1024,
+            })
+        );
+        assert_eq!(
+            Mechanism::for_profile(PolicyProfile::Streaming).label(),
+            "sched-w524288-q32768-cap131072",
+            "the evidence arm must be the row the config resolves"
+        );
+        // Absent profile: the switch's own numbers, exactly as before TP-3.1.
+        assert_eq!(
+            PolicyRelay::resolve("sched", None),
+            PolicyRelay::parse("sched")
+        );
+        assert_eq!(PolicyRelay::resolve("", None), None);
+        let error = PolicyProfile::parse("cinema/1").expect_err("cinema/1 must not parse");
+        assert!(error.to_string().contains("streaming/1"));
     }
 
     #[test]
@@ -1649,6 +1696,23 @@ mod tests {
             "trading_bulk_competing",
             "trading_multi_flow",
             Some("trading_idle"),
+        )
+        .await;
+    }
+
+    /// TP-3.4 Streaming evidence run: the harness-side record for
+    /// `docs/POLICY_PACK_TP-3.4_STREAMING_EVIDENCE.md`. Like TP-3.3 it includes the idle arm,
+    /// because criterion 1 names idle latency and the harness can supply it per arm.
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    #[ignore = "measurement run; use --release --features policy-pack --ignored --nocapture"]
+    async fn streaming_profile_evidence() {
+        run_profile_evidence(
+            "tp-3.4",
+            PolicyProfile::Streaming,
+            "streaming_bulk_competing",
+            "streaming_multi_flow",
+            Some("streaming_idle"),
         )
         .await;
     }
