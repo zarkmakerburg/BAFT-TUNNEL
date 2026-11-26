@@ -227,6 +227,52 @@ What shipped, and the choices this ADR left open for TP-3.2:
   profile) tuples, which is suspended by owner decision; this slice ships the implementation and
   the `simulated` record, not a measured profile.
 
+## Implementation note 2026-11-26 (TP-3.3 / #235): the Trading row and its evidence record
+
+What shipped, and the choices this ADR left open for TP-3.3:
+
+- **No mechanics, only the row.** `trading/1` already resolved through `policy.profile` when TP-3.1
+  shipped; TP-3.3 adds no scheduler type, no config field and no tuning knob. The row is 256 KiB
+  window / 2 KiB quantum / 8 KiB cap, i.e. the finest interleaving the pack can produce on this
+  carrier, and 256 KiB is the carrier floor, so Trading differs from Balanced only in quantum and
+  cap — the smallest thing decisions 15 and 16 permit. Nothing was added to make it "more
+  interactive"; intra-session weights stay excluded (decision 16), so the class label is still the
+  only thing the configured profile changes besides those two numbers.
+- **Why its numbers are not tuned further.** The ADR documents Trading as "throughput deliberately
+  sacrificed". The harness shows the 2 KiB quantum does not in fact reduce the sender's handoff
+  rate against `balanced/1` at 2.5 MB/s (1.6% fewer bytes handed off at the median, a sender-side
+  count that is not delivered goodput) but does cost about 4.4× the CPU per delivered MB, and does
+  not improve the loaded p99 (it is 1.5-21.2% above Balanced in every repeat, 10.3% at the median).
+  That is the row decision 15 fixed, measured; changing quantum or cap to chase a result would be a
+  new decision, not this item.
+- **Evidence record.** `docs/POLICY_PACK_TP-3.3_TRADING_EVIDENCE.md` is the per-tuple record
+  decisions 19 and ADR-0047 ask for. It carries `simulated` numbers from the repo harness at this
+  commit and lists what the harness cannot settle — real-path latency under loss, jitter, path
+  change and carrier kill, RSS, the 60-minute run, and any head-of-line-blocking claim (needs the
+  UDP carrier, #244) — as not measured. Unlike TP-3.2's record it includes the idle arm, because
+  criterion 1 names idle latency and the harness can supply it per arm; TP-3.2's record was left as
+  shipped rather than rewritten.
+- **The harness measures the shipped table.** Test-only `Mechanism::for_profile` (feature build)
+  maps a `PolicyProfile` to the harness arm by reading the same accessors `policy_relay` resolves,
+  and `profile_arms_are_the_shipped_rows` now also pins the `trading/1` literal
+  (`sched-w262144-q2048-cap8192`) plus its difference from Gaming and Balanced. The invalid and
+  absent-profile paths are the TP-3.1 tests that still guard this row:
+  `every_ratified_profile_resolves_to_its_exact_numbers`, `unsupported_names_are_rejected_and_the_error_names_the_accepted_values`,
+  `config_deserialization_rejects_an_unsupported_name_at_parse_time`, `no_profile_is_balanced`,
+  `a_configured_profile_supplies_the_ratified_numbers_and_the_switch_only_enables_them` and
+  `no_profile_keeps_the_switch_numbers_byte_for_byte`.
+- **Enabling it.** Unchanged from TP-3.1 and TP-3.2: the `policy-pack` feature and the
+  `BAFT_TUNNEL_POLICY_PACK` switch gate activation, and `policy.profile: "trading/1"` selects the
+  row. All three are needed to select Trading. An absent profile does not turn the pack off: with
+  the switch set the pack runs on the switch's own (`sched`, i.e. Balanced) numbers, and with the
+  switch unset the path is today's byte for byte.
+- **Status.** TP-3.3 stays open on its acceptance in the pack plan §6 (idle and bulked latency and
+  jitter, loss, throughput, CPU/RSS, fairness, impairment scenarios, long run, evidence labels).
+  The one remaining requirement is a real two-host LAB window for the (engine, carrier, profile)
+  tuples, suspended by owner decision; this slice ships the `simulated` record and no measured
+  profile. The record also puts one question to that window: whether Trading is worth keeping when
+  it does not beat Balanced even in the harness and costs several times the CPU per MB.
+
 ## Known limits (recorded in Phase 0)
 
 - A single TCP carrier can still cause head-of-line blocking; the Gaming/Trading benefit may be limited without a datagram path (QUIC/UDP is not implemented, roadmap Phase 5). See decision 11.
