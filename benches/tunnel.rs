@@ -73,6 +73,9 @@ mod pair_helper;
 mod pair_proto;
 #[path = "../src/pki_helper.rs"]
 mod pki_helper;
+#[cfg(feature = "policy-pack")]
+#[path = "../src/policy_relay.rs"]
+mod policy_relay;
 #[path = "../src/probe_adapters.rs"]
 #[allow(dead_code)]
 mod probe_adapters;

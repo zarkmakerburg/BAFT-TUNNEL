@@ -130,8 +130,19 @@ pub(crate) fn yamux_config(max: usize) -> YamuxConfig {
         keepalive_interval: KEEPALIVE_INTERVAL,
         connection_write_timeout: Duration::from_secs(10),
         max_stream_count: max,
-        max_stream_window_size: MAX_STREAM_WINDOW_SIZE,
+        max_stream_window_size: stream_window(),
     }
+}
+
+/// Yamux per-stream window: the product's 4 MiB, or the pack's in-flight bound when the
+/// `policy-pack` feature is compiled in and `BAFT_TUNNEL_POLICY_PACK` is set (ADR-0048 decision 4).
+/// Feature off or switch unset is exactly today's value.
+fn stream_window() -> u32 {
+    #[cfg(feature = "policy-pack")]
+    if let Some(policy) = crate::policy_relay::PolicyRelay::from_env() {
+        return policy.stream_window;
+    }
+    MAX_STREAM_WINDOW_SIZE
 }
 
 fn configured_control_server() -> Option<crate::control_socket::ControlServer> {
