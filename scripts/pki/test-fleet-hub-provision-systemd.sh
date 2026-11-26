@@ -137,9 +137,11 @@ systemctl is-active --quiet "baft-tunnel-agent@$NAME.service" || fail "helper un
 
 step "4 activate through the authenticated Agent API and verify systemd delivered the per-instance credential"
 HTTP="$(curl -sS -o "$TMP/restart-result.json" -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data '{}' "http://$API/v1/fleet/hub/restart" || true)"
+RESTART_BODY="$(cat "$TMP/restart-result.json" 2>/dev/null || true)"
 if [[ "$HTTP" != 202 ]]; then
   sleep 1
-  systemctl is-active --quiet "baft-tunnel-agent@$NAME.service" || fail "Hub activation request was not accepted (HTTP ${HTTP:-none})"
+  systemctl is-active --quiet "baft-tunnel-agent@$NAME.service" ||
+    fail "Hub activation request was not accepted (HTTP ${HTTP:-none}): $RESTART_BODY"
 fi
 for n in $(seq 1 60); do
   systemctl is-active --quiet "baft-tunnel-agent@$NAME.service" &&
@@ -150,7 +152,16 @@ systemctl is-active --quiet "baft-tunnel-agent@$NAME.service" || fail "Agent fai
 PID="$(systemctl show -p MainPID --value "baft-tunnel-agent@$NAME.service")"
 [[ "$PID" =~ ^[1-9][0-9]*$ ]] || fail "Agent has no main PID"
 CREDENTIALS_DIR="$(tr '\0' '\n' <"/proc/$PID/environ" | sed -n 's/^CREDENTIALS_DIRECTORY=//p')"
-[[ -n "$CREDENTIALS_DIR" && -f "$CREDENTIALS_DIR/fleet-hub-key" ]] || fail "systemd did not deliver fleet-hub-key"
+if [[ -z "$CREDENTIALS_DIR" || ! -f "$CREDENTIALS_DIR/fleet-hub-key" ]]; then
+  # Report what the request and systemd actually did before failing: a silent failure here used to
+  # cost a full CI round trip to diagnose.
+  echo "restart request: HTTP=${HTTP:-none} body=${RESTART_BODY:-none}" >&2
+  echo "agent MainPID=$PID CREDENTIALS_DIRECTORY=${CREDENTIALS_DIR:-none}" >&2
+  ls -la /run/baft-tunnel/control >&2 || true
+  systemctl cat "baft-tunnel-agent@$NAME.service" >&2 || true
+  journalctl -u "baft-tunnel-control-fleet@$NAME.service" -n 40 --no-pager >&2 || true
+  fail "systemd did not deliver fleet-hub-key"
+fi
 cmp -s "$KEY" "$CREDENTIALS_DIR/fleet-hub-key" || fail "delivered credential differs from the root-held key"
 curl -fs "http://$API/v1/health" >/dev/null || fail "Agent API did not recover after restart"
 ss -ltnH | awk '{print $4}' | grep -qx "$LISTEN" || fail "Fleet Hub listener is not bound to the configured address"
