@@ -38,29 +38,45 @@ is not re-opened: accepting this ADR turns nothing on. Every profile below is ac
 shown as measured.
 
 15. **Profile taxonomy (frozen, schema version `1`).** Five profiles, lowercase ids, each a
-    versioned set of transport parameters resolved into knobs the pack already has: the
-    per-session Yamux stream window (`window_bytes`, ADR-0048 decision 4), and the deficit
-    round-robin quantum (`quantum_bytes`) and per-flow queue cap (`max_queued_bytes`) of
-    `SchedulerConfig`, plus the profile's bounded-wait limit (`max_grant_delay_ms`, never above
-    the global `MAX_GRANT_DELAY` of 250 ms). No profile introduces a new transport, engine or
-    kernel mechanism.
+    versioned set of three parameters resolved into knobs the pack already has: the per-session
+    Yamux stream window (`window_bytes`, ADR-0048 decision 4), and the deficit round-robin quantum
+    (`quantum_bytes`) and per-flow queue cap (`max_queued_bytes`) of `SchedulerConfig`. No profile
+    introduces a new transport, engine or kernel mechanism, and none carries a per-profile wait
+    limit (see the bounded-wait note below).
 
-    | Profile | id | window_bytes | quantum_bytes | max_queued_bytes | max_grant_delay_ms | What it changes |
-    |---|---|---|---|---|---|---|
-    | Balanced (default, fail-safe) | `balanced/1` | 262144 (256 KiB) | 16384 (16 KiB) | 65536 (64 KiB) | 250 | Identity: exactly the pack-on parameters TP-2.1/TP-2.2 measured, and the target every profile falls back to |
-    | Gaming | `gaming/1` | 131072 (128 KiB) | 4096 (4 KiB) | 32768 (32 KiB) | 50 | Half the in-flight bytes per stream and a quarter of the quantum: lower tunnel-internal queueing delay for low-rate interactive flows, at the cost of per-stream throughput |
-    | Trading | `trading/1` | 65536 (64 KiB) | 2048 (2 KiB) | 16384 (16 KiB) | 25 | The narrowest window/quantum pair the parser accepts while still holding several quanta in flight: lowest tunnel-internal delay, throughput deliberately sacrificed |
-    | Streaming | `streaming/1` | 524288 (512 KiB) | 32768 (32 KiB) | 131072 (128 KiB) | 250 | Twice Balanced's window and quantum: sustained medium-bitrate delivery without a large standing buffer |
-    | Bulk Transfer | `bulk/1` | 2097152 (2 MiB) | 65536 (64 KiB) | 262144 (256 KiB) | 250 | Four times Balanced's window: throughput for bulk transfers, still half of today's unmanaged 4 MiB window, latency accepted |
+    | Profile | id | window_bytes | quantum_bytes | max_queued_bytes | What it changes |
+    |---|---|---|---|---|---|
+    | Balanced (default, fail-safe) | `balanced/1` | 262144 (256 KiB) | 16384 (16 KiB) | 65536 (64 KiB) | Identity: exactly the pack-on parameters TP-2.1/TP-2.2 measured, and the target every profile falls back to |
+    | Gaming | `gaming/1` | 262144 (256 KiB) | 4096 (4 KiB) | 16384 (16 KiB) | Quarter of Balanced's quantum and cap: the in-flight ceiling stays at the carrier floor, but each grant and each buffer is smaller, so a bulk burst occupies a smaller share of the queue at any moment |
+    | Trading | `trading/1` | 262144 (256 KiB) | 2048 (2 KiB) | 8192 (8 KiB) | The finest interleaving the pack can produce on this carrier: smallest quantum and cap, throughput deliberately sacrificed |
+    | Streaming | `streaming/1` | 524288 (512 KiB) | 32768 (32 KiB) | 131072 (128 KiB) | Twice Balanced's window and quantum: sustained medium-bitrate delivery with a larger but still bounded standing buffer |
+    | Bulk Transfer | `bulk/1` | 2097152 (2 MiB) | 65536 (64 KiB) | 262144 (256 KiB) | Four times Balanced's window: throughput for bulk transfers, still half of today's unmanaged 4 MiB window, latency accepted |
 
-    All five rows satisfy the relay parser's existing bounds (`quantum_bytes >= 1024`,
-    `quantum_bytes <= window_bytes`, `max_queued_bytes >= quantum_bytes`,
-    `max_queued_bytes <= 1 MiB`), so TP-3.x implements them through `SchedulerConfig` as it exists
-    and adds no scheduler type. Why these values: Balanced is not a new choice but the measured
-    pack default; Gaming and Trading only shrink what the tunnel itself controls (in-flight bytes,
-    queueing delay), which is the only effect decision 4 permits; Streaming and Bulk only widen
-    in-flight bytes, and since ADR-0048 decision 4 bounded the measured arm at 256 KiB, each wider
-    value is a hypothesis to be measured per tuple, not a throughput promise.
+    **The 256 KiB window is a floor, not a choice.** `tokio-yamux` 0.3.20 defines
+    `INITIAL_STREAM_WINDOW` as 256 KiB and both ends assume it at stream creation, and
+    `PolicyRelay::parse` refuses any `window-cap` below it. A lower window would need a carrier
+    change, so Gaming and Trading keep the floor and differ from Balanced by quantum and cap only;
+    their claims are therefore limited to tunnel-internal queueing and burst sharing, never to
+    fewer in-flight bytes. This is recorded rather than papered over.
+
+    All five rows satisfy the relay parser's existing bounds (`window_bytes >=
+    INITIAL_STREAM_WINDOW` = 256 KiB, `quantum_bytes >= 1024`, `quantum_bytes <= 256 KiB`,
+    `max_queued_bytes >= quantum_bytes`, `max_queued_bytes <= 1 MiB`), so TP-3.x implements them
+    through `SchedulerConfig` as it exists and adds no scheduler type.
+
+    **Bounded wait is not a profile parameter in schema version `1`.** Every profile is bounded by
+    the existing mechanics: the arbiter's deficit round-robin rotation visits every registered
+    flow, and the guarded wrapper clamps each grant's `delay` to the global `MAX_GRANT_DELAY` of
+    250 ms (`src/policy.rs`). A per-profile tightening would need a deadline on
+    `FlowHandle::acquire`'s wait for the arbiter, which is a mechanics change, so it is explicitly
+    out of schema version 1 and out of TP-3.1 scope; adding it later needs its own decision and
+    tests.
+
+    Why these values: Balanced is not a new choice but the measured pack default; Gaming and
+    Trading shrink only what the tunnel itself controls (chunk size, per-flow buffer), which is the
+    only effect decision 4 permits; Streaming and Bulk widen in-flight bytes, and since ADR-0048
+    decision 4 bounded the measured arm at 256 KiB, each wider value is a hypothesis to be measured
+    per tuple, not a throughput promise.
 
 16. **Traffic-class definition.** A flow's class is the profile configured for its tunnel, and
     nothing else. TP-3.1 adds exactly one config field, `policy.profile`, to the tunnel's JSON
@@ -97,17 +113,20 @@ shown as measured.
 18. **What TP-3.x implements, and its first step.** The first concrete step is **TP-3.1 (#233),
     the profile schema plus Balanced**: a versioned profile object parsed from the tunnel config,
     validated against the table in decision 15, resolved into `SchedulerConfig` and the session
-    window, with `balanced/1` as the identity profile and any invalid or unknown value falling
-    back to Balanced with a logged cause (decision 9). TP-3.2 Gaming, TP-3.3 Trading, TP-3.4
+    window through the existing `PolicyRelay::parse` bounds, with `balanced/1` as the identity
+    profile and any invalid or unknown value falling back to Balanced with a logged cause
+    (decision 9). TP-3.1 changes no mechanics: it selects one of the three existing parameters and
+    the class label, nothing else. TP-3.2 Gaming, TP-3.3 Trading, TP-3.4
     Streaming and TP-3.5 Bulk each add one row of the same table plus their per-tuple evidence
     record; none may change the mechanics, only the parameters.
 
 19. **Testable acceptance for this schema (used by TP-3.x).** For every profile row: the config
     round-trips unchanged; the resolved `SchedulerConfig` and window equal the table exactly; an
-    out-of-range or unknown profile resolves to Balanced with a cause, never partially; no grant
-    exceeds `quantum_bytes`; no queue exceeds `max_queued_bytes`; no grant delay exceeds the
-    profile's `max_grant_delay_ms`, itself never above 250 ms; the pack stays off unless the
-    operator sets both the cargo feature and `BAFT_TUNNEL_POLICY_PACK`. A profile is reported
+    out-of-range or unknown profile resolves to Balanced with a cause, never partially; a window
+    below the 256 KiB carrier floor is refused the same way; no grant exceeds `quantum_bytes`; no
+    queue exceeds `max_queued_bytes`; no grant's `delay` exceeds the global 250 ms
+    `MAX_GRANT_DELAY`; the arbiter still visits every registered flow in one rotation; and the
+    pack stays off unless the operator sets both the cargo feature and `BAFT_TUNNEL_POLICY_PACK`. A profile is reported
     `measured` only when a result record for its exact (engine, carrier, profile) tuple carries an
     evidence level and the run's SHA (ADR-0047), and the scheduler arm keeps its `simulated` label.
 
