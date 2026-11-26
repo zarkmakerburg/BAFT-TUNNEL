@@ -1,7 +1,9 @@
 # ADR-0048: Policy queues and scheduler (TP-2.1)
 
-**Status:** Proposed. Nothing is implemented. Mechanism is chosen by measurement, see "Experiments".
+**Status:** Accepted for the queue/scheduler core (implemented 2026-11-26 behind `policy-pack`, not wired into the relay). The in-flight mechanism below (M1/M2/M3) stays undecided until the experiments run.
 **Date:** 2026-11-17
+
+**Implementation (2026-11-26):** `src/policy_sched.rs` provides decision 1's bounded per-flow queues and the deficit round-robin rotation. Decisions 3, 4 (the queue bound and the bounded wait) and 5 (off path equals today) are covered by 7 unit tests: a flow is visited at least once per rotation, a quantum bounds one visit, an overflow is refused and counted rather than truncated, and a drained flow leaves the rotation. Nothing calls it yet — the relay still uses the fixed 16 KiB pump, so the data path with the pack off is unchanged. Class weights (decision 2) and the M1/M2/M3 choice are untouched, and no result is claimed.
 **Related:** [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md), [ADR-0044](ADR-0044-engine-agnostic-policy-interface.md), [ADR-0047](ADR-0047-policy-status-contract.md), research [POLICY_PACK_TP-0.1_RESEARCH.md](POLICY_PACK_TP-0.1_RESEARCH.md) sections 2, 9, issues [#231](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/231), [#232](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/232)
 
 ## Context

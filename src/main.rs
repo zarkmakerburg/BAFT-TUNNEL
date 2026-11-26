@@ -34,6 +34,8 @@ mod pki_helper;
 mod policy;
 #[cfg(test)]
 mod policy_baseline;
+#[cfg(feature = "policy-pack")]
+mod policy_sched;
 mod probe_adapters;
 mod probe_api;
 mod probe_http;

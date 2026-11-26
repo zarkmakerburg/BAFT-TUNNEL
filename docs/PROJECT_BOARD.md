@@ -2,6 +2,13 @@
 
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
+## به‌روزرسانی 2026-11-26
+
+- `main` روی `4cdb8c2` (ادغام PR مستنداتی #451)؛ آخرین Stable همچنان **`v0.3.1`** است و از زمان تگ آن فقط مستندات ادغام شده (#448، #449، #450، #451)، پس `v0.3.2` برنامه‌ریزی نمی‌شود و نسخهٔ پایدار بعدی **`v0.4.0`** است.
+- **مأموریت بعدی: `v0.4.0` — Adaptive Traffic Policy Pack.** رابط مستقل از موتور (TP-2.0، `src/policy.rs`) و هستهٔ صف/زمان‌بند (TP-2.1، `src/policy_sched.rs` با ۷ تست واحد) پشت فیچر `policy-pack` پیاده شده‌اند؛ این فیچر پیش‌فرض خاموش است و **به relay وصل نشده**، پس مسیر داده تغییری نکرده است. هیچ پروفایلی پذیرفته یا اندازه‌گیری نشده و هیچ ادعای سودی نیست.
+- **گیت انتشار 0.4.0:** اتصال به relay، آزمایش‌های ADR-0048 برای انتخاب مکانیزم M1/M2/M3، پذیرش TP-0.2 (ADR-0031 و طرح پروفایل) و سنجش هر سه‌گانهٔ (engine, carrier, profile) با برچسب شواهد. LAB دو‌میزبانه معلق است، بنابراین شواهد اندازه‌گیری حداکثر `simulated`/CI است و هرگز LAB حساب نمی‌شود.
+- **#445** (Fleet) باز است و تنها بلاکر آن پنجرهٔ LAB دو‌میزبانه است؛ گیت‌های غیر-LAB روی `2f61c58` سبزند. جزئیات در [REMAINING_WORK_PLAN.md](REMAINING_WORK_PLAN.md).
+
 ## به‌روزرسانی 2026-11-25
 
 - `main` روی `62c0ba274c8d2843ece1ee9030feb351c5444367` (ادغام PR #440) است و چک‌های دقیق همان SHA ده از ده `SUCCESS` هستند ([run 45549914213](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/45549914213)). آخرین Stable همچنان `v0.3.0` است و **S5 باز است** (تأیید انسانی مستقل ثبت نشده).
