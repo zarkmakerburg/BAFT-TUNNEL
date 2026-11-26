@@ -170,9 +170,12 @@ coding-level choices this ADR left open:
   numbers are used unchanged, so the default data path is byte-identical to the commit before
   TP-3.1 — and `balanced/1` equals `BAFT_TUNNEL_POLICY_PACK=sched`.
 - **Plumbing.** `ServerOptions`/`ForwardOptions` carry `profile: Option<PolicyProfile>`; the session
-  window comes from `yamux_config_for(max, profile)` and the scheduler from
-  `policy_session(profile)`, on both session ends and on the resume path. No new module, task or
-  config path is added.
+  window comes from `yamux_config_for(max, profile)` on both session ends and on the protocol-v3
+  resume session, and the scheduler from `policy_session(profile)` on the two Yamux relay paths —
+  server and forward — which are the only paths that ever had it. The resumable-stream relay
+  (`resume_stream`) keeps its own buffering and budget and is untouched: a profile's quantum and cap
+  bound Yamux logical streams, not resumed substreams, exactly as `BAFT_TUNNEL_POLICY_PACK=sched`
+  already did. No new module, task or config path is added.
 - **Class label.** The profile id *is* the class id; no separate `Class` mapping is wired yet,
   because class weights stay identity in schema version 1 (decision 16). The mapping lands with the
   weights that need it.
