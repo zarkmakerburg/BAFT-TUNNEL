@@ -1,9 +1,11 @@
 # TP-4.1 adaptive controller: simulated evidence record
 
-**Status: harness evidence only (`simulated`), one host, loopback. TP-4.1 stays open on its
-two-host LAB criterion. The loop measured here made no change, and since 2026-11-27 the live 1 Hz
+**Status: delivered and merged 2026-11-27. The loop measured here made no change, and the live 1 Hz
 driver itself is covered end to end (section 5) — with scripted sample values, because this harness
-cannot produce a live congestion estimate.**
+cannot produce a live congestion estimate. TP-4.1 has no open repo-side work left. What remains
+unverified is real-path behaviour, which needs the owner-suspended two-host LAB window (a
+release-level gate shared with TP-3.2-TP-3.5); it is recorded as unverified, not claimed, and this
+`simulated` record does not substitute for it.**
 Item: TP-4.1 (#238). Design: [ADR-0056](ADR-0056-adaptive-optimization-controller.md) decisions 4
 (inputs), 6-8 (hysteresis, steps, fail-safe) and 12 (this benchmark). Row table:
 [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) decision 15. Status contract:
