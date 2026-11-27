@@ -104,7 +104,8 @@ shorter runs: 6 s per arm and rate, two repeats, plus one 20 s run at 250 000 B/
   sample is a constant `0` and row 2 is forced only, never observed.
 - **#239's "mark adaptive `Unknown`/`Off`":** there is no status surface to mark. ADR-0056
   decision 11 reserves the adaptive view for [ADR-0047](ADR-0047-policy-status-contract.md), which
-  is still Proposed. The requirement is recorded as blocked on ADR-0047 and is not invented here;
+  was still Proposed when this record was written (it was accepted on 2026-11-27). The requirement is
+  recorded as deferred to that contract and is not invented here;
   it is not one of TP-4.2's remaining criteria.
 
 No profile becomes `measured` through this record, ADR-0048's default-off decision and the
