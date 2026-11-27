@@ -286,10 +286,10 @@ impl PolicySession {
 
     /// One slow-loop tick: read this session's own counters, then decide and apply. Split so the
     /// driver has no decision logic.
-    async fn tick(&self, now: Duration) {
+    async fn tick(&self, started: Instant) {
         let to_peer = self.to_peer.stats().await.map(counters);
         let from_peer = self.from_peer.stats().await.map(counters);
-        self.tick_with(now, to_peer, from_peer).await;
+        self.tick_with(started.elapsed(), to_peer, from_peer).await;
     }
 
     /// The decide-and-apply half of a tick, given each direction's sample or `None` for a missed
@@ -352,7 +352,7 @@ fn spawn_adaptive_driver(session: Weak<PolicySession>) {
             let Some(session) = session.upgrade() else {
                 return;
             };
-            session.tick(started.elapsed()).await;
+            session.tick(started).await;
         }
     });
 }

@@ -33,7 +33,10 @@ forced sequence cannot settle and leaves that to the suspended LAB window.
   policy-pack --bin baft-tunnel adaptive_controller_experiments -- --ignored --nocapture`), to show
   that adding the test seam left the live sampling path unchanged. Every line is `simulated`.
 - Environment: four-core Linux `4.19.0-gvisor` sandbox (`x86_64`), one process, no other load,
-  2026-11-27, run `tp-4.2-local-2026-11-27`.
+  2026-11-27, run `tp-4.2-local-2026-11-27`, source `ba3d3198` (PR #465). The arm ran in the
+  worktree that became that commit; the only difference between the measured tree and the commit
+  is a `rustfmt` rewrap of two assertions in the `policy_relay` tests module, so no production
+  code differs.
 
 ## 2. The matrix (forced)
 
