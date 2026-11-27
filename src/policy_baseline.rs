@@ -4,9 +4,11 @@
 //! competing bulk stream, through the product's own `yamux_config` and `relay_with_idle_timeout`
 //! (the real relay path, both ends) over loopback TCP joined by a rate-limited proxy. Evidence
 //! level of every number is `simulated` (never VM or LAB). It measures today's data path
-//! (Baseline, pack off) plus the ADR-0048 mechanism variants M1/M2/M3 behind test-only switches.
+//! (Baseline, pack off) plus the ADR-0048 mechanism variants M1/M2/M3 behind test-only switches and
+//! ADR-0056's adaptive arm, which starts from a profile row and may select another one.
 //!
-//! Run: `cargo test --release policy_baseline -- --ignored --nocapture`.
+//! Run: `cargo test --release policy_baseline -- --ignored --nocapture`; the adaptive arm is
+//! `adaptive_controller_experiments`.
 //! The comparison run reads `POLICY_RATE`, `POLICY_REPEATS` and `POLICY_SECONDS`.
 
 use std::{
@@ -24,6 +26,8 @@ use tokio::{
 };
 use tokio_yamux::Session;
 
+#[cfg(feature = "policy-pack")]
+use crate::policy::Direction;
 use crate::tunnel::{relay_with_idle_timeout, yamux_config};
 
 /// One end's scheduler state for the `sched` arm. Without the feature the arm does not exist and the
@@ -165,6 +169,14 @@ pub(crate) enum Mechanism {
         quantum: usize,
         cap: usize,
     },
+    /// ADR-0056: the shipped scheduler arm plus the adaptive loop, starting from `profile`'s row
+    /// and free to select any of the five accepted rows from the pack's own counters. Compared
+    /// with `Scheduler` at the same starting row (`Mechanism::for_profile`).
+    #[cfg(feature = "policy-pack")]
+    Adaptive {
+        window: u32,
+        profile: crate::policy_profile::PolicyProfile,
+    },
 }
 
 impl Mechanism {
@@ -184,6 +196,10 @@ impl Mechanism {
                 quantum,
                 cap,
             } => format!("sched-w{window}-q{quantum}-cap{cap}"),
+            #[cfg(feature = "policy-pack")]
+            Mechanism::Adaptive { window, profile } => {
+                format!("adaptive-w{window}-from-{}", profile.id())
+            }
         }
     }
 }
@@ -200,6 +216,14 @@ impl Mechanism {
             cap: profile.max_queued_bytes(),
         }
     }
+
+    /// The same starting row under ADR-0056's adaptive loop: the control against `for_profile`.
+    pub(crate) fn adaptive_from(profile: crate::policy_profile::PolicyProfile) -> Self {
+        Mechanism::Adaptive {
+            window: profile.window_bytes(),
+            profile,
+        }
+    }
 }
 
 /// The Yamux per-stream window an arm runs with: the arm's own cap, or the product value.
@@ -207,7 +231,7 @@ fn window_for(mechanism: Mechanism) -> Option<u32> {
     match mechanism {
         Mechanism::WindowCap { bytes } => Some(bytes),
         #[cfg(feature = "policy-pack")]
-        Mechanism::Scheduler { window, .. } => Some(window),
+        Mechanism::Scheduler { window, .. } | Mechanism::Adaptive { window, .. } => Some(window),
         _ => None,
     }
 }
@@ -221,6 +245,17 @@ fn policy_for(_mechanism: Mechanism) -> Option<ArmPolicy> {
                 quantum_bytes: quantum,
                 max_queued_bytes: cap,
             },
+        ));
+    }
+    #[cfg(feature = "policy-pack")]
+    if let Mechanism::Adaptive { profile, .. } = _mechanism {
+        return Some(crate::policy_relay::PolicySession::new(
+            crate::policy_sched::SchedulerConfig {
+                quantum_bytes: profile.quantum_bytes(),
+                max_queued_bytes: profile.max_queued_bytes(),
+            },
+            profile,
+            true,
         ));
     }
     None
@@ -667,6 +702,98 @@ pub(crate) async fn run_transfer_mechanism(
     elapsed
 }
 
+/// What the ADR-0056 loop did during one multi-flow run. Only `Adaptive` arms fill it; every other
+/// arm reports `None`, so their records are unchanged.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct AdaptiveReport {
+    pub changes: usize,
+    /// `<direction>:<from>-><to>` in order.
+    pub transitions: Vec<String>,
+    /// When each change was accepted, in milliseconds since the session's driver started.
+    pub change_at_ms: Vec<u64>,
+    /// Gaps between consecutive changes, in milliseconds (dwell and rate limit show up here).
+    pub gaps_ms: Vec<u64>,
+    pub estimates: usize,
+    pub estimate_p50_ms: u64,
+    pub estimate_p95_ms: u64,
+    pub estimate_max_ms: u64,
+    /// Samples whose estimate was above the ADR's 50 ms down-step threshold.
+    pub estimate_over_50ms: usize,
+}
+
+impl AdaptiveReport {
+    fn json(&self) -> String {
+        let list = |values: &[u64]| {
+            values
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let transitions = self
+            .transitions
+            .iter()
+            .map(|transition| format!("\"{transition}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"changes\":{},\"transitions\":[{}],\"change_at_ms\":[{}],\"gaps_ms\":[{}],\"estimates\":{},\"estimate_p50_ms\":{},\"estimate_p95_ms\":{},\"estimate_max_ms\":{},\"estimate_over_50ms\":{}}}",
+            self.changes,
+            transitions,
+            list(&self.change_at_ms),
+            list(&self.gaps_ms),
+            self.estimates,
+            self.estimate_p50_ms,
+            self.estimate_p95_ms,
+            self.estimate_max_ms,
+            self.estimate_over_50ms
+        )
+    }
+
+    #[cfg(feature = "policy-pack")]
+    fn from_session(session: &crate::policy_relay::PolicySession) -> Option<Self> {
+        let changes = session.changes();
+        let mut estimates: Vec<u64> = session
+            .estimates()
+            .into_iter()
+            .map(|(_, estimate)| estimate.as_millis() as u64)
+            .collect();
+        if changes.is_empty() && estimates.is_empty() {
+            return None;
+        }
+        estimates.sort_unstable();
+        let mut report = AdaptiveReport {
+            changes: changes.len(),
+            transitions: changes
+                .iter()
+                .map(|change| {
+                    let direction = match change.direction {
+                        Direction::ToPeer => "to_peer",
+                        Direction::FromPeer => "from_peer",
+                    };
+                    format!("{direction}:{}->{}", change.change.from, change.change.to)
+                })
+                .collect(),
+            change_at_ms: changes
+                .iter()
+                .map(|change| change.change.at.as_millis() as u64)
+                .collect(),
+            estimates: estimates.len(),
+            estimate_p50_ms: percentile(&estimates, 50.0),
+            estimate_p95_ms: percentile(&estimates, 95.0),
+            estimate_max_ms: estimates.last().copied().unwrap_or(0),
+            estimate_over_50ms: estimates.iter().filter(|value| **value > 50).count(),
+            gaps_ms: Vec::new(),
+        };
+        report.gaps_ms = report
+            .change_at_ms
+            .windows(2)
+            .map(|pair| pair[1].saturating_sub(pair[0]))
+            .collect();
+        Some(report)
+    }
+}
+
 /// Multi-flow arm result (TP-2.2). Several bulk flows compete for one shaped bottleneck, each with
 /// its own echo stream, so arbitration between flows is measured instead of inferred from the
 /// single bulk + single interactive pair.
@@ -688,6 +815,8 @@ pub(crate) struct MultiFlowSummary {
     /// True when every flow that was not churned still handed bytes after the churn.
     pub continued_after_churn: bool,
     pub stalled: bool,
+    /// ADR-0056: what the loop did on the client session, `None` for every static arm.
+    pub adaptive: Option<AdaptiveReport>,
 }
 
 impl MultiFlowSummary {
@@ -719,7 +848,7 @@ impl MultiFlowSummary {
                 .join(",")
         };
         format!(
-            "{{\"scenario\":\"{}\",\"mechanism\":\"{}\",\"evidence\":\"{}\",\"flows\":{},\"bulk_bytes\":[{}],\"total_bulk_bytes\":{},\"delivery_min_over_max\":{:.3},\"flow_p50_us\":[{}],\"flow_p95_us\":[{}],\"cpu_us\":{},\"churn_closed\":{},\"continued_after_churn\":{},\"stalled\":{}}}",
+            "{{\"scenario\":\"{}\",\"mechanism\":\"{}\",\"evidence\":\"{}\",\"flows\":{},\"bulk_bytes\":[{}],\"total_bulk_bytes\":{},\"delivery_min_over_max\":{:.3},\"flow_p50_us\":[{}],\"flow_p95_us\":[{}],\"cpu_us\":{},\"churn_closed\":{},\"continued_after_churn\":{},\"stalled\":{},\"adaptive\":{}}}",
             self.scenario,
             self.mechanism,
             self.evidence,
@@ -734,7 +863,11 @@ impl MultiFlowSummary {
                 .map(|index| index.to_string())
                 .unwrap_or_else(|| "null".to_string()),
             self.continued_after_churn,
-            self.stalled
+            self.stalled,
+            self.adaptive
+                .as_ref()
+                .map(AdaptiveReport::json)
+                .unwrap_or_else(|| "null".to_string())
         )
     }
 }
@@ -923,6 +1056,13 @@ async fn run_multi_flow(
         flow_p50_us.push(percentile(samples, 50.0));
         flow_p95_us.push(percentile(samples, 95.0));
     }
+    #[cfg(feature = "policy-pack")]
+    let adaptive = client_policy
+        .as_ref()
+        .map(|policy| policy.as_ref())
+        .and_then(AdaptiveReport::from_session);
+    #[cfg(not(feature = "policy-pack"))]
+    let adaptive = None;
     MultiFlowSummary {
         scenario,
         mechanism: mechanism.label(),
@@ -935,6 +1075,7 @@ async fn run_multi_flow(
         churn_closed: churn.then_some(0),
         continued_after_churn,
         stalled,
+        adaptive,
     }
 }
 
@@ -1997,6 +2138,71 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// ADR-0056 decision 12: the adaptive loop against the static row it starts from, on the same
+    /// shaped bottleneck. Two arms at three rates, plus one long run so a down-step can reach its
+    /// verification window and be kept. Every line is `simulated`. Reads `POLICY_ADAPTIVE_SECONDS`
+    /// (short runs, default 8) and `POLICY_ADAPTIVE_LONG_SECONDS` (long run, default 150).
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "measurement run; use --release --features policy-pack --ignored --nocapture"]
+    async fn adaptive_controller_experiments() {
+        use crate::policy_profile::PolicyProfile;
+
+        let seconds: u64 = std::env::var("POLICY_ADAPTIVE_SECONDS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(8);
+        let long_seconds: u64 = std::env::var("POLICY_ADAPTIVE_LONG_SECONDS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(150);
+        let interval = Duration::from_millis(20);
+        // Start at the pack's default row: its 256 KiB window is small enough that the shaped
+        // bottleneck's backpressure reaches the arbiter, which is where the loop takes its sample.
+        let profile = PolicyProfile::Balanced;
+        let arms = [
+            Mechanism::for_profile(profile),
+            Mechanism::adaptive_from(profile),
+        ];
+        for rate in [250_000_u64, 500_000, 1_000_000] {
+            for mechanism in arms {
+                for repeat in 1..=2 {
+                    let summary = run_multi_flow(
+                        "adaptive_control",
+                        3,
+                        false,
+                        rate,
+                        Duration::from_secs(seconds),
+                        interval,
+                        mechanism,
+                    )
+                    .await;
+                    println!(
+                        "POLICY_ADAPTIVE_EXPERIMENT {{\"repeat\":{repeat},\"rate_bytes_per_s\":{rate},\"seconds\":{seconds}}} {}",
+                        summary.json()
+                    );
+                }
+            }
+        }
+        // One long run at the slowest rate: 3 s of queueing starts a down-step, the 60 s
+        // verification window decides it, and the 30 s dwell plus the 300 s rate limit gate the
+        // next one, so this is where changes and their spacing are actually observable.
+        let summary = run_multi_flow(
+            "adaptive_control_long",
+            3,
+            false,
+            250_000,
+            Duration::from_secs(long_seconds),
+            interval,
+            Mechanism::adaptive_from(profile),
+        )
+        .await;
+        println!(
+            "POLICY_ADAPTIVE_EXPERIMENT {{\"repeat\":0,\"rate_bytes_per_s\":250000,\"seconds\":{long_seconds}}} {}",
+            summary.json()
+        );
     }
 
     /// Full Baseline scenarios; prints one JSON line per scenario. Not part of the normal run.

@@ -76,6 +76,9 @@ mod pki_helper;
 #[cfg(feature = "policy-pack")]
 #[path = "../src/policy.rs"]
 mod policy;
+#[cfg(feature = "policy-pack")]
+#[path = "../src/policy_adaptive.rs"]
+mod policy_adaptive;
 #[path = "../src/policy_profile.rs"]
 mod policy_profile;
 #[cfg(feature = "policy-pack")]

@@ -74,6 +74,7 @@ pub struct Scheduler {
     flows: HashMap<FlowId, FlowState>,
     rotation: VecDeque<FlowId>,
     grants: u64,
+    granted_bytes: u64,
     overflow_refusals: u64,
 }
 
@@ -84,12 +85,20 @@ impl Scheduler {
             flows: HashMap::new(),
             rotation: VecDeque::new(),
             grants: 0,
+            granted_bytes: 0,
             overflow_refusals: 0,
         }
     }
 
     pub fn config(&self) -> SchedulerConfig {
         self.config
+    }
+
+    /// Replaces the bounds in force. Only a ratified ADR-0031 row is ever passed here (ADR-0056
+    /// decision 1), so the new pair is already bounds-checked. Queued bytes are left alone: they
+    /// drain under the new quantum on the next visits.
+    pub fn set_config(&mut self, config: SchedulerConfig) {
+        self.config = config;
     }
 
     /// Registers a flow with its configured class. Re-registering keeps any queued bytes.
@@ -111,7 +120,10 @@ impl Scheduler {
         self.rotation.retain(|candidate| *candidate != flow);
     }
 
-    /// Offers `bytes` to a flow's queue. Refuses rather than growing past the bound.
+    /// Offers `bytes` to a flow's queue. Refuses rather than growing past the bound. The relay
+    /// uses [`Self::offer`] instead, because it re-offers a span it already queued; this additive
+    /// form is what the scheduler's own tests model several flows with.
+    #[cfg(test)]
     pub fn enqueue(&mut self, flow: FlowId, bytes: usize) -> Enqueue {
         let Some(state) = self.flows.get(&flow) else {
             return Enqueue::NotScheduled;
@@ -133,9 +145,44 @@ impl Scheduler {
         Enqueue::Accepted
     }
 
+    /// Records the span a flow's single in-flight request covers, replacing whatever it offered
+    /// before. The relay re-offers the bytes a grant left unwritten, and those bytes are already
+    /// in this queue, so adding them again would count them twice and could answer a later
+    /// request with more bytes than it offered. A span past the cap is refused exactly as
+    /// [`Self::enqueue`] refuses it.
+    pub fn offer(&mut self, flow: FlowId, bytes: usize) -> Enqueue {
+        if !self.flows.contains_key(&flow) {
+            return Enqueue::NotScheduled;
+        }
+        if bytes > self.config.max_queued_bytes {
+            self.overflow_refusals += 1;
+            return Enqueue::Full;
+        }
+        if let Some(state) = self.flows.get_mut(&flow) {
+            state.queued = bytes;
+        }
+        if bytes > 0 && !self.rotation.contains(&flow) {
+            self.rotation.push_back(flow);
+        }
+        Enqueue::Accepted
+    }
+
     /// Next flow to serve and how many bytes it may move now, bounded by `max_bytes` and the
     /// quantum. `None` means every queue is empty.
+    #[cfg(test)]
     pub fn next_grant(&mut self, max_bytes: usize) -> Option<(FlowId, usize)> {
+        self.next_grant_for(max_bytes, |_| true)
+    }
+
+    /// A grant for the next flow that both has queued bytes and is `ready` for them. The arbiter
+    /// passes the set of flows whose acquire is still waiting: granting bytes to a flow that has
+    /// no request outstanding would count bytes nobody writes and inflate the granted-byte rate
+    /// the adaptive loop divides by (ADR-0056 decision 4).
+    pub fn next_grant_for(
+        &mut self,
+        max_bytes: usize,
+        mut ready: impl FnMut(FlowId) -> bool,
+    ) -> Option<(FlowId, usize)> {
         if max_bytes == 0 {
             return None;
         }
@@ -146,6 +193,11 @@ impl Scheduler {
             };
             if state.queued == 0 {
                 state.deficit = 0;
+                continue;
+            }
+            if !ready(flow) {
+                // Keep the flow's place and its queue; it is granted when its request arrives.
+                self.rotation.push_back(flow);
                 continue;
             }
             if state.deficit == 0 {
@@ -169,6 +221,7 @@ impl Scheduler {
                 self.rotation.push_back(flow);
             }
             self.grants += 1;
+            self.granted_bytes = self.granted_bytes.saturating_add(grant as u64);
             return Some((flow, grant));
         }
         None
@@ -195,6 +248,11 @@ impl Scheduler {
         self.grants
     }
 
+    /// Bytes handed to flows so far; the rate half of ADR-0056 decision 4's estimate.
+    pub fn granted_bytes(&self) -> u64 {
+        self.granted_bytes
+    }
+
     pub fn overflow_refusals(&self) -> u64 {
         self.overflow_refusals
     }
@@ -208,6 +266,7 @@ const COMMAND_BUFFER: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct ArbiterStats {
     pub grants: u64,
+    pub granted_bytes: u64,
     pub overflow_refusals: u64,
     pub queued_bytes: usize,
     pub flows: usize,
@@ -221,6 +280,7 @@ enum Command {
         reply: oneshot::Sender<usize>,
     },
     Close(FlowId),
+    Configure(SchedulerConfig),
     Stats(oneshot::Sender<ArbiterStats>),
 }
 
@@ -249,6 +309,12 @@ impl Arbiter {
             arbiter: Arc::clone(self),
             closed: AtomicBool::new(false),
         }
+    }
+
+    /// Applies a new scheduler pair to a running direction (ADR-0056 decision 2). `false` means
+    /// the arbiter has already stopped, so the caller must not assume the change took effect.
+    pub(crate) async fn configure(&self, config: SchedulerConfig) -> bool {
+        self.commands.send(Command::Configure(config)).await.is_ok()
     }
 
     #[allow(dead_code)] // tests and diagnostics ask the arbiter what it is holding.
@@ -339,7 +405,7 @@ async fn run(config: SchedulerConfig, mut commands: mpsc::Receiver<Command>) {
                 if scheduler.class_of(flow).is_none() {
                     scheduler.register(flow, Class::Balanced);
                 }
-                match scheduler.enqueue(flow, bytes) {
+                match scheduler.offer(flow, bytes) {
                     Enqueue::Accepted => {
                         waiting.insert(flow, reply);
                     }
@@ -356,9 +422,11 @@ async fn run(config: SchedulerConfig, mut commands: mpsc::Receiver<Command>) {
                 // Dropping the sender ends any acquire still waiting on this flow.
                 waiting.remove(&flow);
             }
+            Some(Command::Configure(config)) => scheduler.set_config(config),
             Some(Command::Stats(reply)) => {
                 let _ = reply.send(ArbiterStats {
                     grants: scheduler.grants(),
+                    granted_bytes: scheduler.granted_bytes(),
                     overflow_refusals: scheduler.overflow_refusals(),
                     queued_bytes: scheduler.total_queued_bytes(),
                     flows: scheduler.flows(),
@@ -373,10 +441,16 @@ async fn run(config: SchedulerConfig, mut commands: mpsc::Receiver<Command>) {
 /// Grants every queue that can move now. A queued flow without a waiter still has its bytes
 /// granted and discarded, which lets a stale queue drain instead of blocking the rotation.
 fn serve(scheduler: &mut Scheduler, waiting: &mut HashMap<FlowId, oneshot::Sender<usize>>) {
-    while let Some((flow, grant)) = scheduler.next_grant(scheduler.config().quantum_bytes) {
-        if let Some(reply) = waiting.remove(&flow) {
-            let _ = reply.send(grant);
-        }
+    while let Some((flow, grant)) = scheduler
+        .next_grant_for(scheduler.config().quantum_bytes, |flow| {
+            waiting.contains_key(&flow)
+        })
+    {
+        let Some(reply) = waiting.remove(&flow) else {
+            // Unreachable: `ready` selected this flow, so a request is waiting.
+            break;
+        };
+        let _ = reply.send(grant);
     }
 }
 
@@ -486,6 +560,42 @@ mod tests {
         assert_eq!(scheduler.overflow_refusals(), 1);
         assert_eq!(scheduler.enqueue(flow, usize::MAX), Enqueue::Full);
         assert_eq!(scheduler.overflow_refusals(), 2);
+    }
+
+    #[test]
+    fn a_reoffered_remainder_is_not_counted_twice_and_drains_to_zero() {
+        let mut scheduler = scheduler();
+        let flow = FlowId(5);
+        scheduler.register(flow, Class::Balanced);
+        // The relay offers the span its request covers; a grant of one quantum leaves the rest
+        // queued, and the relay's next offer repeats that span rather than adding to it.
+        assert_eq!(scheduler.offer(flow, 2_500), Enqueue::Accepted);
+        assert_eq!(scheduler.next_grant(4_096), Some((flow, 1_000)));
+        assert_eq!(scheduler.queued_bytes(flow), 1_500);
+        assert_eq!(scheduler.offer(flow, 1_500), Enqueue::Accepted);
+        assert_eq!(
+            scheduler.queued_bytes(flow),
+            1_500,
+            "re-offering the remainder must not add it again"
+        );
+        assert_eq!(scheduler.next_grant(4_096), Some((flow, 1_000)));
+        assert_eq!(scheduler.queued_bytes(flow), 500);
+        assert_eq!(scheduler.offer(flow, 500), Enqueue::Accepted);
+        assert_eq!(scheduler.next_grant(4_096), Some((flow, 500)));
+        assert_eq!(
+            scheduler.queued_bytes(flow),
+            0,
+            "a complete read leaves no queued bytes"
+        );
+        // A read smaller than the quantum is granted whole, and also leaves the queue empty.
+        assert_eq!(scheduler.offer(flow, 300), Enqueue::Accepted);
+        assert_eq!(scheduler.next_grant(4_096), Some((flow, 300)));
+        assert_eq!(scheduler.queued_bytes(flow), 0);
+        // The cap bounds the span one request covers, not a sum of past offers.
+        assert_eq!(scheduler.offer(flow, 4_001), Enqueue::Full);
+        assert_eq!(scheduler.overflow_refusals(), 1);
+        assert_eq!(scheduler.offer(flow, 0), Enqueue::Accepted);
+        assert_eq!(scheduler.next_grant(4_096), None);
     }
 
     #[test]
@@ -608,5 +718,42 @@ mod tests {
             stats.flows, 0,
             "drop must close the flow, not leak its slot"
         );
+    }
+
+    /// ADR-0056 decision 4 divides queued bytes by the granted bytes over the interval, so the
+    /// arbiter must report bytes, not only a grant count.
+    #[tokio::test]
+    async fn arbiter_counts_the_bytes_it_grants() {
+        let arbiter = Arbiter::spawn(arbiter_config());
+        let handle = arbiter.flow(FlowId(8));
+        assert_eq!(handle.acquire(1_024).await.expect("grant"), 1_024);
+        let stats = arbiter.stats().await.expect("stats");
+        assert_eq!(stats.grants, 1);
+        assert_eq!(stats.granted_bytes, 1_024);
+    }
+
+    /// ADR-0056 decision 2: a change applies to a running direction, with no session restart. The
+    /// next grant uses the new pair.
+    #[tokio::test]
+    async fn arbiter_applies_a_new_pair_to_a_running_direction() {
+        let arbiter = Arbiter::spawn(arbiter_config());
+        let handle = arbiter.flow(FlowId(9));
+        assert_eq!(handle.acquire(1_024).await.expect("grant"), 1_024);
+        assert!(
+            arbiter
+                .configure(SchedulerConfig {
+                    quantum_bytes: 512,
+                    max_queued_bytes: 2_048,
+                })
+                .await
+        );
+        assert_eq!(
+            handle.acquire(1_024).await.expect("grant"),
+            512,
+            "the shrunk quantum must bound the very next grant"
+        );
+        let stats = arbiter.stats().await.expect("stats");
+        assert_eq!(stats.granted_bytes, 1_536);
+        assert_eq!(stats.overflow_refusals, 0);
     }
 }

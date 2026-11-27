@@ -1,17 +1,18 @@
-//! Adaptive optimisation controller core (ADR-0056, TP-4.1 / #238).
+//! Adaptive optimisation controller (ADR-0056, TP-4.1 / #238).
 //!
-//! Pure, deterministic decision logic for the pack's slow control loop. Nothing samples signals,
-//! spawns a task, logs to the tunnel or reconfigures the relay yet: like `policy` at TP-2.0, the
-//! module settles the rules and is exercised by tests only, behind the `policy-pack` cargo
-//! feature. Every value it can select is one of the five rows of the ADR-0031 table; the window
-//! stays the configured profile's for the session's lifetime, so adaptation never changes the
-//! carrier, the class or the default data path.
-#![allow(dead_code)]
+//! Pure, deterministic decision logic: `Controller` for one direction, `Adaptation` to feed two of
+//! them from a session's own counters, and `queue_delay` for the estimate both act on. The 1 Hz
+//! driver, the log line and the scheduler reconfiguration live in `policy_relay`, which is also
+//! where the opt-in is enforced: `policy.adaptive` plus a configured profile, and only when the
+//! `policy-pack` feature and `BAFT_TUNNEL_POLICY_PACK` enable the pack. Every value it can select
+//! is one of the five rows of the ADR-0031 table; the window stays the configured profile's for the
+//! session's lifetime, so adaptation never changes the carrier, the class or the default data path.
 
 use std::collections::VecDeque;
 use std::fmt;
 use std::time::Duration;
 
+use crate::policy::Direction;
 use crate::policy_profile::PolicyProfile;
 
 /// Period of the slow loop: at most one sample per second (ADR-0056 decision 3).
@@ -54,6 +55,10 @@ pub(crate) const LADDER: [PolicyProfile; 5] = [
 pub(crate) struct Signals {
     /// Tunnel-internal queueing-delay estimate for the direction being adapted.
     pub queue_delay: Duration,
+    /// Whether this sample had a delivered-byte rate to derive [`Self::queue_delay`] from. When
+    /// it did not, the delay is not an observation and the controller's delay-based rules must
+    /// not run on it; the guard and overflow counters are still real and still checked.
+    pub estimated: bool,
     /// Cumulative scheduler refusals at sample time.
     pub overflow_refusals: u64,
     /// Cumulative `Guarded` interface violations at sample time.
@@ -165,11 +170,13 @@ impl Controller {
     }
 
     /// The row the tunnel's `policy.profile` selects: the anchor and the fail-safe target.
+    #[cfg(test)]
     pub(crate) fn configured(&self) -> PolicyProfile {
         self.configured
     }
 
     /// The scheduler row in force. Equals [`Self::configured`] until something is changed.
+    #[cfg(test)]
     pub(crate) fn current(&self) -> PolicyProfile {
         self.current
     }
@@ -209,11 +216,20 @@ impl Controller {
             self.suspended_until = None;
         }
 
+        if !signals.estimated {
+            // No rate, no estimate: the delay rules have nothing to act on, so the streaks must
+            // rebuild from real samples. A pending verification waits for the next estimate
+            // instead of being passed by a value that was never measured.
+            self.down_streak = 0;
+            self.up_streak = 0;
+            return None;
+        }
+
         // Verify a pending down-step before considering another change.
         if let Some(pending) = self.pending {
             if now >= pending.at.saturating_add(VERIFY_WINDOW) {
-                let improved =
-                    signals.queue_delay.saturating_mul(100) <= pending.baseline.saturating_mul(90);
+                let improved = signals.queue_delay.saturating_mul(100)
+                    <= pending.baseline.saturating_mul(100 - MIN_IMPROVEMENT);
                 self.pending = None;
                 if !improved {
                     // Revert this step only: the row before it was already verified.
@@ -378,6 +394,153 @@ fn ladder_index(profile: PolicyProfile) -> usize {
         .expect("every accepted profile is on the ladder")
 }
 
+/// One direction's raw counters, read once per slow-loop tick. These are the pack's own numbers:
+/// no RTT, loss, port, protocol or payload signal enters (ADR-0056 decision 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Counters {
+    /// Bytes queued in the direction's arbiter at sample time.
+    pub queued_bytes: usize,
+    /// Cumulative bytes the arbiter granted, for the rate over the interval.
+    pub granted_bytes: u64,
+    /// Cumulative scheduler refusals (a queue hit its cap).
+    pub overflow_refusals: u64,
+    /// Cumulative `Guarded` interface violations, when a guard is in the path.
+    pub violations: u64,
+}
+
+/// The ADR-0056 decision-4 estimate: queued bytes divided by the rate the arbiter delivered over
+/// the interval. With no delivered bytes there is no rate to divide by, so the estimate is zero and
+/// the loop does not act on it rather than inventing a starvation signal.
+fn queue_delay(queued_bytes: usize, granted_bytes: u64, interval: Duration) -> Duration {
+    if granted_bytes == 0 || interval.is_zero() {
+        return Duration::ZERO;
+    }
+    let micros = (queued_bytes as u128)
+        .saturating_mul(interval.as_micros())
+        .saturating_div(granted_bytes as u128);
+    Duration::from_micros(u64::try_from(micros).unwrap_or(u64::MAX))
+}
+
+/// One change attributed to the direction whose counters caused it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DirectionChange {
+    pub direction: Direction,
+    pub change: Change,
+}
+
+impl std::fmt::Display for DirectionChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let direction = match self.direction {
+            Direction::ToPeer => "to_peer",
+            Direction::FromPeer => "from_peer",
+        };
+        write!(f, "{} direction={}", self.change, direction)
+    }
+}
+
+/// The per-session sampler: one [`Controller`] per relay direction, fed from that direction's own
+/// arbiter counters at the ADR's cadence, plus the estimates it computed for diagnostics. Time is
+/// passed in, so tests drive it without a clock or a task.
+#[derive(Debug)]
+pub(crate) struct Adaptation {
+    to_peer: Controller,
+    from_peer: Controller,
+    previous: [Option<Counters>; 2],
+    last_at: Option<Duration>,
+    history: Vec<(Direction, Duration)>,
+    transcript: Vec<DirectionChange>,
+}
+
+impl Adaptation {
+    pub(crate) fn new(configured: PolicyProfile) -> Self {
+        Self {
+            to_peer: Controller::new(configured),
+            from_peer: Controller::new(configured),
+            previous: [None, None],
+            last_at: None,
+            history: Vec::new(),
+            transcript: Vec::new(),
+        }
+    }
+
+    /// The row a direction's scheduler pair should use now, for tests and diagnostics.
+    #[cfg(test)]
+    pub(crate) fn current(&self, direction: Direction) -> PolicyProfile {
+        match direction {
+            Direction::ToPeer => self.to_peer.current(),
+            Direction::FromPeer => self.from_peer.current(),
+        }
+    }
+
+    /// Estimates computed so far, oldest first, for the evidence record only.
+    pub(crate) fn history(&self) -> &[(Direction, Duration)] {
+        &self.history
+    }
+
+    /// Every change made, oldest first, for the evidence record and tests.
+    pub(crate) fn transcript(&self) -> &[DirectionChange] {
+        &self.transcript
+    }
+
+    /// One tick with the counters each direction reported, or `None` when the arbiter could not
+    /// answer (a missed sample, which the controller handles as staleness, never as a zero).
+    pub(crate) fn tick(
+        &mut self,
+        now: Duration,
+        to_peer: Option<Counters>,
+        from_peer: Option<Counters>,
+    ) -> Vec<DirectionChange> {
+        let interval = self
+            .last_at
+            .map_or(SAMPLE_PERIOD, |last| now.saturating_sub(last));
+        self.last_at = Some(now);
+        let mut changes = Vec::new();
+        for (index, direction, counters) in [
+            (0, Direction::ToPeer, to_peer),
+            (1, Direction::FromPeer, from_peer),
+        ] {
+            // The rate over the interval, or zero when there is none: a first sample, a reset
+            // counter, or a direction that delivered nothing.
+            let granted = counters.map_or(0, |counters| match self.previous[index] {
+                Some(previous) if counters.granted_bytes >= previous.granted_bytes => {
+                    counters.granted_bytes - previous.granted_bytes
+                }
+                _ => 0,
+            });
+            self.previous[index] = counters;
+            // No delivered bytes means no rate to divide by, so there is no estimate. That is a
+            // missed sample (ADR-0056 decision 4), never a measured zero: a zero would advance
+            // the low-delay streak and satisfy a pending verification with data that does not
+            // exist.
+            // No delivered bytes means no rate to divide by, so the delay is not an estimate;
+            // the counters are still sampled, because a guard violation or an overflow is real
+            // whatever the rate. The tick is never turned into a measured zero.
+            let signals = counters.map(|counters| Signals {
+                queue_delay: queue_delay(counters.queued_bytes, granted, interval),
+                estimated: granted > 0,
+                overflow_refusals: counters.overflow_refusals,
+                violations: counters.violations,
+            });
+            if let Some(signals) = signals.filter(|signals| signals.estimated) {
+                if self.history.len() >= 4_096 {
+                    self.history.drain(..2_048);
+                }
+                self.history.push((direction, signals.queue_delay));
+            }
+            let controller = match direction {
+                Direction::ToPeer => &mut self.to_peer,
+                Direction::FromPeer => &mut self.from_peer,
+            };
+            if let Some(change) = controller.update(now, signals) {
+                let change = DirectionChange { direction, change };
+                self.transcript.push(change);
+                changes.push(change);
+            }
+        }
+        changes
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +552,7 @@ mod tests {
     fn sample(delay_ms: u64) -> Option<Signals> {
         Some(Signals {
             queue_delay: Duration::from_millis(delay_ms),
+            estimated: true,
             overflow_refusals: 0,
             violations: 0,
         })
@@ -630,6 +794,7 @@ mod tests {
 
         let violation = Some(Signals {
             queue_delay: Duration::from_millis(200),
+            estimated: true,
             overflow_refusals: 0,
             violations: 1,
         });
@@ -660,6 +825,7 @@ mod tests {
 
         let violation = Some(Signals {
             queue_delay: Duration::from_millis(200),
+            estimated: true,
             overflow_refusals: 0,
             violations: 1,
         });
@@ -689,6 +855,7 @@ mod tests {
         step_down(&mut controller, 0, 200);
         let overflow = Some(Signals {
             queue_delay: Duration::from_millis(200),
+            estimated: true,
             overflow_refusals: 1,
             violations: 0,
         });
@@ -707,5 +874,174 @@ mod tests {
         assert!(line.starts_with("policy adaptive: balanced/1 -> gaming/1"));
         assert!(line.contains("cause=queue_delay_high"));
         assert!(line.contains("queue_delay_ms=80"));
+    }
+
+    fn counters(queued: usize, granted: u64) -> Option<Counters> {
+        Some(Counters {
+            queued_bytes: queued,
+            granted_bytes: granted,
+            overflow_refusals: 0,
+            violations: 0,
+        })
+    }
+
+    #[test]
+    fn the_estimate_is_queued_bytes_over_the_delivered_rate() {
+        // 100 KB queued while 2.5 MB/s was delivered over one second: 40 ms.
+        assert_eq!(
+            queue_delay(100_000, 2_500_000, Duration::from_secs(1)),
+            Duration::from_millis(40)
+        );
+        // Half the rate, same queue: twice the delay.
+        assert_eq!(
+            queue_delay(100_000, 1_250_000, Duration::from_secs(1)),
+            Duration::from_millis(80)
+        );
+        // No queued bytes is no queueing delay, and no delivered bytes is no rate to divide by.
+        assert_eq!(
+            queue_delay(0, 1_000, Duration::from_secs(1)),
+            Duration::ZERO
+        );
+        assert_eq!(
+            queue_delay(1_000, 0, Duration::from_secs(1)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn sustained_wired_samples_step_a_direction_and_leave_the_other_alone() {
+        let mut adaptation = Adaptation::new(PolicyProfile::Balanced);
+        let mut changes = Vec::new();
+        // The first tick has no previous counters, so it has no rate to divide by and computes no
+        // estimate; the streak is built by the next three.
+        for second in 1..=4 {
+            // 150 KB queued at 2.5 MB/s is 60 ms, above the down threshold; the other direction
+            // is calm and must not move.
+            changes.extend(adaptation.tick(
+                at(second),
+                counters(150_000, second * 2_500_000),
+                counters(0, second * 2_500_000),
+            ));
+        }
+        assert_eq!(changes.len(), 1, "one step, one change");
+        assert_eq!(changes[0].direction, Direction::ToPeer);
+        assert_eq!(changes[0].change.from, PolicyProfile::Balanced);
+        assert_eq!(changes[0].change.to, PolicyProfile::Gaming);
+        assert_eq!(adaptation.current(Direction::ToPeer), PolicyProfile::Gaming);
+        assert_eq!(
+            adaptation.current(Direction::FromPeer),
+            PolicyProfile::Balanced
+        );
+        assert!(changes[0].to_string().contains("direction=to_peer"));
+        assert_eq!(
+            adaptation.history().len(),
+            6,
+            "one estimate per direction after the first tick"
+        );
+        // The sample is the queue (150 KB) over the delivered rate (2.5 MB in 1 s): 60 ms.
+        assert_eq!(
+            adaptation.history()[0],
+            (Direction::ToPeer, Duration::from_millis(60))
+        );
+    }
+
+    #[test]
+    fn a_direction_with_no_delivered_bytes_feeds_no_estimate() {
+        let mut adaptation = Adaptation::new(PolicyProfile::Balanced);
+        // Step down on three 60 ms samples, so a pending verification and a changed row exist.
+        for second in 1..=4 {
+            adaptation.tick(
+                at(second),
+                counters(150_000, second * 2_500_000),
+                counters(0, second * 2_500_000),
+            );
+        }
+        assert_eq!(adaptation.current(Direction::ToPeer), PolicyProfile::Gaming);
+        let history = adaptation.history().len();
+        // The arbiter now reports nothing delivered in either direction: there is no rate, so
+        // there is no estimate. A fabricated zero would cancel the pending verification as an
+        // improvement (0 ms is under any baseline) and start an up-streak; instead only the
+        // counters are read, the delay rules stay silent, and the row is held.
+        let flat = counters(0, 4 * 2_500_000);
+        let mut changes = Vec::new();
+        for second in 5..=7 {
+            changes.extend(adaptation.tick(at(second), flat, flat));
+        }
+        assert!(changes.is_empty(), "a tick with no rate changes nothing");
+        assert_eq!(
+            adaptation.history().len(),
+            history,
+            "no estimate is recorded"
+        );
+        assert_eq!(
+            adaptation.current(Direction::ToPeer),
+            PolicyProfile::Gaming,
+            "the row is held while the delay is unknown"
+        );
+    }
+
+    #[test]
+    fn a_missed_sample_is_not_a_zero_and_three_restore_the_configured_row() {
+        let mut adaptation = Adaptation::new(PolicyProfile::Balanced);
+        for second in 1..=4 {
+            adaptation.tick(
+                at(second),
+                counters(150_000, second * 2_500_000),
+                counters(0, second * 2_500_000),
+            );
+        }
+        assert_eq!(adaptation.current(Direction::ToPeer), PolicyProfile::Gaming);
+        // Two gaps only clear the streaks; the third restores the configured row.
+        assert!(adaptation.tick(at(5), None, None).is_empty());
+        assert!(adaptation.tick(at(6), None, None).is_empty());
+        let changes = adaptation.tick(at(7), None, None);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].change.cause, Cause::StaleSignals);
+        assert_eq!(changes[0].change.to, PolicyProfile::Balanced);
+        assert_eq!(
+            adaptation.current(Direction::ToPeer),
+            PolicyProfile::Balanced
+        );
+    }
+
+    #[test]
+    fn a_guard_increase_on_the_wire_restores_and_suspends() {
+        let mut adaptation = Adaptation::new(PolicyProfile::Streaming);
+        for second in 1..=4 {
+            adaptation.tick(
+                at(second),
+                counters(300_000, second * 2_500_000),
+                counters(0, second * 2_500_000),
+            );
+        }
+        assert_eq!(
+            adaptation.current(Direction::ToPeer),
+            PolicyProfile::Balanced
+        );
+        let guarded = Some(Counters {
+            queued_bytes: 300_000,
+            granted_bytes: 10_000_000,
+            overflow_refusals: 0,
+            violations: 1,
+        });
+        let changes = adaptation.tick(at(5), guarded, counters(0, 10_000_000));
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].change.cause, Cause::GuardViolation);
+        assert_eq!(changes[0].change.from, PolicyProfile::Balanced);
+        assert_eq!(changes[0].change.to, PolicyProfile::Streaming);
+        // The suspension holds for the guard window: a fresh high estimate changes nothing.
+        assert!(
+            adaptation
+                .tick(
+                    at(6),
+                    counters(300_000, 12_500_000),
+                    counters(0, 12_500_000)
+                )
+                .is_empty()
+        );
+        assert_eq!(
+            adaptation.current(Direction::ToPeer),
+            PolicyProfile::Streaming
+        );
     }
 }

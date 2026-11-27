@@ -30,16 +30,19 @@
 //! window alone cannot do. Its measurement (TP-2.2) is recorded in ADR-0048 as `simulated`.
 
 use std::io;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout;
 
-use crate::policy::FlowId;
+use crate::policy::{Direction, FlowId};
+use crate::policy_adaptive::{Adaptation, Counters, DirectionChange, SAMPLE_PERIOD};
 use crate::policy_profile::PolicyProfile;
-use crate::policy_sched::{Arbiter, DEFAULT_QUANTUM_BYTES, FlowHandle, SchedulerConfig};
+use crate::policy_sched::{
+    Arbiter, ArbiterStats, DEFAULT_QUANTUM_BYTES, FlowHandle, SchedulerConfig,
+};
 
 /// Runtime switch read by `tunnel::yamux_config` and `tunnel::policy_session`.
 pub(crate) const ENV_POLICY: &str = "BAFT_TUNNEL_POLICY_PACK";
@@ -164,32 +167,124 @@ impl PolicyRelay {
 pub(crate) struct PolicySession {
     to_peer: Arc<Arbiter>,
     from_peer: Arc<Arbiter>,
-    chunk: usize,
+    /// Read size per direction. It follows that direction's adaptation down the ladder, so a
+    /// smaller quantum never meets a request larger than the row's queue cap (ADR-0056 decision 2).
+    chunk: [AtomicUsize; 2],
     next_flow: AtomicU64,
+    /// `Some` only when `policy.adaptive` opted in (ADR-0056 decisions 9-10).
+    adaptation: Option<Mutex<Adaptation>>,
 }
 
 impl PolicySession {
     /// `Some` only when the switch enables the pack and a scheduler applies; a `window-cap` switch
-    /// with no configured profile keeps today's unscheduled path (ADR-0048).
-    pub(crate) fn from_env_and_profile(profile: Option<PolicyProfile>) -> Option<Arc<Self>> {
+    /// with no configured profile keeps today's unscheduled path (ADR-0048). `adaptive` is the
+    /// tunnel config's `policy.adaptive` opt-in: with no configured profile it stays inert, because
+    /// the loop selects rows and never enables a profile (ADR-0056 decisions 1 and 10).
+    pub(crate) fn from_env_and_profile(
+        profile: Option<PolicyProfile>,
+        adaptive: bool,
+    ) -> Option<Arc<Self>> {
         let relay = PolicyRelay::from_env_and_profile(profile)?;
         let config = relay.scheduler?;
-        Some(Self::with_config(config))
+        let Some(profile) = profile else {
+            if adaptive {
+                eprintln!(
+                    "policy adaptive: inert (policy.profile is absent, so there is no row to adapt from)"
+                );
+            }
+            return Some(Self::with_config(config));
+        };
+        Some(Self::new(config, profile, adaptive))
     }
 
     /// Session with fixed bounds, for the measurement harness.
     pub(crate) fn with_config(config: SchedulerConfig) -> Arc<Self> {
-        Arc::new(Self {
-            to_peer: Arbiter::spawn(config),
-            from_peer: Arbiter::spawn(config),
-            chunk: config.quantum_bytes,
-            next_flow: AtomicU64::new(1),
-        })
+        Self::new(config, PolicyProfile::Balanced, false)
     }
 
-    /// Bytes one read may carry, and therefore the most a flow ever queues.
-    pub(crate) fn chunk(&self) -> usize {
-        self.chunk
+    /// Session that starts at `configured` and, when `adaptive`, samples the two arbiters at the
+    /// ADR's 1 Hz cadence and applies the controller's chosen row to the direction that caused it.
+    pub(crate) fn new(
+        config: SchedulerConfig,
+        configured: PolicyProfile,
+        adaptive: bool,
+    ) -> Arc<Self> {
+        let session = Arc::new(Self {
+            to_peer: Arbiter::spawn(config),
+            from_peer: Arbiter::spawn(config),
+            chunk: [
+                AtomicUsize::new(config.quantum_bytes),
+                AtomicUsize::new(config.quantum_bytes),
+            ],
+            next_flow: AtomicU64::new(1),
+            adaptation: adaptive.then(|| Mutex::new(Adaptation::new(configured))),
+        });
+        if adaptive {
+            spawn_adaptive_driver(Arc::downgrade(&session));
+        }
+        session
+    }
+
+    /// Bytes one read may carry for the direction, and therefore the most a flow queues.
+    fn chunk(&self, direction: Direction) -> &AtomicUsize {
+        match direction {
+            Direction::ToPeer => &self.chunk[0],
+            Direction::FromPeer => &self.chunk[1],
+        }
+    }
+
+    /// Every change adaptation made, for the evidence record.
+    #[allow(dead_code)] // read by the measurement harness, which also builds outside `cfg(test)`
+    pub(crate) fn changes(&self) -> Vec<DirectionChange> {
+        self.adaptation
+            .as_ref()
+            .and_then(|adaptation| adaptation.lock().ok())
+            .map(|adaptation| adaptation.transcript().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Every queueing-delay estimate adaptation computed, for the evidence record.
+    #[allow(dead_code)] // read by the measurement harness, which also builds outside `cfg(test)`
+    pub(crate) fn estimates(&self) -> Vec<(Direction, Duration)> {
+        self.adaptation
+            .as_ref()
+            .and_then(|adaptation| adaptation.lock().ok())
+            .map(|adaptation| adaptation.history().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// One accepted change: reconfigure that direction's arbiter and keep its read bound in step.
+    async fn apply(&self, change: DirectionChange) {
+        let profile = change.change.to;
+        let config = SchedulerConfig {
+            quantum_bytes: profile.quantum_bytes(),
+            max_queued_bytes: profile.max_queued_bytes(),
+        };
+        let arbiter = match change.direction {
+            Direction::ToPeer => &self.to_peer,
+            Direction::FromPeer => &self.from_peer,
+        };
+        if arbiter.configure(config).await {
+            self.chunk(change.direction)
+                .store(config.quantum_bytes, Ordering::Relaxed);
+            eprintln!("{change}");
+        }
+    }
+
+    /// One slow-loop tick, split out so the driver has no decision logic and tests can drive it.
+    async fn tick(&self, started: Instant) {
+        let Some(adaptation) = &self.adaptation else {
+            return;
+        };
+        let to_peer = self.to_peer.stats().await.map(counters);
+        let from_peer = self.from_peer.stats().await.map(counters);
+        let changes = adaptation
+            .lock()
+            .map(|mut adaptation| adaptation.tick(started.elapsed(), to_peer, from_peer))
+            .unwrap_or_default();
+        for change in changes {
+            self.apply(change).await;
+        }
     }
 
     /// Registers one stream in both directions under one id.
@@ -205,6 +300,34 @@ impl PolicySession {
         let from_peer = self.from_peer.stats().await.map_or(0, |stats| stats.flows);
         (to_peer, from_peer)
     }
+}
+
+/// The pack's counters as the controller's sample. The scheduler path has no
+/// `Guarded<TrafficPolicy>` in it (`policy.rs`'s wrapper is not instantiated by the relay), so there
+/// is no live interface-violation counter to report: the field is zero and the guard fail-safe is
+/// covered by the controller's own tests, not by live traffic.
+fn counters(stats: ArbiterStats) -> Counters {
+    Counters {
+        queued_bytes: stats.queued_bytes,
+        granted_bytes: stats.granted_bytes,
+        overflow_refusals: stats.overflow_refusals,
+        violations: 0,
+    }
+}
+
+/// The 1 Hz slow loop, one per adaptive session. It holds the session weakly, so it stops as soon
+/// as the session and its arbiters go away and cannot keep a finished session alive.
+fn spawn_adaptive_driver(session: Weak<PolicySession>) {
+    tokio::spawn(async move {
+        let started = Instant::now();
+        loop {
+            tokio::time::sleep(SAMPLE_PERIOD).await;
+            let Some(session) = session.upgrade() else {
+                return;
+            };
+            session.tick(started).await;
+        }
+    });
 }
 
 /// Relay both directions under the pack's scheduler until each side closes, failing a direction
@@ -231,7 +354,7 @@ where
             b_write,
             idle,
             &from_peer,
-            session.chunk(),
+            session.chunk(Direction::FromPeer),
             crate::session_status::add_from_peer,
         ),
         pump_scheduled(
@@ -239,7 +362,7 @@ where
             a_write,
             idle,
             &to_peer,
-            session.chunk(),
+            session.chunk(Direction::ToPeer),
             crate::session_status::add_to_peer,
         )
     );
@@ -256,15 +379,19 @@ async fn pump_scheduled<R, W>(
     mut writer: W,
     idle: Duration,
     flow: &FlowHandle,
-    chunk: usize,
+    chunk: &AtomicUsize,
     count: fn(usize),
 ) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut buffer = vec![0_u8; chunk];
+    let mut buffer = Vec::new();
     loop {
+        // An adaptation step changes this direction's quantum; the next read must not exceed it,
+        // or the request could be larger than the new row's queue cap.
+        let size = chunk.load(Ordering::Relaxed).max(1);
+        buffer.resize(size, 0);
         let read = timeout(idle, reader.read(&mut buffer))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "stream idle timeout"))??;
@@ -274,7 +401,9 @@ where
         }
         let mut written = 0;
         while written < read {
-            let want = read - written;
+            // A change can land while this read is in flight, so the offer is re-capped to the
+            // quantum in force now: the arbiter refuses an offer past its row's cap.
+            let want = (read - written).min(chunk.load(Ordering::Relaxed).max(1));
             let grant = flow.acquire(want).await?;
             if grant > want {
                 return Err(io::Error::new(
@@ -429,6 +558,89 @@ mod tests {
             flows = session.flows().await;
         }
         assert_eq!(flows, (0, 0), "no flow may outlive its relay");
+    }
+
+    /// ADR-0056 decision 10: with the pack switch unset, `policy.adaptive` constructs nothing, so
+    /// the data path is exactly today's. The switch, not the tunnel config, decides whether the
+    /// module runs at all (ADR-0048).
+    #[test]
+    fn adaptation_cannot_start_without_the_pack_switch() {
+        use crate::policy_profile::PolicyProfile;
+        assert!(
+            PolicySession::from_env_and_profile(Some(PolicyProfile::Balanced), true).is_none(),
+            "the switch is unset in tests"
+        );
+        assert!(PolicySession::from_env_and_profile(None, true).is_none());
+        assert!(PolicySession::from_env_and_profile(None, false).is_none());
+    }
+
+    /// Without the opt-in the session has no controller at all: no sampler task, no changes, and
+    /// both directions keep the configured quantum for the session's whole life.
+    #[tokio::test]
+    async fn an_unconfigured_session_has_no_adaptation() {
+        let session = PolicySession::with_config(SchedulerConfig {
+            quantum_bytes: 4 * 1024,
+            max_queued_bytes: 16 * 1024,
+        });
+        assert!(session.adaptation.is_none());
+        assert_eq!(
+            session.chunk(Direction::ToPeer).load(Ordering::Relaxed),
+            4 * 1024
+        );
+        assert_eq!(
+            session.chunk(Direction::FromPeer).load(Ordering::Relaxed),
+            4 * 1024
+        );
+        assert!(session.changes().is_empty());
+        assert!(session.estimates().is_empty());
+    }
+
+    /// ADR-0056 decision 2: an accepted change is applied to that direction's scheduler pair and
+    /// its read bound together, and to nothing else. The other direction keeps its row.
+    #[tokio::test]
+    async fn an_accepted_change_reaches_only_its_direction() {
+        use crate::policy_adaptive::{Cause, Change};
+        use crate::policy_profile::PolicyProfile;
+        let session = PolicySession::new(
+            SchedulerConfig {
+                quantum_bytes: PolicyProfile::Gaming.quantum_bytes(),
+                max_queued_bytes: PolicyProfile::Gaming.max_queued_bytes(),
+            },
+            PolicyProfile::Gaming,
+            true,
+        );
+        let (to_peer, _) = session.open();
+        session
+            .apply(DirectionChange {
+                direction: Direction::ToPeer,
+                change: Change {
+                    at: Duration::from_secs(4),
+                    from: PolicyProfile::Gaming,
+                    to: PolicyProfile::Trading,
+                    cause: Cause::QueueDelayHigh,
+                    queue_delay: Duration::from_millis(80),
+                },
+            })
+            .await;
+        assert_eq!(
+            session.chunk(Direction::ToPeer).load(Ordering::Relaxed),
+            PolicyProfile::Trading.quantum_bytes()
+        );
+        assert_eq!(
+            session.chunk(Direction::FromPeer).load(Ordering::Relaxed),
+            PolicyProfile::Gaming.quantum_bytes(),
+            "the other direction was not the one that queued"
+        );
+        // The running arbiter enforces the new quantum on the very next grant, no restart.
+        assert_eq!(
+            to_peer.acquire(4096).await.expect("grant"),
+            PolicyProfile::Trading.quantum_bytes()
+        );
+        let stats = session.to_peer.stats().await.expect("stats");
+        assert_eq!(
+            stats.granted_bytes,
+            PolicyProfile::Trading.quantum_bytes() as u64
+        );
     }
 
     #[test]
