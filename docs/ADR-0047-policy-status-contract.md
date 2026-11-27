@@ -129,7 +129,8 @@ assumptions:
      cannot make any tuple `measured`, whatever its numbers say. This is why the four TP-3.2-TP-3.5
      records and the TP-4.1/TP-4.2 records leave every row below `unknown`.
    - `unsupported` means the code cannot apply a profile there at all: `baft` (ADR-0031 decision 17)
-     and the datagram carrier (#244, ADR-0046 not accepted). Unsupported rows are shown, not hidden.
+     and the datagram carrier (#244; ADR-0046 accepted 2026-11-27 for its design, no carrier yet).
+     Unsupported rows are shown, not hidden.
    - A tuple with no record is `unknown`; absence is never rendered as `measured` or as a zero.
 
    The object carries one entry per profile row (the five of decision 15) on the tunnel's own
