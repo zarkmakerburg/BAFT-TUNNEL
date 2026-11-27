@@ -1,9 +1,9 @@
 # ADR-0047: Policy Pack status contract (API, CLI, panel)
 
-**Status:** Accepted 2026-11-27 under the owner's delegated decision authority. The read surface is
-**implemented and merged** (2026-11-27, § "Implementation plan"): the tunnel publishes
-`policy.json`, `GET /v1/status` carries the `policy` member, and `baft-tunnel policy status`
-renders it. The write surface it sits beside shipped earlier
+**Status:** Accepted 2026-11-27 under the owner's delegated decision authority. The read surface and
+its panel card are **implemented and merged** (2026-11-27, § "Implementation plan"): the tunnel
+publishes `policy.json`, `GET /v1/status` carries the `policy` member, `baft-tunnel policy status`
+renders it, and `panel-react`'s `PolicyCard` shows the same object in fa/en. The write surface it sits beside shipped earlier
 ([ADR-0057](ADR-0057-policy-operator-surface.md), merged 2026-11-27).
 **Date:** 2026-11-17, accepted 2026-11-27 after reconciling it with the shipped write surface and the
 pack's `simulated` records.
@@ -248,8 +248,12 @@ into `agent::status` with a single `unit_view` read for both members); `src/poli
 unreachable or mismatched agent. The tests cover decision 3's table case by case, the gate-off build,
 the absent/off/multi-source switch, stale and foreign-pid evidence, fallback causes, every tuple
 `unknown` (and `baft` `unsupported`), null-not-zero metrics, the `policy` member in the agent's
-status route, and the CLI rendering. TP-5.2 (#241) then builds the card on the shipped object, and
-TP-5.3 documents it; TP-5.1 (#240) closes on that merge.
+status route, and the CLI rendering. TP-5.1 (#240) closes on that merge. TP-5.2 (#241) then built the fa/en card on that object and
+merged it on 2026-11-27: `panel-react`'s `PolicyCard` renders exactly the fields above (state and
+reason, configured vs running, switch with sources, adaptive, fallback, tuple claims and metrics as
+unavailable-with-reason rather than 0), and its pure view model marks a gate-off build, an absent
+`policy` member and a failed/401 status read unavailable with a reason instead of inventing a
+healthy state; its decision table runs in the panel's `npm test`. TP-5.3 documents the pack.
 
 ## Rejected
 
@@ -270,8 +274,8 @@ TP-5.3 documents it; TP-5.1 (#240) closes on that merge.
 
 ## Not covered (stated, not faked)
 
-- The implementation itself (plan above), the panel card (TP-5.2), the pack's documentation page
-  (TP-5.3) and the UDP carrier (#244).
+- The pack's documentation page (TP-5.3) and the UDP carrier (#244). (The implementation and the
+  panel card (TP-5.2) have since shipped: 2026-11-27.)
 - Any measured profile: no tuple is `measured` and none can become so without a real two-host LAB
   window, which stays suspended.
 - Turning the adaptive controller on: `policy.adaptive` is reported, never set, by this surface.

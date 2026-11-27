@@ -1,0 +1,53 @@
+{
+  "policy": {
+    "interface_version": 1,
+    "feature_compiled": true,
+    "state": "active",
+    "reason": null,
+    "profile": {
+      "configured": "gaming/1",
+      "configured_effective": "gaming/1",
+      "running": "gaming/1"
+    },
+    "switch": {
+      "state": "on",
+      "value": "sched",
+      "sources": ["/etc/systemd/system/baft-tunnel@edge.service.d/50-policy-pack.conf"],
+      "scan": null
+    },
+    "adaptive": { "configured": true, "effective": false },
+    "fallback": null,
+    "tuples": [
+      { "engine": "tcp-tls", "carrier": "tcp", "profile": "balanced/1", "claim": "unknown", "evidence": null },
+      { "engine": "tcp-tls", "carrier": "tcp", "profile": "gaming/1", "claim": "unknown", "evidence": null }
+    ],
+    "capabilities": {
+      "priority_enforcement": "unknown",
+      "write_pacing": "unknown",
+      "rtt_observation": "unknown",
+      "queue_observation": "unknown",
+      "datagram": "unknown"
+    },
+    "metrics": {
+      "queued_bytes": {
+        "value": 0,
+        "unit": "bytes",
+        "interval_seconds": 1,
+        "provenance": "measured",
+        "fresh": true,
+        "available": true,
+        "reason": null
+      },
+      "guard_violations": {
+        "value": null,
+        "unit": "count",
+        "interval_seconds": 1,
+        "provenance": "measured",
+        "fresh": false,
+        "available": false,
+        "reason": "not_instrumented"
+      }
+    },
+    "evidence": { "running": { "pid": 4242, "sampled_unix": 1764219600, "age_s": 0, "fresh": true } }
+  }
+}

@@ -205,6 +205,9 @@ jobs:
           npm ci --no-audit --no-fund
           npx tsc --noEmit
           npm run build
+      - name: Panel view-model tests (ADR-0047 policy decision table)
+        working-directory: panel-react
+        run: npm test
       - name: Committed dist must match the sources (rebuild and rerun npm run build, then commit panel-react/dist)
         run: git diff --exit-code -- panel-react/dist
       - name: Dist is self-contained

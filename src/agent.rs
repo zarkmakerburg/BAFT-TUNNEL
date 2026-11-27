@@ -5500,6 +5500,10 @@ mod tests {
             ("shell", include_str!("../panel-react/src/shell/Shell.tsx")),
             ("setup", include_str!("../panel-react/src/pages/Setup.tsx")),
             ("parts", include_str!("../panel-react/src/pages/parts.tsx")),
+            (
+                "policy",
+                include_str!("../panel-react/src/pages/PolicyCard.tsx"),
+            ),
         ] {
             assert!(
                 !src.contains("dangerouslySetInnerHTML") && !src.contains("innerHTML"),

@@ -4,6 +4,7 @@ import { useData } from '../feed-context';
 import { ago, conf, fmtNum, roleLabel } from '../derive';
 import { Card, KV, Ltr, Pill } from '../components/ui';
 import { CapPill, OpsBody, nv } from './parts';
+import { PolicyCard } from './PolicyCard';
 
 export function AgentPage() {
   const { t, lang, toast } = useApp();
@@ -46,6 +47,7 @@ export function AgentPage() {
           [t('f.protocol'), c.protocol_version == null ? '—' : <Ltr key="pv">{'v' + c.protocol_version}</Ltr>],
         ]} />
       </Card>
+      <PolicyCard />
       <Card title={t('agent.caps')}>
         <ul className="list">
           <li>{t('cap.audit')}: <CapPill state={d.meta.audit} /></li>
