@@ -1,11 +1,13 @@
 # TP-4.1 adaptive controller: simulated evidence record
 
 **Status: delivered and merged 2026-11-27. The loop measured here made no change, and the live 1 Hz
-driver itself is covered end to end (section 5) — with scripted sample values, because this harness
-cannot produce a live congestion estimate. TP-4.1 has no open repo-side work left. What remains
-unverified is real-path behaviour, which needs the owner-suspended two-host LAB window (a
-release-level gate shared with TP-3.2-TP-3.5); it is recorded as unverified, not claimed, and this
-`simulated` record does not substitute for it.**
+driver itself is covered end to end (section 5); since the decision-4 amendment (section 6) the
+sample carries granted-but-unwritten bytes, and the live driver was observed producing a non-zero
+estimate (1,001 ms, `in_flight_bytes` 16,384) at the exact live state where `queued_bytes` reads 0 —
+on this loopback harness, with a test-chosen drain rate. TP-4.1 has no open repo-side work left.
+What remains unverified is real-path behaviour, which needs the owner-suspended two-host LAB window
+(a release-level gate shared with TP-3.2-TP-3.5); it is recorded as unverified, not claimed, and
+this `simulated` record does not substitute for it.**
 Item: TP-4.1 (#238). Design: [ADR-0056](ADR-0056-adaptive-optimization-controller.md) decisions 4
 (inputs), 6-8 (hysteresis, steps, fail-safe) and 12 (this benchmark). Row table:
 [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) decision 15. Status contract:
@@ -126,3 +128,63 @@ bound), and spawning the driver regardless of the opt-in (the inert test's scrip
 No profile becomes `measured` through this record, ADR-0048's default-off decision and the
 `simulated` label of every other record are untouched, and the `policy.adaptive` opt-in stays off
 by default because there is no reproducible benefit to turn it on.
+
+## 6. The in-flight sample at the relay boundary (2026-11-27, ADR-0056 decision 4 amended)
+
+Section 3's finding was that the decision-4 signal cannot see the wait it is meant to regulate: the
+arbiter's queue is a rendezvous, so `queued_bytes` reads zero while the real wait is in the granted
+bytes whose `write_all` is blocked by the peer's Yamux window. This section records the amendment
+that closes that gap and what it was observed to do.
+
+**What changed.** `relay_with_policy`'s pump now raises a per-direction `in_flight_bytes` counter
+after `FlowHandle::acquire` returns a grant and lowers it (saturating) when that `write_all`
+completes, so the counter's meaning is exactly "granted by the arbiter, not yet written by the
+relay". The 1 Hz sample reads it beside the arbiter counters, `Counters` carries it, and the
+decision-4 estimate divides `queued_bytes + in_flight_bytes` by the interval's granted rate. The
+`queued_bytes` metric itself is untouched: it is still the arbiter's own queue length and still
+reads zero in this state. With `policy.adaptive` off no controller, no driver and no estimate exist;
+the counter is bookkeeping on the relay path and changes no wire byte. No default changed.
+
+**Observed numbers (loopback, `simulated`, this box, one run per line, 2026-11-27).** The harness is
+the live-driver test extended with a real relay whose peer drains 512 bytes every 50 ms against a
+16 KiB quantum, so a grant is held unwritten across whole sample intervals. The product's own 1 Hz
+driver then samples the live counters:
+
+```
+POLICY_TP41_INFLIGHT {"queued_bytes":0,"in_flight_bytes":16384,"estimate_ms":1001}
+```
+
+| Signal | Value at the same live sample |
+|---|---|
+| `queued_bytes` (decision 4, unchanged) | **0** — the arbiter granted the request immediately |
+| `in_flight_bytes` (amendment) | **16,384** — one full `balanced/1` quantum held in `write_all` |
+| estimate with `queued_bytes` only (the old input) | **0 ms** — the 13-run record's result, reproduced |
+| estimate with the amendment | **1,001 ms** — 16,384 bytes at the 16 KiB/s grant rate over the 1 s interval |
+
+So the answer to the question decision 4 left open is: **yes, at the relay boundary the signal is
+non-zero exactly where `queued_bytes` reads zero**, and it is large (about one second of queueing)
+rather than marginal. The test fails if the boundary never reports a held grant, if the arbiter queue
+were not zero in that state, or if the live driver never produced a non-zero estimate; the printed
+line is the assertion's own evidence, not a hand-computed claim.
+
+**Reverse mutations (each broke the production path, failed the new test, then was restored).**
+
+| Mutation | Observed failure |
+|---|---|
+| Removed the `in_flight.fetch_add` after `acquire` (the boundary stops knowing a grant exists) | `panicked at src/policy_relay.rs:893: the write boundary never reported granted-but-unwritten bytes while its writer was blocked` |
+| Made `counters()` pass `in_flight_bytes: 0` (the sample stops carrying the new signal) | `panicked at src/policy_relay.rs:920: the live sample must turn a held grant into a non-zero estimate; queued_bytes=0, in_flight_bytes=16384, estimates=[(ToPeer, 0ns), (ToPeer, 0ns), …]` |
+| Built the controller regardless of the opt-in (`adaptation: Some(…)`) | `panicked at src/policy_relay.rs:819: assertion failed: session.adaptation.is_none()` in `the_live_driver_does_not_run_without_the_opt_in` |
+
+A first attempt at the first mutation left the decrement in place, so the counter wrapped and the
+test failed on its bound instead (`one grant is at most one quantum, got 18446744073709535232`). The
+decrement was then made saturating, which is also the correct production behaviour if a future edit
+reorders the two calls, and the mutation reproduced the intended message above.
+
+**What this does and does not establish.** Verified: the relay path carries the sample behind the
+existing `policy.adaptive` opt-in; the live 1 Hz driver reads it and produces a non-zero estimate in
+the state where the old input reads zero; the counter is inert without the opt-in. Not established:
+anything about a real path. The 16,384 bytes held here are a loopback duplex's backpressure, not a
+Yamux window on a real network, the peer's drain rate is chosen by the test, and no benefit is shown
+or claimed. The multi-rate decision-12 benchmark (three bottleneck rates, adaptation off vs on,
+change spacing and time-to-restore) was **not** re-run with the amended signal in this pass; it is
+the named next mission, and the two-host LAB window remains TP-4.1's only acceptance criterion.

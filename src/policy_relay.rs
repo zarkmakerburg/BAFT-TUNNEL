@@ -172,6 +172,10 @@ pub(crate) struct PolicySession {
     /// Read size per direction. It follows that direction's adaptation down the ladder, so a
     /// smaller quantum never meets a request larger than the row's queue cap (ADR-0056 decision 2).
     chunk: [AtomicUsize; 2],
+    /// Bytes the arbiter granted that its writer has not finished writing, per direction (ADR-0056
+    /// decision 4, amended 2026-11-27). The arbiter's queue is a rendezvous, so this is where a
+    /// blocked write actually waits; the 1 Hz sample reads it alongside the arbiter's counters.
+    in_flight: [AtomicU64; 2],
     next_flow: AtomicU64,
     /// `Some` only when `policy.adaptive` opted in (ADR-0056 decisions 9-10).
     adaptation: Option<Mutex<Adaptation>>,
@@ -234,6 +238,7 @@ impl PolicySession {
                 AtomicUsize::new(config.quantum_bytes),
                 AtomicUsize::new(config.quantum_bytes),
             ],
+            in_flight: [AtomicU64::new(0), AtomicU64::new(0)],
             next_flow: AtomicU64::new(1),
             adaptation: adaptive.then(|| Mutex::new(Adaptation::new(configured))),
             #[cfg(test)]
@@ -253,6 +258,15 @@ impl PolicySession {
         match direction {
             Direction::ToPeer => &self.chunk[0],
             Direction::FromPeer => &self.chunk[1],
+        }
+    }
+
+    /// The direction's granted-but-unwritten counter: raised when the arbiter hands a grant to the
+    /// writer and lowered when that write completes (see `pump_scheduled`).
+    fn in_flight(&self, direction: Direction) -> &AtomicU64 {
+        match direction {
+            Direction::ToPeer => &self.in_flight[0],
+            Direction::FromPeer => &self.in_flight[1],
         }
     }
 
@@ -311,8 +325,16 @@ impl PolicySession {
             self.tick_with(started.elapsed(), to_peer, from_peer).await;
             return;
         }
-        let to_peer = self.to_peer.stats().await.map(counters);
-        let from_peer = self.from_peer.stats().await.map(counters);
+        let to_peer = self
+            .to_peer
+            .stats()
+            .await
+            .map(|stats| counters(stats, self.in_flight(Direction::ToPeer)));
+        let from_peer = self
+            .from_peer
+            .stats()
+            .await
+            .map(|stats| counters(stats, self.in_flight(Direction::FromPeer)));
         self.tick_with(started.elapsed(), to_peer, from_peer).await;
     }
 
@@ -365,9 +387,10 @@ impl PolicySession {
 /// The pack's counters as the controller's sample. `violations` is the arbiter's own guard
 /// counter: it rises only above the configured row's cap, so the 1 Hz loop sees a live guard
 /// signal (ADR-0056 decision 8), not a fabricated zero or a forced sample.
-fn counters(stats: ArbiterStats) -> Counters {
+fn counters(stats: ArbiterStats, in_flight: &AtomicU64) -> Counters {
     Counters {
         queued_bytes: stats.queued_bytes,
+        in_flight_bytes: usize::try_from(in_flight.load(Ordering::Relaxed)).unwrap_or(usize::MAX),
         granted_bytes: stats.granted_bytes,
         overflow_refusals: stats.overflow_refusals,
         violations: stats.guard_violations,
@@ -414,6 +437,7 @@ where
             idle,
             &from_peer,
             session.chunk(Direction::FromPeer),
+            session.in_flight(Direction::FromPeer),
             crate::session_status::add_from_peer,
         ),
         pump_scheduled(
@@ -422,6 +446,7 @@ where
             idle,
             &to_peer,
             session.chunk(Direction::ToPeer),
+            session.in_flight(Direction::ToPeer),
             crate::session_status::add_to_peer,
         )
     );
@@ -439,6 +464,7 @@ async fn pump_scheduled<R, W>(
     idle: Duration,
     flow: &FlowHandle,
     chunk: &AtomicUsize,
+    in_flight: &AtomicU64,
     count: fn(usize),
 ) -> io::Result<()>
 where
@@ -470,7 +496,15 @@ where
                     "scheduler granted more than the flow offered",
                 ));
             }
-            writer.write_all(&buffer[written..written + grant]).await?;
+            // The grant exists and the bytes are not on the wire yet: raise the in-flight counter
+            // for the duration of the write, so the 1 Hz sample can see a blocked write even when
+            // the arbiter's own queue reads zero (ADR-0056 decision 4, amended 2026-11-27).
+            in_flight.fetch_add(grant as u64, Ordering::Relaxed);
+            let written_ok = writer.write_all(&buffer[written..written + grant]).await;
+            let _ = in_flight.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(grant as u64))
+            });
+            written_ok?;
             count(grant);
             written += grant;
         }
@@ -807,6 +841,95 @@ mod tests {
         );
     }
 
+    /// ADR-0056 decision 4, amended 2026-11-27: the relay boundary knows a grant exists while its
+    /// bytes are not yet written. A real relay drains its peer end slower than it writes, so the
+    /// writer holds a grant across whole sample intervals; the product's own 1 Hz driver then
+    /// samples the live counters. The arbiter queue reads zero in that state (it is a rendezvous),
+    /// which is exactly the case decision 4's original estimate could not see.
+    #[tokio::test]
+    async fn an_in_flight_grant_is_non_zero_where_queued_bytes_reads_zero() {
+        let configured = PolicyProfile::Balanced;
+        let quantum = configured.quantum_bytes();
+        let session = PolicySession::new(config_for(configured), configured, true);
+
+        let (peer, tunnel) = tokio::io::duplex(512);
+        let (app, local) = tokio::io::duplex(64 * 1024);
+        let relay = tokio::spawn({
+            let session = Arc::clone(&session);
+            async move { relay_with_policy(tunnel, local, Duration::from_secs(30), &session).await }
+        });
+        // 512 bytes every 50 ms is about 10 KiB/s against a 16 KiB quantum, so each grant is held
+        // unwritten for several sample intervals.
+        let drain = tokio::spawn(async move {
+            let (mut read, _write) = tokio::io::split(peer);
+            let mut buffer = [0_u8; 512];
+            loop {
+                if read.read(&mut buffer).await.unwrap_or(0) == 0 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+        let send = tokio::spawn(async move {
+            let (_read, mut write) = tokio::io::split(app);
+            let _ = write.write_all(&vec![7_u8; 128 * 1024]).await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+
+        // The live boundary state: a grant exists and is not on the wire yet, while the arbiter's
+        // own queue reports nothing.
+        let mut observed = None;
+        for _ in 0..1_000 {
+            let stats = session.to_peer.stats().await.expect("the arbiter answers");
+            let in_flight = session.in_flight(Direction::ToPeer).load(Ordering::Relaxed);
+            if in_flight > 0 {
+                observed = Some((stats.queued_bytes, in_flight));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let (queued_bytes, in_flight) = observed.expect(
+            "the write boundary never reported granted-but-unwritten bytes while its writer was blocked",
+        );
+        assert_eq!(
+            queued_bytes, 0,
+            "the arbiter queue is a rendezvous: it reports no queued bytes while a grant is held"
+        );
+        assert!(
+            in_flight <= quantum as u64,
+            "one grant is at most one quantum, got {in_flight}"
+        );
+
+        // The product's live 1 Hz driver, not a forced tick, must turn that state into a non-zero
+        // estimate: bytes granted and not yet written are waiting bytes.
+        let mut estimate = None;
+        for _ in 0..200 {
+            estimate = session
+                .estimates()
+                .into_iter()
+                .find(|(direction, value)| *direction == Direction::ToPeer && !value.is_zero())
+                .map(|(_, value)| value);
+            if estimate.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let estimate = estimate.unwrap_or_else(|| {
+            panic!(
+                "the live sample must turn a held grant into a non-zero estimate; \
+                 queued_bytes={queued_bytes}, in_flight_bytes={in_flight}, estimates={:?}",
+                session.estimates()
+            )
+        });
+        println!(
+            "POLICY_TP41_INFLIGHT {{\"queued_bytes\":{queued_bytes},\"in_flight_bytes\":{in_flight},\"estimate_ms\":{}}}",
+            estimate.as_millis()
+        );
+        relay.abort();
+        drain.abort();
+        send.abort();
+    }
+
     /// TP-4.2 harness: the rollback/fail-safe matrix needs change events, and a loopback run
     /// produces none (the arbiter queue is a rendezvous, so its 1 Hz sample reads zero). These
     /// drive the real session — controller, `Command::Configure` and read-bound update — with
@@ -833,6 +956,7 @@ mod tests {
     ) -> Option<Counters> {
         Some(Counters {
             queued_bytes: delay_ms * 1_000,
+            in_flight_bytes: 0,
             granted_bytes: second * 1_000_000,
             overflow_refusals,
             violations,
@@ -1071,7 +1195,11 @@ mod tests {
             guard_violations: 3,
             ..ArbiterStats::default()
         };
-        assert_eq!(counters(stats).violations, 3);
+        assert_eq!(
+            counters(stats, &AtomicU64::new(0)).violations,
+            3,
+            "a hardcoded zero in the sample would hide the arbiter's real guard counter"
+        );
     }
 
     /// ADR-0056 decision 8 on a real signal: no forced `Counters` feeds the guard. The live
@@ -1106,11 +1234,19 @@ mod tests {
             stats.guard_violations, 1,
             "the signal came from the arbiter"
         );
-        assert_eq!(counters(stats).violations, 1);
+        assert_eq!(counters(stats, &AtomicU64::new(0)).violations, 1);
 
         // The controller's own live read, not a scripted counter set.
-        let to_peer = session.to_peer.stats().await.map(counters);
-        let from_peer = session.from_peer.stats().await.map(counters);
+        let to_peer = session
+            .to_peer
+            .stats()
+            .await
+            .map(|stats| counters(stats, session.in_flight(Direction::ToPeer)));
+        let from_peer = session
+            .from_peer
+            .stats()
+            .await
+            .map(|stats| counters(stats, session.in_flight(Direction::FromPeer)));
         session
             .tick_with(Duration::from_secs(4), to_peer, from_peer)
             .await;
