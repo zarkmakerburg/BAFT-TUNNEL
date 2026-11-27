@@ -99,10 +99,18 @@ evidence level, ADR-0024 metric fields) and is still Proposed.
    f. verify: the file parses and carries the requested `policy` object; with `enable`,
       `/proc/<MainPID>/environ` contains `BAFT_TUNNEL_POLICY_PACK=sched`; with `disable` it does not.
 
-   Any failure after (c) restores the config and removes the drop-in, reloads and restarts on the
-   previous files, and the receipt says `rolled_back` with the restored names. A stopped unit is never
-   started (ADR-0055 decision 3): the receipt says `restart_required: true` and its verification is
-   file-level only, labelled as such.
+   Any failure after (c) restores both files to the bytes they had before the request — the config
+   from its backup, and the drop-in to its previous content, recreated if it existed and removed only
+   if it did not — reloads and restarts on those files. The receipt says `rolled_back` only when that
+   restore, the reload and the restart all succeed, and lists the restored names. A stopped unit is
+   never started (ADR-0055 decision 3): the receipt says `restart_required: true` and its
+   verification is file-level only, labelled as such.
+
+   If the restore, the reload or the restart on the previous files fails, the receipt is
+   `recovery_failed`, not `rolled_back`: it names which step failed, the resulting file state it could
+   and could not confirm, and the operator action the helper could not take (inspect the two named
+   files, then `systemctl daemon-reload` and restart the unit). Nothing in this ADR may report a
+   recovered state it did not verify.
 
 5. **Idempotency is convergence, not repetition.** The same key with the same normalized request
    returns the stored receipt with `replayed: true`; the same key with a different request is 409
@@ -115,8 +123,11 @@ evidence level, ADR-0024 metric fields) and is still Proposed.
    policy/{enable|disable|select|reset}`, actor, target, request SHA-256, result and receipt id, in
    the ADR-0024 shape. The receipt carries `previous` and `requested` values, the names it touched
    (`NAME.json`, `50-policy-pack.conf`), `restart_required`, `verification` (unit-level or
-   file-level with its reason) and `next_commands`. It carries no file contents, no key material and
-   no token.
+   file-level with its reason) and `next_commands`. `result` is one of `configured` (written and
+   verified), `unchanged` (the requested state already held), `refused` (nothing was written),
+   `rolled_back` (the previous bytes, reload and restart were restored and verified) or
+   `recovery_failed` (the restore did not verify; the receipt names the failed step and the operator
+   action). It carries no file contents, no key material and no token.
 
 7. **The CLI is a thin client of the same route.** `baft-tunnel policy enable|disable|select <ID>|
    reset --instance NAME [--agent URL] [--token-file PATH] [--json]`, defaulting to
@@ -141,10 +152,16 @@ evidence level, ADR-0024 metric fields) and is still Proposed.
    whether a restart was needed. "Is it running, and what does the running session use" is exactly
    ADR-0047's question.
 
-9. **TP-5.1's remaining step.** With this ADR the write surface is specified and the read is
-   deferred, so TP-5.1 stays open on exactly one step: accept ADR-0047 and implement the status
-   object and the `policy status` verb against it. TP-5.2's panel card consumes the same object. Both
-   are independent of LAB, and neither acquires a claim.
+9. **What TP-5.1 still owes (this ADR is its first step, not the item).** An accepted design ships
+   no surface, so TP-5.1 stays open on two things, in this order:
+
+   1. the implementation of the surface above — the `POST /v1/policy/apply` route, the helper's typed
+      write with restart-verify and rollback, the thin `baft-tunnel policy …` CLI, and the tests named
+      under "Evidence required" below;
+   2. the read, after ADR-0047 is accepted: the status object and the `policy status` verb against
+      it, which TP-5.2's panel card then consumes.
+
+   Neither is blocked on LAB, and neither acquires a claim.
 
 ## Consequences
 
@@ -152,9 +169,10 @@ evidence level, ADR-0024 metric fields) and is still Proposed.
   and one audit line, and the switch stops being an unmanaged unit edit.
 - The manage helper gains a privileged write of one unit drop-in and a restart-verify step; its
   authorization is the ADR-0055 boundary and its rollback is the existing backup/revert mechanism.
-- Nothing about the default path changes: with the feature off, the switch absent, or no profile, the
-  data path is today's, byte for byte. ADR-0048's default-off decision and every `simulated` label
-  stay exactly as they are.
+- Nothing about the default path changes: with the feature off, or the switch unset, empty or `off`,
+  the data path is today's, byte for byte. A profile alone never enables the pack; with the switch on
+  and no profile the pack runs the Balanced numbers, as TP-3.1 recorded. ADR-0048's default-off
+  decision and every `simulated` label stay exactly as they are.
 
 ## Rejected
 
