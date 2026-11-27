@@ -4,6 +4,8 @@ Baseline: `d47171a` (main). Classification: **Preserve** (unchanged behaviour), 
 
 Rows marked *(reconciled)* were checked against `panel-react/src` on 2026-11-27 by **reading the source, not by running the panel**. Every other row keeps the evidence label it had. Where the code and an older claim disagreed, the code is recorded and the older claim is dropped.
 
+**Merged:** the closures below landed on `main` in [PR #480](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/480) (merge `678c099a`); its exact-head CI on `1ccbca42` was green on all fifteen check runs, including `panel-react`, `panel-ui` and the axe job. Merging changes no evidence label in the older rows: they were not re-run in a browser, and the rows still marked NOT VERIFIED stay that way.
+
 | # | Capability (old location → new) | Class | Backend | Evidence |
 |---|---|---|---|---|
 | 1 | Token sign-in, sessionStorage only, 401 → sign-out | Improve (empty/offline messages) | `GET /v1/status` | p1-real-agent flow logic unchanged; screenshots QA |

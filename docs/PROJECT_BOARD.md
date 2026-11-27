@@ -2,12 +2,20 @@
 
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
+## به‌روزرسانی 2026-11-27 (ادغام PR #480 و مأموریت بعدی: درایور ۱Hz در TP-4.1)
+
+- **ادغام شد:** [PR #480](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/480) با squash merge در `678c099a` روی `main` نشست. هفت نقص `panel-react` (pillهای capability، `?? 0`، پیام ۲۴ساعته، رنگ‌تنها بودن نوار سلامت، برچسب ~۷px نقشه، `.flip` بی‌استفاده، dim حالت stale) به‌همراه goodput سمت سینک و pin کردن ورودی socket در همین PR بودند. CI روی head `1ccbca42` در هر ۱۵ چک سبز بود.
+- **دو ایراد CodeRabbit اصلاح شد، نه رد:** (۱) بازهٔ goodput حالا در خود سینک و در لحظهٔ آخرین خواندن مهر می‌خورد؛ قبلاً بعد از بیدار شدن task و EOF گرفته می‌شد و تأخیر زمان‌بند را هم می‌شمرد. تست `delivered_goodput_excludes_a_late_waiter_and_eof` روی نسخهٔ قدیم با ۲۵۰ms تأخیر مصنوعی ۲۷۷ms در برابر ۳۳ms را نشان داد و شکست. (۲) §4b سند TP-3.5 اکنون منبع (همین commit)، نبودِ run ID و اعداد بازسنجی‌شده را دارد و اعداد اجرای اول را «منسوخ» می‌نامد.
+- **اعداد جدید §4b (simulated، release، ۶۴MiB، دو تکرار):** baseline ۳۴۰.۴ و ۳۲۸.۱ MB/s؛ `balanced/1` ۴۲۹.۶ و ۳۲۴.۲؛ `bulk/1` ۶۹۶.۲ و ۵۷۵.۷ — یعنی `bulk/1` ۱.۷۵–۲.۰۵ برابر baseline و ۱.۶۲–۱.۷۸ برابر Balanced؛ baseline و Balanced در این دو اجرا از هم جدا نشدند.
+- **مأموریت بعدی (از roadmap، نه اختراعی):** تنها موردی که سندها دربارهٔ مسیر `v0.4.0` هنوز **unverified** می‌نامند، خودِ درایور ۱Hz در TP-4.1 است: هستهٔ تصمیم، ماتریس fail-safe با tick اجباری و اتصال شمارندهٔ واقعی گارد تست شده‌اند، ولی هیچ تستی حلقهٔ واقعی ۱Hz را داخل یک `PolicySession` زنده روی relay اجرا نمی‌کند. گام بعد: تست end-to-end با درایور واقعی، یک تغییر پذیرفته‌شده تا `Command::Configure`، بازگردانی fail-safe و بی‌اثر بودن با `policy.adaptive` خاموش؛ برچسب `simulated`، بدون تغییر پیش‌فرض‌ها.
+- **چیزی که هنوز اثبات نشده:** هیچ چیز دربارهٔ مسیر واقعی؛ پنجرهٔ دو‌میزبانهٔ LAB تنها معیار پذیرش TP-3.2–3.5 و TP-4.1/4.2 است. tag/release ساخته نشد.
+
 ## به‌روزرسانی 2026-11-27 (بستن هفت نقص PANEL_REDESIGN_PARITY با تست پین‌کننده)
 
 - **هفت نقص بسته شد.** pillهای hardcoded `plan/apply` حذف شدند و جایشان یادداشت fa/en آمد (Agent این‌ها را capability گزارش نمی‌کند)؛ `?? 0` در سه نقطه با `totalOrNull`/«نامعلوم» جایگزین شد تا مقدار غایب صفر نشود؛ پیام ۲۴ساعته با `longHistoryNotice` بین «تاریخچهٔ ناموجود» و «بازهٔ خالی» تفکیک شد؛ سلول ناموفق نوار سلامت با `cellGeometry` کوتاه‌تر شد و راهنمای متنی ✓/✕ گرفت؛ برچسب‌های نقشه از SVG مقیاس‌پذیر بیرون آمدند و در `figcaption.geo-pins` با `--fs-1` نشستند؛ آیکون collapse با `className="flip"` در RTL آینه شد؛ و dim حالت stale (`.shell.is-stale .view`) حذف شد و stale به‌صورت Pill متنی نمایش داده می‌شود.
 - **تست‌ها:** `panel-react/test/panel-defects.test.mjs` — ۳ تست واحد روی helperهای خالص (`series.mjs`، `history-view.mjs`، `health-strip.mjs`) و ۷ assertion روی منبع/CSS. هر هفت مورد جهش خلاف‌جهت شد و تست مربوط شکست، سپس بازگردانده شد.
 - **چک‌های پنل:** typecheck سبز، `npm test` ۲۲/۲۲، `check:i18n` با ۱۰۳۸ کلید در هر زبان، `build` و `check:dist` سبز. این پکیج اسکریپت lint ندارد؛ چیزی به‌عنوان lint ادعا نمی‌شود.
-- **ماتریس Rust:** دست‌نخورده و سبز (fmt، clippy هر دو حالت، default ۴۷۰ pass، `policy-pack` ۵۴۴ pass، ۰ fail). بدون merge/tag/release؛ پیش‌فرض‌ها و `policy.adaptive` دست‌نخورده.
+- **ماتریس Rust:** دست‌نخورده و سبز (fmt، clippy هر دو حالت، default ۴۷۰ pass، `policy-pack` ۵۴۴ pass، ۰ fail). در زمان نگارش این بخش بدون merge/tag/release بود؛ همان روز با PR #480 ادغام شد (بخش بالاتر). پیش‌فرض‌ها و `policy.adaptive` دست‌نخورده.
 
 ## به‌روزرسانی 2026-11-27 (بازبینی تازهٔ همین پاس + تطبیق ادعاهای PANEL_REDESIGN_PARITY با کد)
 
@@ -20,7 +28,7 @@
 - **چرا این مأموریت:** در `REMAINING_WORK_PLAN` و roadmap، تنها معیار بازِ مسیر `v0.4.0` که نه به LAB و نه به (b)/(e) وابسته است، «delivered goodput» (اولین معیار پذیرش #237) بود که خود سند می‌گفت harness نمی‌تواند بدهد. بقیهٔ TP-3.x/4.x فقط پنجرهٔ معلق LAB می‌خواهند و ۵.۱–۵.۳ بسته‌اند.
 - **کار:** در `src/policy_baseline.rs` مسیر جدید `delivery_probe` بایت‌های خوانده‌شده در سینک را می‌شمارد، بازهٔ دقیق را از اولین نوشتن تا اتمام سینک می‌گیرد و `delivered_goodput` نرخ را از همان بازه می‌سازد؛ `relay_cpu_probe` روی همین probe بازنویسی شد بدون تغییر رفتار قبلی‌اش.
 - **تست:** `delivered_goodput_is_measured_at_the_sink_over_an_exact_interval` (arm پایه و، با feature، ردیف `Balanced`)؛ سبز، و در اجرای release شواهد ۶۴MiB/دو تکرار همهٔ ۶۷,۱۰۸,۸۶۴ بایت تحویل داده شد.
-- **اعداد (simulated، loopback بدون shaper، release 2026-11-27):** baseline ۱۷۴.۷ و ۱۹۲.۴ MB/s؛ `balanced/1` ۱۶۵.۲ و ۱۴۱.۴؛ `bulk/1` ۳۴۴.۲ و ۲۵۲.۴. یعنی `bulk/1` در این اجرا ۱.۳–۲.۰ برابر baseline و ۱.۸–۲.۱ برابر Balanced تحویل داد — مشاهدهٔ harness، نه نتیجهٔ پذیرش.
+- **اعداد (simulated، loopback بدون shaper، release 2026-11-27):** این اعداد با ابزار اولیه گرفته شده بودند و **منسوخ‌اند**؛ ابزار اصلاح شد (مهر زمان در لحظهٔ آخرین خواندن سینک، نه پس از EOF و بیدار شدن task) و اجرای بازسنجی‌شده در [POLICY_PACK_TP-3.5_BULK_EVIDENCE.md](POLICY_PACK_TP-3.5_BULK_EVIDENCE.md) §4b ثبت شده است: baseline ۳۴۰.۴ و ۳۲۸.۱ MB/s؛ `balanced/1` ۴۲۹.۶ و ۳۲۴.۲؛ `bulk/1` ۶۹۶.۲ و ۵۷۵.۷. یعنی `bulk/1` ۱.۷۵–۲.۰۵ برابر baseline و ۱.۶۲–۱.۷۸ برابر Balanced تحویل داد — مشاهدهٔ harness، نه نتیجهٔ پذیرش.
 - **برچسب‌ها:** شمارش سینک و بازه **tested**؛ اعداد **measured/simulated**؛ tuple واقعی `(engine, carrier)` و هر ادعای LAB **unverified**.
 - **وضعیت ماتریس:** fmt سبز؛ clippy هر دو حالت سبز؛ default ۴۷۰ pass / ۰ fail؛ با `policy-pack` ۵۴۴ pass / ۰ fail؛ `policy-pack` و `policy.adaptive` همان قبلی و خاموش؛ بدون commit/PR/tag.
 
