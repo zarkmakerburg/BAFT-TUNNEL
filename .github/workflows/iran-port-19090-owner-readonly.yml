@@ -1,0 +1,104 @@
+name: Iran LAB port 19090 owner diagnostic (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type READ_ONLY_IRAN_PORT_19090_OWNER to inspect only the process name bound to port 19090 on the registered Iran LAB host
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-trusted-lab-hosts
+  cancel-in-progress: false
+
+jobs:
+  validate-confirmation:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require exact task-specific confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == "READ_ONLY_IRAN_PORT_19090_OWNER" ]] || {
+            echo "Invalid confirmation; no LAB host was contacted." >&2
+            exit 2
+          }
+
+  inspect-iran-port:
+    needs: validate-confirmation
+    runs-on: ubuntu-24.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 5
+    env:
+      LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+      LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+      LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+    steps:
+      - name: Prepare ephemeral pinned SSH credentials
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -n "$SSH_PRIVATE_KEY" || { echo 'Missing LAB_SSH_PRIVATE_KEY' >&2; exit 2; }
+          test -n "$SSH_KNOWN_HOSTS" || { echo 'Missing LAB_SSH_KNOWN_HOSTS' >&2; exit 2; }
+          test -n "$LAB_IRAN_HOST" || { echo 'Missing LAB_IRAN_HOST' >&2; exit 2; }
+          echo "::add-mask::$LAB_IRAN_HOST"
+          mkdir -p "$RUNNER_TEMP/baft-tunnel-port-owner"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/baft-tunnel-port-owner/id_ed25519"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/baft-tunnel-port-owner/known_hosts"
+          chmod 600 "$RUNNER_TEMP/baft-tunnel-port-owner/id_ed25519" "$RUNNER_TEMP/baft-tunnel-port-owner/known_hosts"
+          echo "SSH_KEY_FILE=$RUNNER_TEMP/baft-tunnel-port-owner/id_ed25519" >> "$GITHUB_ENV"
+          echo "SSH_KNOWN_HOSTS_FILE=$RUNNER_TEMP/baft-tunnel-port-owner/known_hosts" >> "$GITHUB_ENV"
+
+      - name: Read only process name bound to TCP port 19090 on Iran
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          user="${LAB_IRAN_SSH_USER:-root}"
+          port="${LAB_IRAN_SSH_PORT:-22}"
+          [[ "$user" =~ ^[A-Za-z_][A-Za-z0-9_.-]*[$]?$ ]] || { echo 'Invalid LAB_IRAN_SSH_USER' >&2; exit 2; }
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || { echo 'Invalid LAB_IRAN_SSH_PORT' >&2; exit 2; }
+          ssh -i "$SSH_KEY_FILE" -p "$port" \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" \
+            -o GlobalKnownHostsFile=/dev/null \
+            -o ConnectTimeout=12 -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=2 -o LogLevel=ERROR \
+            "$user@$LAB_IRAN_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          command -v ss >/dev/null 2>&1 || { echo 'PORT_DIAGNOSTIC=ss_unavailable'; exit 3; }
+          raw="$(ss -lntpH 'sport = :19090' 2>/dev/null)"
+          if [[ -z "$raw" ]]; then
+            echo 'PORT_19090_STATE=not-listening'
+            exit 0
+          fi
+          printf '%s\n' "$raw" | python3 -c '
+          import re, sys
+          raw = sys.stdin.read()
+          names = sorted(set(re.findall(r"users:\(\(\"([^\"]+)\",pid=\d+,fd=\d+\)\)", raw)))
+          print("PORT_19090_STATE=listening")
+          if names:
+              for name in names:
+                  safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)[:64]
+                  print(f"PROCESS_NAME={safe}")
+          else:
+              print("PROCESS_NAME=unavailable")
+              print("PROCESS_OWNER_VISIBILITY=insufficient")
+          '
+          REMOTE
+
+      - name: Remove ephemeral credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/baft-tunnel-port-owner"
