@@ -2,6 +2,17 @@
 
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
+## به‌روزرسانی 2026-11-27 (TP-5.2 — کارت وضعیت پک در پنل fa/en پیاده‌سازی و ادغام شد؛ #241 بسته شد)
+
+- `main` روی ادغام PR همین کار (یک PR محدود: کارت پنل برای شیء `policy`، طبق ADR-0047). آخرین Stable همچنان **`v0.3.1`** و نسخهٔ پایدار بعدی **`v0.4.0`**؛ هیچ tag، release، bump نسخه، تغییر dependency یا فعال‌سازی پک انجام نشد و چهار فایل uncommitted مالک در `hq/fleet-stack-integration` دست نخوردند.
+- **کارت (`panel-react`، پیش‌فرض `/`):** کامپوننت `PolicyCard` در صفحهٔ Agent همان شیء `GET /v1/status` را نمایش می‌دهد و هیچ فیلد یا حالتی از خودش نمی‌سازد: نشان حالت (`off`/`active`/`fallback`/`unknown`) با دلیل، پروفایل «پیکربندی‌شده» و «مؤثر پیکربندی» و «در حال اجرا» به‌صورت جدا (فقط `active`/`fallback` اجازهٔ نمایش «در حال اجرا» دارند)، `switch` با مقدار و منبع‌ها، `adaptive` پیکربندی/مؤثر، علت آخرین fallback، جدول ادعای هر tuple با چیپ شاهد، و جدول متریک‌ها با unit/منشأ/تازگی — متریکی که دیده نشده «در دسترس نیست (دلیل)» نشان می‌دهد، هرگز `0`.
+- **کاملاً دوزبانه:** ۷۸ کلید جدید fa/en در همان دیکشنری پنل (RTL از مسیر موجود)، و `check:i18n` بدون اختلاف placeholder سبز است.
+- **افت‌ادن صادقانه:** بیلد بدون feature (`off`/`feature_not_compiled`)، خواندن `unknown` با دلیل، ایجنت قدیمی بدون عضو `policy`، و ۴۰۱/غیرقابل‌دسترس بودن وضعیت همه «در دسترس نیست/نامعلوم با دلیل» رندر می‌شوند؛ منطق خالص در `policy-view.mjs` است تا همین جدول تصمیم قابل تست باشد (اگر payload حالت ناشناخته یا claim بیرون از مجموعهٔ بسته بدهد، `unknown` می‌شود).
+- **تست‌های واقعی:** ۱۲ تست `node --test` (بدون dependency جدید) روی fixtureهای «سوئیچ روشن ولی feature کامپایل نشده» و «ایجنت بدون عضو policy» و fixture فعال؛ اسکریپت `npm test` به `package.json` و همین گام به job `panel-react` در CI اضافه شد. `tsc --noEmit`، `npm run build`، `check-dist`، `check:i18n` و `npm audit --omit=dev` سبز؛ `dist` بازسازی و کامیت شد (CI تفاوت dist را چک می‌کند).
+- **سمت Rust:** `cargo fmt --check`، clippy `-D warnings` و `cargo test` در هر دو بیکربندی اجرا شد؛ تنها شکست همان assertion شناخته‌شدهٔ symlink در `src/control_socket.rs` است (محیطی؛ در CI سبز) و یک تست پنل هم به فهرست تست «بدون innerHTML» اضافه شد.
+- **محدودهٔ صریح:** کارت فقط در پنل پیش‌فرض React است؛ پنل کلاسیک `/classic` که طبق ADR-0054 یک نسخه به‌عنوان fallback می‌ماند این کارت را ندارد و همان مسیر `baft-tunnel policy status` برایش باقی است. هیچ ادعای `measured` یا تغییر سطح شواهد اضافه نشد.
+- **وضعیت واقعی:** TP-5.1 (#240) و TP-5.2 (#241) هر دو **پیاده، تست‌شده و ادغام‌شده**اند؛ گام بعدی **TP-5.3 (#242) — مستندسازی پک**؛ گیت `v0.4.0` دست‌نخورده (TP-3.x + TP-4.1/4.2 روی LAB دو‌میزبانه) است.
+
 ## به‌روزرسانی 2026-11-27 (TP-5.1 — خواندن وضعیت پک پیاده‌سازی و ادغام شد؛ آیتم #240 بسته شد)
 
 - `main` روی ادغام PR همین کار (یک PR محدود: خواندن وضعیت طبق ADR-0047). آخرین Stable همچنان **`v0.3.1`** و نسخهٔ پایدار بعدی **`v0.4.0`**؛ هیچ tag، release، bump نسخه، تغییر dependency یا فعال‌سازی پک انجام نشد و `hq/fleet-stack-integration` و چهار فایل uncommitted کاربر دست نخوردند.

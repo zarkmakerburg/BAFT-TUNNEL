@@ -1,0 +1,7 @@
+{
+  "agent": "baft-tunnel",
+  "version": "0.3.1",
+  "engine": "tcp-tls",
+  "listener_accepting": false,
+  "tunnel": { "state": "down", "tiers": { "unit": { "result": "unknown" } } }
+}
