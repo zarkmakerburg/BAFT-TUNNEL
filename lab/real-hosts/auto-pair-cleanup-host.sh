@@ -4,6 +4,10 @@ set -Eeuo pipefail
 umask 077
 
 die() { echo "auto-pair cleanup: $*" >&2; exit 2; }
+
+CLEANUP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=lab/real-hosts/lib-runtime-children.sh
+source "$CLEANUP_DIR/lib-runtime-children.sh"
 [[ "$#" -ge 4 ]] || die "expected SHA256 PACKAGE_DIR AGENT_STATE_DIR REMOTE_DIR and scoped cleanup arguments"
 
 EXPECTED_SHA="$1"
@@ -16,6 +20,8 @@ UB=/usr/local/bin/baft-tunnel
 EB=/etc/baft-tunnel
 STATE_DIR=/var/lib/baft-tunnel-agent
 CONTROL_DIR=/run/baft-tunnel/control
+# The control-manage socket directory: product-owned, declared by the shipped tmpfiles.d entry and
+# recreated by `baft-tunnel-control-manage@.socket`. Its presence is not a LAB leftover.
 MANAGE_DIR=/run/baft-tunnel/manage
 UNIT_DIR=/etc/systemd/system
 ENGINE_STORE=/usr/local/lib/baft-tunnel-engines
@@ -26,22 +32,12 @@ AUTO_PAIR_ECHO_PORT=""
 [[ "$(id -u)" == 0 ]] || die "must run as root"
 [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{64}$ ]] || die "invalid candidate SHA-256"
 [[ "$REMOTE_DIR" =~ ^/tmp/baft-tunnel-e2e-[A-Za-z0-9._-]+$ ]] || die "invalid run directory"
-[[ -d "$REMOTE_DIR" && ! -L "$REMOTE_DIR" ]] || die "run directory is missing or unsafe"
-[[ "$(stat -c '%U:%G %a' "$REMOTE_DIR")" == root:root\ 700 ]] || die "run directory ownership or mode changed"
-run_marker="$REMOTE_DIR/.baft-tunnel-e2e-run-owner"
-[[ -f "$run_marker" && ! -L "$run_marker" ]] || die "LAB run ownership marker is missing"
-[[ "$(stat -c '%U:%G %a' "$run_marker")" == root:root\ 600 ]] || die "LAB run ownership marker changed"
-[[ "$(cat "$run_marker")" == "$REMOTE_DIR" ]] || die "LAB run ownership marker belongs to another run"
-[[ "$PKG" == "$REMOTE_DIR/pkg" ]] || die "package path is outside this run directory"
-[[ -d "$PKG" && ! -L "$PKG" ]] || die "package directory is missing or unsafe"
-[[ "$(stat -c '%U:%G' "$PKG")" == root:root ]] || die "package directory is not root-owned"
-[[ "$AGENT_STATE_DIR" == /var/lib/baft-tunnel-agent ]] || die "unexpected agent state directory"
 
 # A round can invoke this helper twice: once when the round finishes and once from the
-# stage's EXIT trap. The first pass removes the installation (including the config root),
-# so the second pass must be a successful no-op instead of failing on the absent config
-# root. Exit 0 only when every artifact owned by this helper is already gone; any partial
-# state still falls through to the strict, fail-closed checks below.
+# stage's EXIT trap. The first pass removes the installation (including the config root and
+# the run directory), so the second pass must be a successful no-op instead of failing on an
+# absent config root. Exit 0 only when every artifact this helper owns is already gone; any
+# partial state still falls through to the strict, fail-closed checks below.
 installation_absent() {
   local path
   for path in "$UB" "$EB" /var/lib/baft-tunnel "$AGENT_STATE_DIR" /var/lib/baft-tunnel-control \
@@ -62,6 +58,16 @@ if installation_absent; then
   echo 'auto-pair cleanup: installation already absent; nothing to remove'
   exit 0
 fi
+[[ -d "$REMOTE_DIR" && ! -L "$REMOTE_DIR" ]] || die "run directory is missing or unsafe"
+[[ "$(stat -c '%U:%G %a' "$REMOTE_DIR")" == root:root\ 700 ]] || die "run directory ownership or mode changed"
+run_marker="$REMOTE_DIR/.baft-tunnel-e2e-run-owner"
+[[ -f "$run_marker" && ! -L "$run_marker" ]] || die "LAB run ownership marker is missing"
+[[ "$(stat -c '%U:%G %a' "$run_marker")" == root:root\ 600 ]] || die "LAB run ownership marker changed"
+[[ "$(cat "$run_marker")" == "$REMOTE_DIR" ]] || die "LAB run ownership marker belongs to another run"
+[[ "$PKG" == "$REMOTE_DIR/pkg" ]] || die "package path is outside this run directory"
+[[ -d "$PKG" && ! -L "$PKG" ]] || die "package directory is missing or unsafe"
+[[ "$(stat -c '%U:%G' "$PKG")" == root:root ]] || die "package directory is not root-owned"
+[[ "$AGENT_STATE_DIR" == /var/lib/baft-tunnel-agent ]] || die "unexpected agent state directory"
 
 [[ -d "$EB" && ! -L "$EB" ]] || die "config root is missing or unsafe"
 [[ "$(stat -c '%U:%G %a' "$EB")" == root:baft-tunnel\ 750 ]] || die "config root ownership or mode changed"
@@ -378,18 +384,14 @@ fi
 # directory the product creates (tmpfiles entry plus baft-tunnel-control-manage@.socket).
 # scripts/uninstall.sh removes both; any other runtime resource is still refused.
 if [[ -d /run/baft-tunnel ]]; then
+  # Exactly two children are the product's own: control (checked above) and manage. Both are
+  # validated; any third entry stops the cleanup instead of being removed.
+  baft_runtime_children_known /run/baft-tunnel "$CONTROL_DIR" "$MANAGE_DIR" ||
+    die "unexpected runtime resource under /run/baft-tunnel; preserving it"
   if [[ -e "$MANAGE_DIR" || -L "$MANAGE_DIR" ]]; then
-    [[ ! -L "$MANAGE_DIR" ]] || die "manage runtime directory became a symlink; preserving it"
-    [[ -d "$MANAGE_DIR" ]] || die "manage runtime path has an unexpected type; preserving it"
-    [[ "$(stat -c '%U' "$MANAGE_DIR")" == root ]] || die "manage runtime directory ownership changed; preserving it"
+    baft_manage_dir_known "$MANAGE_DIR" ||
+      die "manage runtime directory changed; preserving it"
   fi
-  for child in /run/baft-tunnel/*; do
-    [[ -e "$child" || -L "$child" ]] || continue
-    case "$child" in
-      "$CONTROL_DIR" | "$MANAGE_DIR") ;;
-      *) die "unexpected runtime resource $child; preserving it" ;;
-    esac
-  done
 fi
 
 # Refuse to uninstall if the binary, installed scripts, templates, or library tree changed.
@@ -449,6 +451,9 @@ fi
 
 # The control directory was proved empty above. No config purge is used.
 bash "$PKG/scripts/uninstall.sh" --stop >/dev/null
+# Uninstall removes the control and manage directories; if either survived, stop instead of
+# deleting it here, so an unrecognised resource is never removed by this helper.
+[[ ! -e "$MANAGE_DIR" && ! -L "$MANAGE_DIR" ]] || die "manage runtime directory survived uninstall; preserving it"
 rmdir /run/baft-tunnel 2>/dev/null || true
 systemctl daemon-reload
 

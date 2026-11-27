@@ -63,8 +63,8 @@ contains "$cleanup_helper" 'agent-token.sha256'
 contains "$cleanup_helper" 'package directory is not root-owned'
 contains "$cleanup_helper" 'config root ownership or mode changed'
 contains "$cleanup_helper" 'MANAGE_DIR=/run/baft-tunnel/manage'
-contains "$cleanup_helper" '"$CONTROL_DIR" | "$MANAGE_DIR")'
-contains "$cleanup_helper" 'manage runtime directory ownership changed'
+contains "$cleanup_helper" 'baft_runtime_children_known /run/baft-tunnel "$CONTROL_DIR" "$MANAGE_DIR"'
+contains "$cleanup_helper" 'baft_manage_dir_known "$MANAGE_DIR"'
 contains "$cleanup_helper" 'installation already absent; nothing to remove'
 not_contains "$cleanup_helper" 'rm -rf /run/baft-tunnel'
 contains "$cleanup_helper" 'at least one explicit --instance is required'
@@ -133,7 +133,17 @@ contains "$lab_config_workflow" 'test-auto-pair-integrity-retry.sh'
 contains "$workflow" 'baft-tunnel-v0.3.1-rc.1-linux-x86_64'
 not_contains "$workflow" 'cargo +1.88.0 build --locked --release'
 
-agent_userdel_line="$(grep -nF 'userdel baft-tunnel-agent' "$cleanup_helper" | cut -d: -f1)"
+contains "$cleanup_helper" 'MANAGE_DIR=/run/baft-tunnel/manage'
+contains "$cleanup_helper" 'lib-runtime-children.sh'
+contains "$cleanup_helper" 'baft_runtime_children_known /run/baft-tunnel "$CONTROL_DIR" "$MANAGE_DIR"'
+contains "$cleanup_helper" 'baft_manage_dir_known "$MANAGE_DIR"'
+contains "$cleanup_helper" 'manage runtime directory survived uninstall'
+contains "$stage" 'lab/real-hosts/lib-runtime-children.sh'
+contains "$stage" 'lab/real-hosts/auto-pair-cleanup-host.sh'
+not_contains "$cleanup_helper" 'rm -rf /run/baft-tunnel'
+bash "$root/lab/real-hosts/test-runtime-children.sh"
+
+agent_userdel_line="$(grep -nF 'userdel baft-tunnel-agent'  "$cleanup_helper" | cut -d: -f1)"
 service_userdel_line="$(grep -nF 'userdel baft-tunnel' "$cleanup_helper" | tail -1 | cut -d: -f1)"
 [[ -n "$agent_userdel_line" && -n "$service_userdel_line" && "$agent_userdel_line" -lt "$service_userdel_line" ]] ||
   fail "agent account must be deleted before the service account"
@@ -144,8 +154,10 @@ service_group_after_line="$(grep -nF 'getent group baft-tunnel > "$REMOTE_DIR/ac
   fail "service-group manifest must capture the agent supplementary membership"
 
 fast_path_line="$(grep -nF 'if installation_absent; then' "$cleanup_helper" | cut -d: -f1)"
+run_dir_line="$(grep -nF '|| die "run directory is missing or unsafe"' "$cleanup_helper" | cut -d: -f1)"
 config_root_line="$(grep -nF '|| die "config root is missing or unsafe"' "$cleanup_helper" | cut -d: -f1)"
-[[ -n "$fast_path_line" && -n "$config_root_line" && "$fast_path_line" -lt "$config_root_line" ]] ||
-  fail "the already-clean fast path must be evaluated before the config-root requirement"
+[[ -n "$fast_path_line" && -n "$run_dir_line" && -n "$config_root_line" &&
+   "$fast_path_line" -lt "$run_dir_line" && "$fast_path_line" -lt "$config_root_line" ]] ||
+  fail "the already-clean fast path must be evaluated before the run-directory and config-root requirements"
 
 echo 'Automatic pairing cleanup and signed-candidate safety contract: PASS'

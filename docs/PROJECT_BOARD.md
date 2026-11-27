@@ -2,6 +2,14 @@
 
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
+## به‌روزرسانی 2026-11-27 (LAB — cleanup روی `/run/baft-tunnel/manage` رفع شد؛ سطح شاهد: فقط LOCAL TEST)
+
+- **علت دقیق:** اجرای 46039424060 جفت‌سازی مستقیم و بررسی SHA256 برای ۶۴KB و ~۲MB را کامل کرد و بعد cleanup روی هر دو میزبان متوقف شد، چون اسکریپت `auto-pair-cleanup-host.sh` زیر `/run/baft-tunnel` فقط `control` را مجاز می‌دانست. مسیر `manage` متعلق به خود محصول است: خط `d /run/baft-tunnel/manage 0755 root root -` در tmpfiles.d نصب‌شده، `ListenStream=/run/baft-tunnel/manage/%i.manage.sock` در تمپلیت socket، و `tunnel_helper::SOCKET_DIR`.
+- **رفع:** بررسی هر دو فرزند به `lab/real-hosts/lib-runtime-children.sh` منتقل شد؛ `manage` باید دایرکتوری معمولی با مالک root و فقط شامل سوکت‌های `*.manage.sock` با مالک root باشد. هر ورودی سوم cleanup را متوقف می‌کند و **حذف نمی‌شود**. uninstall خودِ محصول هر دو دایرکتوری را برمی‌دارد و helper اگر `manage` باقی بماند دیگر ادامه نمی‌دهد. lib در tar بستهٔ اجرا هم اضافه شد و inventory مسیر `manage` را گزارش می‌کند.
+- **تست:** `lab/real-hosts/test-runtime-children.sh` (بدون root و بدون شبکه) مجموعه مجاز، نام سوکت اشتباه، فایل معمولی، symlink، دایرکتوری symlink و نبود parent را پوشش می‌دهد؛ contract test هم assertهای جدید دارد. هر دو سبز.
+- **جهش خلاف‌جهت (بازگردانی بایت‌به‌بایت با `cmp`):** حذف `"$MANAGE_DIR"` از allowlist → «missing required guard: baft_runtime_children_known /run/baft-tunnel "$CONTROL_DIR" "$MANAGE_DIR"»؛ حذف قاعدهٔ نام سوکت → «runtime children contract: a socket without the manage name must be refused».
+- **سطح شاهد:** فقط **LOCAL TEST**. هیچ میزبان واقعی لمس نشد؛ تا اجرای مجدد LAB با dispatch مالک، این رفع اثبات میدانی ندارد. Reverse round هنوز جداگانه اجرا نشده و LAB badge قدیمی معتبر نیست.
+
 ## به‌روزرسانی 2026-11-27 (TP-4.1 — اندازه‌گیری مستقل از ردیف انجام شد و سود پله را توجیه نمی‌کند؛ مأموریت بعدی: انتظار واقعی داخل Yamux)
 
 - **چه اضافه شد:** پمپ relay حالا لحظهٔ گرفتن grant را با `Instant::now()` ثبت می‌کند و بعد از پایان همان `write_all` اختلاف را با کوانتوم در-force آن گرنت ذخیره می‌کند (`WaitLog`/`DirectionMeter`)؛ هارنس توزیع را به دو سبد `configured` و `stepped` با `p95_ratio` گزارش می‌کند و کنارش تخمین نرمال‌شده به ردیف پیکربندی (`configured_quantum / row_quantum`) را می‌دهد. فقط با opt-in فعال (و در build تست برای arm ثابت به‌عنوان مرجع)؛ هیچ آستانه، پیش‌فرض، مقدار `policy.adaptive` یا معنای `queued_bytes` تغییر نکرد.
