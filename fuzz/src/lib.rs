@@ -32,6 +32,8 @@ pub mod key_custody;
 pub mod link_policy;
 #[path = "../../src/policy_profile.rs"]
 pub mod policy_profile;
+#[path = "../../src/policy_status.rs"]
+pub mod policy_status;
 #[path = "../../src/noise.rs"]
 pub mod noise;
 #[path = "../../src/observe.rs"]

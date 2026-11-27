@@ -42,6 +42,7 @@ mod policy_profile;
 mod policy_relay;
 #[cfg(feature = "policy-pack")]
 mod policy_sched;
+mod policy_status;
 mod probe_adapters;
 mod probe_api;
 mod probe_http;
@@ -279,6 +280,9 @@ enum PolicyCommand {
     },
     /// Clear policy.profile and policy.adaptive, returning to the schema defaults.
     Reset(PolicyTarget),
+    /// Read the pack's status: state, configured and running profile, switch, adaptive, the
+    /// per-tuple claims and the metrics, exactly as `GET /v1/status` reports them (ADR-0047).
+    Status(PolicyTarget),
 }
 
 #[derive(Debug, Subcommand)]
@@ -910,6 +914,28 @@ async fn run() -> Result<()> {
             .await
         }
         Command::Policy { command } => {
+            if let PolicyCommand::Status(target) = &command {
+                let token = target
+                    .token_file
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from(policy_cli::DEFAULT_TOKEN));
+                // ADR-0047 decision 9: an unknown reading is still a successful read, so the
+                // command exits 0 for it; an unreachable or mismatched agent is exit 2.
+                return match policy_cli::status(&target.agent, &token, &target.instance).await {
+                    Ok(policy) => {
+                        if target.json {
+                            println!("{}", serde_json::to_string_pretty(&policy)?);
+                        } else {
+                            print!("{}", policy_cli::render_status(&policy));
+                        }
+                        Ok(())
+                    }
+                    Err(error) => {
+                        eprintln!("policy status: {error:#}");
+                        std::process::exit(2);
+                    }
+                };
+            }
             let (action, profile, target) = match command {
                 PolicyCommand::Enable(target) => (policy_cli::Action::Enable, None, target),
                 PolicyCommand::Disable(target) => (policy_cli::Action::Disable, None, target),
@@ -917,6 +943,8 @@ async fn run() -> Result<()> {
                     (policy_cli::Action::Select, Some(profile), target)
                 }
                 PolicyCommand::Reset(target) => (policy_cli::Action::Reset, None, target),
+                // Returned above: the read has no receipt to render.
+                PolicyCommand::Status(_) => unreachable!("status is handled before the write"),
             };
             let token = target
                 .token_file

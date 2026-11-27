@@ -87,6 +87,8 @@ mod policy_relay;
 #[cfg(feature = "policy-pack")]
 #[path = "../src/policy_sched.rs"]
 mod policy_sched;
+#[path = "../src/policy_status.rs"]
+mod policy_status;
 #[path = "../src/probe_adapters.rs"]
 #[allow(dead_code)]
 mod probe_adapters;

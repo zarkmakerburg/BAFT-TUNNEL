@@ -488,6 +488,15 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
 
 pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> Result<()> {
     crate::session_status::start_publisher();
+    crate::policy_status::start_publisher(
+        if options.noise.is_some() {
+            "noise-tcp"
+        } else {
+            "tcp-tls"
+        },
+        options.profile,
+        options.adaptive,
+    );
     let probe_control = Arc::new(crate::integrity_probe::ProbeControl::default());
     let probe_limiter = Arc::new(crate::integrity_probe::ProbeLimiter::default());
     let listen = socket(&options.listen, "--listen")?;
@@ -1822,6 +1831,15 @@ pub async fn forward(options: ForwardOptions) -> Result<()> {
 
 pub async fn forward_versioned(options: ForwardOptions, protocol_version: u16) -> Result<()> {
     crate::session_status::start_publisher();
+    crate::policy_status::start_publisher(
+        if options.noise.is_some() {
+            "noise-tcp"
+        } else {
+            "tcp-tls"
+        },
+        options.profile,
+        options.adaptive,
+    );
     let probe_control = Arc::new(crate::integrity_probe::ProbeControl::default());
     let probe_limiter = Arc::new(crate::integrity_probe::ProbeLimiter::default());
     if options.target.is_some() {

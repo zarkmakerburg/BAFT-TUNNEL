@@ -245,6 +245,118 @@ fn read_token(path: &Path) -> Result<String> {
     Ok(token)
 }
 
+/// ADR-0047's read: `GET /v1/status`'s `policy` member, unchanged, after confirming the agent is
+/// bound to the instance the operator asked about. An `unknown` reading is returned, not an error:
+/// only a read that failed to happen is an error (the caller exits 2 for it).
+pub async fn status(agent: &str, token_path: &Path, instance: &str) -> Result<Value> {
+    let target = loopback_target(agent)?;
+    let token = read_token(token_path)?;
+    let bound = bound_instance(&target, &token).await?;
+    if bound != instance {
+        bail!("the agent is bound to instance {bound}, not {instance}");
+    }
+    let (code, value) = exchange(&target, "GET", "/v1/status", &token, None).await?;
+    if code != 200 {
+        bail!("the agent did not answer status with 200 ({code})");
+    }
+    value
+        .get("policy")
+        .cloned()
+        .context("the agent's status has no policy member (an agent older than this command?)")
+}
+
+/// Text form of the policy member. Null means "not observed", never zero: a metric without a
+/// value prints its reason, and a state without evidence prints its reason too.
+pub fn render_status(policy: &Value) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "policy: {}",
+        policy["state"].as_str().unwrap_or("unknown")
+    ));
+    if let Some(reason) = policy["reason"].as_str() {
+        out.push_str(&format!(" ({reason})"));
+    }
+    out.push('\n');
+    out.push_str(&format!(
+        "  feature compiled: {}\n",
+        if policy["feature_compiled"] == json!(true) {
+            "yes"
+        } else {
+            "no"
+        }
+    ));
+    let switch = &policy["switch"];
+    out.push_str(&format!(
+        "  switch: {} ({})\n",
+        switch["state"].as_str().unwrap_or("unknown"),
+        switch["value"]
+            .as_str()
+            .or_else(|| switch["scan"].as_str())
+            .unwrap_or("not set in a readable source")
+    ));
+    if let Some(sources) = switch["sources"].as_array().filter(|s| !s.is_empty()) {
+        let sources: Vec<&str> = sources.iter().filter_map(Value::as_str).collect();
+        out.push_str(&format!("    source: {}\n", sources.join(", ")));
+    }
+    let profile = &policy["profile"];
+    out.push_str(&format!(
+        "  profile: configured {} (effective {}), running {}\n",
+        profile["configured"].as_str().unwrap_or("none"),
+        profile["configured_effective"].as_str().unwrap_or("-"),
+        profile["running"].as_str().unwrap_or("unknown"),
+    ));
+    let adaptive = &policy["adaptive"];
+    out.push_str(&format!(
+        "  adaptive: configured {}, effective {}\n",
+        on_off(adaptive["configured"].as_bool()),
+        on_off(adaptive["effective"].as_bool()),
+    ));
+    match policy["fallback"].as_object() {
+        Some(fallback) => out.push_str(&format!(
+            "  fallback: {}\n",
+            fallback["cause"].as_str().unwrap_or("unknown")
+        )),
+        None => out.push_str("  fallback: none\n"),
+    }
+    if let Some(tuples) = policy["tuples"].as_array() {
+        out.push_str("  tuples:\n");
+        for row in tuples {
+            out.push_str(&format!(
+                "    {}/{}/{}/{}: {}\n",
+                row["engine"].as_str().unwrap_or("-"),
+                row["carrier"].as_str().unwrap_or("-"),
+                row["profile"].as_str().unwrap_or("-"),
+                row["claim"].as_str().unwrap_or("-"),
+                row["evidence"].as_str().unwrap_or("-"),
+            ));
+        }
+    }
+    if let Some(metrics) = policy["metrics"].as_object() {
+        out.push_str("  metrics:\n");
+        for (name, metric) in metrics {
+            out.push_str(&format!(
+                "    {name}: {}\n",
+                match metric["value"].as_u64() {
+                    Some(value) => value.to_string(),
+                    None => format!(
+                        "unavailable ({})",
+                        metric["reason"].as_str().unwrap_or("not_observed")
+                    ),
+                }
+            ));
+        }
+    }
+    out
+}
+
+fn on_off(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "on",
+        Some(false) => "off",
+        None => "unknown",
+    }
+}
+
 /// Text form of a receipt: what was written, what it changed from, and what is verified. It never
 /// claims the pack is active — that is ADR-0047's read, not this write's receipt.
 pub fn render(receipt: &Value) -> String {
@@ -354,6 +466,35 @@ mod tests {
         assert!(text.contains("verification (unit)"), "{text}");
         assert!(text.contains("50-policy-pack.conf"), "{text}");
         assert!(!text.contains("active"), "{text}");
+    }
+
+    #[test]
+    fn a_status_reading_prints_reasons_instead_of_inventing_values() {
+        let policy = json!({
+            "state": "unknown", "reason": "no_running_evidence", "feature_compiled": true,
+            "switch": {"state": "on", "value": "sched", "sources": ["/etc/systemd/system/baft-tunnel@edge.service.d/50-policy-pack.conf"], "scan": null},
+            "profile": {"configured": "gaming/1", "configured_effective": "gaming/1", "running": null},
+            "adaptive": {"configured": false, "effective": null},
+            "fallback": null,
+            "tuples": [{"engine": "tcp-tls", "carrier": "tcp", "profile": "gaming/1", "claim": "unknown", "evidence": null}],
+            "metrics": {
+                "guard_violations": {"value": null, "reason": "not_instrumented"},
+                "queueing_delay_estimate_ms": {"value": null, "reason": "signal_blind"},
+            },
+        });
+        let text = render_status(&policy);
+        assert!(
+            text.contains("policy: unknown (no_running_evidence)"),
+            "{text}"
+        );
+        assert!(text.contains("configured gaming/1"), "{text}");
+        assert!(text.contains("running unknown"), "{text}");
+        assert!(text.contains("tcp-tls/tcp/gaming/1/unknown"), "{text}");
+        assert!(
+            text.contains("guard_violations: unavailable (not_instrumented)"),
+            "{text}"
+        );
+        assert!(!text.contains(": 0"), "{text}");
     }
 
     #[test]

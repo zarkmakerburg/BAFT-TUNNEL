@@ -1,8 +1,9 @@
 # ADR-0047: Policy Pack status contract (API, CLI, panel)
 
-**Status:** Accepted 2026-11-27 under the owner's delegated decision authority. Contract only: the
-read surface is **not implemented yet**, and implementing it is the next executable step (§
-"Implementation plan"). The write surface it sits beside is already shipped
+**Status:** Accepted 2026-11-27 under the owner's delegated decision authority. The read surface is
+**implemented and merged** (2026-11-27, § "Implementation plan"): the tunnel publishes
+`policy.json`, `GET /v1/status` carries the `policy` member, and `baft-tunnel policy status`
+renders it. The write surface it sits beside shipped earlier
 ([ADR-0057](ADR-0057-policy-operator-surface.md), merged 2026-11-27).
 **Date:** 2026-11-17, accepted 2026-11-27 after reconciling it with the shipped write surface and the
 pack's `simulated` records.
@@ -221,7 +222,7 @@ assumptions:
   measurement, turns nothing on (the pack stays off behind `policy-pack` and
   `BAFT_TUNNEL_POLICY_PACK`), and claims no benefit.
 
-## Implementation plan (the next executable step; not shipped by this ADR)
+## Implementation plan (shipped 2026-11-27)
 
 In this order, as one implementation PR after this acceptance:
 
@@ -238,8 +239,17 @@ In this order, as one implementation PR after this acceptance:
    reasons; no metric found as `0` when absent; CLI exit codes and non-loopback refusal; and the
    existing default-path test that the data path is unchanged with no switch and no profile.
 
-TP-5.2 (#241) then builds the card on the shipped object, and TP-5.3 documents it. TP-5.1 (#240)
-closes when steps 1-4 are merged and verified; it is not closed by this ADR.
+All four steps shipped on 2026-11-27 in one scoped PR merged to `main`: `src/policy_status.rs`
+carries the publisher (`start_publisher` at unit start in both `serve_versioned` and
+`forward_versioned`, `note_row` on an accepted adaptive change) and the composer (`compose`, wired
+into `agent::status` with a single `unit_view` read for both members); `src/policy_cli.rs` carries
+`status` (bound-instance check, then `GET /v1/status`) and `render_status`, dispatched by
+`PolicyCommand::Status` in `src/main.rs` with exit 0 for an `unknown` reading and 2 for an
+unreachable or mismatched agent. The tests cover decision 3's table case by case, the gate-off build,
+the absent/off/multi-source switch, stale and foreign-pid evidence, fallback causes, every tuple
+`unknown` (and `baft` `unsupported`), null-not-zero metrics, the `policy` member in the agent's
+status route, and the CLI rendering. TP-5.2 (#241) then builds the card on the shipped object, and
+TP-5.3 documents it; TP-5.1 (#240) closes on that merge.
 
 ## Rejected
 
