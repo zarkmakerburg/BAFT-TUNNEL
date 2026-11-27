@@ -216,6 +216,16 @@ build. Nothing here is a runtime or throughput measurement.
   product measurement and not a performance claim; no benefit is shown — in this sequential harness
   UDP is 1.5-1.9x slower at the median. It does not measure head-of-line blocking under a competing
   bulk flow, loss, jitter, NAT rebinding or any real path; those remain gate (e) and later work.
+- ~~Documented fail-closed and DoS behaviour (gate (f)).~~ **Gate (f) is delivered (2026-11-27):**
+  [TP-U_FAIL_CLOSED_AND_DOS.md](TP-U_FAIL_CLOSED_AND_DOS.md) analyses the prototype's failure modes
+  (handshake failure, datagram loss, peer restart, session close, oversized and malformed input,
+  flooding, memory) and states which claims are tested, read from code, or unverified. Five new
+  `udp-carrier` tests pin the testable half: a mismatched trust anchor yields no connection, a
+  closed session fails reads instead of hanging, malformed frames and oversize sends are refused
+  per message without ending the session, and a lost datagram is never retransmitted. It records
+  plainly that source-address validation/retry and handshake-concurrency bounds are quinn defaults
+  not asserted here, and that no application-level flood limit exists — which is why no UDP listener
+  is exposed to users before (b) and (e).
 - No two-host LAB run (gate (e)); whether UDP works on the Iran-to-abroad path remains Unknown.
 - The advisory snapshot is point-in-time; `cargo audit` clean is not a guarantee.
 - The probe is not the product: no workspace lint/profile interaction, no `cargo deny check bans`,
