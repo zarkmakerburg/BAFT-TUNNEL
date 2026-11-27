@@ -238,15 +238,18 @@ pub async fn send_hello(
         "unexpected hello peer id {}",
         hello.peer_id
     );
+    // The reply must echo this call's nonce. Without this check the nonce is transmitted but binds
+    // nothing, so a recorded hello reply would be accepted by a caller that never sent it.
+    ensure!(
+        hello.nonce == nonce,
+        "hello reply did not echo this client's nonce"
+    );
     Ok(())
 }
 
-/// Server side of the control-plane hello: read and validate the peer's, answer with ours.
-pub async fn answer_hello(
-    connection: &quinn::Connection,
-    peer_id: &str,
-    nonce: [u8; NONCE_LEN],
-) -> Result<()> {
+/// Server side of the control-plane hello: read and validate the peer's, then answer with ours,
+/// echoing the peer's nonce so the caller can tell a live answer from a recorded one.
+pub async fn answer_hello(connection: &quinn::Connection, peer_id: &str) -> Result<()> {
     let (mut send, mut recv) = connection
         .accept_bi()
         .await
@@ -258,7 +261,7 @@ pub async fn answer_hello(
         "unexpected hello peer id {}",
         hello.peer_id
     );
-    send.write_all(&encode_hello(peer_id, &nonce)?)
+    send.write_all(&encode_hello(peer_id, &hello.nonce)?)
         .await
         .context("write hello reply")?;
     send.finish().context("finish hello reply")?;
@@ -448,7 +451,7 @@ mod tests {
                 .await
                 .expect("accept timed out")
                 .expect("accept failed");
-            answer_hello(&connection, "server", [7_u8; NONCE_LEN])
+            answer_hello(&connection, "server")
                 .await
                 .expect("hello exchange failed");
             let (sequence, payload) =
@@ -561,9 +564,7 @@ mod tests {
             let (tx, rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
                 let connection = accept(&endpoint).await.expect("accept");
-                answer_hello(&connection, "server", [1_u8; NONCE_LEN])
-                    .await
-                    .expect("hello");
+                answer_hello(&connection, "server").await.expect("hello");
                 let outcome =
                     tokio::time::timeout(Duration::from_secs(10), recv_datagram(&connection)).await;
                 let _ = tx.send(matches!(outcome, Ok(Err(_))));
@@ -603,9 +604,7 @@ mod tests {
             let address = endpoint.local_addr().expect("server address");
             tokio::spawn(async move {
                 let connection = accept(&endpoint).await.expect("accept");
-                answer_hello(&connection, "server", [3_u8; NONCE_LEN])
-                    .await
-                    .expect("hello");
+                answer_hello(&connection, "server").await.expect("hello");
                 loop {
                     match recv_datagram(&connection).await {
                         Ok((sequence, payload)) => {
@@ -652,6 +651,45 @@ mod tests {
         });
     }
 
+    /// A hello reply that does not echo the caller's nonce must be refused: the nonce exists to
+    /// bind the answer to this exchange, so a recorded reply cannot be presented to a new caller.
+    #[test]
+    fn hello_reply_must_echo_the_client_nonce() {
+        let (certificate, key) = certified();
+        runtime().block_on(async move {
+            let config = server_config(certificate.clone(), key).expect("server config");
+            let endpoint = quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap())
+                .expect("bind server");
+            let address = endpoint.local_addr().expect("server address");
+            tokio::spawn(async move {
+                let connection = accept(&endpoint).await.expect("accept");
+                let (mut send, mut recv) =
+                    connection.accept_bi().await.expect("accept hello stream");
+                let request = recv.read_to_end(MAX_HELLO).await.expect("read hello");
+                decode_hello(&request).expect("client hello");
+                // Answer with a nonce this client never sent, i.e. a stale or recorded reply.
+                send.write_all(&encode_hello("server", &[0xaa; NONCE_LEN]).expect("encode"))
+                    .await
+                    .expect("write hello reply");
+                send.finish().expect("finish hello reply");
+                let _ = tokio::time::timeout(Duration::from_secs(10), connection.closed()).await;
+                endpoint.close(0_u32.into(), b"done");
+            });
+            let client_config = client_config(certificate).expect("client config");
+            let client_endpoint =
+                quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).expect("bind client");
+            let connection = connect(&client_endpoint, client_config, address)
+                .await
+                .expect("connect");
+            let outcome = send_hello(&connection, "client", [0x11; NONCE_LEN]).await;
+            assert!(
+                outcome.is_err(),
+                "a hello reply that does not echo this client's nonce must be refused"
+            );
+            client_endpoint.close(0_u32.into(), b"done");
+        });
+    }
+
     /// Datagrams are never retransmitted: what the peer receives is what arrived once, so a lost
     /// datagram is counted as loss and never replayed behind the application's back.
     #[test]
@@ -665,9 +703,7 @@ mod tests {
             let (tx, rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
                 let connection = accept(&endpoint).await.expect("accept");
-                answer_hello(&connection, "server", [5_u8; NONCE_LEN])
-                    .await
-                    .expect("hello");
+                answer_hello(&connection, "server").await.expect("hello");
                 let mut sequences = Vec::new();
                 while let Ok((sequence, _payload)) = recv_datagram(&connection).await {
                     sequences.push(sequence);
