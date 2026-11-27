@@ -16,6 +16,7 @@ UB=/usr/local/bin/baft-tunnel
 EB=/etc/baft-tunnel
 STATE_DIR=/var/lib/baft-tunnel-agent
 CONTROL_DIR=/run/baft-tunnel/control
+MANAGE_DIR=/run/baft-tunnel/manage
 UNIT_DIR=/etc/systemd/system
 ENGINE_STORE=/usr/local/lib/baft-tunnel-engines
 BACKUP_DIRS=()
@@ -35,6 +36,33 @@ run_marker="$REMOTE_DIR/.baft-tunnel-e2e-run-owner"
 [[ -d "$PKG" && ! -L "$PKG" ]] || die "package directory is missing or unsafe"
 [[ "$(stat -c '%U:%G' "$PKG")" == root:root ]] || die "package directory is not root-owned"
 [[ "$AGENT_STATE_DIR" == /var/lib/baft-tunnel-agent ]] || die "unexpected agent state directory"
+
+# A round can invoke this helper twice: once when the round finishes and once from the
+# stage's EXIT trap. The first pass removes the installation (including the config root),
+# so the second pass must be a successful no-op instead of failing on the absent config
+# root. Exit 0 only when every artifact owned by this helper is already gone; any partial
+# state still falls through to the strict, fail-closed checks below.
+installation_absent() {
+  local path
+  for path in "$UB" "$EB" /var/lib/baft-tunnel "$AGENT_STATE_DIR" /var/lib/baft-tunnel-control \
+    /run/baft-tunnel /usr/local/lib/baft-tunnel "$ENGINE_STORE" \
+    /etc/tmpfiles.d/baft-tunnel-control.conf; do
+    [[ ! -e "$path" && ! -L "$path" ]] || return 1
+  done
+  [[ -z "$(find "$UNIT_DIR" -mindepth 1 -name 'baft-tunnel*' -print -quit 2>/dev/null)" ]] || return 1
+  ! systemctl list-unit-files --no-legend 'baft-tunnel*' 2>/dev/null | grep -q '^baft-tunnel' || return 1
+  [[ -z "$(find /var/backups -maxdepth 1 \( -name 'baft-tunnel-install.*' -o -name 'baft-tunnel-backup.*' \) -print -quit 2>/dev/null)" ]] || return 1
+  for account in baft-tunnel baft-tunnel-agent; do
+    ! getent passwd "$account" >/dev/null 2>&1 || return 1
+    ! getent group "$account" >/dev/null 2>&1 || return 1
+  done
+  return 0
+}
+if installation_absent; then
+  echo 'auto-pair cleanup: installation already absent; nothing to remove'
+  exit 0
+fi
+
 [[ -d "$EB" && ! -L "$EB" ]] || die "config root is missing or unsafe"
 [[ "$(stat -c '%U:%G %a' "$EB")" == root:baft-tunnel\ 750 ]] || die "config root ownership or mode changed"
 # This LAB never creates credential directories; preserve any that appear.
@@ -346,10 +374,21 @@ if [[ -d "$CONTROL_DIR" ]]; then
 elif [[ -e "$CONTROL_DIR" || -L "$CONTROL_DIR" ]]; then
   die "control path has an unexpected type; preserving it"
 fi
+# /run/baft-tunnel holds the control request directory and the control-manage socket
+# directory the product creates (tmpfiles entry plus baft-tunnel-control-manage@.socket).
+# scripts/uninstall.sh removes both; any other runtime resource is still refused.
 if [[ -d /run/baft-tunnel ]]; then
+  if [[ -e "$MANAGE_DIR" || -L "$MANAGE_DIR" ]]; then
+    [[ ! -L "$MANAGE_DIR" ]] || die "manage runtime directory became a symlink; preserving it"
+    [[ -d "$MANAGE_DIR" ]] || die "manage runtime path has an unexpected type; preserving it"
+    [[ "$(stat -c '%U' "$MANAGE_DIR")" == root ]] || die "manage runtime directory ownership changed; preserving it"
+  fi
   for child in /run/baft-tunnel/*; do
     [[ -e "$child" || -L "$child" ]] || continue
-    [[ "$child" == "$CONTROL_DIR" ]] || die "unexpected runtime resource $child; preserving it"
+    case "$child" in
+      "$CONTROL_DIR" | "$MANAGE_DIR") ;;
+      *) die "unexpected runtime resource $child; preserving it" ;;
+    esac
   done
 fi
 

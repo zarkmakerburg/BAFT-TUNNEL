@@ -62,6 +62,11 @@ contains "$cleanup_helper" 'unexpected agent state files remain'
 contains "$cleanup_helper" 'agent-token.sha256'
 contains "$cleanup_helper" 'package directory is not root-owned'
 contains "$cleanup_helper" 'config root ownership or mode changed'
+contains "$cleanup_helper" 'MANAGE_DIR=/run/baft-tunnel/manage'
+contains "$cleanup_helper" '"$CONTROL_DIR" | "$MANAGE_DIR")'
+contains "$cleanup_helper" 'manage runtime directory ownership changed'
+contains "$cleanup_helper" 'installation already absent; nothing to remove'
+not_contains "$cleanup_helper" 'rm -rf /run/baft-tunnel'
 contains "$cleanup_helper" 'at least one explicit --instance is required'
 contains "$cleanup_helper" 'no run-owned installer backup path was supplied or recovered'
 contains "$cleanup_helper" 'unit remains active; preserving cleanup target'
@@ -137,5 +142,10 @@ install_agent_line="$(grep -nF 'bash "$PKG/scripts/install-agent-control.sh"' "$
 service_group_after_line="$(grep -nF 'getent group baft-tunnel > "$REMOTE_DIR/account-baft-tunnel.group"' "$install_helper" | cut -d: -f1)"
 [[ -n "$install_agent_line" && -n "$service_group_after_line" && "$service_group_after_line" -gt "$install_agent_line" ]] ||
   fail "service-group manifest must capture the agent supplementary membership"
+
+fast_path_line="$(grep -nF 'if installation_absent; then' "$cleanup_helper" | cut -d: -f1)"
+config_root_line="$(grep -nF '|| die "config root is missing or unsafe"' "$cleanup_helper" | cut -d: -f1)"
+[[ -n "$fast_path_line" && -n "$config_root_line" && "$fast_path_line" -lt "$config_root_line" ]] ||
+  fail "the already-clean fast path must be evaluated before the config-root requirement"
 
 echo 'Automatic pairing cleanup and signed-candidate safety contract: PASS'
