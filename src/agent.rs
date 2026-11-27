@@ -877,6 +877,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
             | "/v1/tunnel/lifecycle"
             | "/v1/tunnel/remove"
             | "/v1/tunnel/edit"
+            | "/v1/policy/apply"
             | "/v1/setup/bundle"
             | "/v1/setup/bundle/inspect"
             | "/v1/pki/csr/create"
@@ -946,6 +947,7 @@ async fn route(head: &str, body: &[u8], ctx: &Ctx) -> (u16, Value) {
         ("POST", "/v1/tunnel/lifecycle") => tunnel_lifecycle(ctx, body).await,
         ("POST", "/v1/tunnel/remove") => tunnel_manage(ctx, body, true).await,
         ("POST", "/v1/tunnel/edit") => tunnel_manage(ctx, body, false).await,
+        ("POST", "/v1/policy/apply") => policy_apply(ctx, body).await,
         ("GET", "/v1/setup/bundle") => own_bundle(ctx),
         ("POST", "/v1/setup/bundle/inspect") => inspect_bundle(ctx, body),
         ("POST", "/v1/pki/csr/create") => (
@@ -1109,7 +1111,8 @@ async fn setup_mode_route(method: &str, path: &str, body: &[u8], ctx: &Ctx) -> (
             | "/v1/desired"
             | "/v1/tunnel/lifecycle"
             | "/v1/tunnel/remove"
-            | "/v1/tunnel/edit",
+            | "/v1/tunnel/edit"
+            | "/v1/policy/apply",
         ) => (
             409,
             json!({"error": "setup pending: this instance has no configuration yet", "setup_pending": true}),
@@ -2812,6 +2815,8 @@ async fn tunnel_manage(ctx: &Ctx, body: &[u8], remove: bool) -> (u16, Value) {
         key: key.clone(),
         peer_host: req.peer_host.clone(),
         backup_peer_hosts: backups,
+        action: None,
+        profile: None,
     };
     let (units, manage, dir) = (
         ctx.units.clone(),
@@ -2851,6 +2856,223 @@ async fn tunnel_manage(ctx: &Ctx, body: &[u8], remove: bool) -> (u16, Value) {
         },
     );
     (crate::apply::result_code(&receipt), receipt)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolicyBody {
+    /// Must be literally `true` (ADR-0022 decision 2).
+    confirm: bool,
+    idempotency_key: String,
+    /// Closed set: `enable`, `disable`, `select`, `reset`. An unknown action is a 422.
+    action: crate::tunnel_helper::PolicyAction,
+    /// `select` only; refused for the other three so a typo cannot be mistaken for intent.
+    #[serde(default)]
+    profile: Option<String>,
+}
+
+fn policy_code(receipt: &Value) -> u16 {
+    match receipt["result"].as_str() {
+        Some("configured" | "unchanged") => 200,
+        Some("refused") => 409,
+        _ => 500,
+    }
+}
+
+/// ADR-0057: the pack's write surface. One typed action changes one of the three existing inputs
+/// (the switch drop-in, `policy.profile`, `policy.adaptive`) through the root helper; nothing here
+/// reads or reports a "status", and the receipt never claims the pack is active.
+async fn policy_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
+    let Some(state_dir) = &ctx.state_dir else {
+        return (
+            404,
+            json!({"error": "policy changes are disabled; receipts need the state directory"}),
+        );
+    };
+    let Some(name) = ctx.instance.clone() else {
+        return (
+            409,
+            json!({"error": "the agent was started without --instance; it does not manage a unit"}),
+        );
+    };
+    let req: PolicyBody = match serde_json::from_slice(body) {
+        Ok(req) => req,
+        Err(error) => {
+            return (
+                422,
+                json!({"error": "invalid request", "detail": error.to_string()}),
+            );
+        }
+    };
+    if !req.confirm {
+        return (
+            422,
+            json!({"error": "this action requires \"confirm\": true"}),
+        );
+    }
+    if !crate::apply::valid_key(&req.idempotency_key) {
+        return (
+            422,
+            json!({"error": "idempotency_key must be 8-64 characters of A-Z a-z 0-9 - _"}),
+        );
+    }
+    let action = req.action;
+    match action {
+        crate::tunnel_helper::PolicyAction::Select => {
+            if req.profile.as_deref().is_none_or(str::is_empty) {
+                return (422, json!({"error": "select needs a profile id"}));
+            }
+        }
+        _ => {
+            if req.profile.is_some() {
+                return (
+                    422,
+                    json!({"error": format!("{} takes no profile", action.as_str())}),
+                );
+            }
+        }
+    }
+    // ADR-0057 decision 3: without the feature the pack cannot run, so accepting `enable` or
+    // `select` would record a state that can never take effect.
+    if matches!(
+        action,
+        crate::tunnel_helper::PolicyAction::Enable | crate::tunnel_helper::PolicyAction::Select
+    ) && cfg!(not(feature = "policy-pack"))
+    {
+        return (
+            409,
+            json!({
+                "error": "feature_not_compiled",
+                "detail": "this agent was built without the policy-pack feature, so the pack cannot run; install a build with --features policy-pack"
+            }),
+        );
+    }
+    let request = json!({"op": "policy", "instance": name, "action": action.as_str(),
+        "profile": req.profile});
+    let digest = hex::encode(Sha256::digest(request.to_string().as_bytes()));
+    let key = req.idempotency_key.clone();
+    let _guard = ctx.lock.lock().await;
+    let receipts = state_dir.join("receipts");
+    if let Some(old) = crate::apply::replay_key(&receipts, &key, &digest) {
+        return old;
+    }
+    let helper_req = crate::tunnel_helper::Request {
+        op: crate::tunnel_helper::Op::Policy,
+        key: key.clone(),
+        peer_host: None,
+        backup_peer_hosts: None,
+        action: Some(action),
+        profile: req.profile.clone(),
+    };
+    let (manage, rdir, dg) = (ctx.manage.clone(), receipts.clone(), digest.clone());
+    let inst = name.clone();
+    let mut receipt = match tokio::task::spawn_blocking(move || {
+        policy_steps(&inst, &rdir, &dg, helper_req, manage.as_ref())
+    })
+    .await
+    {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            return (
+                500,
+                json!({"error": format!("policy task failed: {error}")}),
+            );
+        }
+    };
+    if receipt["result"] == "unknown" {
+        // No receipt: the helper may have written the files, and a stored "unknown" would replay
+        // as if it were an outcome. The operator is told what to inspect instead.
+        let _ = audit(
+            state_dir,
+            ctx,
+            AuditEvent {
+                action: "policy_apply",
+                result: "unknown",
+                resource: format!("policy/{}", action.as_str()),
+                node: None,
+                instance: Some(&name),
+                sha256: &digest,
+                detail: action.as_str(),
+                receipt_id: None,
+            },
+        );
+        return (500, receipt);
+    }
+    crate::apply::store_receipt(&receipts, &key, &mut receipt);
+    let _ = audit(
+        state_dir,
+        ctx,
+        AuditEvent {
+            action: "policy_apply",
+            result: receipt["result"].as_str().unwrap_or("failed"),
+            resource: format!("policy/{}", action.as_str()),
+            node: None,
+            instance: Some(&name),
+            sha256: &digest,
+            detail: action.as_str(),
+            receipt_id: receipt["id"].as_str(),
+        },
+    );
+    (policy_code(&receipt), receipt)
+}
+
+/// The agent's receipt around the helper's answer: ADR-0057's closed result set, one step, and the
+/// helper's own fields passed through unchanged (nothing is re-derived on this side).
+fn policy_steps(
+    name: &str,
+    _receipts: &Path,
+    digest: &str,
+    req: crate::tunnel_helper::Request,
+    manage: &dyn crate::tunnel_helper::ManageHelper,
+) -> Value {
+    let action = req
+        .action
+        .unwrap_or(crate::tunnel_helper::PolicyAction::Reset);
+    let mut rc = json!({
+        "receipt_version": 1, "id": req.key, "stage": format!("policy-{}", action.as_str()),
+        "started_at": unix_now(), "request_sha256": digest, "replayed": false,
+        "instance": name, "action": action.as_str(), "steps": [],
+        "secrets": "none recorded: file names only; key material, the agent token and file contents are never written to a receipt",
+    });
+    let out = manage.submit(name, &req).unwrap_or_else(helper_error);
+    rc["steps"] = json!([{"step": "policy_write", "result": out["result"],
+        "files": out["files"], "reason": out.get("reason")}]);
+    if out["result"] == "unknown" {
+        rc["result"] = json!("unknown");
+        rc["reason"] = json!(UNKNOWN_NOTE);
+        rc["finished_at"] = json!(unix_now());
+        return rc;
+    }
+    for field in [
+        "files",
+        "backup",
+        "previous",
+        "requested",
+        "restart_required",
+        "verification",
+        "next_commands",
+        "cause",
+        "failed_step",
+        "restored",
+        "file_state",
+        "unconfirmed",
+        "recovery_error",
+        "operator_action",
+    ] {
+        if let Some(value) = out.get(field) {
+            rc[field] = value.clone();
+        }
+    }
+    rc["result"] = match out["result"].as_str() {
+        Some("applied") => json!("configured"),
+        Some(other) => json!(other),
+        None => json!("unknown"),
+    };
+    if out["result"] != "applied" {
+        rc["reason"] = out.get("reason").cloned().unwrap_or(Value::Null);
+    }
+    rc["finished_at"] = json!(unix_now());
+    rc
 }
 
 /// A submit error: `unknown` when the helper may have acted (late or foreign result), else `failed`.
@@ -2956,6 +3178,8 @@ fn manage_steps(
                 )),
             )
         }
+        // ADR-0057 writes have their own route and receipt; this function is remove/edit only.
+        Op::Policy => unreachable!("policy writes do not use the tunnel lifecycle"),
         Op::Edit | Op::Revert => {
             let out = manage.submit(name, &req).unwrap_or_else(helper_error);
             steps.push(
@@ -2997,6 +3221,8 @@ fn manage_steps(
                 key: req.key.clone(),
                 peer_host: None,
                 backup_peer_hosts: None,
+                action: None,
+                profile: None,
             };
             let back = manage.submit(name, &revert).unwrap_or_else(helper_error);
             steps.push(json!({"step": "revert_files", "result": back["result"], "reason": back.get("reason")}));
@@ -6661,6 +6887,133 @@ mod tests {
         assert_eq!(
             std::fs::read(helper.0.config.join("edge.json")).unwrap(),
             before
+        );
+    }
+
+    fn policy_bad_requests() -> Vec<&'static str> {
+        vec![
+            r#"{"confirm":false,"idempotency_key":"po-gate-01","action":"enable"}"#,
+            r#"{"confirm":true,"idempotency_key":"x","action":"enable"}"#,
+            r#"{"confirm":true,"idempotency_key":"po-gate-02","action":"pause"}"#,
+            r#"{"confirm":true,"idempotency_key":"po-gate-03"}"#,
+            r#"{"confirm":true,"idempotency_key":"po-gate-04","action":"select"}"#,
+            r#"{"confirm":true,"idempotency_key":"po-gate-05","action":"select","profile":""}"#,
+            r#"{"confirm":true,"idempotency_key":"po-gate-06","action":"enable","profile":"gaming/1"}"#,
+            r#"{"confirm":true,"idempotency_key":"po-gate-07","action":"reset","profile":"gaming/1"}"#,
+            r#"{"confirm":true,"idempotency_key":"po-gate-08","action":"disable","instance":"other"}"#,
+            r#"{"confirm":true,"idempotency_key":"po-gate-09","action":"enable","confirm_name":"edge"}"#,
+        ]
+    }
+
+    #[tokio::test]
+    async fn policy_apply_is_typed_and_validated_before_anything_is_written() {
+        let (ctx, fake, helper, state) = manage_ctx("po-gate", "active");
+        let ok = br#"{"confirm":true,"idempotency_key":"po-gate-00","action":"reset"}"#;
+        let head = "POST /v1/policy/apply HTTP/1.1\r\nHost: 127.0.0.1";
+        assert_eq!(route(head, ok, &ctx).await.0, 401);
+        for bad in policy_bad_requests() {
+            assert_eq!(
+                route(&post("/v1/policy/apply"), bad.as_bytes(), &ctx)
+                    .await
+                    .0,
+                422,
+                "{bad}"
+            );
+        }
+        assert!(fake.log.lock().unwrap().is_empty());
+        assert!(!helper.0.drop_in("edge").exists());
+        assert!(!state.join("receipts").exists());
+        // No state directory: the route is off, exactly as the tunnel routes are.
+        let (bare, _) = lifecycle_ctx(&state_dir("po-bare"), Some("edge"), "active");
+        let bare = Ctx {
+            state_dir: None,
+            ..bare
+        };
+        assert_eq!(route(&post("/v1/policy/apply"), ok, &bare).await.0, 404);
+        // No --instance: nothing can be bound to a unit.
+        let (loose, _) = lifecycle_ctx(&state_dir("po-loose"), None, "active");
+        assert_eq!(route(&post("/v1/policy/apply"), ok, &loose).await.0, 409);
+    }
+
+    #[cfg(not(feature = "policy-pack"))]
+    #[tokio::test]
+    async fn policy_without_the_feature_refuses_enable_and_select_without_writing() {
+        let (ctx, _fake, helper, state) = manage_ctx("po-off", "active");
+        for (i, body) in [
+            r#"{"confirm":true,"idempotency_key":"po-off-0001","action":"enable"}"#,
+            r#"{"confirm":true,"idempotency_key":"po-off-0002","action":"select","profile":"gaming/1"}"#,
+        ]
+        .iter()
+        .enumerate()
+        {
+            let (code, out) = route(&post("/v1/policy/apply"), body.as_bytes(), &ctx).await;
+            assert_eq!(code, 409, "case {i}: {out}");
+            assert_eq!(out["error"], "feature_not_compiled", "{out}");
+            assert!(!state.join("receipts").exists());
+        }
+        assert!(!helper.0.drop_in("edge").exists());
+        // The two actions that can only remove state remain available.
+        let body = br#"{"confirm":true,"idempotency_key":"po-off-0003","action":"disable"}"#;
+        let (code, out) = route(&post("/v1/policy/apply"), body, &ctx).await;
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["result"], "unchanged");
+    }
+
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    async fn policy_apply_writes_through_the_helper_replays_and_detects_conflicts() {
+        let (ctx, _fake, helper, state) = manage_ctx("po-on", "inactive");
+        let body = br#"{"confirm":true,"idempotency_key":"po-on-0001","action":"select","profile":"gaming/1"}"#;
+        let (code, out) = route(&post("/v1/policy/apply"), body, &ctx).await;
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["result"], "configured");
+        assert_eq!(out["action"], "select");
+        assert_eq!(out["instance"], "edge");
+        assert!(state.join("receipts/po-on-0001.json").exists());
+        let cfg: Value =
+            serde_json::from_slice(&std::fs::read(helper.0.config.join("edge.json")).unwrap())
+                .unwrap();
+        assert_eq!(cfg["policy"]["profile"], "gaming/1");
+        // The same key and the same request is the stored receipt, never a second write.
+        let (code, again) = route(&post("/v1/policy/apply"), body, &ctx).await;
+        assert_eq!(code, 200);
+        assert_eq!(again["replayed"], true, "{again}");
+        // The same key with a different request is a conflict.
+        let other = br#"{"confirm":true,"idempotency_key":"po-on-0001","action":"enable"}"#;
+        assert_eq!(route(&post("/v1/policy/apply"), other, &ctx).await.0, 409);
+        // A fresh key for the same converged state is `unchanged` and writes nothing.
+        let same = br#"{"confirm":true,"idempotency_key":"po-on-0002","action":"select","profile":"gaming/1"}"#;
+        let (code, out) = route(&post("/v1/policy/apply"), same, &ctx).await;
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["result"], "unchanged");
+        assert_eq!(out["files"], json!([]));
+        // The switch: write the managed drop-in, then remove it again.
+        let enable = br#"{"confirm":true,"idempotency_key":"po-on-0003","action":"enable"}"#;
+        let (code, out) = route(&post("/v1/policy/apply"), enable, &ctx).await;
+        assert_eq!(code, 200, "{out}");
+        assert_eq!(out["result"], "configured");
+        assert_eq!(
+            std::fs::read(helper.0.drop_in("edge")).unwrap(),
+            crate::tunnel_helper::MANAGED_DROP_IN
+        );
+        let disable = br#"{"confirm":true,"idempotency_key":"po-on-0004","action":"disable"}"#;
+        let (code, out) = route(&post("/v1/policy/apply"), disable, &ctx).await;
+        assert_eq!(code, 200, "{out}");
+        assert!(!helper.0.drop_in("edge").exists());
+        // An id the runtime does not know is a refusal, not a write.
+        let bad = br#"{"confirm":true,"idempotency_key":"po-on-0005","action":"select","profile":"baft/1"}"#;
+        let (code, out) = route(&post("/v1/policy/apply"), bad, &ctx).await;
+        assert_eq!(code, 409, "{out}");
+        assert_eq!(out["result"], "refused");
+        assert_eq!(out["cause"], "policy_not_valid");
+        let audit = std::fs::read_to_string(state.join(AUDIT_FILE)).unwrap();
+        assert!(audit.contains("\"action\":\"policy_apply\""), "{audit}");
+        assert!(audit.contains("\"resource\":\"policy/select\""), "{audit}");
+        assert!(!audit.contains(TOKEN));
+        let receipts = std::fs::read_dir(state.join("receipts")).unwrap().count();
+        assert_eq!(
+            receipts, 5,
+            "one receipt per accepted key, including refusals"
         );
     }
 

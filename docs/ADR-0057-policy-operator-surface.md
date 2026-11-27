@@ -1,7 +1,8 @@
 # ADR-0057: Policy Pack operator surface (Agent API and CLI)
 
-**Status:** Accepted 2026-11-27 under the owner's delegated decision authority. Write surface only; the
-status/metrics read is deferred to [ADR-0047](ADR-0047-policy-status-contract.md) (still Proposed).
+**Status:** Accepted 2026-11-27 under the owner's delegated decision authority and implemented
+2026-11-27. Write surface only; the status/metrics read is deferred to
+[ADR-0047](ADR-0047-policy-status-contract.md) (still Proposed).
 **Date:** 2026-11-27
 **Related:** [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) decisions 2, 10, 14 and 15-19,
 [ADR-0047](ADR-0047-policy-status-contract.md), [ADR-0044](ADR-0044-engine-agnostic-policy-interface.md),
@@ -209,3 +210,25 @@ file-level verification for a stopped unit, unit-level verification with the res
 default-build test that the data path is unchanged with no switch and no profile already exists and is
 not replaced by this work. No measurement is added by an operator surface, so no evidence label
 changes.
+
+## Implementation note (2026-11-27, added with the code)
+
+The write surface shipped in one scoped PR and this note records the three places where the code
+pins down what the decisions above left to implementation, without changing any of them:
+
+1. **The CLI's `--instance` is checked, not sent.** The typed request stays exactly the four fields
+   of decision 1, so the agent takes the instance from its own `--instance`. A thin client that
+   ignored the flag could therefore write a different instance than the operator named; the client
+   reads the agent's existing `GET /v1/host/tunnels` first (the `current` entry) and refuses before
+   sending when it does not match. No policy rule lives in the client: the profile list, the engine
+   scope and every refusal stay on the agent and the helper.
+2. **Refusals carry a machine-readable `cause`** beside the human `reason`:
+   `switch_managed_elsewhere` (the switch is set in the unit file, in another drop-in, or the
+   managed path holds foreign content), `switch_not_managed` (`disable` asked to remove a drop-in
+   this surface did not write) and `policy_not_valid` (the runtime's own schema or profile table
+   refused the edited configuration, with its accepted values in the message).
+3. **A helper transport outcome that cannot be established is reported as `unknown`,** with the
+   existing `UNKNOWN_NOTE`, a 500, and **no stored receipt** — the receipt set of decision 6 covers
+   writes, and storing `unknown` would replay as if it were an outcome. The exit codes are the ones
+   decision 6 states (200 for `configured`/`unchanged`, 409 for `refused`, 500 for
+   `rolled_back`/`recovery_failed`).

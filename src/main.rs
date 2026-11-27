@@ -36,6 +36,7 @@ mod policy;
 mod policy_adaptive;
 #[cfg(test)]
 mod policy_baseline;
+mod policy_cli;
 mod policy_profile;
 #[cfg(feature = "policy-pack")]
 mod policy_relay;
@@ -166,6 +167,13 @@ enum Command {
         #[command(subcommand)]
         command: SetupCommand,
     },
+    /// Operator surface of the adaptive policy pack (ADR-0057): enable or disable the pack on the
+    /// tunnel's unit, select one of the five versioned profiles, or reset to Balanced. A thin
+    /// client of the local agent: it writes nothing itself and reports the agent's receipt.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommand,
+    },
     /// Automatic pairing (ADR-0050): `offer` on the listening server prints a one-time code,
     /// `accept CODE` on the other server enrolls it. No file is copied between the servers.
     Pair {
@@ -238,6 +246,39 @@ enum FleetCommand {
         #[arg(long)]
         instance: String,
     },
+}
+
+#[derive(Debug, clap::Args)]
+struct PolicyTarget {
+    /// systemd instance (`baft-tunnel@NAME`) to change.
+    #[arg(long)]
+    instance: String,
+    /// Local agent origin; must be loopback.
+    #[arg(long, default_value = policy_cli::DEFAULT_AGENT)]
+    agent: String,
+    /// Agent token file (default: the installed agent's token).
+    #[arg(long)]
+    token_file: Option<PathBuf>,
+    /// Machine-readable receipt.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum PolicyCommand {
+    /// Write the managed drop-in that sets BAFT_TUNNEL_POLICY_PACK=sched (the pack's gate).
+    Enable(PolicyTarget),
+    /// Remove that drop-in; refused when the switch belongs to operator-owned configuration.
+    Disable(PolicyTarget),
+    /// Set policy.profile to a versioned id; policy.adaptive is preserved.
+    Select {
+        /// `balanced/1`, `gaming/1`, `trading/1`, `streaming/1` or `bulk/1`.
+        profile: String,
+        #[command(flatten)]
+        target: PolicyTarget,
+    },
+    /// Clear policy.profile and policy.adaptive, returning to the schema defaults.
+    Reset(PolicyTarget),
 }
 
 #[derive(Debug, Subcommand)]
@@ -742,6 +783,8 @@ async fn run() -> Result<()> {
                     config: std::path::Path::new("/etc/baft-tunnel"),
                     backups: std::path::Path::new(tunnel_helper::BACKUP_ROOT),
                     run: std::path::Path::new(tunnel_helper::RUN_ROOT),
+                    units: std::path::Path::new(tunnel_helper::UNIT_ROOT),
+                    service: &tunnel_helper::SystemService,
                 },
             )?;
             // Journal line without secrets: operation, key and result only.
@@ -865,6 +908,33 @@ async fn run() -> Result<()> {
                 },
             )
             .await
+        }
+        Command::Policy { command } => {
+            let (action, profile, target) = match command {
+                PolicyCommand::Enable(target) => (policy_cli::Action::Enable, None, target),
+                PolicyCommand::Disable(target) => (policy_cli::Action::Disable, None, target),
+                PolicyCommand::Select { profile, target } => {
+                    (policy_cli::Action::Select, Some(profile), target)
+                }
+                PolicyCommand::Reset(target) => (policy_cli::Action::Reset, None, target),
+            };
+            let token = target
+                .token_file
+                .unwrap_or_else(|| PathBuf::from(policy_cli::DEFAULT_TOKEN));
+            let receipt = policy_cli::apply(
+                &target.agent,
+                &token,
+                &target.instance,
+                action,
+                profile.as_deref(),
+            )
+            .await?;
+            if target.json {
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            } else {
+                print!("{}", policy_cli::render(&receipt));
+            }
+            Ok(())
         }
         Command::Fleet {
             command: FleetCommand::Helper { instance },
