@@ -28,4 +28,28 @@ if grep -Fq 'echo "$LAB_SSH' "$harness" || grep -Eq 'Bearer \$\(?token|--insecur
   exit 1
 fi
 
+# A LAB host secret that is not an IP must be refused by the harness's own validation with an
+# explicit message and its documented exit code, not by a python traceback and exit 1: a workflow
+# log that says only "exit code 1" gives the operator nothing to fix.
+if preflight=$(env -i PATH=/usr/bin:/bin HOME="$PWD" \
+    LAB_IRAN_HOST=lab-iran.example LAB_ABROAD_HOST=203.0.113.7 \
+    LAB_SSH_PRIVATE_KEY=dummy LAB_SSH_KNOWN_HOSTS=dummy \
+    CANDIDATE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa CANDIDATE_BINARY=/bin/true \
+    GITHUB_RUN_ID=1 bash "$harness" 2>&1); then
+  preflight_status=0
+else
+  preflight_status=$?
+fi
+if [ "$preflight_status" -ne 2 ]; then
+  echo "a non-IP LAB host must be refused with exit 2, got $preflight_status: $preflight" >&2
+  exit 1
+fi
+case "$preflight" in
+  *'LAB_IRAN_HOST is not an IP address'*) ;;
+  *)
+    echo "a non-IP LAB host must be named in the refusal: $preflight" >&2
+    exit 1
+    ;;
+esac
+
 printf '%s\n' 'FLEET_REPORT_HARNESS_CONTRACT=PASS manual_confirmation=1 protected_environment=1 serialized_lab=1 exact_main_orchestration=1 artifact_integrity=1 remote_binary_digest=1 member_live=1 negative_controls=1 stale_after_stop=1 no_firewall_changes=1 verified_tls=1'
