@@ -135,8 +135,11 @@ satisfied) and still no live measurement. Evidence:
 throughout, plus a re-run of this ADR's loopback arm that again made 0 changes with a 0 ms estimate,
 confirming the test seam did not alter the live sampling path. `violations` was a constant `0`
 when this note was written; since 2026-11-27 the arbiter's own `guard_violations` counter feeds the
-sample and a live-signal test covers the guard row (**tested**), while the 1 Hz driver inside a
-running product stays **unverified**. #239's "mark adaptive `Unknown`/`Off`" has no
+sample and a live-signal test covers the guard row (**tested**); since 2026-11-27 the 1 Hz driver
+inside a running product is **tested** end to end as well — its own task applies a change and this
+ADR's guard fail-safe restores the row, with scripted sample values
+([TP-4.1 record §5](POLICY_PACK_TP-4.1_ADAPTIVE_EVIDENCE.md)) — while the live congestion signal it
+consumes stays **unverified**. #239's "mark adaptive `Unknown`/`Off`" has no
 surface to write to: decision 11 reserves the adaptive view for ADR-0047 (accepted 2026-11-27), and this
 slice neither adds an endpoint nor invents a log-only status. TP-4.2's one remaining criterion is
 the suspended two-host LAB window.
