@@ -103,9 +103,11 @@ shorter runs: 6 s per arm and rate, two repeats, plus one 20 s run at 250 000 B/
 - **Live `violations`:** updated 2026-11-27 — the arbiter's real guard counter
   (`guard_violations`, raised when a request exceeds the row's cap) now feeds the sample, and
   `a_live_arbiter_guard_violation_restores_the_row_without_forced_samples` observes row 2 through
-  the live arbiter and the session's own counter read (**tested**). Still **unverified**: the same
-  matrix on a real path, and the 1 Hz driver inside a running product (read from code only). Every
-  other row in this record remains a forced sequence, as its labels say.
+  the live arbiter and the session's own counter read (**tested**). Updated again 2026-11-27: the 1 Hz
+driver inside a running product is now **tested** end to end — its own task applies a change and
+this record's guard fail-safe restores it (TP-4.1 record §5), with scripted sample values. Still
+**unverified**: the same matrix on a real path, and any signal from live traffic. Every other row in
+this record remains a forced sequence, as its labels say.
 - **#239's "mark adaptive `Unknown`/`Off`":** there is no status surface to mark. ADR-0056
   decision 11 reserves the adaptive view for [ADR-0047](ADR-0047-policy-status-contract.md), which
   was still Proposed when this record was written (it was accepted on 2026-11-27). The requirement is

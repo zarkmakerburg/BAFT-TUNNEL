@@ -29,6 +29,8 @@
 //! bound bytes in flight; it bounds *who goes next* when several flows share the link, which the
 //! window alone cannot do. Its measurement (TP-2.2) is recorded in ADR-0048 as `simulated`.
 
+#[cfg(test)]
+use std::collections::VecDeque;
 use std::io;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -173,6 +175,12 @@ pub(crate) struct PolicySession {
     next_flow: AtomicU64,
     /// `Some` only when `policy.adaptive` opted in (ADR-0056 decisions 9-10).
     adaptation: Option<Mutex<Adaptation>>,
+    /// Test-only sample source for the live-driver test. The arbiter's queue is a rendezvous that
+    /// reports no queued bytes under real traffic (TP-4.1 record section 3), so the driver's own
+    /// cadence can only be observed against scripted counters. Production always reads the
+    /// arbiters; nothing outside `cfg(test)` can reach this queue.
+    #[cfg(test)]
+    scripted: Mutex<VecDeque<(Option<Counters>, Option<Counters>)>>,
 }
 
 impl PolicySession {
@@ -228,6 +236,8 @@ impl PolicySession {
             ],
             next_flow: AtomicU64::new(1),
             adaptation: adaptive.then(|| Mutex::new(Adaptation::new(configured))),
+            #[cfg(test)]
+            scripted: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -288,11 +298,31 @@ impl PolicySession {
     }
 
     /// One slow-loop tick: read this session's own counters, then decide and apply. Split so the
-    /// driver has no decision logic.
+    /// driver has no decision logic. In tests a queued scripted sample replaces the read (see
+    /// `scripted`); the driver, its 1 Hz cadence and everything below are the running product's.
     async fn tick(&self, started: Instant) {
+        #[cfg(test)]
+        if let Some((to_peer, from_peer)) = self
+            .scripted
+            .lock()
+            .ok()
+            .and_then(|mut scripted| scripted.pop_front())
+        {
+            self.tick_with(started.elapsed(), to_peer, from_peer).await;
+            return;
+        }
         let to_peer = self.to_peer.stats().await.map(counters);
         let from_peer = self.from_peer.stats().await.map(counters);
         self.tick_with(started.elapsed(), to_peer, from_peer).await;
+    }
+
+    /// Queues one scripted sample for the next driver tick (test-only seam, see `scripted`).
+    #[cfg(test)]
+    fn script(&self, to_peer: Option<Counters>, from_peer: Option<Counters>) {
+        self.scripted
+            .lock()
+            .expect("scripted samples")
+            .push_back((to_peer, from_peer));
     }
 
     /// The decide-and-apply half of a tick, given each direction's sample or `None` for a missed
@@ -669,6 +699,111 @@ mod tests {
         assert_eq!(
             stats.granted_bytes,
             PolicyProfile::Trading.quantum_bytes() as u64
+        );
+    }
+
+    /// Polls until the driver's own task has produced `condition`, or fails after 15 s.
+    async fn wait_for_driver(mut condition: impl FnMut() -> bool) {
+        for _ in 0..300 {
+            if condition() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the 1 Hz driver did not reach the expected state within 15 s");
+    }
+
+    /// TP-4.1's live driver, end to end: `PolicySession::new(..., true)` spawns the real 1 Hz task,
+    /// which samples, decides, and applies through `Command::Configure` — no forced tick and no
+    /// direct call to `apply`. The sample *values* are scripted because this harness cannot produce
+    /// a live congestion estimate (the arbiter's queue is a rendezvous; record section 3); the
+    /// cadence, the controller, the apply and the read-bound update are the product's.
+    ///
+    /// Three consecutive seconds above the 50 ms threshold move one rung down and reconfigure the
+    /// running arbiter; a guard violation on a later live tick restores the configured row.
+    #[tokio::test]
+    async fn the_live_1hz_driver_applies_a_change_and_restores_the_configured_row_on_guard() {
+        use crate::policy_adaptive::Cause;
+
+        let configured = PolicyProfile::Balanced;
+        let session = PolicySession::new(config_for(configured), configured, true);
+        assert!(
+            session.adaptation.is_some(),
+            "the opt-in must build the controller"
+        );
+
+        // First tick has no previous counter to subtract, so it carries no estimate; the next
+        // three are the persistence window.
+        session.script(forced(0, 5), forced(0, 5));
+        for second in 1..=3 {
+            session.script(forced(second, 120), forced(second, 5));
+        }
+        wait_for_driver(|| !session.changes().is_empty()).await;
+
+        let changes = session.changes();
+        assert_eq!(changes.len(), 1, "one accepted step, and only one");
+        assert_eq!(changes[0].direction, Direction::ToPeer);
+        assert_eq!(changes[0].change.cause, Cause::QueueDelayHigh);
+        assert_eq!(changes[0].change.from, configured);
+        assert_eq!(changes[0].change.to, PolicyProfile::Gaming);
+        assert_eq!(
+            session.chunk(Direction::ToPeer).load(Ordering::Relaxed),
+            PolicyProfile::Gaming.quantum_bytes(),
+            "the read bound follows the applied row"
+        );
+        assert_eq!(
+            granted(&session, configured.quantum_bytes()).await,
+            PolicyProfile::Gaming.quantum_bytes(),
+            "the running arbiter took the Command::Configure the driver sent"
+        );
+
+        // A guard violation on the next live tick is a fail-safe: the configured row comes back.
+        session.script(forced_with(4, 120, 0, 1), forced(4, 5));
+        wait_for_driver(|| session.changes().len() >= 2).await;
+        let changes = session.changes();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[1].change.cause, Cause::GuardViolation);
+        assert_eq!(changes[1].change.from, PolicyProfile::Gaming);
+        assert_eq!(changes[1].change.to, configured);
+        assert_eq!(
+            session.chunk(Direction::ToPeer).load(Ordering::Relaxed),
+            configured.quantum_bytes()
+        );
+        assert_eq!(
+            granted(&session, configured.quantum_bytes()).await,
+            configured.quantum_bytes(),
+            "the fail-safe restored the arbiter too, not just the controller's state"
+        );
+    }
+
+    /// ADR-0056 decision 10: without `policy.adaptive` there is no controller and no driver task,
+    /// so the same scripted samples cannot move a row and are never even consumed.
+    #[tokio::test]
+    async fn the_live_driver_does_not_run_without_the_opt_in() {
+        let configured = PolicyProfile::Balanced;
+        let session = PolicySession::new(config_for(configured), configured, false);
+        assert!(session.adaptation.is_none());
+        for second in 0..=3 {
+            session.script(forced(second, 120), forced(second, 5));
+        }
+        // Longer than one 1 Hz period: a driver task would have consumed a sample by now.
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert!(
+            session.changes().is_empty(),
+            "no controller means no change"
+        );
+        assert_eq!(
+            session.chunk(Direction::ToPeer).load(Ordering::Relaxed),
+            configured.quantum_bytes()
+        );
+        assert_eq!(
+            granted(&session, configured.quantum_bytes()).await,
+            configured.quantum_bytes()
+        );
+        assert_eq!(
+            session.scripted.lock().expect("scripted samples").len(),
+            4,
+            "nothing ticked, so nothing consumed the script"
         );
     }
 
