@@ -93,6 +93,18 @@ jobs:
           fi
       - name: Run Clippy with the carrier feature
         run: cargo +1.88.0 clippy --locked --all-targets --features udp-carrier -- -D warnings
+      - name: Run the gate-(d) carrier benchmark (release, time-bounded, writes the artifact)
+        env:
+          BAFT_UDP_BENCH_OUT: target/udp-carrier-bench.json
+        run: |
+          cargo +1.88.0 test --release --locked --features udp-carrier udp_carrier_bench -- --nocapture
+      - name: Upload the gate-(d) benchmark artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4.6.2
+        with:
+          name: udp-carrier-bench
+          path: target/udp-carrier-bench.json
+          if-no-files-found: error
+          retention-days: 30
 
   ubuntu-2204-baseline:
     # Baseline gate: Ubuntu 22.04 / systemd 249 with LoadCredential= (no encrypted credentials).

@@ -196,8 +196,26 @@ build. Nothing here is a runtime or throughput measurement.
   QUIC endpoint/connection helpers), a fuzz target (`fuzz/fuzz_targets/udp_datagram.rs`), and a
   two-process loopback test that completes a real QUIC handshake and one datagram round-trip,
   enforced by the dedicated `udp-carrier` CI job and the `fuzz-smoke` `udp-datagram` job.
-- No per-tuple benchmark against the TCP carrier (gate (d)); the build numbers above are not
-  performance.
+- ~~No per-tuple benchmark against the TCP carrier (gate (d)); the build numbers above are not
+  performance.~~ **Gate (d) is delivered (2026-11-27):** `src/udp_carrier_bench.rs` (test-only,
+  compiled only with `udp-carrier`) measures the prototype carrier against the product's TCP carrier
+  layers. The tuple axis is (carrier, application payload size) — 64 B and 1024 B, both inside the
+  1200-byte path-MTU assumption — because decision 10 leaves the five profiles' mapping onto
+  datagram classes undecided, so a profile axis would be invented. The UDP arm is the real gate-(c)
+  session (`crate::udp_carrier`: QUIC handshake, hello, negotiated RFC 9221 datagrams); the TCP arm
+  is TLS 1.3 on `ring` with the pinned certificate plus a real `tokio-yamux` session built with
+  `crate::tunnel::yamux_config(8)` and one stream. Each tuple: 20 warmup, 200 latency and 2000
+  throughput sequential request/echo samples, measured with `std::time::Instant`; every sample must
+  be a byte-exact echo. Release-mode local run on 2026-11-27 (4 vCPU, rustc 1.88.0, loopback):
+  at 64 B, p50 246 µs TCP vs 464 µs UDP (1.89x), p99 2136 vs 3699 µs, echo throughput 145,231 vs
+  89,792 B/s (0.62x); at 1024 B, p50 268 vs 401 µs (1.50x), p99 1108 vs 1995 µs, 1,992,747 vs
+  1,484,536 B/s (0.75x). The dedicated `udp-carrier` CI job runs the harness in release, enforces
+  only conservative sanity bounds (UDP p50 ≤ max(10x TCP p50, TCP p50 + 5 ms); UDP throughput
+  ≥ 0.1x TCP) plus echo integrity, and uploads `udp-carrier-bench.json` (schema
+  `baft-udp-carrier-bench/1`). Evidence label: `local-loopback-release`. It is **not** a per-tuple
+  product measurement and not a performance claim; no benefit is shown — in this sequential harness
+  UDP is 1.5-1.9x slower at the median. It does not measure head-of-line blocking under a competing
+  bulk flow, loss, jitter, NAT rebinding or any real path; those remain gate (e) and later work.
 - No two-host LAB run (gate (e)); whether UDP works on the Iran-to-abroad path remains Unknown.
 - The advisory snapshot is point-in-time; `cargo audit` clean is not a guarantee.
 - The probe is not the product: no workspace lint/profile interaction, no `cargo deny check bans`,

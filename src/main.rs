@@ -65,6 +65,9 @@ mod tunnel_helper;
 #[cfg(feature = "udp-carrier")]
 #[allow(dead_code)] // Prototype surface: exercised by the gate-(c) test and fuzz target.
 mod udp_carrier;
+#[cfg(all(test, feature = "udp-carrier"))]
+#[allow(dead_code)] // Gate-(d) harness: test-only, so no default build or test list changes.
+mod udp_carrier_bench;
 
 use anyhow::{Result, bail};
 use authorization::ConnectionDirection;
