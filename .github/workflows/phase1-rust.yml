@@ -63,6 +63,37 @@ jobs:
         run: |
           bash -n scripts/pki/test-crl-activation-systemd.sh
           bash scripts/pki/test-crl-activation-systemd.sh
+  udp-carrier:
+    # Gate (c) of ADR-0046: the two-process loopback test runs with the non-default carrier feature
+    # enabled, while the default graph and default test list are asserted to stay carrier-free.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy
+      - name: Prove the default dependency graph has no carrier
+        run: |
+          if cargo +1.88.0 tree --locked -e normal --prefix none | grep -q '^quinn v'; then
+            echo 'the default dependency graph contains quinn; udp-carrier must stay non-default' >&2
+            exit 1
+          fi
+      - name: Build with the non-default carrier feature
+        run: cargo +1.88.0 build --locked --features udp-carrier
+      - name: Run the two-process loopback test (real handshake and datagram round-trip)
+        run: |
+          cargo +1.88.0 test --locked --features udp-carrier udp_carrier::tests:: -- --nocapture
+      - name: Prove the default test list has no carrier test
+        run: |
+          if cargo +1.88.0 test --locked -- --list | grep -q 'udp_carrier'; then
+            echo 'a carrier test is compiled without the feature' >&2
+            exit 1
+          fi
+      - name: Run Clippy with the carrier feature
+        run: cargo +1.88.0 clippy --locked --all-targets --features udp-carrier -- -D warnings
+
   ubuntu-2204-baseline:
     # Baseline gate: Ubuntu 22.04 / systemd 249 with LoadCredential= (no encrypted credentials).
     runs-on: ubuntu-22.04

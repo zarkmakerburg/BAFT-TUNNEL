@@ -19,6 +19,31 @@ on:
 permissions:
   contents: read
 jobs:
+  udp-datagram:
+    # Gate (c) of ADR-0046: build and smoke-run the carrier parser target with the non-default
+    # feature. Kept separate so the ten default targets keep their existing build.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned nightly and cargo-fuzz
+        run: |
+          rustup toolchain install nightly-2026-11-07 --profile minimal
+          cargo +nightly-2026-11-07 install cargo-fuzz --version 0.13.2 --locked
+      - name: Build the carrier datagram fuzz target
+        run: cd fuzz && cargo +nightly-2026-11-07 fuzz build udp_datagram --features udp-carrier
+      - name: Smoke-run the carrier datagram fuzz target
+        run: |
+          cd fuzz
+          cargo +nightly-2026-11-07 fuzz run udp_datagram --features udp-carrier -- \
+            -max_total_time=30 -max_len=1200
+      - name: Print crashing inputs (base64)
+        if: failure()
+        run: |
+          for f in fuzz/artifacts/udp_datagram/*; do [ -f "$f" ] && { echo "== $f"; base64 "$f"; }; done || true
+
   fuzz:
     runs-on: ubuntu-24.04
     timeout-minutes: 120

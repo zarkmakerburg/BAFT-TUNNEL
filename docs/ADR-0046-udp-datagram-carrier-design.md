@@ -1,9 +1,12 @@
 # ADR-0046: UDP/datagram carrier (design, accepted 2026-11-27)
 
 **Status:** **Accepted 2026-11-27 for the design decisions below** under the owner's delegated decision
-authority. Proposed 2026-11-17. Design only: nothing is implemented, no dependency is added, no
-carrier code exists, and no capability, tuple, profile or release claim changes. The independent
-audit, benchmark and two-host LAB gates in "Acceptance" are **not** waived by this acceptance.
+authority. Proposed 2026-11-17. **Update 2026-11-27:** gates (a) and (c) are delivered — the
+dependency/licence review and the feature-gated prototype harness (`src/udp_carrier.rs`, the
+`udp_datagram` fuzz target and the two-process loopback test). The prototype adds the reviewed
+dependencies and its harness only: no config key, CLI verb, panel control or API route exists, and
+no capability, tuple, profile or release claim changes. The independent audit (b), benchmark (d)
+and two-host LAB (e) gates in "Acceptance" are **not** waived by this acceptance.
 **Date:** 2026-11-17 (accepted 2026-11-27)
 **Related:** [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) decision 11, [ADR-0044](ADR-0044-engine-agnostic-policy-interface.md), [ADR-0018](ADR-0018-engine-framework.md), [ADR-0030](ADR-0030-read-only-firewall-visibility.md), [ADR-0039](ADR-0039-carrier-link-policy.md), issue [#244](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/244)
 
@@ -103,6 +106,7 @@ LAB is shared and serialized with other work.
 
 - Positive: a path to remove TCP head-of-line blocking for latency-sensitive classes without privileges. Until the acceptance gates pass, the honest product answer to "does UDP help?" stays **Unknown**, and Gaming/Trading keep only their tunnel-internal queueing claims on TCP.
 - Accepted scope: an implementation may now start behind `udp-carrier`, in the order (a), (c), (d) — dependency/licence review, fuzz and CI loopback, benchmark. Nothing user-facing and no Preview label is authorised before (b) and (e) as well.
+- Implementation note (2026-11-27): (a) is the [dependency/licence review](TP-U_DEPENDENCY_AND_LICENCE_REVIEW.md) and (c) is the prototype harness — a bounded datagram frame and hello with QUIC helpers, a fuzz target, and a CI-enforced two-process loopback test that completes a real handshake and one datagram round-trip. Gate (c) proves the parsers refuse malformed input without crashing and that a loopback session works; it proves nothing about real paths, performance, filtering or NAT rebinding, and gate (d) is next.
 - Cost: a second transport to audit and operate; larger attack surface (unauthenticated UDP exposure).
 - Risk: benefit may be nil on paths that filter UDP; the evidence gate applies.
 
