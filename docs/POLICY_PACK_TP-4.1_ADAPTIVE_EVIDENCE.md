@@ -1,7 +1,9 @@
 # TP-4.1 adaptive controller: simulated evidence record
 
 **Status: harness evidence only (`simulated`), one host, loopback. TP-4.1 stays open on its
-two-host LAB criterion, and the loop measured here made no change.**
+two-host LAB criterion. The loop measured here made no change, and since 2026-11-27 the live 1 Hz
+driver itself is covered end to end (section 5) — with scripted sample values, because this harness
+cannot produce a live congestion estimate.**
 Item: TP-4.1 (#238). Design: [ADR-0056](ADR-0056-adaptive-optimization-controller.md) decisions 4
 (inputs), 6-8 (hysteresis, steps, fail-safe) and 12 (this benchmark). Row table:
 [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) decision 15. Status contract:
@@ -72,9 +74,10 @@ This is not a wiring defect: the counters are read from the live arbiter, the dr
 ADR's cadence, and the decision core is exercised by its unit tests (ladder, deadband, dwell, rate
 limit, verification/rollback, cooldown, fail-safe, stale reset, log line). It is a property of the
 input the ADR fixed, and it is recorded rather than papered over. Consequence: on this harness the
-loop cannot be observed changing rows at all, and the wiring's live path is verified only by
-`src/policy_relay.rs`'s tests (an accepted change reaches exactly one direction's arbiter and its
-read chunk; the opt-in gates the controller).
+loop cannot be observed changing rows at all. The wiring's live path is covered by
+`src/policy_relay.rs`'s tests: an accepted change reaches exactly one direction's arbiter and its
+read chunk, the opt-in gates the controller, and — since 2026-11-27 — the real 1 Hz task applies a
+change and a fail-safe restore end to end (section 5).
 
 ## 4. What is not measured
 
@@ -91,9 +94,32 @@ read chunk; the opt-in gates the controller).
   `the_live_sample_carries_the_arbiters_guard_counter`, and
   `a_live_arbiter_guard_violation_restores_the_row_without_forced_samples`, which raises the
   signal through the live arbiter and reads it back with the session's own tick); the 1 Hz driver
-  inside a running product is **read from code**, not observed; and no live congestion sample
-  exists, so decision 4's queue-delay signal stays **unverified** here. `overflow_refusals` is live
+  inside a running product is **tested** end to end with scripted sample values (section 5); and no
+  live congestion sample exists, so decision 4's queue-delay signal stays **unverified** here. `overflow_refusals` is live
   as before.
+
+## 5. The live driver, tested end to end (2026-11-27)
+
+The gap this section closes was stated plainly in section 3: the wiring was covered by tests that
+call the session's tick directly, so the task that actually ticks once a second was read from code
+and never observed. `PolicySession::new(config, profile, true)` spawns that task;
+`the_live_1hz_driver_applies_a_change_and_restores_the_configured_row_on_guard` now lets it run for
+real and asserts, from outside:
+
+| Behaviour | Observation |
+|---|---|
+| An accepted decision reaches `Command::Configure` | Three consecutive live ticks above the 50 ms threshold move one rung (`balanced/1` → `gaming/1`); the read bound becomes 4 KiB **and** the running arbiter's next grant drops from 16,384 to 4,096 bytes — the `Command::Configure` the driver sent, not just the controller's state. |
+| The failure path restores the last-good row | A guard violation on a later live tick restores `balanced/1` in the controller, the read bound and the arbiter's grant, with `cause=guard_violation` in the transcript. |
+| The loop is inert without the opt-in | `the_live_driver_does_not_run_without_the_opt_in` builds the same session with `policy.adaptive` off: no controller, no task, the configured row unchanged, and the scripted samples never consumed after 1.5 s. |
+
+The sample **values** are scripted (a test-only queue in `PolicySession`), because this harness
+cannot produce a live estimate at all — that is section 3's finding. What the test therefore proves
+is the driver's cadence, the decision, the apply and the fail-safe on the product's own relay path;
+what it does not prove is that real traffic produces the signal, which stays decision 4's open
+question and the LAB window's to settle. Three reverse mutations were run and each made the test
+fail before being restored: removing the `arbiter.configure` call (grant stayed 16,384 where 4,096
+was asserted), making `fail_safe` suspend without restoring (no second change within the 15 s
+bound), and spawning the driver regardless of the opt-in (the inert test's script was consumed).
 
 No profile becomes `measured` through this record, ADR-0048's default-off decision and the
 `simulated` label of every other record are untouched, and the `policy.adaptive` opt-in stays off
