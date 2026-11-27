@@ -209,7 +209,17 @@ impl PolicySession {
         configured: PolicyProfile,
         adaptive: bool,
     ) -> Arc<Self> {
-        let session = Arc::new(Self {
+        let session = Self::build(config, configured, adaptive);
+        if adaptive {
+            spawn_adaptive_driver(Arc::downgrade(&session));
+        }
+        session
+    }
+
+    /// The session itself, with no driver task: `new` spawns the 1 Hz loop on top of this. Tests
+    /// that force a tick sequence need the same state without a second, unsolicited sampler.
+    fn build(config: SchedulerConfig, configured: PolicyProfile, adaptive: bool) -> Arc<Self> {
+        Arc::new(Self {
             to_peer: Arbiter::spawn(config),
             from_peer: Arbiter::spawn(config),
             chunk: [
@@ -218,11 +228,14 @@ impl PolicySession {
             ],
             next_flow: AtomicU64::new(1),
             adaptation: adaptive.then(|| Mutex::new(Adaptation::new(configured))),
-        });
-        if adaptive {
-            spawn_adaptive_driver(Arc::downgrade(&session));
-        }
-        session
+        })
+    }
+
+    /// An adaptive session the test drives itself: the real arbiters, the real controller and the
+    /// real apply path, but no 1 Hz task ticking behind the forced sequence.
+    #[cfg(test)]
+    fn without_driver(config: SchedulerConfig, configured: PolicyProfile) -> Arc<Self> {
+        Self::build(config, configured, true)
     }
 
     /// Bytes one read may carry for the direction, and therefore the most a flow queues.
@@ -271,16 +284,30 @@ impl PolicySession {
         }
     }
 
-    /// One slow-loop tick, split out so the driver has no decision logic and tests can drive it.
-    async fn tick(&self, started: Instant) {
+    /// One slow-loop tick: read this session's own counters, then decide and apply. Split so the
+    /// driver has no decision logic.
+    async fn tick(&self, now: Duration) {
+        let to_peer = self.to_peer.stats().await.map(counters);
+        let from_peer = self.from_peer.stats().await.map(counters);
+        self.tick_with(now, to_peer, from_peer).await;
+    }
+
+    /// The decide-and-apply half of a tick, given each direction's sample or `None` for a missed
+    /// one. The driver only ever passes [`Self::tick`]'s live reads; the rollback/fail-safe matrix
+    /// (TP-4.2) forces them, so every matrix row runs through the same controller, the same
+    /// `Command::Configure` and the same read-bound update as live traffic.
+    async fn tick_with(
+        &self,
+        now: Duration,
+        to_peer: Option<Counters>,
+        from_peer: Option<Counters>,
+    ) {
         let Some(adaptation) = &self.adaptation else {
             return;
         };
-        let to_peer = self.to_peer.stats().await.map(counters);
-        let from_peer = self.from_peer.stats().await.map(counters);
         let changes = adaptation
             .lock()
-            .map(|mut adaptation| adaptation.tick(started.elapsed(), to_peer, from_peer))
+            .map(|mut adaptation| adaptation.tick(now, to_peer, from_peer))
             .unwrap_or_default();
         for change in changes {
             self.apply(change).await;
@@ -325,7 +352,7 @@ fn spawn_adaptive_driver(session: Weak<PolicySession>) {
             let Some(session) = session.upgrade() else {
                 return;
             };
-            session.tick(started).await;
+            session.tick(started.elapsed()).await;
         }
     });
 }
@@ -640,6 +667,438 @@ mod tests {
         assert_eq!(
             stats.granted_bytes,
             PolicyProfile::Trading.quantum_bytes() as u64
+        );
+    }
+
+    /// TP-4.2 harness: the rollback/fail-safe matrix needs change events, and a loopback run
+    /// produces none (the arbiter queue is a rendezvous, so its 1 Hz sample reads zero). These
+    /// drive the real session — controller, `Command::Configure` and read-bound update — with
+    /// scripted per-second counters instead of measured ones. Every second and every millisecond
+    /// below is forced, not observed; the live path is unchanged.
+    fn config_for(profile: PolicyProfile) -> SchedulerConfig {
+        SchedulerConfig {
+            quantum_bytes: profile.quantum_bytes(),
+            max_queued_bytes: profile.max_queued_bytes(),
+        }
+    }
+
+    /// One forced sample: with the arbiter adding exactly 1 MB of grants per second,
+    /// `delay_ms * 1_000` queued bytes is `delay_ms` milliseconds of queueing delay.
+    fn forced(second: u64, delay_ms: usize) -> Option<Counters> {
+        forced_with(second, delay_ms, 0, 0)
+    }
+
+    fn forced_with(
+        second: u64,
+        delay_ms: usize,
+        overflow_refusals: u64,
+        violations: u64,
+    ) -> Option<Counters> {
+        Some(Counters {
+            queued_bytes: delay_ms * 1_000,
+            granted_bytes: second * 1_000_000,
+            overflow_refusals,
+            violations,
+        })
+    }
+
+    async fn tick_at(
+        session: &PolicySession,
+        second: u64,
+        to_peer: Option<Counters>,
+        from_peer: Option<Counters>,
+    ) {
+        session
+            .tick_with(Duration::from_secs(second), to_peer, from_peer)
+            .await;
+    }
+
+    /// What the direction's live arbiter grants for one offer, i.e. the row in force right now.
+    async fn granted(session: &PolicySession, offer: usize) -> usize {
+        let (flow, _) = session.open();
+        let grant = flow
+            .acquire(offer)
+            .await
+            .expect("the arbiter grants under the row in force");
+        flow.close().await;
+        grant
+    }
+
+    /// ADR-0056 decision 7: a down-step that fails its 60 s verification is reverted to the row that
+    /// was already verified — in the running arbiter and in the read bound, not just in the
+    /// controller's return value.
+    #[tokio::test]
+    async fn a_failed_verification_rolls_the_live_arbiter_and_read_bound_back() {
+        use crate::policy_adaptive::Cause;
+
+        let configured = PolicyProfile::Balanced;
+        let session = PolicySession::without_driver(config_for(configured), configured);
+        tick_at(&session, 0, forced(0, 5), forced(0, 5)).await;
+        for second in 1..=3 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        assert_eq!(session.changes().len(), 1);
+        assert_eq!(session.changes()[0].change.to, PolicyProfile::Gaming);
+        assert_eq!(
+            session.chunk(Direction::ToPeer).load(Ordering::Relaxed),
+            PolicyProfile::Gaming.quantum_bytes()
+        );
+        assert_eq!(
+            granted(&session, configured.quantum_bytes()).await,
+            PolicyProfile::Gaming.quantum_bytes()
+        );
+
+        // The window closes with a 5% improvement: below the 10% floor, so the row is bad.
+        tick_at(&session, 63, forced(63, 95), forced(63, 5)).await;
+        let changes = session.changes();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[1].change.cause, Cause::NoImprovement);
+        assert_eq!(changes[1].change.from, PolicyProfile::Gaming);
+        assert_eq!(changes[1].change.to, PolicyProfile::Balanced);
+        assert_eq!(
+            session.chunk(Direction::ToPeer).load(Ordering::Relaxed),
+            PolicyProfile::Balanced.quantum_bytes()
+        );
+        assert_eq!(
+            granted(&session, configured.quantum_bytes()).await,
+            PolicyProfile::Balanced.quantum_bytes()
+        );
+    }
+
+    /// ADR-0056 decision 8: a guard violation restores the configured row on the same tick and
+    /// suspends adaptation for its whole 300 s window; the loop then resumes on fresh persistence.
+    #[tokio::test]
+    async fn a_guard_violation_restores_the_live_row_and_suspends_the_loop() {
+        use crate::policy_adaptive::Cause;
+
+        let configured = PolicyProfile::Balanced;
+        let session = PolicySession::without_driver(config_for(configured), configured);
+        tick_at(&session, 0, forced(0, 5), forced(0, 5)).await;
+        for second in 1..=3 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        assert_eq!(session.changes()[0].change.to, PolicyProfile::Gaming);
+
+        tick_at(&session, 4, forced_with(4, 100, 0, 1), forced(4, 5)).await;
+        let changes = session.changes();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[1].change.cause, Cause::GuardViolation);
+        assert_eq!(changes[1].change.to, PolicyProfile::Balanced);
+        assert_eq!(
+            session.chunk(Direction::ToPeer).load(Ordering::Relaxed),
+            PolicyProfile::Balanced.quantum_bytes()
+        );
+        assert_eq!(
+            granted(&session, configured.quantum_bytes()).await,
+            PolicyProfile::Balanced.quantum_bytes()
+        );
+
+        // Sustained congestion for the whole suspension changes nothing.
+        for second in 5..304 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        assert_eq!(
+            session.changes().len(),
+            2,
+            "no change inside the suspension"
+        );
+
+        // The window ends at 4 + 300; three fresh samples then step down again (the dwell since
+        // the restore and the three-change budget both allow it).
+        for second in 304..=306 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        let changes = session.changes();
+        assert_eq!(changes.len(), 3, "adaptation resumes after the suspension");
+        assert_eq!(changes[2].change.to, PolicyProfile::Gaming);
+        assert_eq!(changes[2].change.at, Duration::from_secs(306));
+    }
+
+    /// ADR-0056 decisions 7-8: a cooldown earned by a failed row is not shortened by a later guard
+    /// suspension — the row stays unreachable until its own 600 s window closes.
+    #[tokio::test]
+    async fn a_failed_row_stays_cooled_down_across_a_suspend_and_resume_cycle() {
+        let configured = PolicyProfile::Bulk;
+        let session = PolicySession::without_driver(config_for(configured), configured);
+        tick_at(&session, 0, forced(0, 5), forced(0, 5)).await;
+        for second in 1..=3 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        assert_eq!(session.changes()[0].change.to, PolicyProfile::Streaming);
+
+        // Fails verification at 63 s: back to Bulk, and Streaming is cooled down until 663.
+        tick_at(&session, 63, forced(63, 95), forced(63, 5)).await;
+        assert_eq!(session.changes().len(), 2);
+
+        // A violation arrives while the configured row is already in force: nothing changes, but
+        // the loop is suspended until 364.
+        tick_at(&session, 64, forced_with(64, 100, 0, 1), forced(64, 5)).await;
+        assert_eq!(session.changes().len(), 2, "already at the configured row");
+
+        for second in 65..663 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        assert_eq!(
+            session.changes().len(),
+            2,
+            "the cooled-down row stays unreachable past the suspension"
+        );
+
+        // At exactly 663 s the cooldown closes and the persistence already built is enough.
+        tick_at(&session, 663, forced(663, 100), forced(663, 5)).await;
+        let changes = session.changes();
+        assert_eq!(changes.len(), 3);
+        assert_eq!(changes[2].change.to, PolicyProfile::Streaming);
+        assert_eq!(changes[2].change.at, Duration::from_secs(663));
+    }
+
+    /// ADR-0056 decision 8: three missed samples restore the configured row, and a gap clears the
+    /// persistence streak rather than carrying it across.
+    #[tokio::test]
+    async fn a_stale_gap_resets_the_streak_and_restores_the_live_row() {
+        use crate::policy_adaptive::Cause;
+
+        let configured = PolicyProfile::Streaming;
+        let session = PolicySession::without_driver(config_for(configured), configured);
+        tick_at(&session, 0, forced(0, 5), forced(0, 5)).await;
+        for second in 1..=3 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        assert_eq!(session.changes()[0].change.to, PolicyProfile::Balanced);
+
+        // Two samples, one missed tick, then two more: four congested samples and still no change.
+        for second in [4_u64, 5] {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        tick_at(&session, 6, None, None).await;
+        for second in [7_u64, 8] {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        assert_eq!(
+            session.changes().len(),
+            1,
+            "the gap reset the persistence streak"
+        );
+
+        for second in 9..=11 {
+            tick_at(&session, second, None, None).await;
+        }
+        let changes = session.changes();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[1].change.cause, Cause::StaleSignals);
+        assert_eq!(changes[1].change.to, PolicyProfile::Streaming);
+        assert_eq!(
+            session.chunk(Direction::ToPeer).load(Ordering::Relaxed),
+            PolicyProfile::Streaming.quantum_bytes()
+        );
+        assert_eq!(
+            granted(&session, configured.quantum_bytes()).await,
+            PolicyProfile::Streaming.quantum_bytes()
+        );
+    }
+
+    /// ADR-0056 decision 8's other trigger: an `overflow_refusals` increase takes the same
+    /// immediate restore-and-suspend path as a guard violation.
+    #[tokio::test]
+    async fn an_overflow_restores_the_live_row_and_suspends_the_loop() {
+        use crate::policy_adaptive::Cause;
+
+        let configured = PolicyProfile::Balanced;
+        let session = PolicySession::without_driver(config_for(configured), configured);
+        tick_at(&session, 0, forced(0, 5), forced(0, 5)).await;
+        for second in 1..=3 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        assert_eq!(session.changes()[0].change.to, PolicyProfile::Gaming);
+
+        tick_at(&session, 4, forced_with(4, 100, 1, 0), forced(4, 5)).await;
+        let changes = session.changes();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[1].change.cause, Cause::Overflow);
+        assert_eq!(changes[1].change.to, PolicyProfile::Balanced);
+        assert_eq!(
+            session.chunk(Direction::ToPeer).load(Ordering::Relaxed),
+            PolicyProfile::Balanced.quantum_bytes()
+        );
+        for second in 5..304 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        assert_eq!(session.changes().len(), 2, "the suspension holds");
+    }
+
+    /// #239's condition matrix at the decision boundary: each condition is the 1 Hz sample sequence
+    /// it would produce, forced into the real session. The network itself is not simulated (no
+    /// loss, jitter or path change is induced), so these check the controller's response to those
+    /// sequences: clean and jittery change nothing, sustained congestion steps once, a permanent
+    /// path improvement keeps the step and returns to the configured row.
+    #[tokio::test]
+    async fn forced_condition_matrix_covers_clean_congested_lossy_jittery_and_path_change() {
+        let configured = PolicyProfile::Balanced;
+
+        let session = PolicySession::without_driver(config_for(configured), configured);
+        tick_at(&session, 0, forced(0, 5), forced(0, 5)).await;
+        for second in 1..=60 {
+            tick_at(&session, second, forced(second, 5), forced(second, 5)).await;
+        }
+        assert!(
+            session.changes().is_empty(),
+            "clean traffic changes nothing"
+        );
+
+        let session = PolicySession::without_driver(config_for(configured), configured);
+        tick_at(&session, 0, forced(0, 5), forced(0, 5)).await;
+        for second in 1..=3 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        let changes = session.changes();
+        assert_eq!(changes.len(), 1, "congested traffic steps once");
+        assert_eq!(changes[0].change.to, PolicyProfile::Gaming);
+
+        // Lossy: one 80 ms burst sample at a time, never three in a row.
+        let session = PolicySession::without_driver(config_for(configured), configured);
+        tick_at(&session, 0, forced(0, 5), forced(0, 5)).await;
+        for second in 1..=120 {
+            let delay = if second % 3 == 0 { 80 } else { 5 };
+            tick_at(&session, second, forced(second, delay), forced(second, 5)).await;
+        }
+        assert!(
+            session.changes().is_empty(),
+            "isolated loss bursts do not accumulate a streak"
+        );
+
+        // Jittery: alternating either side of the 50 ms threshold.
+        let session = PolicySession::without_driver(config_for(configured), configured);
+        tick_at(&session, 0, forced(0, 5), forced(0, 5)).await;
+        for second in 1..=120 {
+            let delay = if second % 2 == 0 { 55 } else { 45 };
+            tick_at(&session, second, forced(second, delay), forced(second, 5)).await;
+        }
+        assert!(
+            session.changes().is_empty(),
+            "jitter around the threshold never persists"
+        );
+
+        // Path change: sustained congestion, then a permanent drop to 15 ms. The step is kept and
+        // the calm samples walk it back to the configured row.
+        let session = PolicySession::without_driver(config_for(configured), configured);
+        tick_at(&session, 0, forced(0, 5), forced(0, 5)).await;
+        for second in 1..=3 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        for second in 4..=62 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        // The improved sample that closes the window already counts as the first calm one.
+        tick_at(&session, 63, forced(63, 15), forced(63, 5)).await;
+        for second in 64..=65 {
+            tick_at(&session, second, forced(second, 15), forced(second, 5)).await;
+        }
+        let changes = session.changes();
+        assert_eq!(changes.len(), 2, "the improved step is kept, then returned");
+        assert_eq!(changes[0].change.to, PolicyProfile::Gaming);
+        assert_eq!(changes[1].change.to, configured);
+        assert_eq!(changes[1].change.at, Duration::from_secs(65));
+    }
+
+    /// #239's flapping check and long run: ten minutes of alternating 4 s congestion and 8 s calm,
+    /// the plan's ceiling, forced into one session. Every change is one rung, never above the
+    /// configured row, and the loop stops moving instead of oscillating once the candidate rows are
+    /// cooled down.
+    #[tokio::test]
+    async fn forced_flapping_run_is_bounded_and_settles() {
+        let configured = PolicyProfile::Balanced;
+        let session = PolicySession::without_driver(config_for(configured), configured);
+        tick_at(&session, 0, forced(0, 5), forced(0, 5)).await;
+        for second in 1..=600 {
+            let delay = if second % 12 < 4 { 100 } else { 5 };
+            tick_at(&session, second, forced(second, delay), forced(second, 5)).await;
+        }
+        let changes = session.changes();
+        let rung = |profile: PolicyProfile| {
+            crate::policy_adaptive::LADDER
+                .iter()
+                .position(|row| *row == profile)
+                .expect("ratified row")
+        };
+        for change in &changes {
+            assert_eq!(
+                rung(change.change.to).abs_diff(rung(change.change.from)),
+                1,
+                "every change is one rung: {change:?}"
+            );
+            assert!(
+                rung(change.change.to) <= rung(configured),
+                "adaptation never rises above the configured row"
+            );
+        }
+        assert!(
+            changes.len() <= 4,
+            "ten flapping minutes produce at most four changes, got {}",
+            changes.len()
+        );
+        let last = changes.last().expect("the storm does move once").change.at;
+        assert!(
+            last <= Duration::from_secs(200),
+            "the loop settles instead of oscillating, last change at {last:?}"
+        );
+    }
+
+    /// ADR-0056 decisions 9-10: without `policy.adaptive` there is no controller, so the same
+    /// forced guard and overflow samples change nothing at all.
+    #[tokio::test]
+    async fn forced_fail_safe_samples_change_nothing_without_the_opt_in() {
+        let configured = PolicyProfile::Balanced;
+        let session = PolicySession::with_config(config_for(configured));
+        for second in 0..5 {
+            tick_at(
+                &session,
+                second,
+                forced_with(second, 400, 9, 9),
+                forced(second, 5),
+            )
+            .await;
+        }
+        assert!(session.changes().is_empty());
+        assert!(session.estimates().is_empty());
+        assert_eq!(
+            session.chunk(Direction::ToPeer).load(Ordering::Relaxed),
+            configured.quantum_bytes()
+        );
+        assert_eq!(
+            granted(&session, configured.quantum_bytes()).await,
+            configured.quantum_bytes()
+        );
+    }
+
+    /// The timeline the TP-4.2 evidence record quotes: a scripted sequence, not a network
+    /// measurement. Change 1 at the third congested second, change 2 three calm seconds after the
+    /// step above it was kept.
+    #[tokio::test]
+    async fn the_forced_matrix_timeline_is_reproducible() {
+        let configured = PolicyProfile::Bulk;
+        let session = PolicySession::without_driver(config_for(configured), configured);
+        tick_at(&session, 0, forced(0, 5), forced(0, 5)).await;
+        for second in 1..=3 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        assert_eq!(session.changes()[0].change.to, PolicyProfile::Streaming);
+        // A 40% improvement keeps the step when the window closes, then calm samples step it up.
+        tick_at(&session, 63, forced(63, 60), forced(63, 5)).await;
+        for second in 64..=66 {
+            tick_at(&session, second, forced(second, 5), forced(second, 5)).await;
+        }
+        let changes = session.changes();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[1].change.to, PolicyProfile::Bulk);
+        assert_eq!(changes[1].change.at, Duration::from_secs(66));
+        let at: Vec<u64> = changes
+            .iter()
+            .map(|change| change.change.at.as_millis() as u64)
+            .collect();
+        assert_eq!(at, vec![3_000, 66_000]);
+        println!(
+            "POLICY_TP42_MATRIX {{\"label\":\"forced\",\"changes\":{},\"at_ms\":{at:?},\"gaps_ms\":[63000]}}",
+            changes.len()
         );
     }
 
