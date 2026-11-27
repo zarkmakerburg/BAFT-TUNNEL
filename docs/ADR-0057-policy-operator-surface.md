@@ -112,8 +112,9 @@ evidence level, ADR-0024 metric fields) and is still Proposed.
    If the restore, the reload or (for a running unit) the restart on the previous files fails, the
    receipt is `recovery_failed`, not `rolled_back`: it names which step failed, the resulting file
    state it could and could not confirm, and the operator action the helper could not take (inspect
-   the two named files, then `systemctl daemon-reload` and restart the unit). Nothing in this ADR may
-   report a recovered state it did not verify.
+   the two named files, then `systemctl daemon-reload`, and restart the unit only if it was running
+   before the request — a unit that was stopped stays stopped). Nothing in this ADR may report a
+   recovered state it did not verify.
 
 5. **Idempotency is convergence, not repetition.** The same key with the same normalized request
    returns the stored receipt with `replayed: true`; the same key with a different request is 409
