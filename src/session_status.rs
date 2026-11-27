@@ -91,6 +91,17 @@ fn dir() -> Option<PathBuf> {
         .filter(|p| p.is_absolute() && p.is_dir())
 }
 
+/// The systemd-provided runtime directory, when this process runs inside the unit. Shared with
+/// `policy_status`, which publishes the ADR-0047 running snapshot the same way.
+pub(crate) fn runtime_dir() -> Option<PathBuf> {
+    dir()
+}
+
+/// Atomically publish one evidence file into the unit's runtime directory.
+pub(crate) fn publish_json(dir: &Path, name: &str, body: &serde_json::Value) {
+    write_json(dir, name, body);
+}
+
 fn write_json(dir: &Path, name: &str, body: &serde_json::Value) {
     use std::os::unix::fs::PermissionsExt;
     let tmp = dir.join(format!(".{name}.tmp"));

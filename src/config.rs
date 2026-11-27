@@ -12,6 +12,7 @@ use crate::{
     authorization::{ConnectionDirection, PROTOCOL_V1, PROTOCOL_V2, PROTOCOL_V3},
     engine::NoiseSettings,
     handshake::{validate_fingerprint, validate_identity},
+    policy_profile::PolicyProfile,
     tls, tunnel,
     tunnel::{ForwardOptions, ServerOptions},
 };
@@ -52,6 +53,25 @@ impl EngineKind {
             Self::Baft => "baft",
         }
     }
+}
+
+/// Advisory settings for one tunnel (ADR-0031). Compiled in every build so a config naming a
+/// profile is parsed and validated the same way with the `policy-pack` feature on or off; the
+/// values themselves are applied only when the feature and `BAFT_TUNNEL_POLICY_PACK` both enable
+/// the pack (ADR-0031 decision 19).
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicySettings {
+    /// Versioned profile id: `balanced/1`, `gaming/1`, `trading/1`, `streaming/1` or `bulk/1`.
+    /// Absent means `balanced/1`, the identity and fail-safe profile (ADR-0031 decision 16).
+    #[serde(default)]
+    pub profile: Option<PolicyProfile>,
+    /// ADR-0056: opt in to the adaptive controller for this tunnel. Absent or false keeps the
+    /// configured row for the session's lifetime. It only takes effect when the `policy-pack`
+    /// feature, `BAFT_TUNNEL_POLICY_PACK` and a configured profile are all present; on its own it
+    /// enables nothing (it never switches the pack on and never enables a profile).
+    #[serde(default)]
+    pub adaptive: bool,
 }
 
 /// Warn a week ahead: CRLs are renewed weekly (`baft-pki.sh renew-crl`, 30-day validity).
@@ -105,6 +125,8 @@ pub enum RuntimeConfig {
         max_streams: usize,
         #[serde(default)]
         baft: Option<BaftSettings>,
+        #[serde(default)]
+        policy: PolicySettings,
     },
     Forward {
         /// Direct: local ingress listener. Empty for Reverse (the peer owns the ingress).
@@ -150,6 +172,8 @@ pub enum RuntimeConfig {
         /// identity and pinned fingerprint; at most 3, no duplicates, not for the baft engine.
         #[serde(default)]
         backup_remotes: Vec<String>,
+        #[serde(default)]
+        policy: PolicySettings,
         /// ADR-0049: seconds after which a Direct forward session is replaced by a fresh one
         /// (make before break). 0 (default) keeps one long-lived session; otherwise 5..=3600.
         #[serde(default)]
@@ -202,8 +226,10 @@ impl RuntimeConfig {
                 noise_peer_public,
                 max_streams,
                 baft,
+                policy,
             } => {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
+                validate_policy(policy, *engine)?;
                 validate_protocol_version(*protocol_version, *engine)?;
                 if *protocol_version == PROTOCOL_V3 && *direction == ConnectionDirection::Reverse {
                     bail!("protocol v3 (stream resume Preview) supports Direct tunnels only");
@@ -291,8 +317,10 @@ impl RuntimeConfig {
                 baft,
                 backup_remotes,
                 session_rotate_secs,
+                policy,
             } => {
                 validate_common(local_id, peer_id, tunnel_id, *max_streams)?;
+                validate_policy(policy, *engine)?;
                 validate_session_rotate(*session_rotate_secs, *direction, *engine)?;
                 validate_protocol_version(*protocol_version, *engine)?;
                 if *protocol_version == PROTOCOL_V3
@@ -507,6 +535,13 @@ impl RuntimeConfig {
         }
     }
 
+    /// The configured policy intent (ADR-0031 decision 16, ADR-0047 decision 2). The status reader
+    /// reports it as *configured*; only published running evidence may be called running.
+    pub fn policy_settings(&self) -> &PolicySettings {
+        let (Self::Serve { policy, .. } | Self::Forward { policy, .. }) = self;
+        policy
+    }
+
     pub fn engine_name(&self) -> &'static str {
         let (Self::Serve { engine, .. } | Self::Forward { engine, .. }) = self;
         engine.as_str()
@@ -694,6 +729,7 @@ impl RuntimeConfig {
                 noise_peer_public,
                 max_streams,
                 baft: _,
+                policy,
             } => {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 let noise = noise_settings(engine, &key, noise_peer_public);
@@ -713,6 +749,8 @@ impl RuntimeConfig {
                         key,
                         noise,
                         max_streams,
+                        profile: policy.profile,
+                        adaptive: policy.adaptive,
                     },
                     protocol_version,
                 )
@@ -741,6 +779,7 @@ impl RuntimeConfig {
                 baft: _,
                 backup_remotes,
                 session_rotate_secs,
+                policy,
             } => {
                 let key = private_key_path(key.as_deref(), key_credential.as_deref())?;
                 let noise = noise_settings(engine, &key, noise_peer_public);
@@ -761,6 +800,8 @@ impl RuntimeConfig {
                         key,
                         noise,
                         max_streams,
+                        profile: policy.profile,
+                        adaptive: policy.adaptive,
                         backup_remotes,
                         session_rotate: (session_rotate_secs > 0)
                             .then(|| std::time::Duration::from_secs(session_rotate_secs)),
@@ -771,6 +812,18 @@ impl RuntimeConfig {
             }
         }
     }
+}
+
+/// ADR-0031 decision 17: profiles are realised on the Rust engines' Yamux sessions. The baft
+/// engine host (ADR-0019) keeps its previous behaviour, so a profile there is refused rather than
+/// silently ignored.
+fn validate_policy(policy: &PolicySettings, engine: EngineKind) -> Result<()> {
+    if policy.profile.is_some() && !matches!(engine, EngineKind::TcpTls | EngineKind::NoiseTcp) {
+        bail!(
+            "policy.profile applies to tcp-tls and noise-tcp tunnels only; the baft engine is out of scope (ADR-0031 decision 17)"
+        );
+    }
+    Ok(())
 }
 
 /// ADR-0049: session rotation applies to the Direct forward dialer only and stays inside a sane range.
@@ -1331,5 +1384,86 @@ mod tests {
         assert!(validate_session_rotate(3601, Direct, EngineKind::TcpTls).is_err());
         assert!(validate_session_rotate(60, Reverse, EngineKind::TcpTls).is_err());
         assert!(validate_session_rotate(60, Direct, EngineKind::Baft).is_err());
+    }
+
+    /// A complete Direct serve config, with `policy` appended verbatim.
+    fn serve_json(policy: &str) -> String {
+        let mut text = String::from(
+            "{\"mode\":\"serve\",\"direction\":\"direct\",\"listen\":\"127.0.0.1:9443\",\"target\":\"127.0.0.1:8080\",\"local_id\":\"abroad\",\"peer_id\":\"iran\",\"tunnel_id\":\"demo\",\"peer_fingerprint\":\"",
+        );
+        text.push_str(&"a".repeat(64));
+        text.push_str(
+            "\",\"ca\":\"ca.pem\",\"crl\":\"ca.crl\",\"cert\":\"server.pem\",\"key\":\"server-key.pem\"",
+        );
+        text.push_str(policy);
+        text.push('}');
+        text
+    }
+
+    fn serve_policy(text: &str) -> PolicySettings {
+        match serde_json::from_str::<RuntimeConfig>(text).expect("config parses") {
+            RuntimeConfig::Serve { policy, .. } => policy,
+            RuntimeConfig::Forward { .. } => panic!("expected a serve config"),
+        }
+    }
+
+    #[test]
+    fn policy_profile_is_read_from_the_tunnel_config() {
+        let policy = serve_policy(&serve_json(r#","policy":{"profile":"trading/1"}"#));
+        assert_eq!(policy.profile, Some(PolicyProfile::Trading));
+    }
+
+    #[test]
+    fn a_tunnel_without_a_profile_keeps_the_identity_default() {
+        assert_eq!(serve_policy(&serve_json("")).profile, None);
+        assert_eq!(PolicySettings::default().profile, None);
+        assert_eq!(PolicyProfile::default(), PolicyProfile::Balanced);
+        assert!(
+            !PolicySettings::default().adaptive,
+            "adaptation is off by default"
+        );
+        assert!(!serve_policy(&serve_json("")).adaptive);
+    }
+
+    /// ADR-0056 decision 10: `policy.adaptive` is the tunnel's opt-in and it only ever opts in —
+    /// parsing it does not enable the pack or supply a profile.
+    #[test]
+    fn adaptation_is_an_explicit_opt_in_that_supplies_nothing_else() {
+        let policy = serve_policy(&serve_json(
+            r#","policy":{"profile":"gaming/1","adaptive":true}"#,
+        ));
+        assert!(policy.adaptive);
+        assert_eq!(policy.profile, Some(PolicyProfile::Gaming));
+        let alone = serve_policy(&serve_json(r#","policy":{"adaptive":true}"#));
+        assert!(alone.adaptive);
+        assert_eq!(alone.profile, None, "adaptation never supplies a profile");
+    }
+
+    #[test]
+    fn an_unsupported_profile_is_refused_with_the_accepted_values() {
+        let text = serve_json(r#","policy":{"profile":"turbo/1"}"#);
+        let error = serde_json::from_str::<RuntimeConfig>(&text)
+            .expect_err("an unknown profile must not parse")
+            .to_string();
+        for accepted in crate::policy_profile::ACCEPTED_PROFILES {
+            assert!(error.contains(accepted), "{error}");
+        }
+        let unknown_field = serve_json(r#","policy":{"mode":"turbo"}"#);
+        assert!(serde_json::from_str::<RuntimeConfig>(&unknown_field).is_err());
+    }
+
+    #[test]
+    fn a_profile_only_applies_to_the_rust_engines() {
+        let policy = PolicySettings {
+            profile: Some(PolicyProfile::Gaming),
+            adaptive: false,
+        };
+        assert!(validate_policy(&policy, EngineKind::TcpTls).is_ok());
+        assert!(validate_policy(&policy, EngineKind::NoiseTcp).is_ok());
+        let error = validate_policy(&policy, EngineKind::Baft)
+            .expect_err("the baft engine is out of scope")
+            .to_string();
+        assert!(error.contains("baft"), "{error}");
+        assert!(validate_policy(&PolicySettings::default(), EngineKind::Baft).is_ok());
     }
 }

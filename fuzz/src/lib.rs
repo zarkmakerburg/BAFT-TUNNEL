@@ -2,6 +2,10 @@
 //! parsers can be exercised without turning the binary crate into a library.
 #![allow(dead_code, unused_imports)]
 
+#[cfg(feature = "udp-carrier")]
+#[path = "../../src/udp_carrier.rs"]
+pub mod udp_carrier;
+
 #[path = "../../src/agent.rs"]
 pub mod agent;
 #[path = "../../src/apply.rs"]
@@ -30,6 +34,10 @@ pub mod integrity_probe;
 pub mod key_custody;
 #[path = "../../src/link_policy.rs"]
 pub mod link_policy;
+#[path = "../../src/policy_profile.rs"]
+pub mod policy_profile;
+#[path = "../../src/policy_status.rs"]
+pub mod policy_status;
 #[path = "../../src/noise.rs"]
 pub mod noise;
 #[path = "../../src/observe.rs"]

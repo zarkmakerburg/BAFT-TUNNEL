@@ -34,8 +34,17 @@ mod pair_proto;
 mod pki_helper;
 #[cfg(feature = "policy-pack")]
 mod policy;
+#[cfg(feature = "policy-pack")]
+mod policy_adaptive;
 #[cfg(test)]
 mod policy_baseline;
+mod policy_cli;
+mod policy_profile;
+#[cfg(feature = "policy-pack")]
+mod policy_relay;
+#[cfg(feature = "policy-pack")]
+mod policy_sched;
+mod policy_status;
 mod probe_adapters;
 mod probe_api;
 mod probe_http;
@@ -55,6 +64,12 @@ mod tls;
 mod transport_health;
 mod tunnel;
 mod tunnel_helper;
+#[cfg(feature = "udp-carrier")]
+#[allow(dead_code)] // Prototype surface: exercised by the gate-(c) test and fuzz target.
+mod udp_carrier;
+#[cfg(all(test, feature = "udp-carrier"))]
+#[allow(dead_code)] // Gate-(d) harness: test-only, so no default build or test list changes.
+mod udp_carrier_bench;
 
 use anyhow::{Context, Result, bail};
 use authorization::ConnectionDirection;
@@ -160,6 +175,13 @@ enum Command {
     Setup {
         #[command(subcommand)]
         command: SetupCommand,
+    },
+    /// Operator surface of the adaptive policy pack (ADR-0057): enable or disable the pack on the
+    /// tunnel's unit, select one of the five versioned profiles, or reset to Balanced. A thin
+    /// client of the local agent: it writes nothing itself and reports the agent's receipt.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommand,
     },
     /// Automatic pairing (ADR-0050): `offer` on the listening server prints a one-time code,
     /// `accept CODE` on the other server enrolls it. No file is copied between the servers.
@@ -374,6 +396,42 @@ fn init_fleet_ca(name: &str, confirm: bool) -> Result<()> {
         "Private key remains root-owned with mode 0600; do not copy it to any node or browser."
     );
     Ok(())
+}
+
+#[derive(Debug, clap::Args)]
+struct PolicyTarget {
+    /// systemd instance (`baft-tunnel@NAME`) to change.
+    #[arg(long)]
+    instance: String,
+    /// Local agent origin; must be loopback.
+    #[arg(long, default_value = policy_cli::DEFAULT_AGENT)]
+    agent: String,
+    /// Agent token file (default: the installed agent's token).
+    #[arg(long)]
+    token_file: Option<PathBuf>,
+    /// Machine-readable receipt.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum PolicyCommand {
+    /// Write the managed drop-in that sets BAFT_TUNNEL_POLICY_PACK=sched (the pack's gate).
+    Enable(PolicyTarget),
+    /// Remove that drop-in; refused when the switch belongs to operator-owned configuration.
+    Disable(PolicyTarget),
+    /// Set policy.profile to a versioned id; policy.adaptive is preserved.
+    Select {
+        /// `balanced/1`, `gaming/1`, `trading/1`, `streaming/1` or `bulk/1`.
+        profile: String,
+        #[command(flatten)]
+        target: PolicyTarget,
+    },
+    /// Clear policy.profile and policy.adaptive, returning to the schema defaults.
+    Reset(PolicyTarget),
+    /// Read the pack's status: state, configured and running profile, switch, adaptive, the
+    /// per-tuple claims and the metrics, exactly as `GET /v1/status` reports them (ADR-0047).
+    Status(PolicyTarget),
 }
 
 #[derive(Debug, Subcommand)]
@@ -668,6 +726,7 @@ async fn run() -> Result<()> {
                 noise_peer_public: None,
                 max_streams,
                 baft: None,
+                policy: config::PolicySettings::default(),
             };
             config.validate()?;
             config.apply().await
@@ -711,6 +770,7 @@ async fn run() -> Result<()> {
                 baft: None,
                 backup_remotes: vec![],
                 session_rotate_secs: 0,
+                policy: config::PolicySettings::default(),
             };
             config.validate()?;
             config.apply().await
@@ -876,6 +936,8 @@ async fn run() -> Result<()> {
                     config: std::path::Path::new("/etc/baft-tunnel"),
                     backups: std::path::Path::new(tunnel_helper::BACKUP_ROOT),
                     run: std::path::Path::new(tunnel_helper::RUN_ROOT),
+                    units: std::path::Path::new(tunnel_helper::UNIT_ROOT),
+                    service: &tunnel_helper::SystemService,
                 },
             )?;
             // Journal line without secrets: operation, key and result only.
@@ -999,6 +1061,57 @@ async fn run() -> Result<()> {
                 },
             )
             .await
+        }
+        Command::Policy { command } => {
+            if let PolicyCommand::Status(target) = &command {
+                let token = target
+                    .token_file
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from(policy_cli::DEFAULT_TOKEN));
+                // ADR-0047 decision 9: an unknown reading is still a successful read, so the
+                // command exits 0 for it; an unreachable or mismatched agent is exit 2.
+                return match policy_cli::status(&target.agent, &token, &target.instance).await {
+                    Ok(policy) => {
+                        if target.json {
+                            println!("{}", serde_json::to_string_pretty(&policy)?);
+                        } else {
+                            print!("{}", policy_cli::render_status(&policy));
+                        }
+                        Ok(())
+                    }
+                    Err(error) => {
+                        eprintln!("policy status: {error:#}");
+                        std::process::exit(2);
+                    }
+                };
+            }
+            let (action, profile, target) = match command {
+                PolicyCommand::Enable(target) => (policy_cli::Action::Enable, None, target),
+                PolicyCommand::Disable(target) => (policy_cli::Action::Disable, None, target),
+                PolicyCommand::Select { profile, target } => {
+                    (policy_cli::Action::Select, Some(profile), target)
+                }
+                PolicyCommand::Reset(target) => (policy_cli::Action::Reset, None, target),
+                // Returned above: the read has no receipt to render.
+                PolicyCommand::Status(_) => unreachable!("status is handled before the write"),
+            };
+            let token = target
+                .token_file
+                .unwrap_or_else(|| PathBuf::from(policy_cli::DEFAULT_TOKEN));
+            let receipt = policy_cli::apply(
+                &target.agent,
+                &token,
+                &target.instance,
+                action,
+                profile.as_deref(),
+            )
+            .await?;
+            if target.json {
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            } else {
+                print!("{}", policy_cli::render(&receipt));
+            }
+            Ok(())
         }
         Command::Fleet {
             command: FleetCommand::Ca {

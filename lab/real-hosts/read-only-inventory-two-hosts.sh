@@ -88,6 +88,7 @@ paths=(
   /var/lib/baft-tunnel-control
   /run/baft-tunnel
   /run/baft-tunnel/control
+  /run/baft-tunnel/manage
   /opt/baft-tunnel
   /usr/local/bin/baft-tunnel
   /usr/bin/baft-tunnel

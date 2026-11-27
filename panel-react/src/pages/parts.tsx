@@ -4,6 +4,7 @@ import type { Loaded } from '../api';
 import { ago, fmtBytes, fmtDate, fmtNum, fmtTime, opLabel, tierKind, type Warning } from '../derive';
 import { Card, Empty, KV, Ltr, Pill } from '../components/ui';
 import { LineChart } from '../components/charts';
+import { totalOrNull } from '../series.mjs';
 
 export const nv = (lang: 'fa' | 'en', v: number | null | undefined): string => (v == null ? '—' : fmtNum(lang, v, 0));
 
@@ -62,7 +63,7 @@ export function TrafficBody({ d }: { d: Loaded }) {
         [t('tr.sessions'), nv(lang, tr.sessions_total)],
         [t('tr.sampled'), `${ago(lang, t, tr.sampled_unix)} · ${t('tr.interval', { s: nv(lang, tr.sampling_interval_s) })}`],
       ]} />
-      {hist.length > 1 && <LineChart label={`${t('tr.rate')} (B/s)`} pts={hist.map((x) => ({ x: x.t, y: (x.from_peer_bps ?? 0) + (x.to_peer_bps ?? 0) }))} fmtY={(v) => `${b(v)}/s`} />}
+      {hist.length > 1 && <LineChart label={`${t('tr.rate')} (B/s)`} pts={hist.map((x) => ({ x: x.t, y: totalOrNull(x.from_peer_bps, x.to_peer_bps) }))} fmtY={(v) => `${b(v)}/s`} />}
       <p className="sub">{t('tr.source')}</p>
     </div>
   );

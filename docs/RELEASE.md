@@ -47,6 +47,31 @@ requires the selected tag to point to a commit already contained in `main` (SA-0
 Legacy releases signed from `refs/heads/main` are intentionally rejected by the hardened
 installer and verifier; publish a new tag after this change is merged.
 
+## Next release: v0.4.0 (Adaptive Traffic Policy Pack) — not yet gated
+
+`v0.3.1` is the latest Stable. Between its tag and `main` only documentation and the
+`policy-pack` work merged (#448-#452 and the scheduler-wiring PR), so no `v0.3.2` is planned: a
+Stable tag has to carry a product change. The next Stable is `v0.4.0` (roadmap §9.5). It is **not
+taggable yet**:
+
+- the policy pack lives behind the `policy-pack` cargo feature, is off by default, and only its
+  in-flight window bound (`BAFT_TUNNEL_POLICY_PACK=window-cap[:<bytes>]`, 256 KiB) and its
+  scheduler (`BAFT_TUNNEL_POLICY_PACK=sched[:<quantum>[:<cap>]]`) reach the relay; unset means
+  today's 4 MiB window, today's pump and today's data path. The scheduler was measured as neither
+  a win nor a regression in the two-flow harness scenario, per-MB CPU is unmeasured, and no
+  profile has measured evidence, so there is nothing to ship;
+- no profile has measured evidence against Balanced and Baseline; the two-host LAB stays
+  suspended, so any number produced before an owner-authorized window is harness or CI level
+  and must keep the `simulated` label; it is never LAB evidence;
+- the gate is the acceptance table in
+  [ADAPTIVE_TRAFFIC_POLICY_PACK.md](ADAPTIVE_TRAFFIC_POLICY_PACK.md). A profile that cannot
+  beat Balanced is dropped or documented as limited, not shipped as a claim.
+
+When those gates are met the release follows the same train as `v0.3.1`: a signed release
+candidate on a reviewed `main`, independent verification of the published assets, then Stable.
+A hosted-CI-only evidence level is acceptable only as a recorded residual risk, exactly as for
+`v0.3.1`, and never as a substitute for LAB evidence.
+
 ## Known issues (Stable)
 
 ### v0.3.1 (Stable, released 26 November 2026)
@@ -67,6 +92,17 @@ installer and verifier; publish a new tag after this change is merged.
   `integrity` remain Unknown by design.
 - Fleet CA / Join / Pairing (PR #445) is **not** part of this release. It stays open with its own
   acceptance gates and no two-host LAB.
+- **Independent verification record (2026-11-26, outside CI).** The published assets of `v0.3.1`
+  were downloaded from the release page and checked locally, not trusted from the workflow log:
+  `sha256sum -c SHA256SUMS` reported `OK` for all six listed artifacts, and
+  `cosign verify-blob SHA256SUMS --bundle SHA256SUMS.cosign.bundle --certificate-identity
+  https://github.com/zarkmakerburg/BAFT-TUNNEL/.github/workflows/release.yml@refs/tags/v0.3.1
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com` printed `Verified OK`
+  with exit status 0. `SHA256SUMS` and `SHA256SUMS.cosign.bundle` are the two remaining assets.
+  This confirms provenance of the bytes published for this tag; it does not replace the missing
+  two-host LAB acceptance or the S5 review.
+- The GitHub release page for `v0.3.1` now carries the same evidence level and known-issue list in
+  its body, so the release page alone is not more optimistic than this document.
 
 ### v0.2.2
 

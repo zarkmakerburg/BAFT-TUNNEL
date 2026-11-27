@@ -98,3 +98,82 @@ New scenario `aged_session_throttled`: the bottleneck drops to a low rate once a
 | 4 MiB (product) | 1,972 ms | 1,996 ms | 1,678 ms |
 
 Loaded delay is close to window divided by bottleneck rate, so the queue behind the bottleneck is set by the Yamux window (plus small pipe buffers). Capping the window is a large lever (about 20x here) but `tokio-yamux` requires `max_stream_window_size >= 256 KiB` (initial window), so a window cap alone bottoms out near 100 ms at this rate: still about 40x the idle 2.3 ms and short of the ADR-0048 hypothesis (p95 within 10x of idle). Getting lower needs a per-class budget below the stream window (M1) or a smaller socket buffer (M3). Caveats: single run per value; simulated bottleneck without propagation delay; a smaller window also lowers the bandwidth-delay product a stream can fill on a long path, so a window cap can reduce throughput on real high-RTT links and must be tested with a delay model before it is considered.
+
+### 9.3 Experiment: ADR-0048 mechanism matrix (2026-11-26, evidence level: simulated)
+
+`mechanism_experiments` (ignored by default) runs the same bulk-competing scenario as 9.2 with each in-flight mechanism applied to the bulk flow, at three bottleneck rates, two repeats, 6 s per run. Run command: `POLICY_RATE=<rate> POLICY_REPEATS=2 POLICY_SECONDS=6 cargo test --release --features policy-pack policy_baseline::tests::mechanism_experiments -- --ignored --nocapture`. Loaded ping p50 in milliseconds (repeat medians):
+
+| Arm | 1 MB/s | 2.5 MB/s | 5 MB/s |
+|---|---|---|---|
+| Idle (no bulk) | 4.5 | 4.4 | 4.4 |
+| Baseline (product 4 MiB window) | 4,193 | 2,026 | 1,186 |
+| M1 credit budget, 2 MiB | 2,246 | 977 | 590 |
+| M2 receive pacing, 64 KiB | 4,178 | 2,017 | 1,263 |
+| M3 socket backpressure, 32 KiB / 16 KiB | 4,162 | 2,094 | 1,325 |
+| Window 256 KiB | 271 | 110 | 61 |
+| Scheduler on the 256 KiB window (`sched`, section 9.4) | 270 | 109 | 62 |
+
+At 2.5 MB/s the window arm's p95 is 119 ms (idle p95 5.2 ms), the scheduler's 118 ms, the M1 arm's 1,019 ms, Baseline's 2,088 ms.
+
+What the run establishes, all `simulated`:
+
+- **M1 cannot bound below the window.** Yamux's `StreamHandle::send_window_update` sends an update only when `delta >= max_recv_window / 2`, and the receiving side grants `max_recv_window - 256 KiB` once at stream creation. With the product's 4 MiB window a 64 KiB credit budget therefore stops at 64 KiB and never resumes: `credit_budget_below_the_window_granularity_stalls` (a 256 KiB transfer does not finish). At exactly 2 MiB the flow completes (`credit_budget_at_half_the_window_completes`) and the bound is 2 MiB — the 1,045 ms row.
+- **M2 and M3 do not move the queue.** Both measured within run-to-run variance of Baseline at all three rates: the bytes are already in the sender's Yamux window before either the socket buffer or the receiving sink matters.
+- **The window is the lever.** 256 KiB cut p50 by 18x at 2.5 MB/s and 21x at 5 MB/s. The rerun of the 9.2 experiment reproduces its numbers within about 15% (256 KiB 114 ms, 1 MiB 526 ms, 4 MiB 2,130 ms p50, single run).
+- **The aged-session throttle is unchanged.** `aged_session_under_window_cap`: fresh 545 ms / aged 5,381 ms against Baseline 544 / 5,370 ms — the bound neither hides nor worsens it.
+- **`bulk_bytes_per_s` is not goodput.** It counts bytes handed to the engine; the shaped pump fixes the delivered rate in every arm. The window arm hands over less (2.1 versus 2.8 MB/s at a 2.5 MB/s bottleneck) because it queues less, which is the point. Real-path goodput under a smaller window is not measured here.
+
+Decision: the in-flight bound is the per-stream window, 256 KiB, applied by `tunnel::yamux_config` and switchable with `BAFT_TUNNEL_POLICY_PACK=window-cap[:<bytes>]` (`src/policy_relay.rs`). M1/M2/M3 are not wired; see [ADR-0048](ADR-0048-policy-queues-and-scheduler.md) decision 4 and its results section. The remaining gap to the p95-within-10x-idle hypothesis (met at 5 MB/s, not at 2.5 or 1 MB/s) is the queue in front of the interactive flow, which the per-class scheduler (`src/policy_sched.rs`) is meant to bound and which is still not called by the relay.
+### 9.4 Experiment: scheduler wired to the relay, TP-2.2 (2026-11-26, evidence level: simulated)
+
+The same matrix re-run with the shipped `sched` switch as a sixth arm: one deficit round-robin arbiter per relay direction, 16 KiB quantum, 64 KiB per-flow cap, on the same 256 KiB window as the `window-cap` arm. The comparison therefore isolates arbitration, not the in-flight bound. Commands are those of 9.3; the arm is `sched-w262144-q16384-cap65536`.
+
+| Arm | 1 MB/s p50 | 2.5 MB/s p50 | 5 MB/s p50 | 2.5 MB/s p95 | 2.5 MB/s p99 | bulk handed at 2.5 MB/s |
+|---|---|---|---|---|---|---|
+| Idle | 4.5 | 4.4 | 4.4 | 5.2 | 6.3 | 0 |
+| Window 256 KiB | 271 | 110 | 61 | 119 | 138 | 2.21 MB/s |
+| `sched` on that window | 270 | 109 | 62 | 118 | 144 | 2.22 MB/s |
+
+Findings, all `simulated`:
+
+- **No benefit, no regression in this scenario.** Every arm-level difference is inside the repeat-to-repeat spread; p99 is 6 ms worse at 2.5 MB/s and 5 ms better at 5 MB/s. Nothing here justifies turning the switch on by default, so it stays off.
+- **The reason is structural.** With one bulk flow and one interactive flow the window already bounds the queue, and DRR only decides the order of 16 KiB chunks inside it; it cannot shrink the window's worth of queued bytes. Fair scheduling between classes/flows is the case it exists for: section 9.5 measures competing flows, and classes remain TP-3.x.
+- **Bounded queues verified by tests, not by numbers.** Per-flow queued bytes never exceed one quantum; an over-cap request is refused with an error that ends the flow rather than growing memory; a closed or dropped flow leaves the rotation and the arbiter reports zero flows after the relay ends (`policy_sched` and `policy_relay` tests).
+- **Idle timeouts and the aged-session throttle are unchanged.** `aged_session_under_scheduler`: fresh 538 ms / aged 5,392 ms against Baseline 545 / 5,371 and window-cap 544 / 5,404.
+- **Per-MB CPU is measured in section 9.6.** Decision 6's budget is met as measured (+1.4% / +4.3% / −8.2% per delivered MB against Baseline; idle p50 within 73 µs), with the margin bounded by the harness's per-run spread rather than certified below it.
+- **No LAB evidence.** The two-host LAB window is still suspended, so every number here is loopback harness evidence labelled `simulated`.
+
+### 9.5 Experiment: multiple competing flows and mid-run churn (TP-2.2, 2026-11-26, evidence level: simulated)
+
+`run_multi_flow` in the same harness: `flows` bulk uploaders share the shaped bottleneck, each with its own 64-byte echo stream so per-flow latency is reported per flow, plus a variant that closes flow 0 at half the run. Command: `cargo test --release --features policy-pack policy_baseline::tests::multi_flow_experiments -- --ignored --nocapture` with `POLICY_RATE` at the same three rates, `POLICY_REPEATS=2`, `POLICY_SECONDS=6`.
+
+Two flows, medians of two repeats, per-flow p50 / p95 in ms:
+
+| Rate | Arm | flow A | flow B | handed in 6 s |
+|---|---|---|---|---|
+| 1 MB/s | Baseline | 1,935 / 7,394 | 3,534 / 5,788 | 16.9 MB |
+| 1 MB/s | Window 256 KiB | 559 / 602 | 559 / 604 | 6.46 MB |
+| 1 MB/s | `sched` | 561 / 575 | 565 / 605 | 6.46 MB |
+| 2.5 MB/s | Baseline | 3,400 / 4,233 | 2,669 / 4,233 | 25.3 MB |
+| 2.5 MB/s | Window 256 KiB | 252 / 264 | 252 / 256 | 12.2-12.7 MB |
+| 2.5 MB/s | `sched` | 247 / 255 | 248 / 255 | 12.7 MB |
+| 5 MB/s | Baseline | 2,119 / 2,660 | 1,663 / 2,660 | 33.7 MB |
+| 5 MB/s | Window 256 KiB | 142 / 150 | 143 / 162 | 19.6-20.1 MB |
+| 5 MB/s | `sched` | 144 / 151 | 144 / 150 | 20.1 MB |
+
+Three flows agree: p50 385 µs (window) against 378 µs (`sched`) at 2.5 MB/s, 224 against 229 at 5 MB/s, 851 against 849 at 1 MB/s.
+
+- **Delivery is exactly even in every arm** (`delivery_min_over_max` = 1.000): the shaper serialises the flows and Yamux credits each stream the same window, so the split does not discriminate between arms; it does show the scheduler starves nobody.
+- **Latency is set by the window, not by arbitration**: Baseline queues 4 MiB per stream (1.7-7.4 s), the bounded arms sit at the 256 KiB window (0.14-0.56 s), and `sched` is within 1% of the window pump at all rates and flow counts.
+- **Churn is safe**: the closed flow hands about half the survivor's bytes (5.19 against 14.63 MB at 5 MB/s), the survivors keep moving, no arm stalls.
+- **Classes are not measured**: `SchedulerConfig` has only a quantum and a cap and every flow is `Balanced`; a multi-class run would need API that does not exist (TP-3.x), and inventing it would not have measured shipped code.
+
+### 9.6 Experiment: per-MB CPU of the merged arms (decision 6, 2026-11-26, evidence level: simulated)
+
+Two views, both `cargo test --release --features policy-pack ... --ignored --nocapture`:
+
+- `cpu_cost_experiments` wraps the 9.4 matrix in `getrusage(RUSAGE_SELF)`. The figure compared across arms at one rate is CPU per *delivered* MB, because the loopback shaper's work is the same for every arm and the delivered rate is fixed by construction: Baseline 87.4 / 71.3 / 54.5 µs per MB at 1 / 2.5 / 5 MB/s, Window 62.0 / 68.2 / 51.0, `sched` 62.9 / 74.4 / 50.0 (medians of two repeats). Against Baseline the scheduler is +1.4% / +4.3% / −8.2%, inside decision 6's 5% budget; against the window arm it is +1.4% / +9.1% / −2.0%, and the +9.1% cell sits inside that arm's 12% repeat spread.
+- `relay_cpu_probe_experiments` removes the shaper: one unshaped loopback session, both ends in-process, 512 MiB per run, six runs per arm. CPU per MB relayed: Baseline 6,235 µs (range 5,840-6,602), Window 7,295 (6,738-7,813), `sched` 6,279 (4,961-10,273). The scheduler is +0.7% against Baseline and −14% against the window pump by median.
+
+Idle latency (decision 6, second half): `sched` p50 4,575 / 4,588 / 4,464 µs against Baseline 4,631 / 4,545 / 4,537, i.e. −56 / +43 / −73 µs; `sched` p95 is at most +0.72 ms above Baseline. Both halves are inside the budget, but per-run arm-to-arm spread (±12-40%) is wider than 5%, so the result bounds the overhead rather than certifying a smaller margin; decision 6 is recorded as **met as measured** with that reservation. Still `simulated`, still no LAB claim.
+

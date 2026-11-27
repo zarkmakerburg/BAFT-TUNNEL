@@ -25,10 +25,14 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring"]
 tokio-yamux = "0.3.20"
 zeroize = "1.9.1"
 x509-parser = "=0.16.0"
+quinn = { version = "0.11.12", optional = true, default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 
 [features]
 # Adaptive Traffic Policy Pack interface (ADR-0031/0044). Off by default; the data path is unchanged.
 policy-pack = []
+# Prototype UDP/QUIC datagram carrier (ADR-0046). Off by default: no dependency, socket or
+# listener in a default build. Gate (c) only; no user-facing surface before (b) and (e).
+udp-carrier = ["dep:quinn"]
 
 [dev-dependencies]
 divan = { version = "6.0.0", package = "codspeed-divan-compat" }

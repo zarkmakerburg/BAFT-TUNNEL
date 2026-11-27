@@ -1,0 +1,228 @@
+# ADR-0056: Adaptive optimisation controller (TP-4.1)
+
+**Status:** Accepted (2026-11-26, TP-4.1 / #238). The design is settled and both implementation slices are shipped behind `policy-pack`: the pure decision core and its wiring (a `policy.adaptive` opt-in, a 1 Hz sampler on the session's own arbiter counters, one log line per accepted change, and the change applied to that direction's scheduler pair), plus a `simulated` benchmark record at [POLICY_PACK_TP-4.1_ADAPTIVE_EVIDENCE.md](POLICY_PACK_TP-4.1_ADAPTIVE_EVIDENCE.md). Adaptation is off by default (`policy.adaptive` absent or false, and inert without a configured profile), makes no benefit claim, and has no two-host LAB evidence. ADR-0048's off-by-default scheduler decision and every `simulated` label are unchanged.
+**Date:** 2026-11-26
+**Related:** [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) decisions 8, 9, 10, 15-19, [ADR-0044](ADR-0044-engine-agnostic-policy-interface.md), [ADR-0047](ADR-0047-policy-status-contract.md), [ADR-0048](ADR-0048-policy-queues-and-scheduler.md) decisions 3-6, plan [ADAPTIVE_TRAFFIC_POLICY_PACK.md](ADAPTIVE_TRAFFIC_POLICY_PACK.md), issues [#238](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/238), [#239](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/239), [#229](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/229)
+
+## Context
+
+TP-4.1 (#238) asks for "a slow control loop over measured signals (TP-1.1) adjusting only profile-allowed parameters in small bounded steps with minimum dwell time, hysteresis and rate limit; every change logged with the signal that caused it", with acceptance "ADR, benchmark, LAB". ADR-0031 decision 9 fixed the shape of the loop (slow, bounded, dwell, hysteresis, rate limit, logged causes, fail-safe to Balanced) but deliberately left its inputs and numbers open; the plan's risk table names "adaptive loop oscillates" and prescribes exactly those guards.
+
+What exists on `main` today:
+
+- Five accepted profile rows (ADR-0031 decision 15), each a `(window, quantum, cap)` triple, all bounds-checked and resolved into `PolicyRelay` at session start. A session's class is its configured profile; class weights are identity.
+- The scheduler's own counters: `ArbiterStats { grants, granted_bytes, overflow_refusals, guard_violations, queued_bytes, flows }` and the per-`Scheduler` `grants`/`overflow_refusals`/`total_queued_bytes`, plus `Guarded::violations()` from the interface wrapper (`src/policy.rs`, `src/policy_sched.rs`). They are `pub(crate)` diagnostics; nothing exports them.
+- No product RTT, loss or per-packet signal: the metric surface of TP-1.1 (#229) is not implemented (the pack plan records harness-only measurement), and ADR-0047's `policy` status object, accepted 2026-11-27, is a contract whose read is not implemented yet.
+- No runtime reconfiguration path: the window is applied to both Yamux session ends at session creation and cannot change for that session's lifetime, and the profile is resolved once per session.
+- No reproducible benefit from the scheduler arm and no measured profile: everything stays off by default and every number is `simulated`; the two-host LAB is suspended.
+
+An ADR that ignored those facts would design a controller nothing can feed. The decision below is constrained to what the code can supply and what ADR-0031 already ratified.
+
+## Decision
+
+1. **The controller chooses rows, it does not compute numbers.** Its only output is one of the five ADR-0031 decision-15 rows. It never interpolates, scales or invents a `window`, `quantum` or `cap`, so every state it can enter is an already-accepted, already-bounds-checked configuration. This is what "profile-allowed parameters" means here: the pack's own table, nothing beside it.
+2. **The window is not adaptable; only the scheduler pair is.** `window_bytes` is fixed for a session's lifetime (ADR-0048 decision 4: both Yamux ends assume it at stream creation), so the controller never changes it: the configured profile keeps supplying the window, and adaptation selects only `quantum_bytes` + `max_queued_bytes` from the table. A change therefore needs no session renegotiation, no carrier change and no new parameter. A future window adaptation would need a new ADR and a session-restart design; it is out of scope here.
+3. **Fixed ladder, not a search space.** The five rows ordered by their scheduler pair (both numbers strictly increase along it, pinned by a test):
+
+   | Rung | Row | quantum | cap |
+   |---|---|---|---|
+   | 0 (floor) | `trading/1` | 2 KiB | 8 KiB |
+   | 1 | `gaming/1` | 4 KiB | 16 KiB |
+   | 2 | `balanced/1` | 16 KiB | 64 KiB |
+   | 3 | `streaming/1` | 32 KiB | 128 KiB |
+   | 4 | `bulk/1` | 64 KiB | 256 KiB |
+
+   A change moves exactly one rung, and never above the configured row: adaptation may shrink the scheduler pair under sustained queueing delay and restore it as the delay falls, but it cannot widen beyond what the operator configured. `balanced/1` stays the fail-safe target of ADR-0031 decision 2, and a controller that cannot improve simply stays at the configured row.
+4. **Inputs are the pack's own counters, on a 1 Hz slow loop.** One fresh sample is `{queue_delay, overflow_refusals, violations}`:
+   - `queue_delay` — the tunnel-internal queueing-delay **estimate** for the direction, derived as queued bytes divided by the recent delivered rate (the arbiter's `queued_bytes` and granted bytes over the last interval). It is labelled `estimated`, not `measured`, in ADR-0024 terms and makes no claim about wire RTT or the internet path. **Amendment (2026-11-27):** the numerator is `queued_bytes + in_flight_bytes`, where `in_flight_bytes` counts bytes the arbiter granted but the relay has not finished writing. `queued_bytes` keeps its own meaning (the arbiter's queue) and is not redefined; the amendment exists because that queue is a rendezvous and therefore reads zero exactly when a granted write is blocked (record §3), which made the original input unusable on the product path. The estimate is still `estimated`, still derived only from the pack's own counters, and adds no wire, RTT or payload signal.
+   - `overflow_refusals` — the scheduler's cumulative refusal counter; an increase means a queue hit its cap and a flow was refused, which is a guard condition, not a tuning signal.
+   - `violations` — the scheduler's cumulative guard-violation counter (`ArbiterStats::guard_violations`: requests above the configured row's cap), also sourced from `Guarded::violations()` when that wrapper is used; an increase is a fail-safe trigger.
+   - Freshness is part of the signal: a tick with no fresh sample is a missed sample, not a zero.
+
+   The controller uses no RTT, loss, retransmission, port, protocol or payload signal, and no inference of any kind (ADR-0031 decisions 6 and 8). A wire RTT source would need a product metric surface (#229) and is recorded as a limit, not assumed.
+5. **Objective and direction.** The loop minimises the queueing-delay estimate inside the tunnel's own control by shrinking the scheduler pair while the estimate stays high, and restores the configured row once it stays low. It claims nothing about throughput, goodput, loss or path latency; the measured cost/benefit of every row remains the TP-3.x evidence question, unchanged by adaptation.
+6. **Hysteresis and timing (provisional design values, not measurements).**
+
+   | Knob | Value | Why |
+   |---|---|---|
+   | sample period | 1 s | The loop must be far slower than the relay; one sample per second is ~1/16 of the dwell and costs one counter read. |
+   | persistence | 3 consecutive samples | Debounce against a single burst; a step needs sustained pressure. |
+   | step-down threshold | queueing estimate > 50 ms | ADR-0048's acceptance uses "loaded p95 within 10x idle", which at 2.5 MB/s (idle p50 about 5 ms) is about 50 ms; the plan's risk table asks for hysteresis rather than a single trigger. |
+   | step-up threshold | estimate < 20 ms | 40% of the step-down threshold; the 30 ms gap is the deadband that prevents flapping around one value. |
+   | minimum dwell | 30 s | Longer than any verification window's half; a state is held long enough to be observed. |
+   | rate limit | 3 voluntary changes per 300 s | Bounds the worst case even if dwell and verification are satisfied repeatedly; a forced restore or rollback is immediate and still counts against the budget. |
+   | verification window | 60 s after a down-step | The step must show its effect before another is allowed; 60 s is 60 samples, ample for the 1 s loop. |
+   | minimum improvement | 10% of the pre-step estimate | A step that cannot move the estimate by more than the harness's per-run spread is treated as ineffective (the TP-2.2/ADR-0048 runs report ±12-40% spread, so 10% is a floor, not a significance claim). |
+   | bad-row cooldown | 600 s | A row that failed verification is not retried immediately. |
+   | guard suspension | 300 s | After a violation or overflow, adaptation is suspended for five minutes while the configured row runs. |
+   | staleness | 3 missed samples | No fresh data means no adaptation; the configured row is restored. |
+
+   These values are the design's starting point. The benchmark (decision 12) may amend them through an ADR amendment; until then they are neither evidence nor a claim.
+7. **Bounded, verified, reversible steps.** A down-step is taken on the third consecutive sample above the step-down threshold if dwell and rate limit allow; it records the pre-step estimate as its baseline. At the end of the verification window the step is kept only if the estimate improved by at least 10%; otherwise the controller reverts exactly that step (to the row that was already verified, not all the way to the configured row), marks the failed row for the cooldown and logs the cause. A second step cannot start while one is under verification.
+
+   The dwell and rate limit gate **voluntary** steps only. A verification rollback and a fail-safe restore are forced: they happen immediately, may cross several rungs, and are exempt from both gates, but they are still recorded in the change budget, so adaptation cannot use them to slip extra voluntary changes in. The cooldown a failed row earns is not shortened by a later suspension.
+8. **Fail-safe.** These are not adapted around:
+   - an increase in `violations` or in `overflow_refusals` restores the configured row immediately, clears any pending verification and suspends adaptation for 300 s; the failed-row cooldown of decision 7 survives the suspension, so a row that failed verification is still not retried early;
+   - three consecutive missed samples restore the configured row, and every missed sample clears both persistence streaks, so fresh samples must rebuild a full one before any change;
+   - the configured row is the anchor: if the configured profile is `balanced/1`, the restore target is already ADR-0031's fail-safe; if it is another row, its own row is the operator's stated intent and the anchor. Falling below `trading/1` is impossible (the floor), so there is always a bounded state to fall back to.
+9. **Every change is one log line with its cause.** The controller returns a change record `{at, from, to, cause, queue_delay}` rendered as `policy adaptive: <from> -> <to> cause=<cause> queue_delay_ms=<n>`; causes are the closed set `queue_delay_high`, `queue_delay_low`, `no_improvement`, `guard_violation`, `overflow`, `stale_signals`. There is no per-sample logging, and a change with no attributable signal cannot be produced.
+10. **How it stays off by default.** Three independent gates, in addition to nothing being wired:
+    - the `policy-pack` cargo feature (off by default) owns the code;
+    - `BAFT_TUNNEL_POLICY_PACK` must enable the pack at runtime, exactly as for the window and scheduler today;
+    - the tunnel config must opt in with a new boolean `policy.adaptive` (default absent = `false`), added by the wiring step, not by this ADR's slice. With the field absent or false the session runs its configured row end to end, and the data path is byte-identical to today's. With the pack off the field is inert and logged as such; it does not switch the pack on.
+
+    Adaptation never changes the window, never changes the class label, never enables a profile and never widens beyond the configured row. ADR-0048's decision that the scheduler switch stays off (no reproducible benefit) and the `simulated` label of every existing record are untouched; no profile becomes "ready" through adaptation.
+11. **Status contract is reserved, not extended here.** When ADR-0047's `policy` object ships it will need the adaptive view (`state`, configured row, current row, last change and cause). ADR-0047 was accepted on 2026-11-27; no endpoint, field or panel card is added by this ADR, and the read
+stays its own step.
+12. **Benchmark plan (TP-4.1's second acceptance item), not executed here.** With the wiring in place, the harness compares adaptation off against on at fixed seeds and at least three bottleneck rates, on the ADR-0048 matrix: the queueing-delay estimate over time, loaded ping p50/p95/p99, the sender-side handoff count (never called delivered goodput), CPU per delivered MB, number and spacing of changes over a 10-minute run, time-to-restore after the load stops, and every rollback/suspension path. Evidence is `simulated`/CI only; the result must state whether the loop is level with the static configured row, better, or worse, and a cost with no benefit is a reason to leave the opt-in off by default. A 10-minute run is the plan's ceiling; the 60-minute profile run stays a TP-3.x/LAB item.
+
+   **Amendment (2026-11-27):** the `simulated` run produced no change at all (0 ms estimate in every sample; see the evidence record), so the change spacing, time-to-restore after the load stops, and the forced rollback/suspension paths could not be measured in TP-4.1. Those measurements move to TP-4.2 (#239), whose first step is the forced-change rollback/fail-safe matrix; TP-4.1's remaining acceptance item stays the two-host LAB window.
+
+   **Amendment (2026-11-27, second): the benchmark was executed with the corrected decision-4 signal** (record §6 and §7). Three rates × adaptive off/on × two repeats, then a 150 s run at the slowest rate, each with a recovery phase after the bulk load stops:
+
+   - **Settling.** The loop moved exactly one rung — `balanced/1 → gaming/1` — at 4.0 s (250 and 500 KB/s) and 5.0 s (1 MB/s), stayed there for the rest of the run, and in the 150 s run did not move again until the load stopped. It never went below `gaming/1`.
+   - **Estimate distribution.** Non-zero but intermittent: p50 0 ms (most ticks hold no grant), p95 187 / 93 / 53 ms at 250 / 500 / 1000 KB/s, max 375 ms; the long run p50 46 ms, p95 93 ms, p99 125 ms, max 375 ms.
+   - **Change spacing.** The short runs have one change each, so there is no gap; the long run's single gap is 152.3 s — the down-step's whole life.
+   - **Recovery.** The estimate fell back under the 20 ms up-threshold 603-1,614 ms after the load stopped in the short runs (811 ms in the long one), and the row returned 5.9 s after the stop in the long run. In the 10 s windows the row did not return because the 30 s dwell had not expired; that is the design, not a missing measurement.
+   - **No benefit.** Interactive p50 is level with the static row at all three rates and the adaptive arm delivers 0.4-1.7% fewer bulk bytes in an 8 s window. Nothing here justifies turning the opt-in on.
+
+   One question this raises is recorded rather than answered: the estimate's numerator is bytes in flight, which cannot exceed the quantum in force, so a down-step caps its own input and part of any "improvement" is mechanical. **Next mission:** make the measurement row-independent — time the grant-to-write wait itself (or normalise by the configured row) — and re-run this matrix to see whether the step is still justified; the LAB window is unchanged as TP-4.1's acceptance criterion.
+13. **LAB (TP-4.1's third acceptance item) is suspended and unmeasured.** The two-host window is the only place the loop's real behaviour (carrier RTT, path change, impairment) can be observed; nothing in this ADR or its slice is LAB evidence, and TP-3.2-TP-3.5's LAB criteria remain open as they were.
+
+## Testable acceptance for the slice shipped with this ADR
+
+The pure core `src/policy_adaptive.rs` (feature `policy-pack`, not called from the relay) must satisfy, by unit tests that run in both feature configurations of `cargo test --all-targets`:
+
+1. The ladder is exactly the five ratified rows, in strictly increasing quantum and cap order.
+2. A fresh controller starts at the configured row and a calm stream (estimate below the step-up threshold) never changes it.
+3. Three consecutive samples above the step-down threshold produce exactly one change, one rung down, with `queue_delay_high` and the sampled estimate recorded.
+4. Every change moves exactly one rung and never above the configured row; the floor row never steps below itself; the deadband value between the two thresholds never changes anything.
+5. Voluntary changes are never closer than the dwell, and no more than three occur inside a 300 s window; a forced restore or rollback is immediate, exempt from those gates, and still counted in the budget.
+6. A down-step that improves the estimate by at least 10% inside 60 s is kept and does not itself produce a change; a step that does not improve is reverted to the previously verified row with `no_improvement`, and its row is not retried inside the 600 s cooldown, including across a later 300 s guard suspension (which keeps the cooldown but still restores and suspends immediately).
+7. Calm samples restore towards the configured row one rung at a time and stop there.
+8. Three missed samples restore the configured row with `stale_signals`, and a gap resets the streaks so the next change needs three fresh samples.
+9. A `violations` or `overflow_refusals` increase restores the configured row with its cause and the triggering estimate, and suspends further changes for 300 s; adaptation resumes afterwards within the dwell and rate limit.
+10. The rendered log line carries the from/to rows, the cause and the triggering estimate.
+
+## What shipped with this ADR (implementation note, 2026-11-26)
+
+- `src/policy_adaptive.rs`: the constants above, `LADDER`, `Signals`, `Cause`, `Change` (`Display`), the private `Pending` verification record and `Controller::{new, update}`. Pure and deterministic: time is a `Duration` argument and every rule is a function of the sample sequence, so tests need no clock, task, socket or I/O. `Adaptation` feeds two controllers from one session's counters, `Counters`/`queue_delay` are the decision-4 estimate, and `DirectionChange` attributes a change to the direction that caused it.
+- **Wiring (second slice, 2026-11-26):** `PolicySession` in `src/policy_relay.rs` owns the 1 Hz driver (a weakly-held task, so it ends with the session), samples each direction's `ArbiterStats` at the ADR's cadence, and applies an accepted change through a new `Command::Configure(SchedulerConfig)` to that direction's arbiter only. The per-direction read chunk follows the row's quantum, so a shrunk cap never meets a larger request. Each applied change logs exactly one `policy adaptive: <from> -> <to> cause=<cause> queue_delay_ms=<n> direction=<to_peer|from_peer>` line, after the arbiter accepts the new pair. A tick whose direction delivered no bytes has no rate and therefore no delay estimate: the guard and overflow counters are still sampled (a violation is real whatever the rate), the delay rules are skipped, and the value is never taken as a measured zero, so it cannot advance a streak or pass a pending verification. The relay's offer is re-capped to the quantum in force before each write, and a re-offered remainder replaces the flow's queued span instead of adding to it, so byte accounting stays exact across a change. `policy.adaptive` (`src/config.rs`, `#[serde(default)]`) is threaded through `ServeOptions`/`ForwardOptions` to the session; absent or false constructs no controller and no driver, so quantum, cap, window and wire behaviour are the configured row for the session's whole life.
+- `mod policy_adaptive` is declared behind `#[cfg(feature = "policy-pack")]` in `src/main.rs` and in the bench target; the default build does not compile it.
+- **Known limit, recorded rather than papered over, and fixed 2026-11-27:** the scheduler path instantiates no `Guarded<TrafficPolicy>`, so the sample's `violations` counter once had no live source and was reported as `0`. The arbiter now counts a request above the row's cap in `ArbiterStats::guard_violations` and `policy_relay::counters` carries that value, so the guard fail-safe responds to a real signal (**tested** through the live arbiter and a session tick); the 1 Hz driver inside a running process is observed end to end since 2026-11-27 (TP-4.1 record §5). `overflow_refusals` is live as before. `queue_delay` needs at least one prior sample to have a rate, so the first tick of a session records no estimate and acts on none.
+- **Second known limit, measured not assumed:** the arbiter's queue is a rendezvous — `serve()` grants a request immediately after it is queued — so `queued_bytes` read at the 1 Hz cadence is `0` even while the loaded ping p50 is seconds. The bytes that actually wait are the granted ones whose write is blocked by the peer's Yamux window, and decision 4's original signal did not count them. Consequence: on the `simulated` harness the loop never leaves its configured row (0 changes, 0 ms estimate in every sample). **Fixed by the 2026-11-27 amendment:** the relay's write boundary now raises a per-direction `in_flight_bytes` counter after a grant and lowers it when the write completes, the sample carries it, and the amended estimate divides the sum. In the live-driver harness with a real relay and a slow peer the same live state reads `queued_bytes = 0`, `in_flight_bytes = 16,384` and a **1,001 ms** estimate where the old input read 0 ms (TP-4.1 record §6). What is still open is not the input's existence but its behaviour on a real path: the multi-rate decision-12 benchmark has not been re-run with the amended signal, and the two-host LAB window remains the acceptance criterion.
+- **Measurement:** [POLICY_PACK_TP-4.1_ADAPTIVE_EVIDENCE.md](POLICY_PACK_TP-4.1_ADAPTIVE_EVIDENCE.md) records the `simulated` benchmark (the loop started from `balanced/1` against the same static row at three bottleneck rates, plus a 180 s run), including the change count, estimate distribution, loaded latency, CPU and sender handoffs. It is a loopback harness result, not a LAB result; the loop made no change and no benefit is claimed.
+- **Not in this slice:** the two-host LAB window, the status view (ADR-0047 accepted 2026-11-27; the read is the next step), and any real-path or cross-engine
+  measurement.
+
+## TP-4.1 decision 4, amended: the in-flight sample (implementation note, 2026-11-27)
+
+The record's section 3 named the gap: the arbiter's queue is a rendezvous, so `queued_bytes` at 1 Hz
+is zero while the real wait is in granted bytes blocked in `write_all`. This amendment closes it
+without touching that metric or any default.
+
+- **Where it is computed.** `relay_with_policy`'s pump raises a per-direction `in_flight_bytes`
+  counter (`PolicySession::in_flight`) immediately after `FlowHandle::acquire` returns a grant and
+  lowers it, saturating, after that grant's `write_all` completes. The definition is therefore
+  exact: bytes the arbiter granted that the relay has not finished writing. The 1 Hz tick reads it
+  beside the arbiter's own counters; `Counters::in_flight_bytes` carries it; the estimate divides
+  `queued_bytes + in_flight_bytes` by the interval's granted rate.
+- **What stays the same.** `queued_bytes` is untouched — still the arbiter's queue, still zero in
+  this state. No wire byte, window, quantum, cap, default or `policy.adaptive` value changes; with
+  the opt-in off there is no controller, no driver and no estimate, only a counter that no one
+  reads.
+- **Observed, not asserted (TP-4.1 record §6).** With a real relay whose peer drains 512 bytes every
+  50 ms against a 16 KiB quantum, one live sample read `queued_bytes = 0`, `in_flight_bytes =
+  16,384` and produced a **1,001 ms** estimate — where the original input produced 0 ms. Three
+  reverse mutations (no `fetch_add`, sample drops the field, opt-in ignored) each failed the test
+  with its own message before being restored.
+- **Measured since.** The multi-rate decision-12 benchmark was re-run with the amended signal
+  (TP-4.1 record §7: one rung down at each rate, calm within 0.6-1.6 s of the load stopping, the row
+  back in 5.9 s) and then again with a row-independent wait alongside it (§8). Neither run shows a
+  benefit; the two-host LAB window remains TP-4.1's only acceptance criterion and nothing here is a
+  benefit claim.
+
+## TP-4.1 decision 12, amended: the row-independent wait (implementation note, 2026-11-27)
+
+Decision 12 asked whether the loop's benefit is real, and the first answer (§7) could not settle it:
+`in_flight_bytes` is capped by the row in force, so a down-step mechanically shrinks the estimate's
+numerator. This amendment adds the missing measurement, re-runs the matrix, and records that the
+benefit claim does **not** survive it.
+
+- **Where it is measured.** The pump now stamps `Instant::now()` when `FlowHandle::acquire` returns a
+  grant and again after that grant's `write_all` completes (`WaitLog`/`DirectionMeter` in
+  `src/policy_relay.rs`), tagging each sample with the quantum in force at grant time. The harness
+  reports the distribution split by that tag: `configured` (the row `policy.profile` selects) and
+  `stepped`, with `p95_ratio = stepped.p95 / configured.p95`. The same record carries
+  `estimate_normalised_p50/p95_ms`, the estimate scaled by `configured_quantum / row_quantum`, so
+  the mechanical component is the gap between raw and normalised.
+- **What stays the same.** The recorder exists only when `policy.adaptive` is on, plus test builds
+  that need the static arm as a reference; the default path allocates nothing and the guard is a
+  `bool` the pump already reads. No threshold, quantum, cap, default, `policy.adaptive` value or
+  `queued_bytes` semantic changes. The estimate still divides `queued_bytes + in_flight_bytes` by
+  the interval's granted rate.
+- **Observed (TP-4.1 record §8).** At 250 KB/s the measured p95 wait is unchanged after the step
+  (53→47 µs and 29→33 µs, ratios 0.887 and 1.138) while the estimate's p95 doubles when normalised
+  to the configured row (187→375 ms): the improvement there is the row, not the path. At 500 KB/s
+  the ratios are 0.978 and 1.097 — unchanged. Only at 1 MB/s (0.604, 0.770) and in the 150 s run at
+  250 KB/s (0.538) does the wait itself fall. The estimate (53-187 ms p95) and the measured wait
+  (29-91 µs p95) differ by three orders of magnitude, because `write_all` returns once Yamux buffers
+  the bytes: decision 4's estimate is a bytes-in-flight-to-rate ratio, not a queueing delay.
+- **Consequence.** The row-independent number does not justify the step at two of three rates. No
+  benefit is claimed, `policy.adaptive` stays off by default, and no profile becomes `measured`.
+  Decision 12's remaining question — whether the wait improves where the bytes actually wait (inside
+  Yamux's stream window or the carrier) rather than at the relay boundary — is the next mission; the
+  two-host LAB window stays the acceptance criterion.
+- **Reverse mutations.** Removing the `granted_at` stamp fails with `the relay boundary must report
+  grant-to-write waits`; tagging every wait with `quantum = 0` fails with `the configured-row wait
+  must be measured, not assumed: WaitReport { configured: WaitDist { count: 0, … }, … }`; making the
+  normalisation the identity fails with `60 ms at gaming/1's 4 KiB reads as 240 ms against the
+  configured 16 KiB row`. Each was restored byte-for-byte (`cmp`).
+
+## What TP-4.1 still needs
+
+One step: **the two-host LAB window** (suspended by the owner's decision), which is the item's remaining acceptance criterion, like TP-3.2-TP-3.5; the decision-12 measurements the zero-change harness could not produce are moved to TP-4.2 by the amendment above. Nothing in the wiring or the `simulated` record substitutes for it, and no benefit is claimed until it runs.
+
+## TP-4.2: the rollback and fail-safe matrix (implementation note, 2026-11-27)
+
+Decisions 7–9 are now exercised through the session the product runs, not only through the
+controller's return value. `PolicySession::tick` was split into the live counter read and
+`tick_with(now, to_peer, from_peer)`, so a test can force one tick per simulated second into the
+same decide-and-apply path — the same `Command::Configure`, the same read-chunk update — with no
+clock, task or socket. The tests in `src/policy_relay.rs` cover, one per row: a failed verification
+reverting the arbiter and the read bound to the verified row; a guard violation and an overflow
+restoring the configured row on that tick and suspending adaptation for 300 s, with the first
+voluntary step exactly one suspension later; a failed row's 600 s cooldown unchanged across a
+suspend/resume cycle (unreachable to 663 s, retried at 663 s); a stale gap dropping the persistence
+streak and three consecutive misses restoring the configured row; and an unconfigured session
+ignoring the same forced guard and overflow samples entirely. #239's condition matrix (clean,
+congested, lossy bursts, threshold jitter, a permanent path improvement), its flapping check and its
+ten-minute run are decision-level tests over the same seam: only sustained congestion steps, arrived
+at one rung, and the loop settles once the failed rows are cooled down instead of oscillating.
+
+Every second and millisecond in those tests is forced: they prove the wiring and the gating, not
+that a real carrier produces those sequences. Decision 12's change spacing, time-to-restore and
+rollback paths therefore have a deterministic timeline (a 3 s persistence step, a 60 s verification
+window, a 63 s change gap, a 300 s suspension, a 600 s cooldown, a 3 s calm return once the dwell is
+satisfied) and still no live measurement. Evidence:
+[POLICY_PACK_TP-4.2_FAILSAFE_EVIDENCE.md](POLICY_PACK_TP-4.2_FAILSAFE_EVIDENCE.md) — `simulated`
+throughout, plus a re-run of this ADR's loopback arm that again made 0 changes with a 0 ms estimate,
+confirming the test seam did not alter the live sampling path. `violations` was a constant `0`
+when this note was written; since 2026-11-27 the arbiter's own `guard_violations` counter feeds the
+sample and a live-signal test covers the guard row (**tested**); since 2026-11-27 the 1 Hz driver
+inside a running product is **tested** end to end as well — its own task applies a change and this
+ADR's guard fail-safe restores the row, with scripted sample values
+([TP-4.1 record §5](POLICY_PACK_TP-4.1_ADAPTIVE_EVIDENCE.md)) — while the live congestion signal it
+consumes stays **unverified**. #239's "mark adaptive `Unknown`/`Off`" has no
+surface to write to: decision 11 reserves the adaptive view for ADR-0047 (accepted 2026-11-27), and this
+slice neither adds an endpoint nor invents a log-only status. TP-4.2's one remaining criterion is
+the suspended two-host LAB window.
+
+## Rejected
+
+- **Continuous numeric tuning (PID-like or proportional steps) on `window`/`quantum`/`cap`.** It would create values no profile has accepted or measured, needs new bound tests, and cannot be exercised by the per-tuple evidence process. Choosing among ratified rows is the smallest rule that still adapts.
+- **Changing the window mid-session.** Yamux assumes the window at stream creation (ADR-0048 decision 4); pretending otherwise would either be inert or break the carrier. Window adaptation needs its own decision and session-restart design.
+- **Adapting on wire RTT or loss.** No product signal exists (#229 is not implemented), and the pack cannot claim path effects (ADR-0031 decision 4). Inventing a probe here would be a second metrics design inside a controller item.
+- **Adapting upwards past the configured row.** An operator who configured `bulk/1` asked for throughput; automatic widening would silently override configuration and could only increase the queueing the loop is meant to bound.
+- **Always-on adaptation, or adaptation as the default.** ADR-0031 decisions 2 and 9 make the pack optional and conservative; the scheduler arm has no reproducible benefit to justify a default (ADR-0048), so adaptation needs an explicit opt-in and stays behind the existing gates.
+- **A per-sample log or a metric export for the loop.** One line per change, with its cause, is what the issue asks for; a metrics surface is TP-1.1's ADR, not this one.

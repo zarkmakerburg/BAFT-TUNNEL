@@ -6,7 +6,9 @@ use crate::session_status::Stage;
 use crate::{
     authorization::{ConnectionDirection, StreamCapability},
     engine::{BoxedSecureStream, NoiseEngine, NoiseSettings, StreamEngine, TlsEngine},
-    handshake, tls,
+    handshake,
+    policy_profile::PolicyProfile,
+    tls,
 };
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
@@ -94,6 +96,12 @@ pub struct ServerOptions {
     /// `Some` selects the `noise-tcp` engine; the TLS fields are then unused.
     pub noise: Option<NoiseSettings>,
     pub max_streams: usize,
+    /// ADR-0031: the tunnel's configured profile, absent when the config names none. Applied only
+    /// when the `policy-pack` feature and `BAFT_TUNNEL_POLICY_PACK` both enable the pack.
+    pub profile: Option<PolicyProfile>,
+    /// ADR-0056: the tunnel's `policy.adaptive` opt-in. Inert unless the pack runs and a profile is
+    /// configured.
+    pub adaptive: bool,
 }
 
 pub struct ForwardOptions {
@@ -115,6 +123,12 @@ pub struct ForwardOptions {
     /// `Some` selects the `noise-tcp` engine; the TLS fields are then unused.
     pub noise: Option<NoiseSettings>,
     pub max_streams: usize,
+    /// ADR-0031: the tunnel's configured profile, absent when the config names none. Applied only
+    /// when the `policy-pack` feature and `BAFT_TUNNEL_POLICY_PACK` both enable the pack.
+    pub profile: Option<PolicyProfile>,
+    /// ADR-0056: the tunnel's `policy.adaptive` opt-in. Inert unless the pack runs and a profile is
+    /// configured.
+    pub adaptive: bool,
     /// Alternate addresses of the SAME peer (same identity, same pinned fingerprint), in priority
     /// order after `remote` (ADR-0039). Empty keeps the single-link behaviour.
     pub backup_remotes: Vec<String>,
@@ -123,15 +137,35 @@ pub struct ForwardOptions {
     pub session_rotate: Option<Duration>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // test and bench setups only; the relay uses the profile-aware form
 pub(crate) fn yamux_config(max: usize) -> YamuxConfig {
+    yamux_config_for(max, None)
+}
+
+/// The same, for a tunnel whose config names a profile (ADR-0031): when the pack is enabled the
+/// profile's window replaces the switch's.
+fn yamux_config_for(max: usize, profile: Option<PolicyProfile>) -> YamuxConfig {
     YamuxConfig {
         accept_backlog: max,
         enable_keepalive: true,
         keepalive_interval: KEEPALIVE_INTERVAL,
         connection_write_timeout: Duration::from_secs(10),
         max_stream_count: max,
-        max_stream_window_size: MAX_STREAM_WINDOW_SIZE,
+        max_stream_window_size: stream_window(profile),
     }
+}
+
+/// Yamux per-stream window: the product's 4 MiB, or the pack's in-flight bound when the
+/// `policy-pack` feature is compiled in and `BAFT_TUNNEL_POLICY_PACK` is set (ADR-0048 decision 4).
+/// Feature off or switch unset is exactly today's value; a profile only applies while the switch is
+/// on, and then supplies the ratified window (ADR-0031 decision 19).
+fn stream_window(profile: Option<PolicyProfile>) -> u32 {
+    #[cfg(feature = "policy-pack")]
+    if let Some(policy) = crate::policy_relay::PolicyRelay::from_env_and_profile(profile) {
+        return policy.stream_window;
+    }
+    let _ = profile;
+    MAX_STREAM_WINDOW_SIZE
 }
 
 fn configured_control_server() -> Option<crate::control_socket::ControlServer> {
@@ -267,6 +301,51 @@ where
         pump_with_idle_timeout(b_read, a_write, idle, crate::session_status::add_to_peer)
     )?;
     Ok(())
+}
+
+#[cfg(feature = "policy-pack")]
+type PolicySessionHandle = std::sync::Arc<crate::policy_relay::PolicySession>;
+/// Placeholder for the pack-off build: no session can be created, and `Arc` keeps the option
+/// non-`Copy` so the two builds share the same plumbing.
+#[cfg(not(feature = "policy-pack"))]
+#[derive(Debug)]
+struct PackDisabled;
+#[cfg(not(feature = "policy-pack"))]
+type PolicySessionHandle = std::sync::Arc<PackDisabled>;
+
+/// The pack's per-session scheduler when `BAFT_TUNNEL_POLICY_PACK` enables it. `None` — feature
+/// off, switch unset, or another switch value — is today's data path, byte for byte (ADR-0048).
+/// A configured profile only chooses the numbers once the switch is on (ADR-0031 decision 19).
+fn policy_session(profile: Option<PolicyProfile>, adaptive: bool) -> Option<PolicySessionHandle> {
+    #[cfg(feature = "policy-pack")]
+    {
+        crate::policy_relay::PolicySession::from_env_and_profile(profile, adaptive)
+    }
+    #[cfg(not(feature = "policy-pack"))]
+    {
+        let _ = (profile, adaptive);
+        None
+    }
+}
+
+/// Relay a stream with the pack's scheduler when one was requested for this session, otherwise
+/// exactly as before. The idle timeout, EOF shutdown and byte counters are the same in both paths.
+async fn relay_stream<A, B>(
+    peer: A,
+    local: B,
+    idle: Duration,
+    policy: Option<&PolicySessionHandle>,
+) -> std::io::Result<()>
+where
+    A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    #[cfg(feature = "policy-pack")]
+    if let Some(policy) = policy {
+        return crate::policy_relay::relay_with_policy(peer, local, idle, policy).await;
+    }
+    let _ = policy;
+    relay_with_idle_timeout(peer, local, idle).await
 }
 
 fn next_backoff(current: Duration) -> Duration {
@@ -409,6 +488,15 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
 
 pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> Result<()> {
     crate::session_status::start_publisher();
+    crate::policy_status::start_publisher(
+        if options.noise.is_some() {
+            "noise-tcp"
+        } else {
+            "tcp-tls"
+        },
+        options.profile,
+        options.adaptive,
+    );
     let probe_control = Arc::new(crate::integrity_probe::ProbeControl::default());
     let probe_limiter = Arc::new(crate::integrity_probe::ProbeLimiter::default());
     let listen = socket(&options.listen, "--listen")?;
@@ -546,13 +634,15 @@ pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> R
                 };
                 let sessions = sessions.clone();
                 let engine = engine.clone();
-                let (local, peer, tunnel, direction, target, max, stream_slots) = (
+                let (local, peer, tunnel, direction, target, max, profile, adaptive, stream_slots) = (
                     options.local_id.clone(),
                     options.peer_id.clone(),
                     options.tunnel_id.clone(),
                     options.direction,
                     target,
                     options.max_streams,
+                    options.profile,
+                    options.adaptive,
                     streams.clone(),
                 );
                 let session_shutdown = shutdown_rx.clone();
@@ -603,13 +693,13 @@ pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> R
                                 server_id: local.clone(),
                                 tunnel_id: tunnel.clone(),
                             };
-                            let session = Session::new_server(secure, yamux_config(max));
+                            let session = Session::new_server(secure, yamux_config_for(max, profile));
                             resume.serve_session(session, grant, who, session_shutdown).await;
                             return Ok(());
                         }
                         match ingress_side {
                             None => {
-                                server_session_versioned(secure, target, max, stream_slots, tunnel, peer, direction, protocol_version, session_probe_control, session_probe_limiter.clone(), session_shutdown).await;
+                                server_session_versioned(secure, target, max, profile, adaptive, stream_slots, tunnel, peer, direction, protocol_version, session_probe_control, session_probe_limiter.clone(), session_shutdown).await;
                             }
                             Some(side) => {
                                 // Reverse: the dialing peer holds the service. This node opens the streams.
@@ -629,8 +719,8 @@ pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> R
                                 });
                                 let _presence = SessionPresence::attach(side.clone());
                                 let mut receiver = side.receiver.lock().await;
-                                let session = Session::new_server(secure, yamux_config(max));
-                                let outcome = run_forward_session_versioned(session, &mut receiver, &stream_slots, direction, &tunnel, &peer, protocol_version, session_probe_control, session_probe_limiter.clone(), end_rx).await;
+                                let session = Session::new_server(secure, yamux_config_for(max, profile));
+                                let outcome = run_forward_session_versioned(session, &mut receiver, &stream_slots, direction, &tunnel, &peer, protocol_version, session_probe_control, session_probe_limiter.clone(), end_rx, profile, adaptive).await;
                                 relay_end.abort();
                                 if let Err(error) = outcome {
                                     eprintln!("reverse session ended: {error:#}");
@@ -685,6 +775,8 @@ async fn server_session_versioned<S>(
     stream: S,
     target: SocketAddr,
     max: usize,
+    profile: Option<PolicyProfile>,
+    adaptive: bool,
     slots: Arc<Semaphore>,
     tunnel: String,
     peer: String,
@@ -696,7 +788,7 @@ async fn server_session_versioned<S>(
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let session = Session::new_server(stream, yamux_config(max));
+    let session = Session::new_server(stream, yamux_config_for(max, profile));
     let _mark = crate::session_status::SessionMark::open(&tunnel, &peer, direction);
     serve_streams_versioned(
         session,
@@ -708,6 +800,8 @@ async fn server_session_versioned<S>(
         probe_control,
         probe_limiter,
         shutdown,
+        profile,
+        adaptive,
     )
     .await;
 }
@@ -726,12 +820,15 @@ async fn serve_streams_versioned<S>(
     probe_control: Arc<crate::integrity_probe::ProbeControl>,
     probe_limiter: Arc<crate::integrity_probe::ProbeLimiter>,
     mut shutdown: watch::Receiver<bool>,
+    profile: Option<PolicyProfile>,
+    adaptive: bool,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let (_probe_guard, mut probe_rx) = probe_control.begin_session();
     let mut control = session.control();
     let mut stream_tasks = JoinSet::new();
+    let policy = policy_session(profile, adaptive);
     loop {
         let item = tokio::select! {
             probe = probe_rx.recv() => {
@@ -794,6 +891,7 @@ async fn serve_streams_versioned<S>(
                 let destination = target;
                 let stream_tunnel = tunnel.clone();
                 let stream_probe_limiter = probe_limiter.clone();
+                let stream_policy = policy.clone();
                 stream_tasks.spawn(async move {
                     let _permit = permit;
                     let result: Result<()> = async {
@@ -815,10 +913,11 @@ async fn serve_streams_versioned<S>(
                                         .await
                                         .context("destination connect timeout")??;
                                 eprintln!("fixed destination connected for yamux stream");
-                                relay_with_idle_timeout(
+                                relay_stream(
                                     &mut logical,
                                     &mut upstream,
                                     STREAM_IDLE_TIMEOUT,
+                                    stream_policy.as_ref(),
                                 )
                                 .await
                                 .context("forward TCP stream")?;
@@ -937,7 +1036,7 @@ async fn connect_peer_staged(
 
     Ok(Session::new_client(
         secure,
-        yamux_config(options.max_streams),
+        yamux_config_for(options.max_streams, options.profile),
     ))
 }
 
@@ -962,7 +1061,10 @@ pub(crate) async fn connect_peer_grant(
         .and_then(|r| r)
         .map_err(handshake_stage)?;
         Ok((
-            Session::new_client(secure, yamux_config(options.max_streams)),
+            Session::new_client(
+                secure,
+                yamux_config_for(options.max_streams, options.profile),
+            ),
             grant,
         ))
     }
@@ -1003,6 +1105,8 @@ async fn run_forward_session(
         Arc::new(crate::integrity_probe::ProbeControl::default()),
         Arc::new(crate::integrity_probe::ProbeLimiter::default()),
         shutdown,
+        None,
+        false,
     )
     .await
 }
@@ -1019,6 +1123,8 @@ async fn run_forward_session_versioned(
     probe_control: Arc<crate::integrity_probe::ProbeControl>,
     probe_limiter: Arc<crate::integrity_probe::ProbeLimiter>,
     shutdown: watch::Receiver<bool>,
+    profile: Option<PolicyProfile>,
+    adaptive: bool,
 ) -> Result<()> {
     run_forward_session_core(
         session,
@@ -1032,6 +1138,8 @@ async fn run_forward_session_versioned(
         probe_limiter,
         shutdown,
         None,
+        profile,
+        adaptive,
     )
     .await
 }
@@ -1071,12 +1179,15 @@ async fn run_forward_session_core(
     probe_limiter: Arc<crate::integrity_probe::ProbeLimiter>,
     mut shutdown: watch::Receiver<bool>,
     mut rotate: Option<watch::Receiver<bool>>,
+    profile: Option<PolicyProfile>,
+    adaptive: bool,
 ) -> Result<()> {
     let _probe_guard_and_rx = probe_control.begin_session();
     let (_probe_guard, mut probe_rx) = _probe_guard_and_rx;
     let _mark = crate::session_status::SessionMark::open(tunnel, peer, direction);
     let mut control = session.control();
     let mut stream_tasks = JoinSet::new();
+    let policy = policy_session(profile, adaptive);
     let driver_tunnel = tunnel.to_owned();
     let driver_direction = direction;
     let driver_version = protocol_version;
@@ -1193,6 +1304,7 @@ async fn run_forward_session_core(
                 };
                 let mut stream_control = control.clone();
                 let tunnel = tunnel.to_owned();
+                let stream_policy = policy.as_ref().cloned();
                 stream_tasks.spawn(async move {
                     let _permit = permit;
                     let result: Result<()> = async {
@@ -1213,9 +1325,14 @@ async fn run_forward_session_core(
                         )
                         .await
                         .context("authorize TCP forwarding stream")?;
-                        relay_with_idle_timeout(&mut stream, &mut local, STREAM_IDLE_TIMEOUT)
-                            .await
-                            .context("forward local TCP stream")?;
+                        relay_stream(
+                            &mut stream,
+                            &mut local,
+                            STREAM_IDLE_TIMEOUT,
+                            stream_policy.as_ref(),
+                        )
+                        .await
+                        .context("forward local TCP stream")?;
                         Ok(())
                     }
                     .await;
@@ -1443,6 +1560,8 @@ async fn supervise_forward(
                         probe_limiter.clone(),
                         shutdown.clone(),
                         options.session_rotate.map(|_| rotate_rx),
+                        options.profile,
+                        options.adaptive,
                     );
                     tokio::pin!(run);
                     let mut dial: Option<DialFuture<'_>> = None;
@@ -1665,6 +1784,8 @@ async fn supervise_reverse_service(
                     probe_control.clone(),
                     probe_limiter.clone(),
                     shutdown.clone(),
+                    options.profile,
+                    options.adaptive,
                 )
                 .await;
                 if let Some(set) = links.as_mut() {
@@ -1710,6 +1831,15 @@ pub async fn forward(options: ForwardOptions) -> Result<()> {
 
 pub async fn forward_versioned(options: ForwardOptions, protocol_version: u16) -> Result<()> {
     crate::session_status::start_publisher();
+    crate::policy_status::start_publisher(
+        if options.noise.is_some() {
+            "noise-tcp"
+        } else {
+            "tcp-tls"
+        },
+        options.profile,
+        options.adaptive,
+    );
     let probe_control = Arc::new(crate::integrity_probe::ProbeControl::default());
     let probe_limiter = Arc::new(crate::integrity_probe::ProbeLimiter::default());
     if options.target.is_some() {
@@ -1835,6 +1965,8 @@ mod tests {
                 client_control_for_task,
                 client_limiter,
                 client_stop_rx,
+                None,
+                false,
             )
             .await
         });
@@ -1848,6 +1980,8 @@ mod tests {
             server_control.clone(),
             server_limiter.clone(),
             server_stop_rx,
+            None,
+            false,
         ));
 
         timeout(Duration::from_secs(2), async {
@@ -1913,6 +2047,8 @@ mod tests {
                 public_control_for_task,
                 Arc::new(crate::integrity_probe::ProbeLimiter::default()),
                 public_stop_rx,
+                None,
+                false,
             )
             .await
         });
@@ -1926,6 +2062,8 @@ mod tests {
             service_control.clone(),
             Arc::new(crate::integrity_probe::ProbeLimiter::default()),
             service_stop_rx,
+            None,
+            false,
         ));
 
         timeout(Duration::from_secs(2), async {
@@ -2095,6 +2233,8 @@ mod tests {
             key: public_key,
             noise: None,
             max_streams: 8,
+            profile: None,
+            adaptive: false,
         }));
         let mut ready = false;
         for _ in 0..100 {
@@ -2122,6 +2262,8 @@ mod tests {
             key: service_key.clone(),
             noise: None,
             max_streams: 8,
+            profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: None,
         };
@@ -2219,6 +2361,8 @@ mod tests {
                 control_for_tunnel,
                 limiter,
                 client_stop_rx,
+                None,
+                false,
             )
             .await
         });
@@ -2232,6 +2376,8 @@ mod tests {
             peer_control,
             peer_limiter,
             server_stop_rx,
+            None,
+            false,
         ));
 
         timeout(Duration::from_secs(2), async {
@@ -2467,6 +2613,8 @@ mod tests {
             key: server_key_path,
             noise: None,
             max_streams: 8,
+            profile: None,
+            adaptive: false,
         }));
 
         let mut ready = false;
@@ -2495,6 +2643,8 @@ mod tests {
             key: client_key_path,
             noise: None,
             max_streams: 8,
+            profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: None,
         };
@@ -2611,6 +2761,8 @@ mod tests {
                     peer_public: client_public,
                 }),
                 max_streams: 8,
+                profile: None,
+                adaptive: false,
             },
             PROTOCOL_V3,
         ));
@@ -2661,6 +2813,8 @@ mod tests {
                 peer_public: server_public,
             }),
             max_streams: 8,
+            profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: None,
         };
@@ -2769,6 +2923,8 @@ mod tests {
                 peer_public: client_public,
             }),
             max_streams: 8,
+            profile: None,
+            adaptive: false,
         }));
         for _ in 0..100 {
             if TcpStream::connect(server_address).await.is_ok() {
@@ -2795,6 +2951,8 @@ mod tests {
                 peer_public: server_public,
             }),
             max_streams: 8,
+            profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: Some(Duration::from_secs(1)),
         };
@@ -2921,6 +3079,8 @@ mod tests {
                 peer_public: client_public,
             }),
             max_streams: 8,
+            profile: None,
+            adaptive: false,
         }));
         for _ in 0..100 {
             if TcpStream::connect(server_address).await.is_ok() {
@@ -2947,6 +3107,8 @@ mod tests {
                 peer_public,
             }),
             max_streams: 8,
+            profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: None,
         };
@@ -3085,6 +3247,8 @@ mod tests {
                 peer_public: private_pub,
             }),
             max_streams: 8,
+            profile: None,
+            adaptive: false,
         }));
         for _ in 0..100 {
             if TcpStream::connect(ingress_address).await.is_ok() {
@@ -3132,6 +3296,8 @@ mod tests {
                     peer_public: public_pub,
                 }),
                 max_streams: 8,
+                profile: None,
+                adaptive: false,
                 backup_remotes: vec![],
                 session_rotate: None,
             })
@@ -3220,6 +3386,8 @@ mod tests {
                 peer_public: private_pub,
             }),
             max_streams: 8,
+            profile: None,
+            adaptive: false,
         }));
         for _ in 0..100 {
             if TcpStream::connect(tunnel_address).await.is_ok() {
@@ -3246,6 +3414,8 @@ mod tests {
                 peer_public: public_pub.clone(),
             }),
             max_streams: 8,
+            profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: None,
         };
@@ -3411,6 +3581,41 @@ mod tests {
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
     }
 
+    /// ADR-0048 decision 5: when a session is selected the relay takes the scheduled path, and it
+    /// keeps both the data path and the idle timeout of the unscheduled one.
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    async fn relay_stream_uses_the_pack_session_when_one_is_selected() {
+        let session =
+            crate::policy_relay::PolicySession::with_config(crate::policy_sched::SchedulerConfig {
+                quantum_bytes: 4 * 1024,
+                max_queued_bytes: 16 * 1024,
+            });
+        let (mut client, relay_a) = duplex(1024);
+        let (relay_b, mut server) = duplex(1024);
+        let handle = std::sync::Arc::clone(&session);
+        let task = tokio::spawn(async move {
+            relay_stream(relay_a, relay_b, Duration::from_millis(300), Some(&handle)).await
+        });
+        client.write_all(b"ping").await.unwrap();
+        let mut buffer = [0u8; 4];
+        server.read_exact(&mut buffer).await.unwrap();
+        assert_eq!(&buffer, b"ping");
+        server.write_all(b"pong").await.unwrap();
+        client.read_exact(&mut buffer).await.unwrap();
+        assert_eq!(&buffer, b"pong");
+        let result = timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(
+            session.flows().await,
+            (0, 0),
+            "the scheduled relay must release both flow handles"
+        );
+    }
+
     /// ADR-0039: the first link is dead, the backup is the real peer; the service node must fail
     /// over on its own and carry traffic. In-process Noise, local evidence only, not LAB.
     #[tokio::test]
@@ -3474,6 +3679,8 @@ mod tests {
                 peer_public: private_pub,
             }),
             max_streams: 8,
+            profile: None,
+            adaptive: false,
         }));
         for _ in 0..100 {
             if TcpStream::connect(ingress_address).await.is_ok() {
@@ -3501,6 +3708,8 @@ mod tests {
                     peer_public: public_pub,
                 }),
                 max_streams: 8,
+                profile: None,
+                adaptive: false,
                 backup_remotes: vec![tunnel_address.to_string()],
                 session_rotate: None,
             })
@@ -3544,6 +3753,8 @@ mod tests {
             key: PathBuf::new(),
             noise: None,
             max_streams: 8,
+            profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: None,
         };

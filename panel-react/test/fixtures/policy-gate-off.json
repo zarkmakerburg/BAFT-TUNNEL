@@ -1,0 +1,54 @@
+{
+  "agent": "baft-tunnel",
+  "version": "0.3.1",
+  "policy": {
+    "interface_version": 1,
+    "feature_compiled": false,
+    "state": "off",
+    "reason": "feature_not_compiled",
+    "profile": {
+      "configured": "gaming/1",
+      "configured_effective": "gaming/1",
+      "running": "gaming/1"
+    },
+    "switch": {
+      "state": "on",
+      "value": "sched",
+      "sources": ["/etc/systemd/system/baft-tunnel@edge.service.d/50-policy-pack.conf"],
+      "scan": null
+    },
+    "adaptive": { "configured": true, "effective": true },
+    "fallback": null,
+    "tuples": [
+      { "engine": "tcp-tls", "carrier": "tcp", "profile": "gaming/1", "claim": "unknown", "evidence": null }
+    ],
+    "capabilities": {
+      "priority_enforcement": "unknown",
+      "write_pacing": "unknown",
+      "rtt_observation": "unknown",
+      "queue_observation": "unknown",
+      "datagram": "unknown"
+    },
+    "metrics": {
+      "guard_violations": {
+        "value": 0,
+        "unit": "count",
+        "interval_seconds": 1,
+        "provenance": "measured",
+        "fresh": false,
+        "available": false,
+        "reason": "not_instrumented"
+      },
+      "queueing_delay_estimate_ms": {
+        "value": 0,
+        "unit": "ms",
+        "interval_seconds": 1,
+        "provenance": "estimated",
+        "fresh": false,
+        "available": false,
+        "reason": "signal_blind"
+      }
+    },
+    "evidence": { "running": { "pid": 4242, "sampled_unix": 1764219600, "age_s": 120, "fresh": false } }
+  }
+}
