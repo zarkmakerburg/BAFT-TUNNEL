@@ -1092,7 +1092,7 @@ async fn direct_endpoints() -> (TcpStream, TcpStream) {
 }
 
 /// Sink-side result of one delivery probe: bytes the receiving application actually read, and the
-/// wall time from the first write to the sink's completion. Unshaped loopback, so the rate is the
+/// wall time from the first write to the sink's last read. Unshaped loopback, so the rate is the
 /// relay path's own delivery rate — `simulated`, not a path, engine or LAB measurement.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Delivered {
@@ -1108,24 +1108,43 @@ impl Delivered {
 }
 
 /// One unshaped loopback session: pushes `bytes` through one stream and stops when the sink has
-/// read them all. The clock starts at the first write and stops when the sink reports completion,
-/// so the delivery rate and the CPU window cover the same work; every byte must arrive
+/// read them all. The clock starts at the first write and stops at the sink's own last read, so
+/// the delivery rate and the CPU window cover the same work; every byte must arrive
 /// (`delivered == bytes`) for the interval to mean anything.
 async fn delivery_probe(mechanism: Mechanism, bytes: u64) -> (Delivered, u64) {
+    delivery_probe_with_delay(mechanism, bytes, Duration::ZERO).await
+}
+
+/// The probe with an optional delay between the sink's last read and its notification. Callers
+/// pass zero; the test beside this module uses it to prove the reported interval stops at the last
+/// byte instead of when the waiting task happens to resume or the stream reaches EOF.
+async fn delivery_probe_with_delay(
+    mechanism: Mechanism,
+    bytes: u64,
+    sink_notify_delay: Duration,
+) -> (Delivered, u64) {
     let (client_io, server_io) = direct_endpoints().await;
     let window = window_for(mechanism);
     let mut server_session = Session::new_server(server_io, config_with_window(window));
     let server_policy = policy_for(mechanism);
     let delivered = Arc::new(AtomicU64::new(0));
     let finished = Arc::new(tokio::sync::Notify::new());
+    // The sink stamps its own completion against the first write; the waiting task never does.
+    let started_slot: Arc<std::sync::Mutex<Option<Instant>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let completed_ns = Arc::new(AtomicU64::new(0));
     let sink_total = Arc::clone(&delivered);
     let sink_done = Arc::clone(&finished);
+    let sink_started = Arc::clone(&started_slot);
+    let sink_completed = Arc::clone(&completed_ns);
     let server_task = tokio::spawn(async move {
         while let Some(item) = server_session.next().await {
             let Ok(stream) = item else { break };
             let relay_policy = server_policy.clone();
             let sink_total = Arc::clone(&sink_total);
             let sink_done = Arc::clone(&sink_done);
+            let sink_started = Arc::clone(&sink_started);
+            let sink_completed = Arc::clone(&sink_completed);
             tokio::spawn(async move {
                 let (local, mut app) = duplex(64 * 1024);
                 tokio::spawn(async move {
@@ -1133,11 +1152,24 @@ async fn delivery_probe(mechanism: Mechanism, bytes: u64) -> (Delivered, u64) {
                 });
                 let mut buffer = vec![0_u8; PUMP_READ];
                 let mut total = 0_u64;
+                let mut completed_at = None;
                 while let Ok(count) = app.read(&mut buffer).await {
                     if count == 0 {
                         break;
                     }
                     total += count as u64;
+                    if completed_at.is_none() && total >= bytes {
+                        completed_at = Some(Instant::now());
+                    }
+                }
+                if let Some(at) = completed_at {
+                    if let Some(start) = *sink_started.lock().expect("started slot") {
+                        let ns = at.saturating_duration_since(start).as_nanos();
+                        sink_completed.store(ns.min(u64::MAX as u128) as u64, Ordering::SeqCst);
+                    }
+                }
+                if !sink_notify_delay.is_zero() {
+                    tokio::time::sleep(sink_notify_delay).await;
                 }
                 sink_total.store(total, Ordering::SeqCst);
                 // `notify_one` keeps a permit, so a sink that finishes before the probe waits
@@ -1164,6 +1196,7 @@ async fn delivery_probe(mechanism: Mechanism, bytes: u64) -> (Delivered, u64) {
 
     let cpu_start = process_cpu_us();
     let started = Instant::now();
+    *started_slot.lock().expect("started slot") = Some(started);
     let payload = vec![0x5a_u8; PUMP_READ];
     let mut sent = 0_u64;
     while sent < bytes {
@@ -1175,7 +1208,12 @@ async fn delivery_probe(mechanism: Mechanism, bytes: u64) -> (Delivered, u64) {
     // The bound keeps a broken arm from hanging the probe; a healthy arm returns as soon as the
     // sink has read every byte, not after a fixed sleep.
     let _ = tokio::time::timeout(Duration::from_secs(60), finished.notified()).await;
-    let elapsed = started.elapsed();
+    // The sink's own timestamp, not the moment this task resumed: a late waiter or a slow EOF
+    // must not lengthen the interval that is divided into the byte count.
+    let elapsed = match completed_ns.load(Ordering::SeqCst) {
+        0 => started.elapsed(),
+        ns => Duration::from_nanos(ns),
+    };
     let cpu_us = process_cpu_us().saturating_sub(cpu_start);
     let total = delivered.load(Ordering::SeqCst);
     server_task.abort();
@@ -1795,6 +1833,40 @@ mod tests {
                 "a delivered rate must be derivable from the interval"
             );
         }
+    }
+
+    /// A sink that finishes while the waiting task is still asleep must not inflate the interval:
+    /// the clock stops at the sink's last read, not when `notified()` returns or at EOF. The older
+    /// instrument stamped the end after the wake and after the sink's EOF, so this test failed by
+    /// the whole delay.
+    #[tokio::test]
+    async fn delivered_goodput_excludes_a_late_waiter_and_eof() {
+        let bytes = 4 * 1024 * 1024;
+        let plain = delivered_goodput(Mechanism::Baseline, bytes).await;
+        assert_eq!(
+            plain.delivered, bytes,
+            "the plain arm must deliver every byte"
+        );
+        let delay = Duration::from_millis(250);
+        let wall = Instant::now();
+        let (delayed, _) = delivery_probe_with_delay(Mechanism::Baseline, bytes, delay).await;
+        let wall = wall.elapsed();
+        assert_eq!(
+            delayed.delivered, bytes,
+            "the delayed arm must deliver every byte"
+        );
+        assert!(
+            wall >= delay,
+            "the sink must actually have been delayed: wall={wall:?}"
+        );
+        let drift = delayed.elapsed.saturating_sub(plain.elapsed);
+        assert!(
+            drift < Duration::from_millis(120),
+            "the reported interval must stop at the last byte (plain={:?}, delayed={:?}, wall={:?})",
+            plain.elapsed,
+            delayed.elapsed,
+            wall
+        );
     }
 
     /// The evidence run behind TP-3.5 section 4: three arms, `POLICY_REPEATS` times, one JSON line

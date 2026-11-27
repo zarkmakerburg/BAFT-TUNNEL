@@ -125,28 +125,39 @@ delivered-goodput or bulk-share measurement and is not written up as one.
 ### 4b. Delivered goodput at the sink (measured 2026-11-27)
 
 The missing sink-side counter now exists: `src/policy_baseline.rs`'s `delivery_probe` counts the
-bytes the receiving application actually reads and stops the clock when the sink reports
-completion; `delivered_goodput` divides those bytes by that exact interval. This is `simulated`
-evidence — one process, unshaped loopback, no engine handshake, no path — and it is not a tuple or
-LAB result.
+bytes the receiving application actually reads, and the sink itself stamps the moment it reaches
+that count; `delivered_goodput` divides those bytes by that interval. The stamp is taken at the
+sink's last read, not when the waiting task resumes — an earlier revision of the probe read the
+clock after `notified()` returned, which also waited for the sink's EOF and for the scheduler to
+run the waiter, so a slow wake was counted as slow delivery. The numbers below come from the
+corrected instrument and supersede the first run's. This is `simulated` evidence — one process,
+unshaped loopback, no engine handshake, no path — and it is not a tuple or LAB result.
 
-Run: `cargo test --release --features policy-pack delivered_goodput_experiment -- --ignored
---nocapture`, 2026-11-27, 64 MiB per arm, two repeats. Every arm delivered all 67,108,864 bytes, so
-the interval covers the same work in every arm.
+Run: `cargo test --release --features policy-pack --bin baft-tunnel delivered_goodput_experiment --
+--ignored --nocapture`, 2026-11-27, 64 MiB per arm, two repeats. There is no CI run ID for this
+figure: the experiment is an `#[ignore]`d local measurement that no hosted job executes. Its source
+is `src/policy_baseline.rs` exactly as committed in this change set (the harness carried no
+uncommitted edits at the run), release profile, `POLICY_REPEATS` unset (two). Every arm delivered
+all 67,108,864 bytes, so the interval covers the same work in every arm.
 
 | Arm | repeat 1 | repeat 2 | delivered bytes |
 |---|---|---|---|
-| baseline | 174,668,509 B/s (384 ms) | 192,442,300 B/s (348 ms) | 67,108,864 each |
-| `balanced/1` | 165,213,823 B/s (406 ms) | 141,375,871 B/s (474 ms) | 67,108,864 each |
-| `bulk/1` | 344,151,550 B/s (194 ms) | 252,407,574 B/s (265 ms) | 67,108,864 each |
+| baseline | 340,441,572 B/s (197 ms) | 328,110,966 B/s (204 ms) | 67,108,864 each |
+| `balanced/1` | 429,570,959 B/s (156 ms) | 324,177,051 B/s (207 ms) | 67,108,864 each |
+| `bulk/1` | 696,171,706 B/s (96 ms) | 575,690,900 B/s (116 ms) | 67,108,864 each |
 
-`bulk/1` delivered 1.3-2.0x the Baseline rate and 1.8-2.1x the Balanced rate in these two loopback
-repeats. That is an observation for the future tuple runs on the ordering, not an acceptance result:
-the item's goodput criterion is about a real `(engine, carrier)` path, which is still the LAB
-window's to measure. The evidence labels are: sink-side counting and the interval are **tested**
-(`delivered_goodput_is_measured_at_the_sink_over_an_exact_interval`, which runs the Baseline arm
-and, with `policy-pack`, a shipped profile row); the numbers above are **measured** at
-`simulated` level; real-path goodput and any tuple claim are **unverified**.
+`bulk/1` delivered 1.75-2.05x the Baseline rate and 1.62-1.78x the Balanced rate in these two
+loopback repeats, while Baseline and Balanced stayed within 33% of each other, so these two runs do
+not separate them. That is an observation for the future tuple runs on the ordering, not an
+acceptance result: the item's goodput criterion is about a real `(engine, carrier)` path, which is
+still the LAB window's to measure. The evidence labels are: sink-side counting, the sink-side
+completion stamp and the exclusion of a late waiter are **tested**
+(`delivered_goodput_is_measured_at_the_sink_over_an_exact_interval`, which runs the Baseline arm and,
+with `policy-pack`, a shipped profile row; and `delivered_goodput_excludes_a_late_waiter_and_eof`,
+which delays the sink by 250 ms after its last read and fails if the reported interval grows by
+that delay, as the pre-fix probe did: it reported 277 ms against a 33 ms plain run); the numbers
+above are **measured** at `simulated` level; real-path goodput and any tuple claim are
+**unverified**.
 
 ## 5. Fairness and starvation (`bulk_multi_flow`)
 
