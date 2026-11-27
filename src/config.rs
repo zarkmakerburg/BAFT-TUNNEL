@@ -535,6 +535,13 @@ impl RuntimeConfig {
         }
     }
 
+    /// The configured policy intent (ADR-0031 decision 16, ADR-0047 decision 2). The status reader
+    /// reports it as *configured*; only published running evidence may be called running.
+    pub fn policy_settings(&self) -> &PolicySettings {
+        let (Self::Serve { policy, .. } | Self::Forward { policy, .. }) = self;
+        policy
+    }
+
     pub fn engine_name(&self) -> &'static str {
         let (Self::Serve { engine, .. } | Self::Forward { engine, .. }) = self;
         engine.as_str()

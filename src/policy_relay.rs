@@ -280,6 +280,9 @@ impl PolicySession {
         if arbiter.configure(config).await {
             self.chunk(change.direction)
                 .store(config.quantum_bytes, Ordering::Relaxed);
+            // The running row moved: publish it, or the agent would keep reporting the old one
+            // for the rest of the process's life (ADR-0047 'profile.running').
+            crate::policy_status::note_row(profile);
             eprintln!("{change}");
         }
     }

@@ -3909,13 +3909,24 @@ async fn listener_accepting(config: &RuntimeConfig) -> bool {
 
 pub(crate) async fn status(ctx: &Ctx, config: &RuntimeConfig) -> Value {
     let listening = listener_accepting(config).await;
+    // One systemd read serves both members (ADR-0047 needs the same unit evidence ADR-0024's
+    // `tunnel` tier reports), so a status poll still shells out at most once for the unit.
+    let (unit, pid) = unit_view(ctx).await;
+    let policy = crate::policy_status::compose(crate::policy_status::Inputs {
+        instance: ctx.instance.as_deref(),
+        runtime_dir: ctx.runtime_dir.as_deref(),
+        config,
+        unit_result: unit["result"].as_str(),
+        main_pid: pid,
+    });
     json!({
         "agent": "baft-tunnel",
         "version": env!("CARGO_PKG_VERSION"),
         "engine": config.engine_name(),
         "config": config.support_report(),
         "listener_accepting": listening,
-        "tunnel": tunnel_status(ctx, config, listening).await,
+        "tunnel": tunnel_status(ctx, config, listening, &unit, pid).await,
+        "policy": policy,
         "warnings": status_warnings(config),
     })
 }
@@ -4118,9 +4129,14 @@ fn integrity_tier(last_probe: Option<Value>, now: u64) -> Value {
 
 /// End-to-end tunnel state as separate evidence tiers (ADR-0024). The summary `state` is the
 /// highest tier actually observed; it never says "ready" and never implies integrity.
-async fn tunnel_status(ctx: &Ctx, config: &RuntimeConfig, listening: bool) -> Value {
+async fn tunnel_status(
+    ctx: &Ctx,
+    config: &RuntimeConfig,
+    listening: bool,
+    unit: &Value,
+    pid: Option<u32>,
+) -> Value {
     let now = unix_now();
-    let (unit, pid) = unit_view(ctx).await;
     let ev = ctx.evidence(pid);
     let samples = ctx.traffic_samples();
     let last_bidi = crate::observe::last_bidirectional(&samples);
@@ -4973,6 +4989,20 @@ mod tests {
         assert!(body.contains("\"listener_accepting\":false"));
         assert!(!body.contains("/secret"));
         assert!(!body.contains("192.0.2.1"));
+        // ADR-0047: the policy member is always present and, with no instance, honestly unknown.
+        let payload: Value = serde_json::from_str(body.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(payload["policy"]["interface_version"], 1);
+        assert_eq!(payload["policy"]["state"], "unknown");
+        assert_eq!(payload["policy"]["reason"], "no_instance");
+        // A metric nothing observed is null with its reason, never a zero that reads as measured.
+        assert_eq!(
+            payload["policy"]["metrics"]["guard_violations"]["value"],
+            Value::Null
+        );
+        assert_eq!(
+            payload["policy"]["metrics"]["guard_violations"]["available"],
+            false
+        );
     }
 
     async fn raw(req: &str) -> String {
