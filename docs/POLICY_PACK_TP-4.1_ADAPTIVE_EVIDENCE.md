@@ -266,3 +266,73 @@ asserts the report it claims:
 The first mutation also shows why the number matters: with the field dropped the loop makes **no
 change at all** (0 changes, 0 ms), which is exactly the 2026-11-26 result, so the amendment is what
 makes the loop observable on this harness rather than a cosmetic addition.
+
+## 8. The row-independent wait, and what it says about the step (2026-11-27)
+
+Section 7 answered decision 12's questions but left one open: the estimate's numerator is bytes in
+flight, which the row in force caps, so a down-step can improve its own reading. This section adds a
+measurement of the wait itself, re-runs the matrix, and states what the two together say.
+
+**The measurement.** The pump now stamps `Instant::now()` when `FlowHandle::acquire` returns a grant
+and reads it again after that grant's `write_all` completes, recording the pair with the quantum in
+force at grant time (`WaitLog` in `src/policy_relay.rs`). It is behind the existing opt-in — an
+adaptive session records; a test build records for every policy arm so the static `balanced/1` arm can
+serve as the configured-row reference. The default build with `policy.adaptive` off records nothing
+and pays nothing. The record also carries `estimate_normalised_p50/p95_ms`: the same estimate scaled
+by `configured_quantum / row_quantum_in_force`, so the row's own contribution to the reading is
+visible as the gap between raw and normalised.
+
+**Re-run, same command as section 7** (three rates × static/adaptive × two repeats, 8 s + 10 s
+recovery; then 150 s at 250 KB/s with 45 s recovery). Waits in microseconds, aggregated over both
+directions; `ratio` is `stepped.p95 / configured.p95`.
+
+| rate | arm | configured-row wait p50/p95 | stepped wait p50/p95 | ratio | estimate p95 raw → normalised |
+|---|---|---|---|---|---|
+| 250 KB/s | static | 19 / 82 · 17 / 42 | — | — | — |
+| 250 KB/s | adaptive | 19 / 53 · 14 / 29 | 16 / 47 · 13 / 33 | **0.887 · 1.138** | 187 → 375 |
+| 500 KB/s | static | 15 / 30 · 17 / 39 | — | — | — |
+| 500 KB/s | adaptive | 13 / 46 · 13 / 31 | 1 / 45 · 12 / 34 | **0.978 · 1.097** | 93 → 125 · 179 |
+| 1 MB/s | static | 15 / 41 · 14 / 55 | — | — | — |
+| 1 MB/s | adaptive | 14 / 91 · 14 / 61 | 1 / 55 · 1 / 47 | **0.604 · 0.770** | 53 → 53 · 55 |
+| 250 KB/s, 150 s | adaptive | 23 / 91 (n = 9,316) | 0 / 49 (n = 864) | **0.538** | 93 → 375 |
+
+Settling, change spacing and recovery reproduced section 7: exactly one rung down at every rate
+(`balanced/1 → gaming/1` at 4.0 s at 250/500 KB/s, 5.0 s at 1 MB/s), and in the 150 s run two changes
+with a 151.2 s gap, the estimate calm 807 ms after the load stopped and the row back 4.84 s after it.
+
+**What the numbers say.**
+
+1. **The mechanical share is real and, at the slow rates, it is the whole effect.** At 250 KB/s the
+   estimate's p95 doubles when normalised to the configured row (187 → 375 ms) while the measured
+   wait's p95 moves from 53 to 47 µs and 29 to 33 µs — a ratio of 0.887 and 1.138, i.e. unchanged
+   inside the run-to-run spread. The step improved its own reading by halving its quantum; the bytes
+   did not start waiting less.
+2. **The wait does improve at the fast rate and over the long run** — 0.604 / 0.770 at 1 MB/s and
+   0.538 in the 150 s run — so the step is not inert everywhere, but it is not consistent enough to
+   call a benefit.
+3. **The estimate and the measured wait disagree by about three orders of magnitude** (p95 53-187 ms
+   against 29-91 µs). That is not a rounding difference: `write_all` into the Yamux stream returns
+   as soon as the stream buffers the bytes, so the relay boundary rarely waits at all, while
+   decision 4's estimate divides whatever bytes were in flight at the sample instant by the last
+   interval's rate. The estimate is not a queueing-delay measurement; it is a ratio that moves with
+   the row and with the sampling instant.
+4. **Downgrade.** Decision 12's question is answered against the loop at two of three rates: the
+   row-independent number does **not** justify the down-step at 250 and 500 KB/s, and only partly at
+   1 MB/s. No benefit is claimed anywhere, `policy.adaptive` stays off by default, and no profile
+   becomes `measured`. The 1 MB/s and long-run ratios are the only numbers that would support a
+   future claim, and one loopback proxy cannot carry it.
+
+**Caveats, recorded rather than smoothed.** The configured-row bucket contains the first ~4 s of each
+run, including stream start-up, so its tail (p99 0.3-1.0 s in the matrix, max 2.2 s in the long run's
+stepped bucket) is contaminated by warm-up and by one stall; the comparison above rests on p50/p95.
+The recorder caps at 8,192 samples per direction and drops the oldest half, so a very long run keeps
+the recent window, not the whole run. And a wait measured at the relay boundary cannot see a byte
+waiting inside Yamux's window or in the carrier — which is where a real path's delay lives.
+
+**Reverse mutations (each restored byte-for-byte, `cmp` confirmed).**
+
+| Mutation | Observed failure |
+|---|---|
+| `granted_at` is always `None` (the write boundary stops timing the wait) | `panicked at src/policy_baseline.rs:2763: the relay boundary must report grant-to-write waits` |
+| The wait is tagged `quantum = 0` (its row is wrong, so the configured reference disappears) | `panicked at src/policy_baseline.rs:2764: the configured-row wait must be measured, not assumed: WaitReport { configured: WaitDist { count: 0, … }, stepped: Some(WaitDist { count: 209, p50_us: 43, p95_us: 183, … }), p95_ratio: None }` |
+| The normalisation divides by the configured quantum instead of the row in force (identity) | `panicked at src/policy_adaptive.rs:994: assertion left == right failed: 60 ms at gaming/1's 4 KiB reads as 240 ms against the configured 16 KiB row; left: 60ms right: 240ms` |

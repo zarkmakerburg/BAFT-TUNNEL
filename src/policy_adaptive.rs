@@ -170,14 +170,13 @@ impl Controller {
         }
     }
 
-    /// The row the tunnel's `policy.profile` selects: the anchor and the fail-safe target.
-    #[cfg(test)]
+    /// The row the tunnel's `policy.profile` selects: the anchor and the fail-safe target. Read by
+    /// the row-normalised estimate, which needs the configured quantum in every build.
     pub(crate) fn configured(&self) -> PolicyProfile {
         self.configured
     }
 
     /// The scheduler row in force. Equals [`Self::configured`] until something is changed.
-    #[cfg(test)]
     pub(crate) fn current(&self) -> PolicyProfile {
         self.current
     }
@@ -453,6 +452,11 @@ pub(crate) struct Adaptation {
     previous: [Option<Counters>; 2],
     last_at: Option<Duration>,
     history: Vec<(Direction, Duration)>,
+    /// The same estimates scaled by `configured_quantum / row_quantum_in_force` (ADR-0056 decision
+    /// 12, 2026-11-27): the estimate's numerator can never exceed the quantum, so a down-step
+    /// shrinks its own reading. This is what the estimate would have read at the configured row,
+    /// and the harness compares it against the raw series to isolate the mechanical share.
+    history_normalised: Vec<(Direction, Duration)>,
     transcript: Vec<DirectionChange>,
 }
 
@@ -464,6 +468,7 @@ impl Adaptation {
             previous: [None, None],
             last_at: None,
             history: Vec::new(),
+            history_normalised: Vec::new(),
             transcript: Vec::new(),
         }
     }
@@ -480,6 +485,12 @@ impl Adaptation {
     /// Estimates computed so far, oldest first, for the evidence record only.
     pub(crate) fn history(&self) -> &[(Direction, Duration)] {
         &self.history
+    }
+
+    /// The same estimates scaled to the configured row, oldest first (ADR-0056 decision 12's
+    /// row-independent reading; see [`Self::history`]).
+    pub(crate) fn normalised_history(&self) -> &[(Direction, Duration)] {
+        &self.history_normalised
     }
 
     /// Every change made, oldest first, for the evidence record and tests.
@@ -538,8 +549,29 @@ impl Adaptation {
             if let Some(signals) = signals.filter(|signals| signals.estimated) {
                 if self.history.len() >= 4_096 {
                     self.history.drain(..2_048);
+                    self.history_normalised.drain(..2_048);
                 }
+                let (configured, row) = match direction {
+                    Direction::ToPeer => (self.to_peer.configured(), self.to_peer.current()),
+                    Direction::FromPeer => (self.from_peer.configured(), self.from_peer.current()),
+                };
                 self.history.push((direction, signals.queue_delay));
+                // Row-independent reading: the numerator can never exceed the quantum in force, so
+                // scale by how far the row has shrunk from the configured one.
+                let by = row.quantum_bytes() as u128;
+                let micros = if by == 0 {
+                    signals.queue_delay.as_micros()
+                } else {
+                    signals
+                        .queue_delay
+                        .as_micros()
+                        .saturating_mul(configured.quantum_bytes() as u128)
+                        / by
+                };
+                self.history_normalised.push((
+                    direction,
+                    Duration::from_micros(u64::try_from(micros).unwrap_or(u64::MAX)),
+                ));
             }
             let controller = match direction {
                 Direction::ToPeer => &mut self.to_peer,
@@ -920,6 +952,49 @@ mod tests {
         assert_eq!(
             queue_delay(1_000, 0, Duration::from_secs(1)),
             Duration::ZERO
+        );
+    }
+
+    /// ADR-0056 decision 12, 2026-11-27: the estimate's numerator cannot exceed the quantum in
+    /// force, so a down-step shrinks it. The normalised series scales it back to the configured
+    /// row, which is what lets the harness tell a real improvement from a mechanical one.
+    #[test]
+    fn the_normalised_estimate_scales_with_the_row_in_force() {
+        let mut adaptation = Adaptation::new(PolicyProfile::Balanced);
+        adaptation.tick(at(0), counters(0, 0), counters(0, 0));
+        // 150 KB queued at 2.5 MB/s is 60 ms, above the down threshold.
+        for second in 1..=3 {
+            adaptation.tick(
+                at(second),
+                counters(150_000, second * 2_500_000),
+                counters(0, second * 2_500_000),
+            );
+        }
+        assert_eq!(
+            adaptation.current(Direction::ToPeer),
+            PolicyProfile::Gaming,
+            "the third congested sample steps one rung"
+        );
+        adaptation.tick(
+            at(4),
+            counters(150_000, 10_000_000),
+            counters(0, 10_000_000),
+        );
+        let last_to_peer = |series: &[(Direction, Duration)]| {
+            series
+                .iter()
+                .filter(|(direction, _)| *direction == Direction::ToPeer)
+                .next_back()
+                .expect("a to-peer sample")
+                .1
+        };
+        let raw = last_to_peer(adaptation.history());
+        let normalised = last_to_peer(adaptation.normalised_history());
+        assert_eq!(raw, Duration::from_millis(60));
+        assert_eq!(
+            normalised,
+            Duration::from_millis(240),
+            "60 ms at gaming/1's 4 KiB reads as 240 ms against the configured 16 KiB row"
         );
     }
 
