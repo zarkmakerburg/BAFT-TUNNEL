@@ -4,7 +4,11 @@
 driver itself is covered end to end (section 5); since the decision-4 amendment (section 6) the
 sample carries granted-but-unwritten bytes, and the live driver was observed producing a non-zero
 estimate (1,001 ms, `in_flight_bytes` 16,384) at the exact live state where `queued_bytes` reads 0 —
-on this loopback harness, with a test-chosen drain rate. TP-4.1 has no open repo-side work left.
+on this loopback harness, with a test-chosen drain rate. The decision-12 benchmark was then executed
+with that signal (section 7): at 250 / 500 / 1000 KB/s the loop settles exactly one rung below the
+configured row, p95 estimates are 187 / 93 / 53 ms, the estimate recovers in 0.6-1.6 s after the load
+stops, and the 150 s run returns to the configured row 5.9 s after it — level RTT, 0.4-1.7% fewer
+bulk bytes, **no benefit claimed**. TP-4.1 has no open repo-side work left.
 What remains unverified is real-path behaviour, which needs the owner-suspended two-host LAB window
 (a release-level gate shared with TP-3.2-TP-3.5); it is recorded as unverified, not claimed, and
 this `simulated` record does not substitute for it.**
@@ -186,5 +190,79 @@ the state where the old input reads zero; the counter is inert without the opt-i
 anything about a real path. The 16,384 bytes held here are a loopback duplex's backpressure, not a
 Yamux window on a real network, the peer's drain rate is chosen by the test, and no benefit is shown
 or claimed. The multi-rate decision-12 benchmark (three bottleneck rates, adaptation off vs on,
-change spacing and time-to-restore) was **not** re-run with the amended signal in this pass; it is
-the named next mission, and the two-host LAB window remains TP-4.1's only acceptance criterion.
+change spacing and time-to-restore) was **not** re-run with the amended signal in the pass that
+wrote this section; it was executed afterwards and is recorded in section 7, and the two-host LAB
+window remains TP-4.1's only acceptance criterion.
+
+## 7. The decision-12 benchmark, executed with the amended signal (2026-11-27)
+
+ADR-0056 decision 12 asks for the loop against the static row it starts from, at the plan's three
+bottleneck rates, with change spacing, estimate distribution and time-to-restore after the load
+stops. The 2026-11-26 record could not produce any of it because every sample read 0 ms (section 3);
+with the decision-4 amendment (section 6) the harness now can. This section is the run.
+
+**How it was run.** The existing `adaptive_controller_experiments` harness (same `run_multi_flow`,
+same shaped loopback proxy, same three flows) was extended in three places, not replaced: a recovery
+phase after the bulk load stops (ping traffic continues so the loop still has a rate), a per-direction
+final row and `below_configured` in `AdaptiveReport`, and an `after_stop` block (estimates and changes
+in the window, first estimate at or below the ADR's 20 ms up-threshold, first moment both directions
+are back on the configured row). `POLICY_ADAPTIVE_PHASE` selects the three-rate matrix or the long
+run so each measured pass fits one command. Command, release build:
+
+```
+POLICY_ADAPTIVE_PHASE=matrix POLICY_ADAPTIVE_SECONDS=8 POLICY_ADAPTIVE_RECOVERY_SECONDS=10 \
+  cargo test --release --features policy-pack --ignored --nocapture adaptive_controller_experiments
+```
+
+Two arms per rate — `sched-w262144-q16384-cap65536` (static `balanced/1`) and
+`adaptive-w262144-from-balanced/1` — two repeats, three flows, 250 / 500 / 1000 KB/s, 8 s of bulk
+load, then 10 s of recovery. One long run follows: 150 s at 250 KB/s with 45 s of recovery, because
+the ADR's 30 s dwell outlasts a 10 s window and the row-return question needs the longer one. All
+lines carry `evidence: simulated`; the proxy is loopback, not a path.
+
+**Per-rate results (observed, repeat 1 / repeat 2).** Rows are the adaptive arm;
+
+| rate | change | at | estimates | p50 / p95 / p99 / max (ms) | > 50 ms | settled below configured | recovery: calm | recovery: row back |
+|---|---|---|---|---|---|---|---|---|
+| 250 KB/s | 1: `balanced/1 → gaming/1` (to_peer) | 4,006 / 4,006 ms | 29 / 31 | 0 / 187 / 375 / 375 · 0 / 187 / 187 / 187 | 6 / 6 | yes (`to_peer` `gaming/1`) | 605 / 1,614 ms | not inside 10 s |
+| 500 KB/s | 1: `balanced/1 → gaming/1` (to_peer) | 4,006 / 4,006 ms | 34 / 34 | 0 / 93 / 125 / 125 (both) | 3 / 3 | yes | 603 / 605 ms | not inside 10 s |
+| 1 MB/s | 1: `balanced/1 → gaming/1` (to_peer) | 5,007 / 5,006 ms | 34 / 34 | 0 / 53 / 53 / 53 (both) | 3 / 3 | yes | 604 / 604 ms | not inside 10 s |
+| 250 KB/s, 150 s | 2: down at 4,006 ms, up `gaming/1 → balanced/1` at 156,276 ms | gap 152,270 ms | 282 | 46 / 93 / 125 / 375 | 27 | no (returned) | 811 ms | **5,856 ms** |
+
+Read plainly: **the loop settles below the configured row at every rate** — exactly one rung, at the
+third congested sample, and it does not go further even with 150 s of sustained load. The estimate is
+non-zero but intermittent: its median is 0 ms because most ticks see no held grant, while p95 is
+53-187 ms and the maximum 375 ms. Change spacing in the short runs is a single change, so no gap
+exists to measure; the long run gives one gap, 152.3 s, which is the down-step's whole verified
+lifetime — **the row returns only after the load stops**, 6.3 s after the bulk tasks stop (the
+driver's three calm samples; the 30 s dwell had long since passed). In the 10 s recovery windows the
+row did not return, which is the ADR's dwell and persistence working as designed, not a harness gap:
+the down-step happens at ~4 s, so a 30 s dwell cannot expire before the 18 s the window ends at.
+
+**Against the static arm (same runs).** Interactive RTT p50 per flow: 250 KB/s 4.72/6.12 ms static
+vs 5.02/4.70 ms adaptive; 500 KB/s 4.42/4.46 vs 4.45/4.41; 1 MB/s 4.52/4.52 vs 4.60/4.53. Delivered
+bulk bytes: 2.87/2.82 MB (250 KB/s), 4.70/4.65 (500 KB/s), 8.24/8.21 (1 MB/s) — the adaptive arm
+delivers 0.4-1.7% fewer bytes in an 8 s window. That is level-to-slightly-worse, **not a benefit**,
+and no profile becomes `measured`.
+
+**What the numbers do not settle, recorded instead of smoothed over.** The estimate's numerator is
+bytes in flight, which can never exceed the quantum in force, so a down-step caps its own input: some
+of the post-step "improvement" is mechanical rather than the path getting calmer. The 150 s run shows
+the loop *keeping* the step for 152 s while the load ran — the calm streak never built — so the
+mechanism did not cause a spurious keep there, but this pass did not isolate how much of any
+improvement is row-dependent. That is the named next mission, not a claim. Everything here is one
+host, one loopback proxy and three flows; nothing about a real path, a real Yamux window or a carrier
+is measured, and the two-host LAB window remains TP-4.1's only acceptance criterion.
+
+**Reverse mutations (each restored byte-for-byte, `cmp` confirmed).** The new normal test
+`the_adaptive_harness_reports_live_estimates_and_recovery` runs the same harness for 3 s + 3 s and
+asserts the report it claims:
+
+| Mutation | Observed failure |
+|---|---|
+| `counters()` in `src/policy_relay.rs` passes `in_flight_bytes: 0` (the production sample stops carrying the signal) | `panicked at src/policy_baseline.rs:2609: the in-flight signal must make the estimate non-zero under load: AdaptiveReport { changes: 0, …, estimates: 10, estimate_p50_ms: 0, estimate_p95_ms: 0, estimate_max_ms: 0, … }` |
+| `observe_after_stop` returns `AfterStop::default()` immediately (the harness reports a recovery it never watched) | `panicked at src/policy_baseline.rs:2618: ping traffic after the load stops must still give the loop a rate: AfterStop { estimates: 0, changes: 0, calm_ms: None, configured_ms: None }` |
+
+The first mutation also shows why the number matters: with the field dropped the loop makes **no
+change at all** (0 changes, 0 ms), which is exactly the 2026-11-26 result, so the amendment is what
+makes the loop observable on this harness rather than a cosmetic addition.

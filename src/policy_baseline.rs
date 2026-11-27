@@ -224,6 +224,15 @@ impl Mechanism {
             profile,
         }
     }
+
+    /// The row an adaptive arm starts from; `None` for every static arm, which has no loop and so
+    /// no configured row to settle below.
+    pub(crate) fn configured_profile(self) -> Option<crate::policy_profile::PolicyProfile> {
+        match self {
+            Mechanism::Adaptive { profile, .. } => Some(profile),
+            _ => None,
+        }
+    }
 }
 
 /// The Yamux per-stream window an arm runs with: the arm's own cap, or the product value.
@@ -704,6 +713,37 @@ pub(crate) async fn run_transfer_mechanism(
 
 /// What the ADR-0056 loop did during one multi-flow run. Only `Adaptive` arms fill it; every other
 /// arm reports `None`, so their records are unchanged.
+/// What the loop did after the bulk load stopped (ADR-0056 decision 12's recovery phase). Only the
+/// adaptive arm fills it; every static arm reports `None`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct AfterStop {
+    /// Estimates the loop computed in the recovery window (ping traffic only, so a rate exists).
+    pub estimates: usize,
+    /// Changes the loop made after the load stopped.
+    pub changes: usize,
+    /// First post-stop estimate at or below the ADR's 20 ms step-up threshold.
+    pub calm_ms: Option<u64>,
+    /// First post-stop moment both directions are back on the configured row.
+    pub configured_ms: Option<u64>,
+}
+
+impl AfterStop {
+    fn json(&self) -> String {
+        let opt = |value: Option<u64>| {
+            value
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        };
+        format!(
+            "{{\"estimates\":{},\"changes\":{},\"calm_ms\":{},\"configured_ms\":{}}}",
+            self.estimates,
+            self.changes,
+            opt(self.calm_ms),
+            opt(self.configured_ms)
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct AdaptiveReport {
     pub changes: usize,
@@ -719,6 +759,15 @@ pub(crate) struct AdaptiveReport {
     pub estimate_max_ms: u64,
     /// Samples whose estimate was above the ADR's 50 ms down-step threshold.
     pub estimate_over_50ms: usize,
+    /// The row the arm started from.
+    pub configured: String,
+    /// The row each direction ended on: whether the run settled below the configured row.
+    pub final_to_peer: String,
+    pub final_from_peer: String,
+    pub below_configured: bool,
+    pub estimate_p99_ms: u64,
+    /// Filled only when the run has a recovery phase after the bulk load stops.
+    pub after_stop: Option<AfterStop>,
 }
 
 impl AdaptiveReport {
@@ -737,7 +786,7 @@ impl AdaptiveReport {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "{{\"changes\":{},\"transitions\":[{}],\"change_at_ms\":[{}],\"gaps_ms\":[{}],\"estimates\":{},\"estimate_p50_ms\":{},\"estimate_p95_ms\":{},\"estimate_max_ms\":{},\"estimate_over_50ms\":{}}}",
+            "{{\"changes\":{},\"transitions\":[{}],\"change_at_ms\":[{}],\"gaps_ms\":[{}],\"estimates\":{},\"estimate_p50_ms\":{},\"estimate_p95_ms\":{},\"estimate_p99_ms\":{},\"estimate_max_ms\":{},\"estimate_over_50ms\":{},\"configured\":\"{}\",\"final_to_peer\":\"{}\",\"final_from_peer\":\"{}\",\"below_configured\":{},\"after_stop\":{}}}",
             self.changes,
             transitions,
             list(&self.change_at_ms),
@@ -745,13 +794,26 @@ impl AdaptiveReport {
             self.estimates,
             self.estimate_p50_ms,
             self.estimate_p95_ms,
+            self.estimate_p99_ms,
             self.estimate_max_ms,
-            self.estimate_over_50ms
+            self.estimate_over_50ms,
+            self.configured,
+            self.final_to_peer,
+            self.final_from_peer,
+            self.below_configured,
+            self.after_stop
+                .as_ref()
+                .map(AfterStop::json)
+                .unwrap_or_else(|| "null".to_string())
         )
     }
 
     #[cfg(feature = "policy-pack")]
-    fn from_session(session: &crate::policy_relay::PolicySession) -> Option<Self> {
+    fn from_session(
+        session: &crate::policy_relay::PolicySession,
+        configured: crate::policy_profile::PolicyProfile,
+        after_stop: Option<AfterStop>,
+    ) -> Option<Self> {
         let changes = session.changes();
         let mut estimates: Vec<u64> = session
             .estimates()
@@ -781,8 +843,30 @@ impl AdaptiveReport {
             estimates: estimates.len(),
             estimate_p50_ms: percentile(&estimates, 50.0),
             estimate_p95_ms: percentile(&estimates, 95.0),
+            estimate_p99_ms: percentile(&estimates, 99.0),
             estimate_max_ms: estimates.last().copied().unwrap_or(0),
             estimate_over_50ms: estimates.iter().filter(|value| **value > 50).count(),
+            configured: configured.to_string(),
+            final_to_peer: session
+                .rows()
+                .map(|rows| rows.0)
+                .unwrap_or(configured)
+                .to_string(),
+            final_from_peer: session
+                .rows()
+                .map(|rows| rows.1)
+                .unwrap_or(configured)
+                .to_string(),
+            below_configured: session.rows().is_some_and(|rows| {
+                let rung = |profile: crate::policy_profile::PolicyProfile| {
+                    crate::policy_adaptive::LADDER
+                        .iter()
+                        .position(|row| *row == profile)
+                        .unwrap_or(0)
+                };
+                rung(rows.0) < rung(configured) || rung(rows.1) < rung(configured)
+            }),
+            after_stop,
             gaps_ms: Vec::new(),
         };
         report.gaps_ms = report
@@ -885,6 +969,33 @@ async fn run_multi_flow(
     interval: Duration,
     mechanism: Mechanism,
 ) -> MultiFlowSummary {
+    run_multi_flow_with_recovery(
+        scenario,
+        flows,
+        churn,
+        rate,
+        duration,
+        interval,
+        mechanism,
+        Duration::ZERO,
+    )
+    .await
+}
+
+/// As `run_multi_flow`, plus ADR-0056 decision 12's recovery phase: the bulk load stops at
+/// `duration`, ping traffic continues for `recovery`, and the adaptive arm records how fast its
+/// estimate and its row come back. A zero `recovery` is exactly the old behaviour.
+#[allow(clippy::too_many_arguments)]
+async fn run_multi_flow_with_recovery(
+    scenario: &'static str,
+    flows: usize,
+    churn: bool,
+    rate: u64,
+    duration: Duration,
+    interval: Duration,
+    mechanism: Mechanism,
+    recovery: Duration,
+) -> MultiFlowSummary {
     let flows = flows.max(1);
     let (client_io, server_io) = shaped_endpoints_with(Profile::fixed(rate), mechanism).await;
     let cpu_start = process_cpu_us();
@@ -985,6 +1096,9 @@ async fn run_multi_flow(
         }));
     }
 
+    // Ping traffic runs through the recovery phase as well: the loop needs *some* delivered rate
+    // to divide by, and the bulk load is gone exactly when recovery begins.
+    let ping_end = end + recovery;
     let mut ping_set = tokio::task::JoinSet::new();
     for _ in 0..flows {
         let mut app = open(control.clone(), client_policy.clone()).await;
@@ -992,7 +1106,7 @@ async fn run_multi_flow(
             let mut samples = Vec::new();
             let ping = [7_u8; PING];
             let mut echo = [0_u8; PING];
-            while Instant::now() < end {
+            while Instant::now() < ping_end {
                 let asked = Instant::now();
                 if app.write_all(&ping).await.is_err() {
                     break;
@@ -1019,7 +1133,23 @@ async fn run_multi_flow(
         None => Vec::new(),
     };
 
-    let grace = (end + Duration::from_secs(10)).saturating_duration_since(Instant::now());
+    // ADR-0056 decision 12's recovery phase: the bulk load stops here, the ping streams keep the
+    // loop fed, and the adaptive arm records its estimate and row coming back.
+    tokio::time::sleep_until(end.into()).await;
+    for task in bulk_tasks.drain(..) {
+        task.abort();
+    }
+    #[cfg(feature = "policy-pack")]
+    let after_stop = match (mechanism.configured_profile(), client_policy.as_ref()) {
+        (Some(configured), Some(policy)) if !recovery.is_zero() => {
+            Some(observe_after_stop(policy, recovery, configured).await)
+        }
+        _ => None,
+    };
+    #[cfg(not(feature = "policy-pack"))]
+    let _after_stop: Option<AfterStop> = None;
+
+    let grace = (ping_end + Duration::from_secs(10)).saturating_duration_since(Instant::now());
     let mut per_flow_samples: Vec<Vec<u64>> = Vec::new();
     let stalled = {
         let collect = async {
@@ -1057,10 +1187,12 @@ async fn run_multi_flow(
         flow_p95_us.push(percentile(samples, 95.0));
     }
     #[cfg(feature = "policy-pack")]
-    let adaptive = client_policy
-        .as_ref()
-        .map(|policy| policy.as_ref())
-        .and_then(AdaptiveReport::from_session);
+    let adaptive = match (mechanism.configured_profile(), client_policy.as_ref()) {
+        (Some(configured), Some(policy)) => {
+            AdaptiveReport::from_session(policy.as_ref(), configured, after_stop)
+        }
+        _ => None,
+    };
     #[cfg(not(feature = "policy-pack"))]
     let adaptive = None;
     MultiFlowSummary {
@@ -1077,6 +1209,53 @@ async fn run_multi_flow(
         stalled,
         adaptive,
     }
+}
+
+/// ADR-0056 decision 12's recovery observation: watch the live session after the bulk load stops
+/// and record when its estimate falls back under the 20 ms step-up threshold and when both
+/// directions are back on the configured row. Reads only what the product already exposes; the
+/// ping streams keep it fed during the window.
+#[cfg(feature = "policy-pack")]
+async fn observe_after_stop(
+    policy: &crate::policy_relay::PolicySession,
+    window: Duration,
+    configured: crate::policy_profile::PolicyProfile,
+) -> AfterStop {
+    let started = Instant::now();
+    let mut seen_estimates = policy.estimates().len();
+    let mut seen_changes = policy.changes().len();
+    let mut report = AfterStop::default();
+    while started.elapsed() < window {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let estimates = policy.estimates();
+        if estimates.len() > seen_estimates {
+            for (_, value) in &estimates[seen_estimates..] {
+                if *value <= Duration::from_millis(20) {
+                    report
+                        .calm_ms
+                        .get_or_insert(started.elapsed().as_millis() as u64);
+                }
+            }
+            report.estimates += estimates.len() - seen_estimates;
+            seen_estimates = estimates.len();
+        }
+        let changes = policy.changes();
+        if changes.len() > seen_changes {
+            report.changes += changes.len() - seen_changes;
+            seen_changes = changes.len();
+        }
+        if let Some((to_peer, from_peer)) = policy.rows() {
+            if to_peer == configured && from_peer == configured {
+                report
+                    .configured_ms
+                    .get_or_insert(started.elapsed().as_millis() as u64);
+            }
+        }
+        if report.calm_ms.is_some() && report.configured_ms.is_some() {
+            break;
+        }
+    }
+    report
 }
 
 /// Two loopback TCP endpoints with nothing in between: the relay CPU probe's path. No bottleneck
@@ -2334,7 +2513,19 @@ mod tests {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(150);
+        let recovery_seconds: u64 = std::env::var("POLICY_ADAPTIVE_RECOVERY_SECONDS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(10);
+        let repeats: u64 = std::env::var("POLICY_ADAPTIVE_REPEATS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2);
+        // `matrix` runs the three-rate comparison only, `long` only the long run, `both` both. The
+        // split exists so one measured pass fits a single command's time budget.
+        let phase = std::env::var("POLICY_ADAPTIVE_PHASE").unwrap_or_else(|_| "both".into());
         let interval = Duration::from_millis(20);
+        let recovery = Duration::from_secs(recovery_seconds);
         // Start at the pack's default row: its 256 KiB window is small enough that the shaped
         // bottleneck's backpressure reaches the arbiter, which is where the loop takes its sample.
         let profile = PolicyProfile::Balanced;
@@ -2342,43 +2533,96 @@ mod tests {
             Mechanism::for_profile(profile),
             Mechanism::adaptive_from(profile),
         ];
-        for rate in [250_000_u64, 500_000, 1_000_000] {
-            for mechanism in arms {
-                for repeat in 1..=2 {
-                    let summary = run_multi_flow(
-                        "adaptive_control",
-                        3,
-                        false,
-                        rate,
-                        Duration::from_secs(seconds),
-                        interval,
-                        mechanism,
-                    )
-                    .await;
-                    println!(
-                        "POLICY_ADAPTIVE_EXPERIMENT {{\"repeat\":{repeat},\"rate_bytes_per_s\":{rate},\"seconds\":{seconds}}} {}",
-                        summary.json()
-                    );
+        if phase != "long" {
+            for rate in [250_000_u64, 500_000, 1_000_000] {
+                for mechanism in arms {
+                    for repeat in 1..=repeats {
+                        let summary = run_multi_flow_with_recovery(
+                            "adaptive_control",
+                            3,
+                            false,
+                            rate,
+                            Duration::from_secs(seconds),
+                            interval,
+                            mechanism,
+                            recovery,
+                        )
+                        .await;
+                        println!(
+                            "POLICY_ADAPTIVE_EXPERIMENT {{\"phase\":\"matrix\",\"repeat\":{repeat},\"rate_bytes_per_s\":{rate},\"seconds\":{seconds},\"recovery_seconds\":{recovery_seconds}}} {}",
+                            summary.json()
+                        );
+                    }
                 }
             }
         }
-        // One long run at the slowest rate: 3 s of queueing starts a down-step, the 60 s
-        // verification window decides it, and the 30 s dwell plus the 300 s rate limit gate the
-        // next one, so this is where changes and their spacing are actually observable.
-        let summary = run_multi_flow(
-            "adaptive_control_long",
-            3,
+        if phase != "matrix" {
+            // One long run at the slowest rate: 3 s of queueing starts a down-step, the 60 s
+            // verification window decides it, and the 30 s dwell plus the 300 s rate limit gate
+            // the next one, so this is where changes and their spacing are actually observable.
+            let summary = run_multi_flow_with_recovery(
+                "adaptive_control_long",
+                3,
+                false,
+                250_000,
+                Duration::from_secs(long_seconds),
+                interval,
+                Mechanism::adaptive_from(profile),
+                recovery,
+            )
+            .await;
+            println!(
+                "POLICY_ADAPTIVE_EXPERIMENT {{\"phase\":\"long\",\"repeat\":0,\"rate_bytes_per_s\":250000,\"seconds\":{long_seconds},\"recovery_seconds\":{recovery_seconds}}} {}",
+                summary.json()
+            );
+        }
+    }
+
+    /// The decision-12 harness must report what the record says it reports: a non-zero live
+    /// estimate under a shaped bottleneck and a recovery observation once the bulk load stops. One
+    /// flow and a few seconds, so it runs in the normal suite; the three-rate comparison is the
+    /// ignored measurement above.
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_adaptive_harness_reports_live_estimates_and_recovery() {
+        use crate::policy_profile::PolicyProfile;
+
+        let summary = run_multi_flow_with_recovery(
+            "adaptive_harness",
+            1,
             false,
             250_000,
-            Duration::from_secs(long_seconds),
-            interval,
-            Mechanism::adaptive_from(profile),
+            Duration::from_secs(3),
+            Duration::from_millis(20),
+            Mechanism::adaptive_from(PolicyProfile::Balanced),
+            Duration::from_secs(3),
         )
         .await;
-        println!(
-            "POLICY_ADAPTIVE_EXPERIMENT {{\"repeat\":0,\"rate_bytes_per_s\":250000,\"seconds\":{long_seconds}}} {}",
-            summary.json()
+        let report = summary
+            .adaptive
+            .as_ref()
+            .expect("the adaptive arm must fill a report");
+        assert!(
+            report.estimates > 0,
+            "a shaped bottleneck must produce a live estimate, not silence: {report:?}"
         );
+        assert!(
+            report.estimate_max_ms > 0,
+            "the in-flight signal must make the estimate non-zero under load: {report:?}"
+        );
+        let after = report
+            .after_stop
+            .as_ref()
+            .expect("the run has a recovery phase, so one must be reported");
+        assert!(
+            after.estimates > 0,
+            "ping traffic after the load stops must still give the loop a rate: {after:?}"
+        );
+        assert!(
+            after.calm_ms.is_some(),
+            "with the bulk load gone the estimate must fall under the 20 ms threshold: {after:?}"
+        );
+        assert_eq!(report.configured, "balanced/1");
     }
 
     /// Full Baseline scenarios; prints one JSON line per scenario. Not part of the normal run.

@@ -280,6 +280,21 @@ impl PolicySession {
             .unwrap_or_default()
     }
 
+    /// The row each direction is on now, for the ADR-0056 decision-12 harness (whether a run
+    /// settled below the configured row). `None` without the opt-in.
+    #[cfg(test)]
+    pub(crate) fn rows(&self) -> Option<(PolicyProfile, PolicyProfile)> {
+        self.adaptation
+            .as_ref()
+            .and_then(|adaptation| adaptation.lock().ok())
+            .map(|adaptation| {
+                (
+                    adaptation.current(Direction::ToPeer),
+                    adaptation.current(Direction::FromPeer),
+                )
+            })
+    }
+
     /// Every queueing-delay estimate adaptation computed, for the evidence record.
     #[allow(dead_code)] // read by the measurement harness, which also builds outside `cfg(test)`
     pub(crate) fn estimates(&self) -> Vec<(Direction, Duration)> {
