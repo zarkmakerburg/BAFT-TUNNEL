@@ -99,18 +99,21 @@ evidence level, ADR-0024 metric fields) and is still Proposed.
    f. verify: the file parses and carries the requested `policy` object; with `enable`,
       `/proc/<MainPID>/environ` contains `BAFT_TUNNEL_POLICY_PACK=sched`; with `disable` it does not.
 
-   Any failure after (c) restores both files to the bytes they had before the request — the config
-   from its backup, and the drop-in to its previous content, recreated if it existed and removed only
-   if it did not — reloads and restarts on those files. The receipt says `rolled_back` only when that
-   restore, the reload and the restart all succeed, and lists the restored names. A stopped unit is
-   never started (ADR-0055 decision 3): the receipt says `restart_required: true` and its
-   verification is file-level only, labelled as such.
+   Recovery covers every mutation, including a failure inside (c): from the first byte either file
+   writes, and also between the two writes, a failure restores both files to the bytes they had
+   before the request — the config from its backup, and the drop-in to its previous content,
+   recreated if it existed and removed only if it did not — then reloads. The receipt says
+   `rolled_back` only when that restore and the reload are verified and, for a unit that was running,
+   the restart on the previous files succeeded; it lists the restored names. A stopped unit is never
+   started (ADR-0055 decision 3), so for it the restart is not applicable and restore plus reload is
+   the bar: the receipt says `restart_required: true` and its verification is file-level only,
+   labelled as such.
 
-   If the restore, the reload or the restart on the previous files fails, the receipt is
-   `recovery_failed`, not `rolled_back`: it names which step failed, the resulting file state it could
-   and could not confirm, and the operator action the helper could not take (inspect the two named
-   files, then `systemctl daemon-reload` and restart the unit). Nothing in this ADR may report a
-   recovered state it did not verify.
+   If the restore, the reload or (for a running unit) the restart on the previous files fails, the
+   receipt is `recovery_failed`, not `rolled_back`: it names which step failed, the resulting file
+   state it could and could not confirm, and the operator action the helper could not take (inspect
+   the two named files, then `systemctl daemon-reload` and restart the unit). Nothing in this ADR may
+   report a recovered state it did not verify.
 
 5. **Idempotency is convergence, not repetition.** The same key with the same normalized request
    returns the stored receipt with `replayed: true`; the same key with a different request is 409
