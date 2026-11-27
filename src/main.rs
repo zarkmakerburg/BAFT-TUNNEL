@@ -62,6 +62,9 @@ mod tls;
 mod transport_health;
 mod tunnel;
 mod tunnel_helper;
+#[cfg(feature = "udp-carrier")]
+#[allow(dead_code)] // Prototype surface: exercised by the gate-(c) test and fuzz target.
+mod udp_carrier;
 
 use anyhow::{Result, bail};
 use authorization::ConnectionDirection;

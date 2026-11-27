@@ -44,11 +44,16 @@ own gates against it.
 | `rustls-webpki` | 0.103.17 | ISC | 1.71 |
 | `tokio` | 1.54.1 | MIT | 1.85 |
 
-The product already ships `rustls 0.23` + `ring`, `tokio`, `libc`, `rand` and `zeroize`, so the
-**recommended configuration adds only nine crates** to the 186-package product lock:
+The product already ships `rustls 0.23` + `ring`, `tokio`, `libc`, `rand` and `zeroize`.
+**Amended 2026-11-27 (A7): the recommended configuration adds nine new crate names but fifteen lock
+packages**, taking the product lock from 189 to 204 packages. The six extra packages are second
+versions of crates the product already had at another version, all required by `quinn-proto`
+0.11.19's own manifest: `rand 0.10.4`, `rand_core 0.10.1`, `chacha20 0.10.2`, `cpufeatures 0.3.1`,
+`thiserror 2.0.21` and `thiserror-impl 2.0.21`. They cannot be avoided by feature selection (`rand`
+and `thiserror` are non-optional `quinn-proto` dependencies), and all six are MIT OR Apache-2.0, so
+`deny.toml` is still unchanged. The nine new names are:
 `quinn`, `quinn-proto`, `quinn-udp`, `lru-slab`, `rand_pcg`, `rustc-hash`, `tinyvec`, `tracing` and
-`tracing-core`. (The scratch probe itself is the tenth package in its metadata, not a product
-addition.)
+`tracing-core`. (The scratch probe itself is not a product addition.)
 
 | Added crate | Version | Licence | `rust-version` |
 |---|---|---|---|
@@ -61,6 +66,17 @@ addition.)
 | `tinyvec` | 1.13.3 | Zlib OR Apache-2.0 OR MIT | — |
 | `tracing` | 0.1.44 | MIT | 1.65 |
 | `tracing-core` | 0.1.36 | MIT | 1.65 |
+
+Second versions of crates the product already had (amendment A7, 2026-11-27):
+
+| Added package | Version | Licence | Already in the product as |
+|---|---|---|---|
+| `rand` | 0.10.4 | MIT OR Apache-2.0 | `rand 0.8.8` |
+| `rand_core` | 0.10.1 | MIT OR Apache-2.0 | `rand_core 0.6.4` |
+| `chacha20` | 0.10.2 | MIT OR Apache-2.0 | `chacha20 0.9.1` |
+| `cpufeatures` | 0.3.1 | MIT OR Apache-2.0 | `cpufeatures 0.2.17` |
+| `thiserror` | 2.0.21 | MIT OR Apache-2.0 | `thiserror 1.0.69` |
+| `thiserror-impl` | 2.0.21 | MIT OR Apache-2.0 | `thiserror-impl 1.0.69` |
 
 The highest `rust-version` in the closure is 1.85 (`quinn*`, `tokio`, `rand_pcg`), below the
 repository's declared 1.88 — no MSRV bump is needed.
@@ -165,11 +181,21 @@ build. Nothing here is a runtime or throughput measurement.
   or `Zlib` is a policy decision recorded in the PR that enables it.
 - **A6.** The carrier stays behind the non-default `udp-carrier` feature and no operator surface
   (config key, CLI, panel, API) is added; this review authorises a build-time dependency only.
+- **A7.** The lock delta is **fifteen packages, not nine**: nine new names plus the six second
+  versions listed in section 2 (`rand`, `rand_core`, `chacha20`, `cpufeatures`, `thiserror`,
+  `thiserror-impl`), required by `quinn-proto 0.11.19` and all MIT OR Apache-2.0. The earlier count
+  deduplicated by name and missed them. No new licence, feature or policy decision follows from
+  this amendment; `deny.toml` stays unchanged, and any future `quinn`/`quinn-proto` bump re-runs
+  this review (A4).
 
 ## 9. What this review does not establish
 
 - No independent security review of the design or the dependency tree has happened (gate (b)).
-- No fuzz target, no two-process loopback test (gate (c)).
+- ~~No fuzz target, no two-process loopback test (gate (c)).~~ **Gate (c) is delivered (2026-11-27):**
+  a `udp-carrier`-gated prototype surface (`src/udp_carrier.rs`: bounded datagram frame and hello,
+  QUIC endpoint/connection helpers), a fuzz target (`fuzz/fuzz_targets/udp_datagram.rs`), and a
+  two-process loopback test that completes a real QUIC handshake and one datagram round-trip,
+  enforced by the dedicated `udp-carrier` CI job and the `fuzz-smoke` `udp-datagram` job.
 - No per-tuple benchmark against the TCP carrier (gate (d)); the build numbers above are not
   performance.
 - No two-host LAB run (gate (e)); whether UDP works on the Iran-to-abroad path remains Unknown.

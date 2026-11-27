@@ -2,6 +2,13 @@
 
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
+## به‌روزرسانی 2026-11-27 (TP-U — گیت (c) تحویل شد: هارنس fuzz + loopback دورفرآیندی؛ گام بعدی (d))
+
+- **گیت (c) ADR-0046 تحویل شد.** در PR همین کار، `src/udp_carrier.rs` پشت feature غیرپیش‌فرض `udp-carrier` سطح نمونهٔ اولیه را می‌دهد: قاب datagram محدود (`BUD1` + نسخه + sequence + طول) و hello محدود (`BUH1` + شناسه + nonce)، تنظیمات سرور/کلاینت QUIC روی `ring`، و توابع accept/connect/hello/datagram. fuzz target جدید `udp_datagram` هر دو پارسر را می‌زند و تست `udp_carrier::tests::two_process_loopback` **دو فرایند واقعی** (سرور و کلاینت) را اجرا می‌کند، handshake واقعی QUIC را کامل می‌کند، hello را روی استریم دوطرفه رد و بدل می‌کند و یک datagram را می‌فرستد و بازمی‌گیرد؛ اگر هر مرحله کامل نشود تست fail می‌شود، نه skip.
+- **اجرای CI:** جاب اختصاصی `udp-carrier` در `phase1-rust.yml` با feature می‌سازد، همان تست را اجرا می‌کند و ثابت می‌کند گراف پیش‌فرض و فهرست تست پیش‌فرض هیچ نشانه‌ای از حامل ندارند؛ جاب `udp-datagram` در `fuzz-smoke.yml` target را می‌سازد و ۳۰ ثانیه smoke می‌کند. `crate` پیش‌فرض دست‌نخورده: ۰ بستهٔ `quinn`، ۴۸۳ تست پیش‌فرض در برابر ۴۸۵ با feature (دو تست خود حامل).
+- **اصلاحیهٔ A7 (شمارش واقعی lock):** delta واقعی **۱۵ بستهٔ lock** است، نه ۹: ۹ نام تازه + نسخه‌های دوم `rand`، `rand_core`، `chacha20`، `cpufeatures`، `thiserror` و `thiserror-impl` که `quinn-proto 0.11.19` لازم دارد؛ همه MIT OR Apache-2.0 و `deny.toml` بدون تغییر. گزارش بازبینی، پلن و رودمپ اصلاح شدند.
+- **همچنان باز:** audit مستقل (b)، benchmark هر tuple (d) و LAB دومیزبانه (e)؛ #244 باز است. گام بعدی مخزن‌محور: هارنس benchmark (d). نسخه همان `0.3.1`؛ هیچ tag/release/bump و هیچ سطح کاربری اضافه نشد.
+
 ## اصلاح 2026-11-27 (TP-U — شمارش crateها و بیان گام بعدی)
 
 - بازبینی مستقل از وضعیت واقعی روی `main` انجام شد: PR #475 (merge `34ca0f55`) با diff فقط مستندات، ۱۳/۱۳ چک روی head و ۱۰/۱۰ روی merge، و بدون تغییر `Cargo.toml`/`Cargo.lock`/`deny.toml`/کد/نسخه/tag. شمارش «ده crate» در گزارش، پلن، همین برد و کامنت #244 اشتباه بود: مجموعهٔ توصیه‌شده **نه** crate به lock محصول اضافه می‌کند (بستهٔ دهم خودِ probe اسکرچ است) و اصلاح شد. عدد «۵۲ ثانیه» در جدول بک‌اند هم با جدول بیلد (≈۵۶ ثانیه برای deps) هم‌تراز شد.

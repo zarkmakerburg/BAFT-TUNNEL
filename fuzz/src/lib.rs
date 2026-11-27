@@ -2,6 +2,10 @@
 //! parsers can be exercised without turning the binary crate into a library.
 #![allow(dead_code, unused_imports)]
 
+#[cfg(feature = "udp-carrier")]
+#[path = "../../src/udp_carrier.rs"]
+pub mod udp_carrier;
+
 #[path = "../../src/agent.rs"]
 pub mod agent;
 #[path = "../../src/apply.rs"]
