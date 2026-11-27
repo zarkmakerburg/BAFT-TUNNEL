@@ -111,8 +111,9 @@ shown as measured.
       `Unsupported`/`Unknown` (ADR-0044 decision 4) and its tuple claim stays `unknown`, never
       "ready"; ADR-0019 does not change.
     - UDP/datagram carrier ([#244](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/244),
-      ADR-0046, still Proposed): outside this acceptance. Gaming and Trading may be built and
-      measured on TCP, but their claims are limited to tunnel-internal queueing delay; no
+      ADR-0046, accepted 2026-11-27 for its design; no carrier yet): outside this acceptance.
+      Gaming and Trading may be built and measured on TCP, but their claims are limited to
+      tunnel-internal queueing delay; no
       head-of-line-blocking benefit may be claimed before that carrier lands and is accepted
       (decision 11).
     - Direct/Reverse detection keeps running before engine selection (ADR-0021); this pack
@@ -140,8 +141,8 @@ shown as measured.
 
 20. **Nothing in TP-0.2 needs an owner decision.** The taxonomy above is derived from the code and
     the TP-2.2 evidence. Owner-gated items stay outside this acceptance: the two-host LAB window
-    for real-path evidence, acceptance of ADR-0046 (UDP) before any Gaming/Trading
-    head-of-line-blocking claim, and any tag or release.
+    for real-path evidence, the UDP carrier's own evidence gates (ADR-0046, accepted 2026-11-27 for
+    the design) before any Gaming/Trading head-of-line-blocking claim, and any tag or release.
 
 ## Implementation note 2026-11-26 (TP-3.1 / #233): the profile schema as shipped
 
