@@ -542,7 +542,10 @@ impl Adaptation {
                     granted,
                     interval,
                 ),
-                estimated: granted > 0,
+                // A tick with no elapsed time carries no rate either: the same rule that turns
+                // "no delivered bytes" into "no estimate" applies to an interval that could not
+                // be measured, so such a sample never becomes a zero-delay reading.
+                estimated: granted > 0 && !interval.is_zero(),
                 overflow_refusals: counters.overflow_refusals,
                 violations: counters.violations,
             });
@@ -610,6 +613,37 @@ mod tests {
         controller
             .update(at(start + 2), sample(delay_ms))
             .expect("three consecutive samples above the threshold step one row down")
+    }
+
+    /// A tick that arrives with no elapsed time carries no rate, so it cannot be a measured
+    /// estimate. Recording it as a zero delay would advance the low-delay streak (or satisfy a
+    /// pending verification) with a number the tunnel never produced.
+    #[test]
+    fn a_zero_length_interval_is_not_a_measured_estimate() {
+        let mut adaptation = Adaptation::new(PolicyProfile::Balanced);
+        let baseline = Counters {
+            queued_bytes: 8_192,
+            in_flight_bytes: 0,
+            granted_bytes: 1_000_000,
+            overflow_refusals: 0,
+            violations: 0,
+        };
+        let later = Counters {
+            granted_bytes: 1_016_384,
+            ..baseline
+        };
+        // The first sample only establishes the baseline; the second arrives at the same instant.
+        adaptation.tick(Duration::from_secs(1), Some(baseline), None);
+        let changes = adaptation.tick(Duration::from_secs(1), Some(later), None);
+        assert!(
+            adaptation.history().is_empty(),
+            "a zero-length interval has no rate and must not be recorded as an estimate: {:?}",
+            adaptation.history()
+        );
+        assert!(
+            changes.is_empty(),
+            "an impossible interval must not drive adaptation: {changes:?}"
+        );
     }
 
     #[test]
