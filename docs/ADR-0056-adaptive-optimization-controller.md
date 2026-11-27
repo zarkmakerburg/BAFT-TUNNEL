@@ -12,7 +12,7 @@ What exists on `main` today:
 
 - Five accepted profile rows (ADR-0031 decision 15), each a `(window, quantum, cap)` triple, all bounds-checked and resolved into `PolicyRelay` at session start. A session's class is its configured profile; class weights are identity.
 - The scheduler's own counters: `ArbiterStats { grants, overflow_refusals, queued_bytes, flows }` and the per-`Scheduler` `grants`/`overflow_refusals`/`total_queued_bytes`, plus `Guarded::violations()` from the interface wrapper (`src/policy.rs`, `src/policy_sched.rs`). They are `pub(crate)` diagnostics; nothing exports them.
-- No product RTT, loss or per-packet signal: the metric surface of TP-1.1 (#229) is not implemented (the pack plan records harness-only measurement), and ADR-0047's `policy` status object is still Proposed.
+- No product RTT, loss or per-packet signal: the metric surface of TP-1.1 (#229) is not implemented (the pack plan records harness-only measurement), and ADR-0047's `policy` status object, accepted 2026-11-27, is a contract whose read is not implemented yet.
 - No runtime reconfiguration path: the window is applied to both Yamux session ends at session creation and cannot change for that session's lifetime, and the profile is resolved once per session.
 - No reproducible benefit from the scheduler arm and no measured profile: everything stays off by default and every number is `simulated`; the two-host LAB is suspended.
 
@@ -72,7 +72,8 @@ An ADR that ignored those facts would design a controller nothing can feed. The 
     - the tunnel config must opt in with a new boolean `policy.adaptive` (default absent = `false`), added by the wiring step, not by this ADR's slice. With the field absent or false the session runs its configured row end to end, and the data path is byte-identical to today's. With the pack off the field is inert and logged as such; it does not switch the pack on.
 
     Adaptation never changes the window, never changes the class label, never enables a profile and never widens beyond the configured row. ADR-0048's decision that the scheduler switch stays off (no reproducible benefit) and the `simulated` label of every existing record are untouched; no profile becomes "ready" through adaptation.
-11. **Status contract is reserved, not extended here.** When ADR-0047's `policy` object ships it will need the adaptive view (`state`, configured row, current row, last change and cause). ADR-0047 stays Proposed; no endpoint, field or panel card is added by this ADR and none is claimed.
+11. **Status contract is reserved, not extended here.** When ADR-0047's `policy` object ships it will need the adaptive view (`state`, configured row, current row, last change and cause). ADR-0047 was accepted on 2026-11-27; no endpoint, field or panel card is added by this ADR, and the read
+stays its own step.
 12. **Benchmark plan (TP-4.1's second acceptance item), not executed here.** With the wiring in place, the harness compares adaptation off against on at fixed seeds and at least three bottleneck rates, on the ADR-0048 matrix: the queueing-delay estimate over time, loaded ping p50/p95/p99, the sender-side handoff count (never called delivered goodput), CPU per delivered MB, number and spacing of changes over a 10-minute run, time-to-restore after the load stops, and every rollback/suspension path. Evidence is `simulated`/CI only; the result must state whether the loop is level with the static configured row, better, or worse, and a cost with no benefit is a reason to leave the opt-in off by default. A 10-minute run is the plan's ceiling; the 60-minute profile run stays a TP-3.x/LAB item.
 
    **Amendment (2026-11-27):** the `simulated` run produced no change at all (0 ms estimate in every sample; see the evidence record), so the change spacing, time-to-restore after the load stops, and the forced rollback/suspension paths could not be measured in TP-4.1. Those measurements move to TP-4.2 (#239), whose first step is the forced-change rollback/fail-safe matrix; TP-4.1's remaining acceptance item stays the two-host LAB window.
@@ -101,7 +102,8 @@ The pure core `src/policy_adaptive.rs` (feature `policy-pack`, not called from t
 - **Known limit, recorded rather than papered over:** the scheduler path instantiates no `Guarded<TrafficPolicy>`, so the sample's `violations` counter has no live source and is reported as `0`. The guard fail-safe is therefore reached and tested only through the controller's own tests, not by live traffic; `overflow_refusals` is live. `queue_delay` needs at least one prior sample to have a rate, so the first tick of a session records no estimate and acts on none.
 - **Second known limit, measured not assumed:** the arbiter's queue is a rendezvous — `serve()` grants a request immediately after it is queued — so `queued_bytes` read at the 1 Hz cadence is `0` even while the loaded ping p50 is seconds. The bytes that actually wait are the granted ones whose write is blocked by the peer's Yamux window, and decision 4's signal does not count them. Consequence: on the `simulated` harness the loop never leaves its configured row (0 changes, 0 ms estimate in every sample). The loop's decision paths stay covered by their unit tests; whether decision 4's input is usable on a real path is the first thing the LAB window (or a decision-4 amendment) has to settle, and TP-4.2 inherits it.
 - **Measurement:** [POLICY_PACK_TP-4.1_ADAPTIVE_EVIDENCE.md](POLICY_PACK_TP-4.1_ADAPTIVE_EVIDENCE.md) records the `simulated` benchmark (the loop started from `balanced/1` against the same static row at three bottleneck rates, plus a 180 s run), including the change count, estimate distribution, loaded latency, CPU and sender handoffs. It is a loopback harness result, not a LAB result; the loop made no change and no benefit is claimed.
-- **Not in this slice:** the two-host LAB window, the status view (ADR-0047 is still Proposed), and any real-path or cross-engine measurement.
+- **Not in this slice:** the two-host LAB window, the status view (ADR-0047 accepted 2026-11-27; the read is the next step), and any real-path or cross-engine
+  measurement.
 
 ## What TP-4.1 still needs
 
@@ -133,7 +135,7 @@ satisfied) and still no live measurement. Evidence:
 throughout, plus a re-run of this ADR's loopback arm that again made 0 changes with a 0 ms estimate,
 confirming the test seam did not alter the live sampling path. `violations` remains a constant `0`
 on the scheduler path, so the guard row is forced only. #239's "mark adaptive `Unknown`/`Off`" has no
-surface to write to: decision 11 reserves the adaptive view for ADR-0047 (still Proposed), and this
+surface to write to: decision 11 reserves the adaptive view for ADR-0047 (accepted 2026-11-27), and this
 slice neither adds an endpoint nor invents a log-only status. TP-4.2's one remaining criterion is
 the suspended two-host LAB window.
 

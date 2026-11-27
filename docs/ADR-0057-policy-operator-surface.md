@@ -2,7 +2,8 @@
 
 **Status:** Accepted 2026-11-27 under the owner's delegated decision authority and implemented
 2026-11-27. Write surface only; the status/metrics read is deferred to
-[ADR-0047](ADR-0047-policy-status-contract.md) (still Proposed).
+[ADR-0047](ADR-0047-policy-status-contract.md), **accepted 2026-11-27**, and is the next executable
+step.
 **Date:** 2026-11-27
 **Related:** [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md) decisions 2, 10, 14 and 15-19,
 [ADR-0047](ADR-0047-policy-status-contract.md), [ADR-0044](ADR-0044-engine-agnostic-policy-interface.md),
@@ -33,7 +34,7 @@ Two constraints shape the answer. First, ADR-0031's on/off is deliberate and lay
 input (for example `policy.enabled`) would be a parallel path the data path has to consult, and the
 pack must stay off by default exactly as ADR-0048 measured it. Second, the read side already has an
 owner: ADR-0047 fixes the status object (`off`/`active`/`fallback`/`unknown`, per-tuple claims with an
-evidence level, ADR-0024 metric fields) and is still Proposed.
+evidence level, ADR-0024 metric fields) and was accepted on 2026-11-27, after this surface shipped.
 
 ## Decision
 
@@ -260,3 +261,8 @@ pins down what the decisions above left to implementation, without changing any 
    while a policy (or manage) request holds it; the next tick after the guard is released reloads.
    Without that, the process could exit mid-write and leave a completed helper mutation with no HTTP
    response, receipt or audit line.
+
+**Postscript (2026-11-27):** [ADR-0047](ADR-0047-policy-status-contract.md) was accepted after this
+surface shipped. The read it fixes reads `GET /v1/status`'s `policy` member and adds no route, field
+or file here; the receipt still says `configured` and never "active", and decisions 1-9 above are
+unchanged.
