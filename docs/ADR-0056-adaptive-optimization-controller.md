@@ -105,7 +105,37 @@ The pure core `src/policy_adaptive.rs` (feature `policy-pack`, not called from t
 
 ## What TP-4.1 still needs
 
-One step: **the two-host LAB window** (suspended by the owner's decision), which is the item's remaining acceptance criterion, like TP-3.2-TP-3.5; the decision-12 measurements the zero-change harness could not produce are moved to TP-4.2 by the amendment above. Nothing in the wiring or the `simulated` record substitutes for it, and no benefit is claimed until it runs. TP-4.2 (#239) — fail-safe, rollback and multi-condition tests — follows, and its rollback matrix is already specified by decisions 7 and 8 here.
+One step: **the two-host LAB window** (suspended by the owner's decision), which is the item's remaining acceptance criterion, like TP-3.2-TP-3.5; the decision-12 measurements the zero-change harness could not produce are moved to TP-4.2 by the amendment above. Nothing in the wiring or the `simulated` record substitutes for it, and no benefit is claimed until it runs.
+
+## TP-4.2: the rollback and fail-safe matrix (implementation note, 2026-11-27)
+
+Decisions 7–9 are now exercised through the session the product runs, not only through the
+controller's return value. `PolicySession::tick` was split into the live counter read and
+`tick_with(now, to_peer, from_peer)`, so a test can force one tick per simulated second into the
+same decide-and-apply path — the same `Command::Configure`, the same read-chunk update — with no
+clock, task or socket. The tests in `src/policy_relay.rs` cover, one per row: a failed verification
+reverting the arbiter and the read bound to the verified row; a guard violation and an overflow
+restoring the configured row on that tick and suspending adaptation for 300 s, with the first
+voluntary step exactly one suspension later; a failed row's 600 s cooldown unchanged across a
+suspend/resume cycle (unreachable to 663 s, retried at 663 s); a stale gap dropping the persistence
+streak and three consecutive misses restoring the configured row; and an unconfigured session
+ignoring the same forced guard and overflow samples entirely. #239's condition matrix (clean,
+congested, lossy bursts, threshold jitter, a permanent path improvement), its flapping check and its
+ten-minute run are decision-level tests over the same seam: only sustained congestion steps, arrived
+at one rung, and the loop settles once the failed rows are cooled down instead of oscillating.
+
+Every second and millisecond in those tests is forced: they prove the wiring and the gating, not
+that a real carrier produces those sequences. Decision 12's change spacing, time-to-restore and
+rollback paths therefore have a deterministic timeline (a 3 s persistence step, a 60 s verification
+window, a 63 s change gap, a 300 s suspension, a 600 s cooldown, a 3 s calm return once the dwell is
+satisfied) and still no live measurement. Evidence:
+[POLICY_PACK_TP-4.2_FAILSAFE_EVIDENCE.md](POLICY_PACK_TP-4.2_FAILSAFE_EVIDENCE.md) — `simulated`
+throughout, plus a re-run of this ADR's loopback arm that again made 0 changes with a 0 ms estimate,
+confirming the test seam did not alter the live sampling path. `violations` remains a constant `0`
+on the scheduler path, so the guard row is forced only. #239's "mark adaptive `Unknown`/`Off`" has no
+surface to write to: decision 11 reserves the adaptive view for ADR-0047 (still Proposed), and this
+slice neither adds an endpoint nor invents a log-only status. TP-4.2's one remaining criterion is
+the suspended two-host LAB window.
 
 ## Rejected
 
