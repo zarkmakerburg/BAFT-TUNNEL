@@ -136,10 +136,48 @@ without touching that metric or any default.
   16,384` and produced a **1,001 ms** estimate — where the original input produced 0 ms. Three
   reverse mutations (no `fetch_add`, sample drops the field, opt-in ignored) each failed the test
   with its own message before being restored.
-- **Still open.** The multi-rate decision-12 benchmark has not been re-run with the amended signal,
-  so change spacing, time-to-restore and whether the loop is level, better or worse on a shaped
-  bottleneck are unmeasured; the two-host LAB window remains TP-4.1's only acceptance criterion and
-  nothing here is a benefit claim.
+- **Measured since.** The multi-rate decision-12 benchmark was re-run with the amended signal
+  (TP-4.1 record §7: one rung down at each rate, calm within 0.6-1.6 s of the load stopping, the row
+  back in 5.9 s) and then again with a row-independent wait alongside it (§8). Neither run shows a
+  benefit; the two-host LAB window remains TP-4.1's only acceptance criterion and nothing here is a
+  benefit claim.
+
+## TP-4.1 decision 12, amended: the row-independent wait (implementation note, 2026-11-27)
+
+Decision 12 asked whether the loop's benefit is real, and the first answer (§7) could not settle it:
+`in_flight_bytes` is capped by the row in force, so a down-step mechanically shrinks the estimate's
+numerator. This amendment adds the missing measurement, re-runs the matrix, and records that the
+benefit claim does **not** survive it.
+
+- **Where it is measured.** The pump now stamps `Instant::now()` when `FlowHandle::acquire` returns a
+  grant and again after that grant's `write_all` completes (`WaitLog`/`DirectionMeter` in
+  `src/policy_relay.rs`), tagging each sample with the quantum in force at grant time. The harness
+  reports the distribution split by that tag: `configured` (the row `policy.profile` selects) and
+  `stepped`, with `p95_ratio = stepped.p95 / configured.p95`. The same record carries
+  `estimate_normalised_p50/p95_ms`, the estimate scaled by `configured_quantum / row_quantum`, so
+  the mechanical component is the gap between raw and normalised.
+- **What stays the same.** The recorder exists only when `policy.adaptive` is on, plus test builds
+  that need the static arm as a reference; the default path allocates nothing and the guard is a
+  `bool` the pump already reads. No threshold, quantum, cap, default, `policy.adaptive` value or
+  `queued_bytes` semantic changes. The estimate still divides `queued_bytes + in_flight_bytes` by
+  the interval's granted rate.
+- **Observed (TP-4.1 record §8).** At 250 KB/s the measured p95 wait is unchanged after the step
+  (53→47 µs and 29→33 µs, ratios 0.887 and 1.138) while the estimate's p95 doubles when normalised
+  to the configured row (187→375 ms): the improvement there is the row, not the path. At 500 KB/s
+  the ratios are 0.978 and 1.097 — unchanged. Only at 1 MB/s (0.604, 0.770) and in the 150 s run at
+  250 KB/s (0.538) does the wait itself fall. The estimate (53-187 ms p95) and the measured wait
+  (29-91 µs p95) differ by three orders of magnitude, because `write_all` returns once Yamux buffers
+  the bytes: decision 4's estimate is a bytes-in-flight-to-rate ratio, not a queueing delay.
+- **Consequence.** The row-independent number does not justify the step at two of three rates. No
+  benefit is claimed, `policy.adaptive` stays off by default, and no profile becomes `measured`.
+  Decision 12's remaining question — whether the wait improves where the bytes actually wait (inside
+  Yamux's stream window or the carrier) rather than at the relay boundary — is the next mission; the
+  two-host LAB window stays the acceptance criterion.
+- **Reverse mutations.** Removing the `granted_at` stamp fails with `the relay boundary must report
+  grant-to-write waits`; tagging every wait with `quantum = 0` fails with `the configured-row wait
+  must be measured, not assumed: WaitReport { configured: WaitDist { count: 0, … }, … }`; making the
+  normalisation the identity fails with `60 ms at gaming/1's 4 KiB reads as 240 ms against the
+  configured 16 KiB row`. Each was restored byte-for-byte (`cmp`).
 
 ## What TP-4.1 still needs
 

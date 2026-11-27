@@ -233,6 +233,16 @@ impl Mechanism {
             _ => None,
         }
     }
+
+    /// The scheduler row a policy arm runs at, for separating the wait samples taken on the
+    /// configured row from those taken after a step.
+    pub(crate) fn scheduler_quantum(self) -> Option<usize> {
+        match self {
+            Mechanism::Scheduler { quantum, .. } => Some(quantum),
+            Mechanism::Adaptive { profile, .. } => Some(profile.quantum_bytes()),
+            _ => None,
+        }
+    }
 }
 
 /// The Yamux per-stream window an arm runs with: the arm's own cap, or the product value.
@@ -713,6 +723,64 @@ pub(crate) async fn run_transfer_mechanism(
 
 /// What the ADR-0056 loop did during one multi-flow run. Only `Adaptive` arms fill it; every other
 /// arm reports `None`, so their records are unchanged.
+/// One distribution of grant-to-write waits (ADR-0056 decision 12's row-independent measurement).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct WaitDist {
+    pub count: usize,
+    pub p50_us: u64,
+    pub p95_us: u64,
+    pub p99_us: u64,
+    pub max_us: u64,
+}
+
+impl WaitDist {
+    #[cfg(feature = "policy-pack")]
+    fn from_micros(mut samples: Vec<u64>) -> Self {
+        samples.sort_unstable();
+        Self {
+            count: samples.len(),
+            p50_us: percentile(&samples, 50.0),
+            p95_us: percentile(&samples, 95.0),
+            p99_us: percentile(&samples, 99.0),
+            max_us: samples.last().copied().unwrap_or(0),
+        }
+    }
+
+    fn json(&self) -> String {
+        format!(
+            "{{\"count\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"max_us\":{}}}",
+            self.count, self.p50_us, self.p95_us, self.p99_us, self.max_us
+        )
+    }
+}
+
+/// The relay boundary's own wait, split by the row it was taken on. `configured` is the reference:
+/// samples whose quantum equals the configured row's; `stepped` is everything taken after a step.
+/// `p95_ratio` is `stepped.p95 / configured.p95` — the number that says whether the wait itself
+/// improved or only the row-dependent estimate did.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct WaitReport {
+    pub configured: WaitDist,
+    pub stepped: Option<WaitDist>,
+    pub p95_ratio: Option<f64>,
+}
+
+impl WaitReport {
+    fn json(&self) -> String {
+        format!(
+            "{{\"configured\":{},\"stepped\":{},\"p95_ratio\":{}}}",
+            self.configured.json(),
+            self.stepped
+                .as_ref()
+                .map(WaitDist::json)
+                .unwrap_or_else(|| "null".to_string()),
+            self.p95_ratio
+                .map(|ratio| format!("{ratio:.3}"))
+                .unwrap_or_else(|| "null".to_string())
+        )
+    }
+}
+
 /// What the loop did after the bulk load stopped (ADR-0056 decision 12's recovery phase). Only the
 /// adaptive arm fills it; every static arm reports `None`.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -766,6 +834,9 @@ pub(crate) struct AdaptiveReport {
     pub final_from_peer: String,
     pub below_configured: bool,
     pub estimate_p99_ms: u64,
+    /// The same series scaled to the configured row (ADR-0056 decision 12's normalised estimate).
+    pub estimate_normalised_p50_ms: u64,
+    pub estimate_normalised_p95_ms: u64,
     /// Filled only when the run has a recovery phase after the bulk load stops.
     pub after_stop: Option<AfterStop>,
 }
@@ -786,7 +857,7 @@ impl AdaptiveReport {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "{{\"changes\":{},\"transitions\":[{}],\"change_at_ms\":[{}],\"gaps_ms\":[{}],\"estimates\":{},\"estimate_p50_ms\":{},\"estimate_p95_ms\":{},\"estimate_p99_ms\":{},\"estimate_max_ms\":{},\"estimate_over_50ms\":{},\"configured\":\"{}\",\"final_to_peer\":\"{}\",\"final_from_peer\":\"{}\",\"below_configured\":{},\"after_stop\":{}}}",
+            "{{\"changes\":{},\"transitions\":[{}],\"change_at_ms\":[{}],\"gaps_ms\":[{}],\"estimates\":{},\"estimate_p50_ms\":{},\"estimate_p95_ms\":{},\"estimate_p99_ms\":{},\"estimate_max_ms\":{},\"estimate_over_50ms\":{},\"estimate_normalised_p50_ms\":{},\"estimate_normalised_p95_ms\":{},\"configured\":\"{}\",\"final_to_peer\":\"{}\",\"final_from_peer\":\"{}\",\"below_configured\":{},\"after_stop\":{}}}",
             self.changes,
             transitions,
             list(&self.change_at_ms),
@@ -797,6 +868,8 @@ impl AdaptiveReport {
             self.estimate_p99_ms,
             self.estimate_max_ms,
             self.estimate_over_50ms,
+            self.estimate_normalised_p50_ms,
+            self.estimate_normalised_p95_ms,
             self.configured,
             self.final_to_peer,
             self.final_from_peer,
@@ -823,7 +896,13 @@ impl AdaptiveReport {
         if changes.is_empty() && estimates.is_empty() {
             return None;
         }
+        let mut normalised: Vec<u64> = session
+            .normalised_estimates()
+            .into_iter()
+            .map(|(_, estimate)| estimate.as_millis() as u64)
+            .collect();
         estimates.sort_unstable();
+        normalised.sort_unstable();
         let mut report = AdaptiveReport {
             changes: changes.len(),
             transitions: changes
@@ -846,6 +925,8 @@ impl AdaptiveReport {
             estimate_p99_ms: percentile(&estimates, 99.0),
             estimate_max_ms: estimates.last().copied().unwrap_or(0),
             estimate_over_50ms: estimates.iter().filter(|value| **value > 50).count(),
+            estimate_normalised_p50_ms: percentile(&normalised, 50.0),
+            estimate_normalised_p95_ms: percentile(&normalised, 95.0),
             configured: configured.to_string(),
             final_to_peer: session
                 .rows()
@@ -899,6 +980,9 @@ pub(crate) struct MultiFlowSummary {
     /// True when every flow that was not churned still handed bytes after the churn.
     pub continued_after_churn: bool,
     pub stalled: bool,
+    /// ADR-0056 decision 12: the relay boundary's grant-to-write waits for this arm, split by the
+    /// row they were taken on. `None` only when no wait was recorded at all.
+    pub waits: Option<WaitReport>,
     /// ADR-0056: what the loop did on the client session, `None` for every static arm.
     pub adaptive: Option<AdaptiveReport>,
 }
@@ -932,7 +1016,7 @@ impl MultiFlowSummary {
                 .join(",")
         };
         format!(
-            "{{\"scenario\":\"{}\",\"mechanism\":\"{}\",\"evidence\":\"{}\",\"flows\":{},\"bulk_bytes\":[{}],\"total_bulk_bytes\":{},\"delivery_min_over_max\":{:.3},\"flow_p50_us\":[{}],\"flow_p95_us\":[{}],\"cpu_us\":{},\"churn_closed\":{},\"continued_after_churn\":{},\"stalled\":{},\"adaptive\":{}}}",
+            "{{\"scenario\":\"{}\",\"mechanism\":\"{}\",\"evidence\":\"{}\",\"flows\":{},\"bulk_bytes\":[{}],\"total_bulk_bytes\":{},\"delivery_min_over_max\":{:.3},\"flow_p50_us\":[{}],\"flow_p95_us\":[{}],\"cpu_us\":{},\"churn_closed\":{},\"continued_after_churn\":{},\"stalled\":{},\"waits\":{},\"adaptive\":{}}}",
             self.scenario,
             self.mechanism,
             self.evidence,
@@ -948,6 +1032,10 @@ impl MultiFlowSummary {
                 .unwrap_or_else(|| "null".to_string()),
             self.continued_after_churn,
             self.stalled,
+            self.waits
+                .as_ref()
+                .map(WaitReport::json)
+                .unwrap_or_else(|| "null".to_string()),
             self.adaptive
                 .as_ref()
                 .map(AdaptiveReport::json)
@@ -1187,6 +1275,13 @@ async fn run_multi_flow_with_recovery(
         flow_p95_us.push(percentile(samples, 95.0));
     }
     #[cfg(feature = "policy-pack")]
+    let waits = match (mechanism.scheduler_quantum(), client_policy.as_ref()) {
+        (Some(quantum), Some(policy)) => wait_report(policy.as_ref(), quantum),
+        _ => None,
+    };
+    #[cfg(not(feature = "policy-pack"))]
+    let waits: Option<WaitReport> = None;
+    #[cfg(feature = "policy-pack")]
     let adaptive = match (mechanism.configured_profile(), client_policy.as_ref()) {
         (Some(configured), Some(policy)) => {
             AdaptiveReport::from_session(policy.as_ref(), configured, after_stop)
@@ -1207,8 +1302,45 @@ async fn run_multi_flow_with_recovery(
         churn_closed: churn.then_some(0),
         continued_after_churn,
         stalled,
+        waits,
         adaptive,
     }
+}
+
+/// Split the relay boundary's waits by the row they were taken on: samples whose quantum equals the
+/// configured row's are the reference, everything else was taken after a step. The p95 ratio is the
+/// comparison decision 12 needed — a wait that improves is a real improvement; an estimate that
+/// improves while the wait stays or grows is the row capping its own numerator.
+#[cfg(feature = "policy-pack")]
+fn wait_report(
+    session: &crate::policy_relay::PolicySession,
+    configured_quantum: usize,
+) -> Option<WaitReport> {
+    let mut samples = session.waits(Direction::ToPeer);
+    samples.extend(session.waits(Direction::FromPeer));
+    if samples.is_empty() {
+        return None;
+    }
+    let mut configured = Vec::new();
+    let mut stepped = Vec::new();
+    for (quantum, waited) in samples {
+        let micros = u64::try_from(waited.as_micros()).unwrap_or(u64::MAX);
+        if quantum == configured_quantum {
+            configured.push(micros);
+        } else {
+            stepped.push(micros);
+        }
+    }
+    let configured = WaitDist::from_micros(configured);
+    let stepped = (!stepped.is_empty()).then(|| WaitDist::from_micros(stepped));
+    let p95_ratio = stepped.as_ref().and_then(|stepped| {
+        (configured.p95_us > 0).then(|| stepped.p95_us as f64 / configured.p95_us as f64)
+    });
+    Some(WaitReport {
+        configured,
+        stepped,
+        p95_ratio,
+    })
 }
 
 /// ADR-0056 decision 12's recovery observation: watch the live session after the bulk load stops
@@ -2623,6 +2755,21 @@ mod tests {
             "with the bulk load gone the estimate must fall under the 20 ms threshold: {after:?}"
         );
         assert_eq!(report.configured, "balanced/1");
+
+        // ADR-0056 decision 12's row-independent measurement: the wait is timed at the relay
+        // boundary, not inferred from a numerator the row caps.
+        let waits = summary
+            .waits
+            .as_ref()
+            .expect("the relay boundary must report grant-to-write waits");
+        assert!(
+            waits.configured.count > 0,
+            "the configured-row wait must be measured, not assumed: {waits:?}"
+        );
+        assert!(
+            waits.configured.p95_us > 0,
+            "a shaped bottleneck must make the wait non-zero: {waits:?}"
+        );
     }
 
     /// Full Baseline scenarios; prints one JSON line per scenario. Not part of the normal run.

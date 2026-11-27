@@ -49,6 +49,32 @@ use crate::policy_sched::{
 /// Runtime switch read by `tunnel::yamux_config` and `tunnel::policy_session`.
 pub(crate) const ENV_POLICY: &str = "BAFT_TUNNEL_POLICY_PACK";
 
+/// One direction's grant-to-write waits, each tagged with the quantum in force when the grant was
+/// made (ADR-0056 decision 12, 2026-11-27). This is the row-independent measurement: it times the
+/// wait itself instead of dividing bytes in flight — which the row caps — by a rate. Bounded, so a
+/// long session cannot grow it without limit.
+#[derive(Debug, Default)]
+struct WaitLog {
+    samples: Vec<(usize, Duration)>,
+}
+
+impl WaitLog {
+    fn record(&mut self, quantum: usize, waited: Duration) {
+        if self.samples.len() >= 8_192 {
+            self.samples.drain(..4_096);
+        }
+        self.samples.push((quantum, waited));
+    }
+}
+
+/// What the write boundary reports for one direction: the granted-but-unwritten counter it always
+/// keeps, plus the optional wait log (present only when something reads it — the `policy.adaptive`
+/// opt-in or a test build).
+struct DirectionMeter<'a> {
+    in_flight: &'a AtomicU64,
+    waits: Option<&'a Mutex<WaitLog>>,
+}
+
 /// Per-stream window when the switch is on without a size: Yamux's initial window, about 100 ms of
 /// queue in front of a 2.5 MB/s bottleneck.
 pub(crate) const DEFAULT_STREAM_WINDOW: u32 = 256 * 1024;
@@ -176,6 +202,9 @@ pub(crate) struct PolicySession {
     /// decision 4, amended 2026-11-27). The arbiter's queue is a rendezvous, so this is where a
     /// blocked write actually waits; the 1 Hz sample reads it alongside the arbiter's counters.
     in_flight: [AtomicU64; 2],
+    /// Grant-to-write wait logs, `Some` only when something will read them: the adaptive opt-in, or
+    /// a test build's harness. The default path records nothing and pays nothing.
+    waits: Option<[Mutex<WaitLog>; 2]>,
     next_flow: AtomicU64,
     /// `Some` only when `policy.adaptive` opted in (ADR-0056 decisions 9-10).
     adaptation: Option<Mutex<Adaptation>>,
@@ -239,6 +268,12 @@ impl PolicySession {
                 AtomicUsize::new(config.quantum_bytes),
             ],
             in_flight: [AtomicU64::new(0), AtomicU64::new(0)],
+            waits: (adaptive || cfg!(test)).then(|| {
+                [
+                    Mutex::new(WaitLog::default()),
+                    Mutex::new(WaitLog::default()),
+                ]
+            }),
             next_flow: AtomicU64::new(1),
             adaptation: adaptive.then(|| Mutex::new(Adaptation::new(configured))),
             #[cfg(test)]
@@ -270,6 +305,34 @@ impl PolicySession {
         }
     }
 
+    /// What the write boundary reports for the direction, for `pump_scheduled`.
+    fn meter(&self, direction: Direction) -> DirectionMeter<'_> {
+        match direction {
+            Direction::ToPeer => DirectionMeter {
+                in_flight: &self.in_flight[0],
+                waits: self.waits.as_ref().map(|logs| &logs[0]),
+            },
+            Direction::FromPeer => DirectionMeter {
+                in_flight: &self.in_flight[1],
+                waits: self.waits.as_ref().map(|logs| &logs[1]),
+            },
+        }
+    }
+
+    /// Grant-to-write waits recorded for the direction, tagged with the quantum in force at grant
+    /// time, for the ADR-0056 decision-12 harness.
+    #[cfg(test)]
+    pub(crate) fn waits(&self, direction: Direction) -> Vec<(usize, Duration)> {
+        let index = match direction {
+            Direction::ToPeer => 0,
+            Direction::FromPeer => 1,
+        };
+        self.waits
+            .as_ref()
+            .and_then(|logs| logs[index].lock().ok().map(|log| log.samples.clone()))
+            .unwrap_or_default()
+    }
+
     /// Every change adaptation made, for the evidence record.
     #[allow(dead_code)] // read by the measurement harness, which also builds outside `cfg(test)`
     pub(crate) fn changes(&self) -> Vec<DirectionChange> {
@@ -293,6 +356,17 @@ impl PolicySession {
                     adaptation.current(Direction::FromPeer),
                 )
             })
+    }
+
+    /// The same estimates scaled to the configured row (ADR-0056 decision 12's row-independent
+    /// reading), for the measurement harness.
+    #[allow(dead_code)] // read by the measurement harness, which also builds outside `cfg(test)`
+    pub(crate) fn normalised_estimates(&self) -> Vec<(Direction, Duration)> {
+        self.adaptation
+            .as_ref()
+            .and_then(|adaptation| adaptation.lock().ok())
+            .map(|adaptation| adaptation.normalised_history().to_vec())
+            .unwrap_or_default()
     }
 
     /// Every queueing-delay estimate adaptation computed, for the evidence record.
@@ -452,7 +526,7 @@ where
             idle,
             &from_peer,
             session.chunk(Direction::FromPeer),
-            session.in_flight(Direction::FromPeer),
+            session.meter(Direction::FromPeer),
             crate::session_status::add_from_peer,
         ),
         pump_scheduled(
@@ -461,7 +535,7 @@ where
             idle,
             &to_peer,
             session.chunk(Direction::ToPeer),
-            session.in_flight(Direction::ToPeer),
+            session.meter(Direction::ToPeer),
             crate::session_status::add_to_peer,
         )
     );
@@ -479,7 +553,7 @@ async fn pump_scheduled<R, W>(
     idle: Duration,
     flow: &FlowHandle,
     chunk: &AtomicUsize,
-    in_flight: &AtomicU64,
+    meter: DirectionMeter<'_>,
     count: fn(usize),
 ) -> io::Result<()>
 where
@@ -514,11 +588,22 @@ where
             // The grant exists and the bytes are not on the wire yet: raise the in-flight counter
             // for the duration of the write, so the 1 Hz sample can see a blocked write even when
             // the arbiter's own queue reads zero (ADR-0056 decision 4, amended 2026-11-27).
-            in_flight.fetch_add(grant as u64, Ordering::Relaxed);
+            meter.in_flight.fetch_add(grant as u64, Ordering::Relaxed);
+            // The row-independent wait: from the moment the grant exists to the moment its bytes are
+            // written. Recorded only when the opt-in (or a test build) asked for it.
+            let quantum = chunk.load(Ordering::Relaxed).max(1);
+            let granted_at = meter.waits.map(|_| Instant::now());
             let written_ok = writer.write_all(&buffer[written..written + grant]).await;
-            let _ = in_flight.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_sub(grant as u64))
-            });
+            let _ = meter
+                .in_flight
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    Some(current.saturating_sub(grant as u64))
+                });
+            if let (Some(log), Some(granted_at)) = (meter.waits, granted_at) {
+                if let Ok(mut log) = log.lock() {
+                    log.record(quantum, granted_at.elapsed());
+                }
+            }
             written_ok?;
             count(grant);
             written += grant;
