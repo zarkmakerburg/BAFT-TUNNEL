@@ -45,9 +45,10 @@ own gates against it.
 | `tokio` | 1.54.1 | MIT | 1.85 |
 
 The product already ships `rustls 0.23` + `ring`, `tokio`, `libc`, `rand` and `zeroize`, so the
-**recommended configuration adds only ten crates** to the 186-package product lock:
-`quinn`, `quinn-proto`, `quinn-udp`, `lru-slab`, `rand_pcg`, `rustc-hash`, `tinyvec`, `tracing`,
-`tracing-core` and the scratch package itself.
+**recommended configuration adds only nine crates** to the 186-package product lock:
+`quinn`, `quinn-proto`, `quinn-udp`, `lru-slab`, `rand_pcg`, `rustc-hash`, `tinyvec`, `tracing` and
+`tracing-core`. (The scratch probe itself is the tenth package in its metadata, not a product
+addition.)
 
 | Added crate | Version | Licence | `rust-version` |
 |---|---|---|---|
@@ -110,7 +111,7 @@ is not a substitute for the independent review in gate (b).
 | Licence | Apache-2.0 AND ISC — allowed | ISC/Apache-2.0/MIT/BSD-3-Clause expression — allowed |
 | Advisory status | clean | clean |
 | `deny.toml` | passes unchanged | passes unchanged |
-| Cost | already in the product; ~52 s clean dependency build; 2.68 MB unstripped / 2.17 MB stripped for the probe | another backend (~+1 MB of Rust plus a C library); 99 s clean dependency build; 5.28 MB unstripped / 4.62 MB stripped; needs a C toolchain at build time |
+| Cost | already in the product; ~56 s clean dependency build; 2.68 MB unstripped / 2.17 MB stripped for the probe | another backend (~+1 MB of Rust plus a C library); 99 s clean dependency build; 5.28 MB unstripped / 4.62 MB stripped; needs a C toolchain at build time |
 | Fit | same provider the product already uses | FIPS-capable, but duplicates the crypto stack and doubles the audit surface |
 
 The amendment keeps `ring`. `aws-lc-rs` is not rejected on policy grounds — it passes — but it adds a
