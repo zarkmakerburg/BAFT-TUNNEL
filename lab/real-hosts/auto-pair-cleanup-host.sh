@@ -4,6 +4,10 @@ set -Eeuo pipefail
 umask 077
 
 die() { echo "auto-pair cleanup: $*" >&2; exit 2; }
+
+CLEANUP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=lab/real-hosts/lib-runtime-children.sh
+source "$CLEANUP_DIR/lib-runtime-children.sh"
 [[ "$#" -ge 4 ]] || die "expected SHA256 PACKAGE_DIR AGENT_STATE_DIR REMOTE_DIR and scoped cleanup arguments"
 
 EXPECTED_SHA="$1"
@@ -16,6 +20,9 @@ UB=/usr/local/bin/baft-tunnel
 EB=/etc/baft-tunnel
 STATE_DIR=/var/lib/baft-tunnel-agent
 CONTROL_DIR=/run/baft-tunnel/control
+# The control-manage socket directory: product-owned, declared by the shipped tmpfiles.d entry and
+# recreated by `baft-tunnel-control-manage@.socket`. Its presence is not a LAB leftover.
+MANAGE_DIR=/run/baft-tunnel/manage
 UNIT_DIR=/etc/systemd/system
 ENGINE_STORE=/usr/local/lib/baft-tunnel-engines
 BACKUP_DIRS=()
@@ -347,10 +354,14 @@ elif [[ -e "$CONTROL_DIR" || -L "$CONTROL_DIR" ]]; then
   die "control path has an unexpected type; preserving it"
 fi
 if [[ -d /run/baft-tunnel ]]; then
-  for child in /run/baft-tunnel/*; do
-    [[ -e "$child" || -L "$child" ]] || continue
-    [[ "$child" == "$CONTROL_DIR" ]] || die "unexpected runtime resource $child; preserving it"
-  done
+  # Exactly two children are the product's own: control (checked above) and manage. Both are
+  # validated; any third entry stops the cleanup instead of being removed.
+  baft_runtime_children_known /run/baft-tunnel "$CONTROL_DIR" "$MANAGE_DIR" ||
+    die "unexpected runtime resource under /run/baft-tunnel; preserving it"
+  if [[ -e "$MANAGE_DIR" || -L "$MANAGE_DIR" ]]; then
+    baft_manage_dir_known "$MANAGE_DIR" ||
+      die "manage runtime directory changed; preserving it"
+  fi
 fi
 
 # Refuse to uninstall if the binary, installed scripts, templates, or library tree changed.
@@ -410,6 +421,9 @@ fi
 
 # The control directory was proved empty above. No config purge is used.
 bash "$PKG/scripts/uninstall.sh" --stop >/dev/null
+# Uninstall removes the control and manage directories; if either survived, stop instead of
+# deleting it here, so an unrecognised resource is never removed by this helper.
+[[ ! -e "$MANAGE_DIR" && ! -L "$MANAGE_DIR" ]] || die "manage runtime directory survived uninstall; preserving it"
 rmdir /run/baft-tunnel 2>/dev/null || true
 systemctl daemon-reload
 
