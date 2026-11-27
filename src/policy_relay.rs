@@ -401,7 +401,9 @@ where
         }
         let mut written = 0;
         while written < read {
-            let want = read - written;
+            // A change can land while this read is in flight, so the offer is re-capped to the
+            // quantum in force now: the arbiter refuses an offer past its row's cap.
+            let want = (read - written).min(chunk.load(Ordering::Relaxed).max(1));
             let grant = flow.acquire(want).await?;
             if grant > want {
                 return Err(io::Error::new(

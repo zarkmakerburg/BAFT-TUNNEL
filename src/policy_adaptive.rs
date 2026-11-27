@@ -55,6 +55,10 @@ pub(crate) const LADDER: [PolicyProfile; 5] = [
 pub(crate) struct Signals {
     /// Tunnel-internal queueing-delay estimate for the direction being adapted.
     pub queue_delay: Duration,
+    /// Whether this sample had a delivered-byte rate to derive [`Self::queue_delay`] from. When
+    /// it did not, the delay is not an observation and the controller's delay-based rules must
+    /// not run on it; the guard and overflow counters are still real and still checked.
+    pub estimated: bool,
     /// Cumulative scheduler refusals at sample time.
     pub overflow_refusals: u64,
     /// Cumulative `Guarded` interface violations at sample time.
@@ -210,6 +214,15 @@ impl Controller {
                 return None;
             }
             self.suspended_until = None;
+        }
+
+        if !signals.estimated {
+            // No rate, no estimate: the delay rules have nothing to act on, so the streaks must
+            // rebuild from real samples. A pending verification waits for the next estimate
+            // instead of being passed by a value that was never measured.
+            self.down_streak = 0;
+            self.up_streak = 0;
+            return None;
         }
 
         // Verify a pending down-step before considering another change.
@@ -486,24 +499,29 @@ impl Adaptation {
             (0, Direction::ToPeer, to_peer),
             (1, Direction::FromPeer, from_peer),
         ] {
-            let mut estimated = false;
-            let signals = counters.map(|counters| {
-                let granted = match self.previous[index] {
-                    Some(previous) if counters.granted_bytes >= previous.granted_bytes => {
-                        counters.granted_bytes - previous.granted_bytes
-                    }
-                    // First sample or a reset counter: no interval rate to claim.
-                    _ => 0,
-                };
-                estimated = granted > 0;
-                Signals {
-                    queue_delay: queue_delay(counters.queued_bytes, granted, interval),
-                    overflow_refusals: counters.overflow_refusals,
-                    violations: counters.violations,
+            // The rate over the interval, or zero when there is none: a first sample, a reset
+            // counter, or a direction that delivered nothing.
+            let granted = counters.map_or(0, |counters| match self.previous[index] {
+                Some(previous) if counters.granted_bytes >= previous.granted_bytes => {
+                    counters.granted_bytes - previous.granted_bytes
                 }
+                _ => 0,
             });
             self.previous[index] = counters;
-            if let Some(signals) = signals.filter(|_| estimated) {
+            // No delivered bytes means no rate to divide by, so there is no estimate. That is a
+            // missed sample (ADR-0056 decision 4), never a measured zero: a zero would advance
+            // the low-delay streak and satisfy a pending verification with data that does not
+            // exist.
+            // No delivered bytes means no rate to divide by, so the delay is not an estimate;
+            // the counters are still sampled, because a guard violation or an overflow is real
+            // whatever the rate. The tick is never turned into a measured zero.
+            let signals = counters.map(|counters| Signals {
+                queue_delay: queue_delay(counters.queued_bytes, granted, interval),
+                estimated: granted > 0,
+                overflow_refusals: counters.overflow_refusals,
+                violations: counters.violations,
+            });
+            if let Some(signals) = signals.filter(|signals| signals.estimated) {
                 if self.history.len() >= 4_096 {
                     self.history.drain(..2_048);
                 }
@@ -534,6 +552,7 @@ mod tests {
     fn sample(delay_ms: u64) -> Option<Signals> {
         Some(Signals {
             queue_delay: Duration::from_millis(delay_ms),
+            estimated: true,
             overflow_refusals: 0,
             violations: 0,
         })
@@ -775,6 +794,7 @@ mod tests {
 
         let violation = Some(Signals {
             queue_delay: Duration::from_millis(200),
+            estimated: true,
             overflow_refusals: 0,
             violations: 1,
         });
@@ -805,6 +825,7 @@ mod tests {
 
         let violation = Some(Signals {
             queue_delay: Duration::from_millis(200),
+            estimated: true,
             overflow_refusals: 0,
             violations: 1,
         });
@@ -834,6 +855,7 @@ mod tests {
         step_down(&mut controller, 0, 200);
         let overflow = Some(Signals {
             queue_delay: Duration::from_millis(200),
+            estimated: true,
             overflow_refusals: 1,
             violations: 0,
         });
@@ -920,6 +942,41 @@ mod tests {
         assert_eq!(
             adaptation.history()[0],
             (Direction::ToPeer, Duration::from_millis(60))
+        );
+    }
+
+    #[test]
+    fn a_direction_with_no_delivered_bytes_feeds_no_estimate() {
+        let mut adaptation = Adaptation::new(PolicyProfile::Balanced);
+        // Step down on three 60 ms samples, so a pending verification and a changed row exist.
+        for second in 1..=4 {
+            adaptation.tick(
+                at(second),
+                counters(150_000, second * 2_500_000),
+                counters(0, second * 2_500_000),
+            );
+        }
+        assert_eq!(adaptation.current(Direction::ToPeer), PolicyProfile::Gaming);
+        let history = adaptation.history().len();
+        // The arbiter now reports nothing delivered in either direction: there is no rate, so
+        // there is no estimate. A fabricated zero would cancel the pending verification as an
+        // improvement (0 ms is under any baseline) and start an up-streak; instead only the
+        // counters are read, the delay rules stay silent, and the row is held.
+        let flat = counters(0, 4 * 2_500_000);
+        let mut changes = Vec::new();
+        for second in 5..=7 {
+            changes.extend(adaptation.tick(at(second), flat, flat));
+        }
+        assert!(changes.is_empty(), "a tick with no rate changes nothing");
+        assert_eq!(
+            adaptation.history().len(),
+            history,
+            "no estimate is recorded"
+        );
+        assert_eq!(
+            adaptation.current(Direction::ToPeer),
+            PolicyProfile::Gaming,
+            "the row is held while the delay is unknown"
         );
     }
 

@@ -120,7 +120,10 @@ impl Scheduler {
         self.rotation.retain(|candidate| *candidate != flow);
     }
 
-    /// Offers `bytes` to a flow's queue. Refuses rather than growing past the bound.
+    /// Offers `bytes` to a flow's queue. Refuses rather than growing past the bound. The relay
+    /// uses [`Self::offer`] instead, because it re-offers a span it already queued; this additive
+    /// form is what the scheduler's own tests model several flows with.
+    #[cfg(test)]
     pub fn enqueue(&mut self, flow: FlowId, bytes: usize) -> Enqueue {
         let Some(state) = self.flows.get(&flow) else {
             return Enqueue::NotScheduled;
@@ -137,6 +140,28 @@ impl Scheduler {
             state.queued = total;
         }
         if !self.rotation.contains(&flow) {
+            self.rotation.push_back(flow);
+        }
+        Enqueue::Accepted
+    }
+
+    /// Records the span a flow's single in-flight request covers, replacing whatever it offered
+    /// before. The relay re-offers the bytes a grant left unwritten, and those bytes are already
+    /// in this queue, so adding them again would count them twice and could answer a later
+    /// request with more bytes than it offered. A span past the cap is refused exactly as
+    /// [`Self::enqueue`] refuses it.
+    pub fn offer(&mut self, flow: FlowId, bytes: usize) -> Enqueue {
+        if !self.flows.contains_key(&flow) {
+            return Enqueue::NotScheduled;
+        }
+        if bytes > self.config.max_queued_bytes {
+            self.overflow_refusals += 1;
+            return Enqueue::Full;
+        }
+        if let Some(state) = self.flows.get_mut(&flow) {
+            state.queued = bytes;
+        }
+        if bytes > 0 && !self.rotation.contains(&flow) {
             self.rotation.push_back(flow);
         }
         Enqueue::Accepted
@@ -380,7 +405,7 @@ async fn run(config: SchedulerConfig, mut commands: mpsc::Receiver<Command>) {
                 if scheduler.class_of(flow).is_none() {
                     scheduler.register(flow, Class::Balanced);
                 }
-                match scheduler.enqueue(flow, bytes) {
+                match scheduler.offer(flow, bytes) {
                     Enqueue::Accepted => {
                         waiting.insert(flow, reply);
                     }
@@ -535,6 +560,42 @@ mod tests {
         assert_eq!(scheduler.overflow_refusals(), 1);
         assert_eq!(scheduler.enqueue(flow, usize::MAX), Enqueue::Full);
         assert_eq!(scheduler.overflow_refusals(), 2);
+    }
+
+    #[test]
+    fn a_reoffered_remainder_is_not_counted_twice_and_drains_to_zero() {
+        let mut scheduler = scheduler();
+        let flow = FlowId(5);
+        scheduler.register(flow, Class::Balanced);
+        // The relay offers the span its request covers; a grant of one quantum leaves the rest
+        // queued, and the relay's next offer repeats that span rather than adding to it.
+        assert_eq!(scheduler.offer(flow, 2_500), Enqueue::Accepted);
+        assert_eq!(scheduler.next_grant(4_096), Some((flow, 1_000)));
+        assert_eq!(scheduler.queued_bytes(flow), 1_500);
+        assert_eq!(scheduler.offer(flow, 1_500), Enqueue::Accepted);
+        assert_eq!(
+            scheduler.queued_bytes(flow),
+            1_500,
+            "re-offering the remainder must not add it again"
+        );
+        assert_eq!(scheduler.next_grant(4_096), Some((flow, 1_000)));
+        assert_eq!(scheduler.queued_bytes(flow), 500);
+        assert_eq!(scheduler.offer(flow, 500), Enqueue::Accepted);
+        assert_eq!(scheduler.next_grant(4_096), Some((flow, 500)));
+        assert_eq!(
+            scheduler.queued_bytes(flow),
+            0,
+            "a complete read leaves no queued bytes"
+        );
+        // A read smaller than the quantum is granted whole, and also leaves the queue empty.
+        assert_eq!(scheduler.offer(flow, 300), Enqueue::Accepted);
+        assert_eq!(scheduler.next_grant(4_096), Some((flow, 300)));
+        assert_eq!(scheduler.queued_bytes(flow), 0);
+        // The cap bounds the span one request covers, not a sum of past offers.
+        assert_eq!(scheduler.offer(flow, 4_001), Enqueue::Full);
+        assert_eq!(scheduler.overflow_refusals(), 1);
+        assert_eq!(scheduler.offer(flow, 0), Enqueue::Accepted);
+        assert_eq!(scheduler.next_grant(4_096), None);
     }
 
     #[test]
