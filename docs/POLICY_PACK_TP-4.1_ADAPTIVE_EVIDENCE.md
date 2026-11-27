@@ -19,6 +19,10 @@ the concrete input for TP-4.2.
   (`cargo test --release --features policy-pack -- adaptive_controller_experiments --ignored
   --nocapture`), `POLICY_ADAPTIVE_SECONDS=8`, `POLICY_ADAPTIVE_LONG_SECONDS=180`.
 - Harness revision: `4a20d1df` (the commit that adds the wiring and this arm).
+- Review follow-up: the commit after it re-caps a write's offer to the live quantum, makes a
+  re-offer replace rather than add its queued span, and feeds a no-delivery tick as a missed
+  sample instead of a zero. None of those changes any number below: the run delivered bytes in
+  every sampled direction and made no change, so only the no-traffic path behaves differently.
 - Arms, both built from the shipped table by test-only constructors, no hand-copied numbers:
   - `sched-w262144-q16384-cap65536` — the static `balanced/1` row (control).
   - `adaptive-w262144-from-balanced/1` — the same row plus the ADR-0056 loop, which may only move
@@ -27,14 +31,14 @@ the concrete input for TP-4.2.
   process, joined by a userspace rate-limiting proxy over loopback TCP. The adaptive loop runs on
   the client session's two arbiters. No TLS/Noise handshake, no NIC, no second host.
 - Workload: three bulk flows, each with its own echo stream, ping interval 20 ms, shaped at
-  250 000 / 500 000 / 1 000 000 B/s per flow, two repeats per arm and rate, plus one 180 s run at
+  250 000 / 500 000 / 1 000 000 B/s shared by the three flows on the one connection, two repeats per arm and rate, plus one 180 s run at
   250 000 B/s so a down-step could reach the 30 s dwell and the 60 s verification window.
 - Environment: four-core Linux `4.19.0-gvisor` sandbox (`x86_64`), one process, no other load,
   2026-11-26. One invocation, 300.95 s, run `tp-4.1-local-2026-11-26`.
 
 ## 2. What the loop saw and did
 
-| Rate (B/s per flow) | Arm | flow p50, median (range) ms | flow p95, median ms | CPU, median µs | sender handoff, median MB | split |
+| Rate (B/s, shared connection) | Arm | flow p50, median (range) ms | flow p95, median ms | CPU, median µs | sender handoff, median MB | split |
 |---|---|---|---|---|---|---|
 | 250 000 | static `balanced/1` | 2 829.6 (2 534.1–2 990.9) | 3 269.4 | 480 000 | 3.52 | 0.948 |
 | 250 000 | adaptive | 2 686.2 (2 210.0–3 046.5) | 3 236.6 | 405 000 | 3.59 | 0.896 |
