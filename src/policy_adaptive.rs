@@ -401,6 +401,10 @@ fn ladder_index(profile: PolicyProfile) -> usize {
 pub(crate) struct Counters {
     /// Bytes queued in the direction's arbiter at sample time.
     pub queued_bytes: usize,
+    /// Bytes the arbiter granted that the relay's writer has not finished writing (ADR-0056
+    /// decision 4, amended 2026-11-27). The arbiter's queue is a rendezvous, so this is where a
+    /// blocked write actually waits; `queued_bytes` keeps its own meaning and is not redefined.
+    pub in_flight_bytes: usize,
     /// Cumulative bytes the arbiter granted, for the rate over the interval.
     pub granted_bytes: u64,
     /// Cumulative scheduler refusals (a queue hit its cap).
@@ -517,7 +521,16 @@ impl Adaptation {
             // the counters are still sampled, because a guard violation or an overflow is real
             // whatever the rate. The tick is never turned into a measured zero.
             let signals = counters.map(|counters| Signals {
-                queue_delay: queue_delay(counters.queued_bytes, granted, interval),
+                // The amended decision-4 estimate counts both kinds of waiting bytes: those still
+                // queued in the arbiter and those already granted but not yet written. `queued_bytes`
+                // itself is unchanged; the sum is where the new signal enters.
+                queue_delay: queue_delay(
+                    counters
+                        .queued_bytes
+                        .saturating_add(counters.in_flight_bytes),
+                    granted,
+                    interval,
+                ),
                 estimated: granted > 0,
                 overflow_refusals: counters.overflow_refusals,
                 violations: counters.violations,
@@ -880,6 +893,7 @@ mod tests {
     fn counters(queued: usize, granted: u64) -> Option<Counters> {
         Some(Counters {
             queued_bytes: queued,
+            in_flight_bytes: 0,
             granted_bytes: granted,
             overflow_refusals: 0,
             violations: 0,
@@ -906,6 +920,28 @@ mod tests {
         assert_eq!(
             queue_delay(1_000, 0, Duration::from_secs(1)),
             Duration::ZERO
+        );
+    }
+
+    /// ADR-0056 decision 4, amended 2026-11-27: bytes the arbiter granted but the writer has not
+    /// finished writing are waiting bytes too. A direction whose arbiter queue reads zero still has
+    /// a non-zero estimate while its write is blocked, and `queued_bytes` keeps its own meaning.
+    #[test]
+    fn the_estimate_counts_granted_but_unwritten_bytes() {
+        let mut adaptation = Adaptation::new(PolicyProfile::Balanced);
+        adaptation.tick(at(0), counters(0, 0), counters(0, 0));
+        let in_flight = Some(Counters {
+            queued_bytes: 0,
+            in_flight_bytes: 16_384,
+            granted_bytes: 16_384,
+            overflow_refusals: 0,
+            violations: 0,
+        });
+        adaptation.tick(at(1), in_flight, counters(0, 0));
+        assert_eq!(
+            adaptation.history(),
+            &[(Direction::ToPeer, Duration::from_secs(1))],
+            "one 16 KiB grant held for one second at a 16 KiB/s grant rate is 1 s of waiting"
         );
     }
 
@@ -1021,6 +1057,7 @@ mod tests {
         );
         let guarded = Some(Counters {
             queued_bytes: 300_000,
+            in_flight_bytes: 0,
             granted_bytes: 10_000_000,
             overflow_refusals: 0,
             violations: 1,
