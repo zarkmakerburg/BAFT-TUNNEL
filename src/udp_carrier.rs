@@ -504,4 +504,203 @@ mod tests {
             endpoint.wait_idle().await;
         });
     }
+
+    // Gate (f): fail-closed and DoS behaviour that a test can pin. The analysis, including every
+    // claim these tests do not establish, is docs/TP_U_FAIL_CLOSED_AND_DOS.md.
+
+    fn certified() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
+        let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("generate test certificate");
+        (
+            CertificateDer::from(certified.cert.der().to_vec()),
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+                certified.signing_key.serialize_der(),
+            )),
+        )
+    }
+
+    /// A handshake that cannot verify the peer fails closed: no connection exists, so nothing can
+    /// be sent on the data plane, and there is no fallback carrier to silently switch to.
+    #[test]
+    fn handshake_failure_is_fail_closed() {
+        let (server_cert, server_key) = certified();
+        let (other_cert, _other_key) = certified();
+        runtime().block_on(async move {
+            let config = server_config(server_cert, server_key).expect("server config");
+            let endpoint = quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap())
+                .expect("bind server");
+            let address = endpoint.local_addr().expect("server address");
+            let client_config = client_config(other_cert).expect("client config");
+            let client_endpoint =
+                quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).expect("bind client");
+            // Fail closed means no session is obtained: the attempt errors or is still unresolved
+            // when the bound expires. A successful connection is the only failing outcome.
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(2),
+                connect(&client_endpoint, client_config, address),
+            )
+            .await;
+            if let Ok(Ok(_)) = outcome {
+                panic!("a client that trusts another certificate must not connect");
+            }
+            client_endpoint.close(0_u32.into(), b"done");
+            endpoint.close(0_u32.into(), b"done");
+        });
+    }
+
+    /// A closed session fails reads instead of hanging, so a caller cannot mistake a dead carrier
+    /// for a slow one and wait forever.
+    #[test]
+    fn closed_session_fails_reads_instead_of_hanging() {
+        let (certificate, key) = certified();
+        runtime().block_on(async move {
+            let config = server_config(certificate.clone(), key).expect("server config");
+            let endpoint = quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap())
+                .expect("bind server");
+            let address = endpoint.local_addr().expect("server address");
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                let connection = accept(&endpoint).await.expect("accept");
+                answer_hello(&connection, "server", [1_u8; NONCE_LEN])
+                    .await
+                    .expect("hello");
+                let outcome =
+                    tokio::time::timeout(Duration::from_secs(10), recv_datagram(&connection)).await;
+                let _ = tx.send(matches!(outcome, Ok(Err(_))));
+                endpoint.close(0_u32.into(), b"done");
+            });
+            let client_config = client_config(certificate).expect("client config");
+            let client_endpoint =
+                quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).expect("bind client");
+            let connection = connect(&client_endpoint, client_config, address)
+                .await
+                .expect("connect");
+            send_hello(&connection, "client", [2_u8; NONCE_LEN])
+                .await
+                .expect("hello");
+            connection.close(0_u32.into(), b"client done");
+            let failed_closed = tokio::time::timeout(Duration::from_secs(10), rx)
+                .await
+                .expect("server read did not finish within 10 s")
+                .expect("server task result");
+            assert!(
+                failed_closed,
+                "a read on a closed session must return an error, not wait"
+            );
+            client_endpoint.close(0_u32.into(), b"done");
+        });
+    }
+
+    /// Malformed application frames and oversize sends are refused per message: the session stays
+    /// usable, so a hostile or buggy peer cannot end a healthy carrier with one bad datagram.
+    #[test]
+    fn malformed_and_oversize_datagrams_fail_closed_per_message() {
+        let (certificate, key) = certified();
+        runtime().block_on(async move {
+            let config = server_config(certificate.clone(), key).expect("server config");
+            let endpoint = quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap())
+                .expect("bind server");
+            let address = endpoint.local_addr().expect("server address");
+            tokio::spawn(async move {
+                let connection = accept(&endpoint).await.expect("accept");
+                answer_hello(&connection, "server", [3_u8; NONCE_LEN])
+                    .await
+                    .expect("hello");
+                loop {
+                    match recv_datagram(&connection).await {
+                        Ok((sequence, payload)) => {
+                            send_datagram(&connection, sequence, &payload)
+                                .await
+                                .expect("echo");
+                        }
+                        Err(_) => continue,
+                    }
+                }
+            });
+            let client_config = client_config(certificate).expect("client config");
+            let client_endpoint =
+                quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).expect("bind client");
+            let connection = connect(&client_endpoint, client_config, address)
+                .await
+                .expect("connect");
+            send_hello(&connection, "client", [4_u8; NONCE_LEN])
+                .await
+                .expect("hello");
+
+            connection
+                .send_datagram(Vec::from(b"not-a-frame").into())
+                .expect("a hostile raw datagram is sent to the peer");
+            assert!(
+                send_datagram(&connection, 1, &[0_u8; MAX_DATAGRAM])
+                    .await
+                    .is_err(),
+                "an oversized frame must be refused before it reaches the wire"
+            );
+
+            send_datagram(&connection, 9, b"still-here")
+                .await
+                .expect("send after refusals");
+            let (sequence, payload) =
+                tokio::time::timeout(Duration::from_secs(10), recv_datagram(&connection))
+                    .await
+                    .expect("echo timed out")
+                    .expect("echo failed");
+            assert_eq!(sequence, 9);
+            assert_eq!(payload, b"still-here");
+            connection.close(0_u32.into(), b"done");
+            client_endpoint.close(0_u32.into(), b"done");
+        });
+    }
+
+    /// Datagrams are never retransmitted: what the peer receives is what arrived once, so a lost
+    /// datagram is counted as loss and never replayed behind the application's back.
+    #[test]
+    fn datagram_loss_is_not_retransmitted() {
+        let (certificate, key) = certified();
+        runtime().block_on(async move {
+            let config = server_config(certificate.clone(), key).expect("server config");
+            let endpoint = quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap())
+                .expect("bind server");
+            let address = endpoint.local_addr().expect("server address");
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                let connection = accept(&endpoint).await.expect("accept");
+                answer_hello(&connection, "server", [5_u8; NONCE_LEN])
+                    .await
+                    .expect("hello");
+                let mut sequences = Vec::new();
+                while let Ok((sequence, _payload)) = recv_datagram(&connection).await {
+                    sequences.push(sequence);
+                }
+                let _ = tx.send(sequences);
+                endpoint.close(0_u32.into(), b"done");
+            });
+            let client_config = client_config(certificate).expect("client config");
+            let client_endpoint =
+                quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).expect("bind client");
+            let connection = connect(&client_endpoint, client_config, address)
+                .await
+                .expect("connect");
+            send_hello(&connection, "client", [6_u8; NONCE_LEN])
+                .await
+                .expect("hello");
+            for sequence in 1..=3_u64 {
+                send_datagram(&connection, sequence, b"one-shot")
+                    .await
+                    .expect("send");
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            connection.close(0_u32.into(), b"done");
+            let sequences = tokio::time::timeout(Duration::from_secs(10), rx)
+                .await
+                .expect("server did not finish")
+                .expect("server task result");
+            assert!(sequences.len() <= 3, "the peer saw a retransmission");
+            let mut unique = sequences.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(unique.len(), sequences.len(), "a sequence arrived twice");
+            client_endpoint.close(0_u32.into(), b"done");
+        });
+    }
 }
