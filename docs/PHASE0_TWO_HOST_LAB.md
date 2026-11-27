@@ -30,6 +30,19 @@ Never put private keys, host-key material, or host addresses in repository files
 
 The workflow is `.github/workflows/phase0-two-host-lab.yml`. It uses strict host-key verification and temporary runner credentials, removed in an `always()` cleanup step.
 
+## Re-pin host keys after an address change
+
+`LAB_IRAN_HOST` / `LAB_ABROAD_HOST` and `LAB_SSH_KNOWN_HOSTS` are independent secrets. Changing only the addresses leaves the pinned `known_hosts` pointing at the old ones, and every real-host workflow then fails closed at the first SSH call with `No ED25519 host key is known for … and you have requested strict checking`. That is the intended behaviour; do not add `accept-new` or relax `StrictHostKeyChecking` to get past it.
+
+Re-pin with the operator-run helper (local machine, never CI):
+
+1. `lab/real-hosts/re-pin-host-keys.sh --iran <iran-address> --abroad <abroad-address> --expect-iran SHA256:… --expect-abroad SHA256:…`
+2. Copy both fingerprints from the provider console for the independent check. A mismatch means the address now resolves to a different machine; stop and investigate.
+3. Paste the produced (mode `0600`) file into the `baft-tunnel-lab` Environment secret `LAB_SSH_KNOWN_HOSTS`.
+4. Re-run the read-only preflight.
+
+The helper prints fingerprints only; the known_hosts lines are written to a private file and printed only with an explicit `--print-known-hosts`. Its contract test is `lab/real-hosts/test-re-pin-host-keys.sh` (real `ssh-keygen` key material, `ssh-keyscan` mocked, no network).
+
 ## Safety and evidence limits
 
 The preflight reads OS/kernel/architecture/tool availability and performs TCP connection probes from Iran to abroad on configured ports. It does not install software, write persistent remote files, alter firewall/routing, restart services, or reboot either host.
