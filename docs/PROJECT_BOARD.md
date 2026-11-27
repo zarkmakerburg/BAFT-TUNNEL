@@ -2,6 +2,41 @@
 
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
+## به‌روزرسانی 2026-11-27 (بستن هفت نقص PANEL_REDESIGN_PARITY با تست پین‌کننده)
+
+- **هفت نقص بسته شد.** pillهای hardcoded `plan/apply` حذف شدند و جایشان یادداشت fa/en آمد (Agent این‌ها را capability گزارش نمی‌کند)؛ `?? 0` در سه نقطه با `totalOrNull`/«نامعلوم» جایگزین شد تا مقدار غایب صفر نشود؛ پیام ۲۴ساعته با `longHistoryNotice` بین «تاریخچهٔ ناموجود» و «بازهٔ خالی» تفکیک شد؛ سلول ناموفق نوار سلامت با `cellGeometry` کوتاه‌تر شد و راهنمای متنی ✓/✕ گرفت؛ برچسب‌های نقشه از SVG مقیاس‌پذیر بیرون آمدند و در `figcaption.geo-pins` با `--fs-1` نشستند؛ آیکون collapse با `className="flip"` در RTL آینه شد؛ و dim حالت stale (`.shell.is-stale .view`) حذف شد و stale به‌صورت Pill متنی نمایش داده می‌شود.
+- **تست‌ها:** `panel-react/test/panel-defects.test.mjs` — ۳ تست واحد روی helperهای خالص (`series.mjs`، `history-view.mjs`، `health-strip.mjs`) و ۷ assertion روی منبع/CSS. هر هفت مورد جهش خلاف‌جهت شد و تست مربوط شکست، سپس بازگردانده شد.
+- **چک‌های پنل:** typecheck سبز، `npm test` ۲۲/۲۲، `check:i18n` با ۱۰۳۸ کلید در هر زبان، `build` و `check:dist` سبز. این پکیج اسکریپت lint ندارد؛ چیزی به‌عنوان lint ادعا نمی‌شود.
+- **ماتریس Rust:** دست‌نخورده و سبز (fmt، clippy هر دو حالت، default ۴۷۰ pass، `policy-pack` ۵۴۴ pass، ۰ fail). بدون merge/tag/release؛ پیش‌فرض‌ها و `policy.adaptive` دست‌نخورده.
+
+## به‌روزرسانی 2026-11-27 (بازبینی تازهٔ همین پاس + تطبیق ادعاهای PANEL_REDESIGN_PARITY با کد)
+
+- **ساده‌سازی بدون تغییر رفتار:** `delivery_probe` دیگر سه‌تایی مبهم `(u64, Duration, u64)` برنمی‌گرداند؛ `(Delivered, cpu_us)` می‌دهد و `relay_cpu_probe`/`delivered_goodput` فقط همان را بازبسته‌بندی می‌کنند. دو تست goodput که تنها در arm تفاوت داشتند در یک تست با آرایهٔ armها ادغام شدند (پس با feature یک تست کمتر و در حالت پیش‌فرض بی‌تغییر، چون تست دوم feature-gated بود). در `control_socket` شرط نوع `S_IFMT` حذف شد چون زیرمجموعهٔ مقایسهٔ `st_dev`/`st_ino` بود؛ جهش خلاف‌جهت نشان داد همین مقایسهٔ inode است که سیم‌لینک را روی 9p رد می‌کند. توضیح‌های `policy_sched`/`policy_relay` کوتاه شد.
+- **تطبیق پنل:** [PANEL_REDESIGN_PARITY.md](PANEL_REDESIGN_PARITY.md) با `panel-react/src` تطبیق داده شد: wizard سه‌مرحله‌ای است نه شش‌مرحله‌ای؛ pairing با AutoPair (ADR-0050) جای bundle دستی را گرفته و CSR اصلاً منتقل نشده؛ نقشه ساخته شده (پس «maps» از فهرست «ساخته‌نشده» حذف شد)؛ ادعای «stale با خط بالای صفحه به‌جای dim» دقیق نبود (`.shell.is-stale .view{opacity:.82}` هنوز در CSS هست)؛ و از فهرست «هنوز باز»، چهار مورد واقعاً بسته شده بود (aria-current در drawer، حاشیهٔ RTL، live region توست، remount زبان). شش مورد باقی‌مانده در همان روز با تست پین‌کننده بسته شد؛ بخش «Closed on 2026-11-27» در همان سند.
+- **برچسب‌ها:** تطبیق پنل **خوانده‌شده از کد** است و مرورگر اجرا نشد؛ اسکرین‌شات/axe همان نسخهٔ قبلی می‌ماند. ماتریس: fmt سبز؛ clippy هر دو حالت سبز؛ default ۴۷۰ pass / ۰ fail؛ با `policy-pack` ۵۴۴ pass / ۰ fail؛ بدون commit/PR/tag.
+
+## به‌روزرسانی 2026-11-27 (TP-3.5 — goodput تحویل‌شده در سینک اندازه‌گیری شد؛ tuple واقعی هنوز LAB)
+
+- **چرا این مأموریت:** در `REMAINING_WORK_PLAN` و roadmap، تنها معیار بازِ مسیر `v0.4.0` که نه به LAB و نه به (b)/(e) وابسته است، «delivered goodput» (اولین معیار پذیرش #237) بود که خود سند می‌گفت harness نمی‌تواند بدهد. بقیهٔ TP-3.x/4.x فقط پنجرهٔ معلق LAB می‌خواهند و ۵.۱–۵.۳ بسته‌اند.
+- **کار:** در `src/policy_baseline.rs` مسیر جدید `delivery_probe` بایت‌های خوانده‌شده در سینک را می‌شمارد، بازهٔ دقیق را از اولین نوشتن تا اتمام سینک می‌گیرد و `delivered_goodput` نرخ را از همان بازه می‌سازد؛ `relay_cpu_probe` روی همین probe بازنویسی شد بدون تغییر رفتار قبلی‌اش.
+- **تست:** `delivered_goodput_is_measured_at_the_sink_over_an_exact_interval` (arm پایه و، با feature، ردیف `Balanced`)؛ سبز، و در اجرای release شواهد ۶۴MiB/دو تکرار همهٔ ۶۷,۱۰۸,۸۶۴ بایت تحویل داده شد.
+- **اعداد (simulated، loopback بدون shaper، release 2026-11-27):** baseline ۱۷۴.۷ و ۱۹۲.۴ MB/s؛ `balanced/1` ۱۶۵.۲ و ۱۴۱.۴؛ `bulk/1` ۳۴۴.۲ و ۲۵۲.۴. یعنی `bulk/1` در این اجرا ۱.۳–۲.۰ برابر baseline و ۱.۸–۲.۱ برابر Balanced تحویل داد — مشاهدهٔ harness، نه نتیجهٔ پذیرش.
+- **برچسب‌ها:** شمارش سینک و بازه **tested**؛ اعداد **measured/simulated**؛ tuple واقعی `(engine, carrier)` و هر ادعای LAB **unverified**.
+- **وضعیت ماتریس:** fmt سبز؛ clippy هر دو حالت سبز؛ default ۴۷۰ pass / ۰ fail؛ با `policy-pack` ۵۴۴ pass / ۰ fail؛ `policy-pack` و `policy.adaptive` همان قبلی و خاموش؛ بدون commit/PR/tag.
+
+## به‌روزرسانی 2026-11-27 (رفع قرمزِ `control_socket` — کل ماتریس بدون تست قرمز)
+
+- **ریشهٔ واقعی:** این sandbox روی 9p/v9fs اجرا می‌شود و `/tmp` هم 9p است؛ آن فایل‌سیستم `O_NOFOLLOW` را برای باز کردن دایرکتوری اعمال نمی‌کند، پس `openat` در `prepare_socket_path_under` سیم‌لینک instance را دنبال می‌کرد و تابع به‌جای خطا `Ok` برمی‌گرداند (تست در اولین assert می‌شکست). با `RUST_BACKTRACE` و چاپ نتیجه در همان تست بازتولید شد؛ کد نادرست بود، نه تست.
+- **رفع در کد:** علاوه بر `O_NOFOLLOW`، اکنون ورودی instance با `fstatat(..., AT_SYMLINK_NOFOLLOW)` بررسی می‌شود، باید دایرکتوری واقعی باشد و `st_dev`/`st_ino` آن با fd بازشده یکی باشد؛ وگرنه پیش از هر بازرسی/حذف رد می‌شود. این محافظت روی فایل‌سیستم‌هایی که nofollow را جدی نمی‌گیرند هم برقرار است.
+- **تست:** همان سه ادعا (دایرکتوری سیم‌لینک‌شده، مسیر غیر-socket، سیم‌لینک فایل) دست‌نخورده مانده و یک ادعای صریح اضافه شد که از مسیر لینک هیچ فایلی ساخته نشده؛ fixture هم تأیید می‌کند واقعاً سیم‌لینک است و فقط اگر محیط اصلاً سیم‌لینک نسازد با دلیل `SKIP` می‌شود.
+- **وضعیت شواهد:** ریشه و رفع **تست‌شده** (`socket_path_refuses_symlinked_runtime_directory_and_non_socket_stale_path`)؛ روی tmpfs/ext4 رفتار `O_NOFOLLOW` **خوانده‌شده از مستندات کرنل/کد** و در این محیط قابل مشاهده نبود؛ مسیر production روی tmpfs و LAB **تأییدنشده**. هیچ تغییر رفتاری در پیش‌فرض‌ها/فلگ‌ها نیست؛ بدون commit/PR/tag.
+
+## به‌روزرسانی 2026-11-27 (Policy Pack TP-4.1/4.2 — سیگنال واقعی گارد به مسیر تصمیم وصل شد)
+
+- **شکاف ایمنی بسته شد.** تا امروز مسیر scheduler مقدار `violations` را در نمونهٔ ۱Hz ثابت `0` می‌داد و fail-safe گارد فقط با نمونه‌های forced آزموده می‌شد. اکنون arbiter شمارندهٔ واقعی `ArbiterStats::guard_violations` را نگه می‌دارد (درخواستی که از سقف ردیف پیکربندی‌شده بزرگ‌تر است) و `policy_relay::counters` همان مقدار را به کنترلر می‌دهد.
+- **برچسب شواهد:** شمارنده و انتقالش **تست‌شده** (`only_an_over_cap_request_counts_as_a_guard_violation`، `the_live_sample_carries_the_arbiters_guard_counter`، `a_live_arbiter_guard_violation_restores_the_row_without_forced_samples` — دومی سیگنال را از arbiter زنده می‌گیرد و با tick خودِ نشست می‌خواند). درایور ۱Hz در فرایند واقعی **خوانده‌شده از کد** و مشاهده‌نشده؛ ازدحام/مسیر واقعی و پنجرهٔ LAB **تأییدنشده**. نمونه‌های forced قبلی دست‌نخورده و سبز ماندند؛ اگر کسی دوباره مقدار را صفر hardcode کند، دو تست بالا شکست می‌خورند (با جهش واقعی در کد بررسی شد و تست‌ها شکستند).
+- **بدون تغییر رفتار:** پیش‌فرض‌ها و فلگ‌ها (`policy-pack`، `policy.adaptive`) همان قبلی و خاموش؛ بدون نسخه/tag/PR در این پاس. تست‌ها: default ۴۶۹ pass / ۰ fail؛ با `policy-pack` ۵۴۳ pass / ۰ fail؛ clippy هر دو حالت سبز؛ fmt سبز.
+
 ## به‌روزرسانی 2026-11-27 (TP-U — گیت (f) تحویل شد: تحلیل fail-closed/DoS با تست؛ فقط (b)/(e) باز)
 
 - **گیت (f) ADR-0046 تحویل شد.** سند [TP-U_FAIL_CLOSED_AND_DOS.md](TP-U_FAIL_CLOSED_AND_DOS.md) حالت‌های شکست نمونهٔ اولیه را تحلیل می‌کند: شکست handshake، افت datagram، ری‌استارت همتا، بستن نشست، ورودی بزرگ/بدشکل، سیل ترافیک و حافظه؛ و هر ادعا را صریحاً با یکی از سه برچسب «تست‌شده»، «خوانده‌شده از کد» یا «تأییدنشده» مشخص می‌کند.

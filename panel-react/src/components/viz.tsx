@@ -223,7 +223,6 @@ export function GeoMap({ d }: { d: Loaded }) {
   const pin = (p: [number, number] | null, kind: 'me' | 'peer', code: string) => p && (
     <g className={`pin pin-${kind}`}>
       <circle cx={p[0]} cy={p[1]} r={viewW / 80} className="pin-halo" /><circle cx={p[0]} cy={p[1]} r={viewW / 190} className="pin-dot" />
-      <text x={p[0]} y={p[1] - viewW / 55} className="pin-label" fontSize={viewW / 46} textAnchor="middle">{`${flagOf(code)} ${nm(code)}`.trim()}</text>
       <title>{`${kind === 'me' ? t('viz.this') : t('viz.peer')}: ${nm(code)}`}</title>
     </g>
   );
@@ -244,6 +243,12 @@ export function GeoMap({ d }: { d: Loaded }) {
           {arc && lk === 'flow' && <circle r={viewW / 200} className="pulse"><animateMotion dur="2.4s" repeatCount="indefinite" path={arc} /></circle>}
           {pin(a, 'me', effMine)}{pin(b, 'peer', effTheirs)}
         </svg>
+        {(a || b) && (
+          <figcaption className="geo-pins">
+            {a && <span className="geo-pin me"><i className="swatch" aria-hidden="true" />{`${t('viz.this')}: ${flagOf(effMine)} ${nm(effMine)}`}</span>}
+            {b && <span className="geo-pin peer"><i className="swatch" aria-hidden="true" />{`${t('viz.peer')}: ${flagOf(effTheirs)} ${nm(effTheirs)}`}</span>}
+          </figcaption>
+        )}
         {!(a && b) && <figcaption className="geo-hint sub">{t('viz.geo.unset.hint')}</figcaption>}
       </figure>
       )}

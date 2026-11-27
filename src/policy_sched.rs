@@ -76,6 +76,7 @@ pub struct Scheduler {
     grants: u64,
     granted_bytes: u64,
     overflow_refusals: u64,
+    guard_violations: u64,
 }
 
 impl Scheduler {
@@ -87,6 +88,7 @@ impl Scheduler {
             grants: 0,
             granted_bytes: 0,
             overflow_refusals: 0,
+            guard_violations: 0,
         }
     }
 
@@ -155,7 +157,11 @@ impl Scheduler {
             return Enqueue::NotScheduled;
         }
         if bytes > self.config.max_queued_bytes {
+            // An over-cap request breaks the row's contract (a relay reads at most its quantum),
+            // so it is the live guard signal the adaptive loop samples (ADR-0056 decision 8).
+            // Additive queue pressure below stays an overflow only.
             self.overflow_refusals += 1;
+            self.guard_violations += 1;
             return Enqueue::Full;
         }
         if let Some(state) = self.flows.get_mut(&flow) {
@@ -256,6 +262,11 @@ impl Scheduler {
     pub fn overflow_refusals(&self) -> u64 {
         self.overflow_refusals
     }
+
+    /// Requests above the configured row's cap: the live guard signal (ADR-0056 decision 8).
+    pub fn guard_violations(&self) -> u64 {
+        self.guard_violations
+    }
 }
 
 /// Requests one arbiter accepts before senders block. A flow holds at most one request at a time,
@@ -268,6 +279,9 @@ pub(crate) struct ArbiterStats {
     pub grants: u64,
     pub granted_bytes: u64,
     pub overflow_refusals: u64,
+    /// Live interface-violation counter sampled by the adaptive loop: requests above the row's
+    /// cap that the arbiter refused (ADR-0056 decision 8's `guard` signal).
+    pub guard_violations: u64,
     pub queued_bytes: usize,
     pub flows: usize,
 }
@@ -428,6 +442,7 @@ async fn run(config: SchedulerConfig, mut commands: mpsc::Receiver<Command>) {
                     grants: scheduler.grants(),
                     granted_bytes: scheduler.granted_bytes(),
                     overflow_refusals: scheduler.overflow_refusals(),
+                    guard_violations: scheduler.guard_violations(),
                     queued_bytes: scheduler.total_queued_bytes(),
                     flows: scheduler.flows(),
                 });
@@ -599,6 +614,25 @@ mod tests {
     }
 
     #[test]
+    fn only_an_over_cap_request_counts_as_a_guard_violation() {
+        let mut scheduler = scheduler();
+        let flow = FlowId(8);
+        scheduler.register(flow, Class::Balanced);
+        // Ordinary offers, including one that fills the cap exactly, are not violations.
+        assert_eq!(scheduler.offer(flow, 4_000), Enqueue::Accepted);
+        assert_eq!(scheduler.guard_violations(), 0);
+        assert_eq!(scheduler.overflow_refusals(), 0);
+        // A span above the cap is refused and counted on both signals.
+        assert_eq!(scheduler.offer(flow, 4_001), Enqueue::Full);
+        assert_eq!(scheduler.guard_violations(), 1);
+        assert_eq!(scheduler.overflow_refusals(), 1);
+        // Additive queue pressure alone stays an overflow, never a guard violation.
+        scheduler.enqueue(flow, 1);
+        assert_eq!(scheduler.overflow_refusals(), 2);
+        assert_eq!(scheduler.guard_violations(), 1);
+    }
+
+    #[test]
     fn unknown_and_closed_flows_have_no_queue() {
         let mut scheduler = scheduler();
         let flow = FlowId(4);
@@ -676,6 +710,10 @@ mod tests {
         let stats = arbiter.stats().await.expect("stats");
         assert_eq!(stats.queued_bytes, 0, "nothing was buffered past the cap");
         assert_eq!(stats.overflow_refusals, 1);
+        assert_eq!(
+            stats.guard_violations, 1,
+            "an over-cap request is the live guard signal, not only queue pressure"
+        );
         assert_eq!(stats.grants, 0);
     }
 

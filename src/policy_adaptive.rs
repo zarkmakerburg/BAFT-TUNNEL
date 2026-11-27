@@ -61,7 +61,8 @@ pub(crate) struct Signals {
     pub estimated: bool,
     /// Cumulative scheduler refusals at sample time.
     pub overflow_refusals: u64,
-    /// Cumulative `Guarded` interface violations at sample time.
+    /// Cumulative guard violations at sample time: requests the arbiter refused because they
+    /// exceeded the configured row's cap (ADR-0056 decision 8).
     pub violations: u64,
 }
 
@@ -404,7 +405,7 @@ pub(crate) struct Counters {
     pub granted_bytes: u64,
     /// Cumulative scheduler refusals (a queue hit its cap).
     pub overflow_refusals: u64,
-    /// Cumulative `Guarded` interface violations, when a guard is in the path.
+    /// Cumulative guard violations: requests above the row's cap that the arbiter refused.
     pub violations: u64,
 }
 

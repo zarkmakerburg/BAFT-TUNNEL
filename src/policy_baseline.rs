@@ -1091,22 +1091,60 @@ async fn direct_endpoints() -> (TcpStream, TcpStream) {
     (client, server)
 }
 
-/// Per-MB CPU of one arm on an unshaped loopback session: `bytes` pushed through one stream with
-/// both ends in the process and no rate limiter. Returns `(cpu_us, delivered_bytes)`. This is the
-/// figure ADR-0048 decision 6's overhead budget is about: the relay's own cost per byte, without
-/// the shaper's constant work in the denominator.
-async fn relay_cpu_probe(mechanism: Mechanism, bytes: u64) -> (u64, u64) {
+/// Sink-side result of one delivery probe: bytes the receiving application actually read, and the
+/// wall time from the first write to the sink's last read. Unshaped loopback, so the rate is the
+/// relay path's own delivery rate — `simulated`, not a path, engine or LAB measurement.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Delivered {
+    pub delivered: u64,
+    pub elapsed: Duration,
+}
+
+impl Delivered {
+    pub(crate) fn bytes_per_s(&self) -> u64 {
+        let micros = self.elapsed.as_micros().max(1) as u64;
+        self.delivered.saturating_mul(1_000_000) / micros
+    }
+}
+
+/// One unshaped loopback session: pushes `bytes` through one stream and stops when the sink has
+/// read them all. The clock starts at the first write and stops at the sink's own last read, so
+/// the delivery rate and the CPU window cover the same work; every byte must arrive
+/// (`delivered == bytes`) for the interval to mean anything.
+async fn delivery_probe(mechanism: Mechanism, bytes: u64) -> (Delivered, u64) {
+    delivery_probe_with_delay(mechanism, bytes, Duration::ZERO).await
+}
+
+/// The probe with an optional delay between the sink's last read and its notification. Callers
+/// pass zero; the test beside this module uses it to prove the reported interval stops at the last
+/// byte instead of when the waiting task happens to resume or the stream reaches EOF.
+async fn delivery_probe_with_delay(
+    mechanism: Mechanism,
+    bytes: u64,
+    sink_notify_delay: Duration,
+) -> (Delivered, u64) {
     let (client_io, server_io) = direct_endpoints().await;
     let window = window_for(mechanism);
     let mut server_session = Session::new_server(server_io, config_with_window(window));
     let server_policy = policy_for(mechanism);
     let delivered = Arc::new(AtomicU64::new(0));
+    let finished = Arc::new(tokio::sync::Notify::new());
+    // The sink stamps its own completion against the first write; the waiting task never does.
+    let started_slot: Arc<std::sync::Mutex<Option<Instant>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let completed_ns = Arc::new(AtomicU64::new(0));
     let sink_total = Arc::clone(&delivered);
+    let sink_done = Arc::clone(&finished);
+    let sink_started = Arc::clone(&started_slot);
+    let sink_completed = Arc::clone(&completed_ns);
     let server_task = tokio::spawn(async move {
         while let Some(item) = server_session.next().await {
             let Ok(stream) = item else { break };
             let relay_policy = server_policy.clone();
             let sink_total = Arc::clone(&sink_total);
+            let sink_done = Arc::clone(&sink_done);
+            let sink_started = Arc::clone(&sink_started);
+            let sink_completed = Arc::clone(&sink_completed);
             tokio::spawn(async move {
                 let (local, mut app) = duplex(64 * 1024);
                 tokio::spawn(async move {
@@ -1114,13 +1152,29 @@ async fn relay_cpu_probe(mechanism: Mechanism, bytes: u64) -> (u64, u64) {
                 });
                 let mut buffer = vec![0_u8; PUMP_READ];
                 let mut total = 0_u64;
+                let mut completed_at = None;
                 while let Ok(count) = app.read(&mut buffer).await {
                     if count == 0 {
                         break;
                     }
                     total += count as u64;
+                    if completed_at.is_none() && total >= bytes {
+                        completed_at = Some(Instant::now());
+                    }
+                }
+                if let Some(at) = completed_at {
+                    if let Some(start) = *sink_started.lock().expect("started slot") {
+                        let ns = at.saturating_duration_since(start).as_nanos();
+                        sink_completed.store(ns.min(u64::MAX as u128) as u64, Ordering::SeqCst);
+                    }
+                }
+                if !sink_notify_delay.is_zero() {
+                    tokio::time::sleep(sink_notify_delay).await;
                 }
                 sink_total.store(total, Ordering::SeqCst);
+                // `notify_one` keeps a permit, so a sink that finishes before the probe waits
+                // still wakes it; a lost wake would turn a finished transfer into a timeout.
+                sink_done.notify_one();
             });
         }
     });
@@ -1141,6 +1195,8 @@ async fn relay_cpu_probe(mechanism: Mechanism, bytes: u64) -> (u64, u64) {
     });
 
     let cpu_start = process_cpu_us();
+    let started = Instant::now();
+    *started_slot.lock().expect("started slot") = Some(started);
     let payload = vec![0x5a_u8; PUMP_READ];
     let mut sent = 0_u64;
     while sent < bytes {
@@ -1149,17 +1205,42 @@ async fn relay_cpu_probe(mechanism: Mechanism, bytes: u64) -> (u64, u64) {
         sent += count as u64;
     }
     let _ = app.shutdown().await;
-    // Keep the CPU window open until the sink has drained the relayed bytes, so every arm's window
-    // covers the same work; the bound keeps a broken arm from hanging the probe.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while delivered.load(Ordering::SeqCst) < bytes && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    // The bound keeps a broken arm from hanging the probe; a healthy arm returns as soon as the
+    // sink has read every byte, not after a fixed sleep.
+    let _ = tokio::time::timeout(Duration::from_secs(60), finished.notified()).await;
+    // The sink's own timestamp, not the moment this task resumed: a late waiter or a slow EOF
+    // must not lengthen the interval that is divided into the byte count.
+    let elapsed = match completed_ns.load(Ordering::SeqCst) {
+        0 => started.elapsed(),
+        ns => Duration::from_nanos(ns),
+    };
     let cpu_us = process_cpu_us().saturating_sub(cpu_start);
     let total = delivered.load(Ordering::SeqCst);
     server_task.abort();
     client_task.abort();
-    (cpu_us, total)
+    (
+        Delivered {
+            delivered: total,
+            elapsed,
+        },
+        cpu_us,
+    )
+}
+
+/// Per-MB CPU of one arm on an unshaped loopback session: `bytes` pushed through one stream with
+/// both ends in the process and no rate limiter. Returns `(cpu_us, delivered_bytes)`. This is the
+/// figure ADR-0048 decision 6's overhead budget is about: the relay's own cost per byte, without
+/// the shaper's constant work in the denominator.
+async fn relay_cpu_probe(mechanism: Mechanism, bytes: u64) -> (u64, u64) {
+    let (delivered, cpu_us) = delivery_probe(mechanism, bytes).await;
+    (cpu_us, delivered.delivered)
+}
+
+/// Sink-side delivered goodput of one arm over the probe's exact interval. This is the figure
+/// #237's first acceptance item names; here it is `simulated` (loopback, no engine handshake, one
+/// process), so it is a harness reference point, never a tuple or LAB claim.
+pub(crate) async fn delivered_goodput(mechanism: Mechanism, bytes: u64) -> Delivered {
+    delivery_probe(mechanism, bytes).await.0
 }
 
 /// The arms of the ADR-0048 comparison: today's relay, the three candidate bounds, and the window
@@ -1724,6 +1805,101 @@ mod tests {
             relay_cpu_probe(Mechanism::WindowCap { bytes: 256 * 1024 }, bytes).await;
         assert_eq!(delivered, bytes, "the probe must relay every byte");
         assert!(cpu_us > 0, "the probe must see CPU time");
+    }
+
+    /// #237's first acceptance item at the harness level: the sink's own byte count over the
+    /// interval from the first write to the last read. A sender-side handoff count can exceed what
+    /// crossed; this one cannot, because the sink reads the data itself. With `policy-pack` the
+    /// same measurement also runs through a shipped profile row, not a copied number.
+    #[tokio::test]
+    async fn delivered_goodput_is_measured_at_the_sink_over_an_exact_interval() {
+        let bytes = 2 * 1024 * 1024;
+        let arms = [
+            Mechanism::Baseline,
+            #[cfg(feature = "policy-pack")]
+            Mechanism::for_profile(crate::policy_profile::PolicyProfile::Balanced),
+        ];
+        for mechanism in arms {
+            let result = delivered_goodput(mechanism, bytes).await;
+            assert_eq!(
+                result.delivered,
+                bytes,
+                "the sink must read every byte ({})",
+                mechanism.label()
+            );
+            assert!(!result.elapsed.is_zero(), "the interval must be measured");
+            assert!(
+                result.bytes_per_s() > 0,
+                "a delivered rate must be derivable from the interval"
+            );
+        }
+    }
+
+    /// A sink that finishes while the waiting task is still asleep must not inflate the interval:
+    /// the clock stops at the sink's last read, not when `notified()` returns or at EOF. The older
+    /// instrument stamped the end after the wake and after the sink's EOF, so this test failed by
+    /// the whole delay.
+    #[tokio::test]
+    async fn delivered_goodput_excludes_a_late_waiter_and_eof() {
+        let bytes = 4 * 1024 * 1024;
+        let plain = delivered_goodput(Mechanism::Baseline, bytes).await;
+        assert_eq!(
+            plain.delivered, bytes,
+            "the plain arm must deliver every byte"
+        );
+        let delay = Duration::from_millis(250);
+        let wall = Instant::now();
+        let (delayed, _) = delivery_probe_with_delay(Mechanism::Baseline, bytes, delay).await;
+        let wall = wall.elapsed();
+        assert_eq!(
+            delayed.delivered, bytes,
+            "the delayed arm must deliver every byte"
+        );
+        assert!(
+            wall >= delay,
+            "the sink must actually have been delayed: wall={wall:?}"
+        );
+        let drift = delayed.elapsed.saturating_sub(plain.elapsed);
+        assert!(
+            drift < Duration::from_millis(120),
+            "the reported interval must stop at the last byte (plain={:?}, delayed={:?}, wall={:?})",
+            plain.elapsed,
+            delayed.elapsed,
+            wall
+        );
+    }
+
+    /// The evidence run behind TP-3.5 section 4: three arms, `POLICY_REPEATS` times, one JSON line
+    /// per repeat, every line `simulated`.
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    #[ignore = "measurement run; use --release --features policy-pack --ignored --nocapture"]
+    async fn delivered_goodput_experiment() {
+        let (_, repeats, _) = experiment_settings(3);
+        let bytes = 64 * 1024 * 1024;
+        let arms = [
+            Mechanism::for_profile(crate::policy_profile::PolicyProfile::Balanced),
+            Mechanism::for_profile(crate::policy_profile::PolicyProfile::Bulk),
+            Mechanism::Baseline,
+        ];
+        for repeat in 1..=repeats {
+            for mechanism in arms {
+                let result = delivered_goodput(mechanism, bytes).await;
+                assert_eq!(
+                    result.delivered, bytes,
+                    "an arm that did not deliver every byte cannot report goodput"
+                );
+                println!(
+                    "POLICY_EXPERIMENT {{\"scenario\":\"delivered_goodput\",\"mechanism\":\"{}\",\"evidence\":\"simulated\",\"repeat\":{},\"bytes\":{},\"delivered_bytes\":{},\"elapsed_ms\":{},\"goodput_bytes_per_s\":{}}}",
+                    mechanism.label(),
+                    repeat,
+                    bytes,
+                    result.delivered,
+                    result.elapsed.as_millis(),
+                    result.bytes_per_s()
+                );
+            }
+        }
     }
 
     /// ADR-0048 decision 6, first half, clean figure: CPU per MB relayed on an unshaped loopback

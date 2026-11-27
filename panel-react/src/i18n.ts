@@ -268,6 +268,9 @@ const EXTRA: Record<Lang, Record<string, string>> = {
     'pv.unavailable.no_policy_member': 'این ایجنت هنوز عضو policy را ندارد (نسخه‌ای پیش از ADR-0047).',
     'pv.unavailable.generic': 'وضعیت پک در دسترس نیست ({reason}).',
     'ov.notunnel': 'بدون تونل',
+    'cap.setup.note': 'برنامه و اعمال تغییر از ویزارد ساخت تونل انجام می‌شود و این Agent آن‌ها را به‌عنوان capability گزارش نمی‌کند؛ بنابراین در این فهرست نمی‌آیند.',
+    'strip.up': 'سالم',
+    'strip.down': 'ناموفق',
   },
   en: {
     'unreachable.title': 'Could not reach the Agent',
@@ -523,6 +526,9 @@ const EXTRA: Record<Lang, Record<string, string>> = {
     'pv.unavailable.no_policy_member': 'This agent has no policy member yet (a version before ADR-0047).',
     'pv.unavailable.generic': 'The pack status is unavailable ({reason}).',
     'ov.notunnel': 'No tunnel',
+    'cap.setup.note': 'Plan and apply run from the create-tunnel wizard; this Agent does not report them as capabilities, so they are not listed here.',
+    'strip.up': 'Up',
+    'strip.down': 'Down',
   },
 };
 

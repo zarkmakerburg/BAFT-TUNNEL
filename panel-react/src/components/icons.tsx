@@ -24,9 +24,9 @@ const ICONS: Record<string, string[]> = {
   more: ['M5 12h.01', 'M12 12h.01', 'M19 12h.01'],
 };
 
-export function Icon({ name }: { name: string }) {
+export function Icon({ name, className }: { name: string; className?: string }) {
   return (
-    <svg className="ic" viewBox="0 0 24 24" aria-hidden="true">
+    <svg className={className ? `ic ${className}` : 'ic'} viewBox="0 0 24 24" aria-hidden="true">
       {(ICONS[name] ?? []).map((d) => <path key={d} d={d} />)}
     </svg>
   );

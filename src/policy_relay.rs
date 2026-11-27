@@ -332,16 +332,15 @@ impl PolicySession {
     }
 }
 
-/// The pack's counters as the controller's sample. The scheduler path has no
-/// `Guarded<TrafficPolicy>` in it (`policy.rs`'s wrapper is not instantiated by the relay), so there
-/// is no live interface-violation counter to report: the field is zero and the guard fail-safe is
-/// covered by the controller's own tests, not by live traffic.
+/// The pack's counters as the controller's sample. `violations` is the arbiter's own guard
+/// counter: it rises only above the configured row's cap, so the 1 Hz loop sees a live guard
+/// signal (ADR-0056 decision 8), not a fabricated zero or a forced sample.
 fn counters(stats: ArbiterStats) -> Counters {
     Counters {
         queued_bytes: stats.queued_bytes,
         granted_bytes: stats.granted_bytes,
         overflow_refusals: stats.overflow_refusals,
-        violations: 0,
+        violations: stats.guard_violations,
     }
 }
 
@@ -927,6 +926,73 @@ mod tests {
             tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
         }
         assert_eq!(session.changes().len(), 2, "the suspension holds");
+    }
+
+    /// The sample must carry the arbiter's real guard counter. If anyone hardcodes the field back
+    /// to zero, this fails even though the forced matrix would still pass.
+    #[test]
+    fn the_live_sample_carries_the_arbiters_guard_counter() {
+        let stats = ArbiterStats {
+            guard_violations: 3,
+            ..ArbiterStats::default()
+        };
+        assert_eq!(counters(stats).violations, 3);
+    }
+
+    /// ADR-0056 decision 8 on a real signal: no forced `Counters` feeds the guard. The live
+    /// arbiter refuses a request above the row's cap, the guard counter rises, and the next tick's
+    /// own counter read restores the configured row and suspends adaptation.
+    #[tokio::test]
+    async fn a_live_arbiter_guard_violation_restores_the_row_without_forced_samples() {
+        use crate::policy_adaptive::Cause;
+
+        let configured = PolicyProfile::Balanced;
+        let session = PolicySession::without_driver(config_for(configured), configured);
+        tick_at(&session, 0, forced(0, 5), forced(0, 5)).await;
+        for second in 1..=3 {
+            tick_at(&session, second, forced(second, 100), forced(second, 5)).await;
+        }
+        assert_eq!(session.changes()[0].change.to, PolicyProfile::Gaming);
+        assert_eq!(
+            granted(&session, configured.quantum_bytes()).await,
+            PolicyProfile::Gaming.quantum_bytes()
+        );
+
+        // The real signal: a request above the row's cap is refused by the live arbiter.
+        let (flow, _) = session.open();
+        let over_cap = config_for(configured).max_queued_bytes + 1;
+        assert!(
+            flow.acquire(over_cap).await.is_err(),
+            "the arbiter refuses bytes above the cap"
+        );
+        flow.close().await;
+        let stats = session.to_peer.stats().await.expect("stats");
+        assert_eq!(
+            stats.guard_violations, 1,
+            "the signal came from the arbiter"
+        );
+        assert_eq!(counters(stats).violations, 1);
+
+        // The controller's own live read, not a scripted counter set.
+        let to_peer = session.to_peer.stats().await.map(counters);
+        let from_peer = session.from_peer.stats().await.map(counters);
+        session
+            .tick_with(Duration::from_secs(4), to_peer, from_peer)
+            .await;
+
+        let changes = session.changes();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[1].change.cause, Cause::GuardViolation);
+        assert_eq!(changes[1].change.to, configured);
+        assert_eq!(
+            session.chunk(Direction::ToPeer).load(Ordering::Relaxed),
+            configured.quantum_bytes()
+        );
+        assert_eq!(
+            granted(&session, configured.quantum_bytes()).await,
+            configured.quantum_bytes(),
+            "the running row is back at the safe one"
+        );
     }
 
     /// #239's condition matrix at the decision boundary: each condition is the 1 Hz sample sequence

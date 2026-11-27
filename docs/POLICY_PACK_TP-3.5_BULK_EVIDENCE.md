@@ -105,11 +105,10 @@ Reading it honestly:
 ## 4. Sender handoffs in the same runs (`bulk_bulk_competing`)
 
 Bytes the bulk sender handed to its application-side stream per requested second, same three
-repeats. This is **not** delivered goodput: the harness counts writes into the application-side
+repeats. This section is a sender-side record only, **not** delivered goodput: the harness counts writes into the application-side
 duplex, starting from the bulk task's spawn (before the 500 ms pre-measurement sleep) and dividing by
-the requested 8 s, so buffered data and the counted window both affect the figure. There is no
-sink-side counter over an exact elapsed interval in this scenario, so #237's first acceptance item —
-**goodput versus Balanced and Baseline — is not measured here**, and no throughput conclusion is drawn.
+the requested 8 s, so buffered data and the counted window both affect the figure. A sink-side counter over an exact interval was added on 2026-11-27 and is recorded separately in
+§4b; this table stays sender-side and no throughput conclusion is drawn from it.
 
 | Arm | repeat 1 | repeat 2 | repeat 3 | median |
 |---|---|---|---|---|
@@ -122,6 +121,43 @@ The Baseline row's 2,631,680 B/s already exceeds the 2.5 MB/s shaped rate, which
 sender handoffs rather than bytes that crossed the bottleneck. A higher handoff count at a wider
 window is consistent with the row's stated purpose (throughput for large transfers), but it is not a
 delivered-goodput or bulk-share measurement and is not written up as one.
+
+### 4b. Delivered goodput at the sink (measured 2026-11-27)
+
+The missing sink-side counter now exists: `src/policy_baseline.rs`'s `delivery_probe` counts the
+bytes the receiving application actually reads, and the sink itself stamps the moment it reaches
+that count; `delivered_goodput` divides those bytes by that interval. The stamp is taken at the
+sink's last read, not when the waiting task resumes — an earlier revision of the probe read the
+clock after `notified()` returned, which also waited for the sink's EOF and for the scheduler to
+run the waiter, so a slow wake was counted as slow delivery. The numbers below come from the
+corrected instrument and supersede the first run's. This is `simulated` evidence — one process,
+unshaped loopback, no engine handshake, no path — and it is not a tuple or LAB result.
+
+Run: `cargo test --release --features policy-pack --bin baft-tunnel delivered_goodput_experiment --
+--ignored --nocapture`, 2026-11-27, 64 MiB per arm, two repeats. There is no CI run ID for this
+figure: the experiment is an `#[ignore]`d local measurement that no hosted job executes. Its source
+is `src/policy_baseline.rs` exactly as committed in this change set (the harness carried no
+uncommitted edits at the run), release profile, `POLICY_REPEATS` unset (two). Every arm delivered
+all 67,108,864 bytes, so the interval covers the same work in every arm.
+
+| Arm | repeat 1 | repeat 2 | delivered bytes |
+|---|---|---|---|
+| baseline | 340,441,572 B/s (197 ms) | 328,110,966 B/s (204 ms) | 67,108,864 each |
+| `balanced/1` | 429,570,959 B/s (156 ms) | 324,177,051 B/s (207 ms) | 67,108,864 each |
+| `bulk/1` | 696,171,706 B/s (96 ms) | 575,690,900 B/s (116 ms) | 67,108,864 each |
+
+`bulk/1` delivered 1.75-2.05x the Baseline rate and 1.62-1.78x the Balanced rate in these two
+loopback repeats, while Baseline and Balanced stayed within 33% of each other, so these two runs do
+not separate them. That is an observation for the future tuple runs on the ordering, not an
+acceptance result: the item's goodput criterion is about a real `(engine, carrier)` path, which is
+still the LAB window's to measure. The evidence labels are: sink-side counting, the sink-side
+completion stamp and the exclusion of a late waiter are **tested**
+(`delivered_goodput_is_measured_at_the_sink_over_an_exact_interval`, which runs the Baseline arm and,
+with `policy-pack`, a shipped profile row; and `delivered_goodput_excludes_a_late_waiter_and_eof`,
+which delays the sink by 250 ms after its last read and fails if the reported interval grows by
+that delay, as the pre-fix probe did: it reported 277 ms against a 33 ms plain run); the numbers
+above are **measured** at `simulated` level; real-path goodput and any tuple claim are
+**unverified**.
 
 ## 5. Fairness and starvation (`bulk_multi_flow`)
 
@@ -182,7 +218,7 @@ wording of #237, for `bulk/1` versus Balanced and Baseline:
 |---|---|---|---|
 | 1 | Latency p50/p95/p99 and jitter, idle and under bulk load | Idle RTT (section 2) and bulk-competing percentiles (section 3) measured in the harness; **real-path latency not measured**; the loaded p95/p99 tail is unresolved because the arm collected 8 samples | `simulated` (partial) |
 | 2 | Packet loss, or a loss proxy labelled as such | Not modelled: the shaper applies serialization rate only, no loss | **not measured** |
-| 3 | Throughput / goodput | Sender handoff rate measured (section 4); **delivered goodput not measured** — #237's first acceptance item is therefore open | `simulated` (partial) |
+| 3 | Throughput / goodput | Delivered goodput measured sink-side over an exact interval (section 4b, `simulated`, unshaped loopback) plus sender handoff rate (section 4); the real-path tuple figure is still LAB-open | `simulated` (harness) |
 | 4 | CPU and memory overhead | CPU per delivered MiB and the derived CPU per GiB measured (section 6); **RSS not measured** — one process hosts every arm, so per-arm RSS is not separable | `simulated` (CPU only) |
 | 5 | Fairness, no starvation | Three-flow share with a mid-run close (section 5) | `simulated` |
 | 6 | Congestion / impairment (loss, jitter, path change, carrier kill) | Not modelled | **not measured** |
@@ -208,8 +244,9 @@ delivered-throughput claims even at that level.
 ## 9. What is still missing, precisely
 
 The item's acceptance needs a real two-host LAB run — the suspended `baft-tunnel-lab` window —
-covering, per `(engine, carrier, profile)` tuple: delivered goodput (the item's first acceptance item,
-and the one this harness cannot supply), idle and bulked p50/p95/p99 latency and jitter with enough
+covering, per `(engine, carrier, profile)` tuple: delivered goodput (the item's first acceptance
+item; the harness now measures it sink-side at the `simulated` level in section 4b, which is not a
+tuple result), idle and bulked p50/p95/p99 latency and jitter with enough
 samples to resolve the tail, a measured loss figure (or an explicit loss proxy), CPU per GiB and RSS,
 fairness under competing bulk, impairment scenarios (loss, jitter, path change, carrier kill), and a
 run up to the 60-minute project cap. Until that window is authorized, TP-3.5 stays open, no tuple

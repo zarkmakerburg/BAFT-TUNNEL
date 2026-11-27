@@ -470,10 +470,32 @@ fn prepare_socket_path_under(
     }
 
     let result = (|| -> Result<()> {
+        // Some filesystems do not enforce `O_NOFOLLOW` for directory opens (observed on 9p/v9fs
+        // in a container workspace), so the open above can follow an instance symlink. Pin the
+        // directory entry itself with `AT_SYMLINK_NOFOLLOW` and require the held fd to be that
+        // same inode; otherwise refuse before anything is inspected or removed.
+        let mut entry: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: root_fd is live, instance_name is one validated component, entry is writable.
+        let status = unsafe {
+            libc::fstatat(
+                root_fd,
+                instance_name.as_ptr(),
+                &mut entry,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if status != 0 {
+            return Err(std::io::Error::last_os_error()).context("inspect runtime directory entry");
+        }
         let mut directory: libc::stat = unsafe { std::mem::zeroed() };
         // SAFETY: instance_fd is live and directory is writable.
         if unsafe { libc::fstat(instance_fd, &mut directory) } != 0 {
             return Err(std::io::Error::last_os_error()).context("inspect runtime directory");
+        }
+        // The entry and the held fd must be the same real directory: a symlink (which some
+        // filesystems still follow despite `O_NOFOLLOW`) or a swap during the open fails here.
+        if entry.st_dev != directory.st_dev || entry.st_ino != directory.st_ino {
+            bail!("runtime directory must be the opened directory, not a symlink or replacement");
         }
         if directory.st_mode & libc::S_IFMT != libc::S_IFDIR
             || directory.st_uid != expected_uid
@@ -764,10 +786,29 @@ mod tests {
         let link = root.join("node-link");
         std::fs::create_dir_all(&external).unwrap();
         std::fs::set_permissions(&external, std::fs::Permissions::from_mode(0o750)).unwrap();
-        symlink(&external, &link).unwrap();
+        // The refusal below is only meaningful if this environment can create a symlink at all.
+        // A platform that cannot (unsupported filesystem or permissions) is skipped explicitly
+        // with its reason instead of failing for something the fixture could not set up.
+        if let Err(error) = symlink(&external, &link) {
+            eprintln!(
+                "SKIP control_socket symlink refusal: cannot create a symlink in {root:?}: {error}"
+            );
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(false),
+            "the fixture must be a real symlink for the refusal to mean anything"
+        );
         let uid = unsafe { libc::geteuid() };
         let gid = unsafe { libc::getegid() };
         assert!(prepare_socket_path_under(&link.join("control.sock"), &root, uid, gid).is_err());
+        assert!(
+            !external.join("control.sock").exists(),
+            "nothing may be created through the instance symlink"
+        );
 
         let node = root.join("node-a");
         std::fs::create_dir(&node).unwrap();

@@ -38,10 +38,13 @@ assumptions:
    whose own §8 records the tuples as `unknown`, because the harness runs the product relay and
    Yamux over loopback TCP with no engine handshake — its line is neither `(tcp-tls, TCP, …)` nor
    `(noise-tcp, TCP, …)`. TP-4.1's adaptive record and TP-4.2's fail-safe record are `simulated` as
-   well, and TP-4.2 records that `violations` is still a constant `0` on the scheduler path because
-   nothing constructs a `Guarded<TrafficPolicy>` there. A status surface that cannot say `unknown`,
-   or that prints that constant `0` as a measurement, would contradict ADR-0031 decisions 10 and 14
-   and every one of those records.
+   well, and TP-4.2 recorded that `violations` was a constant `0` on the scheduler path because
+   nothing constructs a `Guarded<TrafficPolicy>` there. Since 2026-11-27 the arbiter's own
+   `guard_violations` counter feeds that sample (tested), so the sampling gap is closed; the unit's
+   published running evidence still does not carry the counter, which is why this contract keeps the
+   field `available:false` rather than printing a number. A status surface that cannot say
+   `unknown`, or that prints an unobserved value as a measurement, would contradict ADR-0031
+   decisions 10 and 14 and every one of those records.
 3. **No process currently publishes what the running tunnel resolved.** The unit publishes
    `session.json`, `counters.json` and `last_failure.json` (ADR-0024 decision 1); nothing names the
    switch or the profile a session actually used, and the agent is unprivileged (SA-09), so it
@@ -156,10 +159,12 @@ assumptions:
 
    Two reconciliations with the shipped records are binding:
 
-   - **`guard_violations` is `available:false` while nothing is guarded.** TP-4.2 records that the
-     scheduler path constructs no `Guarded<TrafficPolicy>`, so its counter is a constant `0`. The
-     contract forbids printing that `0`: until the wrapper is wired, the field is `null`,
-     `available:false`, `reason:"not_instrumented"`.
+   - **`guard_violations` is `available:false` while the published evidence does not carry it.**
+     TP-4.2 recorded a constant `0`; since 2026-11-27 the arbiter counts real guard violations and
+     the adaptive sample uses that counter (tested — see ADR-0056's update note), but `policy.json`
+     still omits it, so the status surface has nothing to publish. The contract forbids inventing a
+     number: the field stays `null`, `available:false`, `reason:"not_instrumented"`, now meaning
+     "not published to this surface", not "no counter exists".
    - **`queueing_delay_estimate_ms` is `available:false`, `reason:"signal_blind"`, while the
      sampler cannot see waiting.** TP-4.1 records that the arbiter's queue is a rendezvous: the grant
      is handed out inside the loop, `queued_bytes` samples as `0`, and the bytes that really wait are
