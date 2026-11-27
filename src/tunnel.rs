@@ -99,6 +99,9 @@ pub struct ServerOptions {
     /// ADR-0031: the tunnel's configured profile, absent when the config names none. Applied only
     /// when the `policy-pack` feature and `BAFT_TUNNEL_POLICY_PACK` both enable the pack.
     pub profile: Option<PolicyProfile>,
+    /// ADR-0056: the tunnel's `policy.adaptive` opt-in. Inert unless the pack runs and a profile is
+    /// configured.
+    pub adaptive: bool,
 }
 
 pub struct ForwardOptions {
@@ -123,6 +126,9 @@ pub struct ForwardOptions {
     /// ADR-0031: the tunnel's configured profile, absent when the config names none. Applied only
     /// when the `policy-pack` feature and `BAFT_TUNNEL_POLICY_PACK` both enable the pack.
     pub profile: Option<PolicyProfile>,
+    /// ADR-0056: the tunnel's `policy.adaptive` opt-in. Inert unless the pack runs and a profile is
+    /// configured.
+    pub adaptive: bool,
     /// Alternate addresses of the SAME peer (same identity, same pinned fingerprint), in priority
     /// order after `remote` (ADR-0039). Empty keeps the single-link behaviour.
     pub backup_remotes: Vec<String>,
@@ -310,14 +316,14 @@ type PolicySessionHandle = std::sync::Arc<PackDisabled>;
 /// The pack's per-session scheduler when `BAFT_TUNNEL_POLICY_PACK` enables it. `None` — feature
 /// off, switch unset, or another switch value — is today's data path, byte for byte (ADR-0048).
 /// A configured profile only chooses the numbers once the switch is on (ADR-0031 decision 19).
-fn policy_session(profile: Option<PolicyProfile>) -> Option<PolicySessionHandle> {
+fn policy_session(profile: Option<PolicyProfile>, adaptive: bool) -> Option<PolicySessionHandle> {
     #[cfg(feature = "policy-pack")]
     {
-        crate::policy_relay::PolicySession::from_env_and_profile(profile)
+        crate::policy_relay::PolicySession::from_env_and_profile(profile, adaptive)
     }
     #[cfg(not(feature = "policy-pack"))]
     {
-        let _ = profile;
+        let _ = (profile, adaptive);
         None
     }
 }
@@ -619,7 +625,7 @@ pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> R
                 };
                 let sessions = sessions.clone();
                 let engine = engine.clone();
-                let (local, peer, tunnel, direction, target, max, profile, stream_slots) = (
+                let (local, peer, tunnel, direction, target, max, profile, adaptive, stream_slots) = (
                     options.local_id.clone(),
                     options.peer_id.clone(),
                     options.tunnel_id.clone(),
@@ -627,6 +633,7 @@ pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> R
                     target,
                     options.max_streams,
                     options.profile,
+                    options.adaptive,
                     streams.clone(),
                 );
                 let session_shutdown = shutdown_rx.clone();
@@ -683,7 +690,7 @@ pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> R
                         }
                         match ingress_side {
                             None => {
-                                server_session_versioned(secure, target, max, profile, stream_slots, tunnel, peer, direction, protocol_version, session_probe_control, session_probe_limiter.clone(), session_shutdown).await;
+                                server_session_versioned(secure, target, max, profile, adaptive, stream_slots, tunnel, peer, direction, protocol_version, session_probe_control, session_probe_limiter.clone(), session_shutdown).await;
                             }
                             Some(side) => {
                                 // Reverse: the dialing peer holds the service. This node opens the streams.
@@ -704,7 +711,7 @@ pub async fn serve_versioned(options: ServerOptions, protocol_version: u16) -> R
                                 let _presence = SessionPresence::attach(side.clone());
                                 let mut receiver = side.receiver.lock().await;
                                 let session = Session::new_server(secure, yamux_config_for(max, profile));
-                                let outcome = run_forward_session_versioned(session, &mut receiver, &stream_slots, direction, &tunnel, &peer, protocol_version, session_probe_control, session_probe_limiter.clone(), end_rx, profile).await;
+                                let outcome = run_forward_session_versioned(session, &mut receiver, &stream_slots, direction, &tunnel, &peer, protocol_version, session_probe_control, session_probe_limiter.clone(), end_rx, profile, adaptive).await;
                                 relay_end.abort();
                                 if let Err(error) = outcome {
                                     eprintln!("reverse session ended: {error:#}");
@@ -760,6 +767,7 @@ async fn server_session_versioned<S>(
     target: SocketAddr,
     max: usize,
     profile: Option<PolicyProfile>,
+    adaptive: bool,
     slots: Arc<Semaphore>,
     tunnel: String,
     peer: String,
@@ -784,6 +792,7 @@ async fn server_session_versioned<S>(
         probe_limiter,
         shutdown,
         profile,
+        adaptive,
     )
     .await;
 }
@@ -803,13 +812,14 @@ async fn serve_streams_versioned<S>(
     probe_limiter: Arc<crate::integrity_probe::ProbeLimiter>,
     mut shutdown: watch::Receiver<bool>,
     profile: Option<PolicyProfile>,
+    adaptive: bool,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let (_probe_guard, mut probe_rx) = probe_control.begin_session();
     let mut control = session.control();
     let mut stream_tasks = JoinSet::new();
-    let policy = policy_session(profile);
+    let policy = policy_session(profile, adaptive);
     loop {
         let item = tokio::select! {
             probe = probe_rx.recv() => {
@@ -1087,6 +1097,7 @@ async fn run_forward_session(
         Arc::new(crate::integrity_probe::ProbeLimiter::default()),
         shutdown,
         None,
+        false,
     )
     .await
 }
@@ -1104,6 +1115,7 @@ async fn run_forward_session_versioned(
     probe_limiter: Arc<crate::integrity_probe::ProbeLimiter>,
     shutdown: watch::Receiver<bool>,
     profile: Option<PolicyProfile>,
+    adaptive: bool,
 ) -> Result<()> {
     run_forward_session_core(
         session,
@@ -1118,6 +1130,7 @@ async fn run_forward_session_versioned(
         shutdown,
         None,
         profile,
+        adaptive,
     )
     .await
 }
@@ -1158,13 +1171,14 @@ async fn run_forward_session_core(
     mut shutdown: watch::Receiver<bool>,
     mut rotate: Option<watch::Receiver<bool>>,
     profile: Option<PolicyProfile>,
+    adaptive: bool,
 ) -> Result<()> {
     let _probe_guard_and_rx = probe_control.begin_session();
     let (_probe_guard, mut probe_rx) = _probe_guard_and_rx;
     let _mark = crate::session_status::SessionMark::open(tunnel, peer, direction);
     let mut control = session.control();
     let mut stream_tasks = JoinSet::new();
-    let policy = policy_session(profile);
+    let policy = policy_session(profile, adaptive);
     let driver_tunnel = tunnel.to_owned();
     let driver_direction = direction;
     let driver_version = protocol_version;
@@ -1538,6 +1552,7 @@ async fn supervise_forward(
                         shutdown.clone(),
                         options.session_rotate.map(|_| rotate_rx),
                         options.profile,
+                        options.adaptive,
                     );
                     tokio::pin!(run);
                     let mut dial: Option<DialFuture<'_>> = None;
@@ -1761,6 +1776,7 @@ async fn supervise_reverse_service(
                     probe_limiter.clone(),
                     shutdown.clone(),
                     options.profile,
+                    options.adaptive,
                 )
                 .await;
                 if let Some(set) = links.as_mut() {
@@ -1932,6 +1948,7 @@ mod tests {
                 client_limiter,
                 client_stop_rx,
                 None,
+                false,
             )
             .await
         });
@@ -1946,6 +1963,7 @@ mod tests {
             server_limiter.clone(),
             server_stop_rx,
             None,
+            false,
         ));
 
         timeout(Duration::from_secs(2), async {
@@ -2012,6 +2030,7 @@ mod tests {
                 Arc::new(crate::integrity_probe::ProbeLimiter::default()),
                 public_stop_rx,
                 None,
+                false,
             )
             .await
         });
@@ -2026,6 +2045,7 @@ mod tests {
             Arc::new(crate::integrity_probe::ProbeLimiter::default()),
             service_stop_rx,
             None,
+            false,
         ));
 
         timeout(Duration::from_secs(2), async {
@@ -2196,6 +2216,7 @@ mod tests {
             noise: None,
             max_streams: 8,
             profile: None,
+            adaptive: false,
         }));
         let mut ready = false;
         for _ in 0..100 {
@@ -2224,6 +2245,7 @@ mod tests {
             noise: None,
             max_streams: 8,
             profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: None,
         };
@@ -2322,6 +2344,7 @@ mod tests {
                 limiter,
                 client_stop_rx,
                 None,
+                false,
             )
             .await
         });
@@ -2336,6 +2359,7 @@ mod tests {
             peer_limiter,
             server_stop_rx,
             None,
+            false,
         ));
 
         timeout(Duration::from_secs(2), async {
@@ -2572,6 +2596,7 @@ mod tests {
             noise: None,
             max_streams: 8,
             profile: None,
+            adaptive: false,
         }));
 
         let mut ready = false;
@@ -2601,6 +2626,7 @@ mod tests {
             noise: None,
             max_streams: 8,
             profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: None,
         };
@@ -2718,6 +2744,7 @@ mod tests {
                 }),
                 max_streams: 8,
                 profile: None,
+                adaptive: false,
             },
             PROTOCOL_V3,
         ));
@@ -2769,6 +2796,7 @@ mod tests {
             }),
             max_streams: 8,
             profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: None,
         };
@@ -2878,6 +2906,7 @@ mod tests {
             }),
             max_streams: 8,
             profile: None,
+            adaptive: false,
         }));
         for _ in 0..100 {
             if TcpStream::connect(server_address).await.is_ok() {
@@ -2905,6 +2934,7 @@ mod tests {
             }),
             max_streams: 8,
             profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: Some(Duration::from_secs(1)),
         };
@@ -3032,6 +3062,7 @@ mod tests {
             }),
             max_streams: 8,
             profile: None,
+            adaptive: false,
         }));
         for _ in 0..100 {
             if TcpStream::connect(server_address).await.is_ok() {
@@ -3059,6 +3090,7 @@ mod tests {
             }),
             max_streams: 8,
             profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: None,
         };
@@ -3198,6 +3230,7 @@ mod tests {
             }),
             max_streams: 8,
             profile: None,
+            adaptive: false,
         }));
         for _ in 0..100 {
             if TcpStream::connect(ingress_address).await.is_ok() {
@@ -3246,6 +3279,7 @@ mod tests {
                 }),
                 max_streams: 8,
                 profile: None,
+                adaptive: false,
                 backup_remotes: vec![],
                 session_rotate: None,
             })
@@ -3335,6 +3369,7 @@ mod tests {
             }),
             max_streams: 8,
             profile: None,
+            adaptive: false,
         }));
         for _ in 0..100 {
             if TcpStream::connect(tunnel_address).await.is_ok() {
@@ -3362,6 +3397,7 @@ mod tests {
             }),
             max_streams: 8,
             profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: None,
         };
@@ -3626,6 +3662,7 @@ mod tests {
             }),
             max_streams: 8,
             profile: None,
+            adaptive: false,
         }));
         for _ in 0..100 {
             if TcpStream::connect(ingress_address).await.is_ok() {
@@ -3654,6 +3691,7 @@ mod tests {
                 }),
                 max_streams: 8,
                 profile: None,
+                adaptive: false,
                 backup_remotes: vec![tunnel_address.to_string()],
                 session_rotate: None,
             })
@@ -3698,6 +3736,7 @@ mod tests {
             noise: None,
             max_streams: 8,
             profile: None,
+            adaptive: false,
             backup_remotes: vec![],
             session_rotate: None,
         };

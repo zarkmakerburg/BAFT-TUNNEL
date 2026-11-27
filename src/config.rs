@@ -66,6 +66,12 @@ pub struct PolicySettings {
     /// Absent means `balanced/1`, the identity and fail-safe profile (ADR-0031 decision 16).
     #[serde(default)]
     pub profile: Option<PolicyProfile>,
+    /// ADR-0056: opt in to the adaptive controller for this tunnel. Absent or false keeps the
+    /// configured row for the session's lifetime. It only takes effect when the `policy-pack`
+    /// feature, `BAFT_TUNNEL_POLICY_PACK` and a configured profile are all present; on its own it
+    /// enables nothing (it never switches the pack on and never enables a profile).
+    #[serde(default)]
+    pub adaptive: bool,
 }
 
 /// Warn a week ahead: CRLs are renewed weekly (`baft-pki.sh renew-crl`, 30-day validity).
@@ -737,6 +743,7 @@ impl RuntimeConfig {
                         noise,
                         max_streams,
                         profile: policy.profile,
+                        adaptive: policy.adaptive,
                     },
                     protocol_version,
                 )
@@ -787,6 +794,7 @@ impl RuntimeConfig {
                         noise,
                         max_streams,
                         profile: policy.profile,
+                        adaptive: policy.adaptive,
                         backup_remotes,
                         session_rotate: (session_rotate_secs > 0)
                             .then(|| std::time::Duration::from_secs(session_rotate_secs)),
@@ -1403,6 +1411,25 @@ mod tests {
         assert_eq!(serve_policy(&serve_json("")).profile, None);
         assert_eq!(PolicySettings::default().profile, None);
         assert_eq!(PolicyProfile::default(), PolicyProfile::Balanced);
+        assert!(
+            !PolicySettings::default().adaptive,
+            "adaptation is off by default"
+        );
+        assert!(!serve_policy(&serve_json("")).adaptive);
+    }
+
+    /// ADR-0056 decision 10: `policy.adaptive` is the tunnel's opt-in and it only ever opts in —
+    /// parsing it does not enable the pack or supply a profile.
+    #[test]
+    fn adaptation_is_an_explicit_opt_in_that_supplies_nothing_else() {
+        let policy = serve_policy(&serve_json(
+            r#","policy":{"profile":"gaming/1","adaptive":true}"#,
+        ));
+        assert!(policy.adaptive);
+        assert_eq!(policy.profile, Some(PolicyProfile::Gaming));
+        let alone = serve_policy(&serve_json(r#","policy":{"adaptive":true}"#));
+        assert!(alone.adaptive);
+        assert_eq!(alone.profile, None, "adaptation never supplies a profile");
     }
 
     #[test]
@@ -1422,6 +1449,7 @@ mod tests {
     fn a_profile_only_applies_to_the_rust_engines() {
         let policy = PolicySettings {
             profile: Some(PolicyProfile::Gaming),
+            adaptive: false,
         };
         assert!(validate_policy(&policy, EngineKind::TcpTls).is_ok());
         assert!(validate_policy(&policy, EngineKind::NoiseTcp).is_ok());
