@@ -87,7 +87,7 @@ jobs:
           printf '%s\n' "$raw" | python3 -c '
           import re, sys
           raw = sys.stdin.read()
-          names = sorted(set(re.findall(r"users:\\(\\(\"([^\"]+)\",pid=\\d+,fd=\\d+\\)\\)", raw)))
+          names = sorted(set(re.findall(r"users:\(\(\"([^\"]+)\",pid=\d+,fd=\d+\)\)", raw)))
           print("PORT_19090_STATE=listening")
           if names:
               for name in names:
