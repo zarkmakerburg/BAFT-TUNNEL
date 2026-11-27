@@ -5,6 +5,7 @@
 //! off the network — the URL must be a plain loopback origin — and the receipt is printed as the
 //! agent returned it.
 
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -37,9 +38,19 @@ impl Action {
     }
 }
 
-/// `host:port` to connect to, refusing anything that is not a loopback agent: a remote URL would
-/// send the bearer token off the host.
-pub fn loopback_address(url: &str) -> Result<String> {
+/// A resolved loopback destination: every address the name resolves to is loopback, so the bearer
+/// token cannot leave the host through a resolver answer (an `A` record for `localhost`, say).
+#[derive(Debug)]
+pub struct Target {
+    /// `host:port` as the operator wrote it, for messages and the `Host` header.
+    pub display: String,
+    pub addrs: Vec<SocketAddr>,
+}
+
+/// Refuse anything that is not a loopback agent, and resolve the name here rather than letting the
+/// connector resolve it later: `localhost` is only accepted when every address it resolves to is
+/// loopback.
+pub fn loopback_target(url: &str) -> Result<Target> {
     let rest = url.strip_prefix("http://").with_context(|| {
         format!("--agent must be http://127.0.0.1:PORT (got {url}); the agent API is loopback only")
     })?;
@@ -63,7 +74,21 @@ pub fn loopback_address(url: &str) -> Result<String> {
             "--agent must be a loopback address (127.0.0.1, localhost or [::1]); refusing {other}"
         ),
     };
-    Ok(format!("{host}:{port}"))
+    let display = format!("{host}:{port}");
+    let addrs: Vec<SocketAddr> = display
+        .to_socket_addrs()
+        .with_context(|| format!("resolve the loopback agent address {display}"))?
+        .collect();
+    if addrs.is_empty() {
+        bail!("the loopback agent address {display} did not resolve to any address");
+    }
+    if let Some(remote) = addrs.iter().find(|a| !a.ip().is_loopback()) {
+        bail!(
+            "{display} resolves to {remote}, which is not loopback; refusing to send the agent \
+             token off this host"
+        );
+    }
+    Ok(Target { display, addrs })
 }
 
 /// One request, built with the same fields the agent's typed route parses.
@@ -103,18 +128,31 @@ fn parse_response(raw: &[u8]) -> Result<(u16, Value)> {
 
 /// One HTTP exchange with the loopback agent. The body is JSON when given.
 async fn exchange(
-    addr: &str,
+    target: &Target,
     method: &str,
     path: &str,
     token: &str,
     body: Option<&str>,
 ) -> Result<(u16, Value)> {
-    let mut stream = tokio::net::TcpStream::connect(addr)
-        .await
-        .with_context(|| format!("connect to the agent at {addr}"))?;
+    let mut last = None;
+    let mut stream = None;
+    for addr in &target.addrs {
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(s) => {
+                stream = Some(s);
+                break;
+            }
+            Err(error) => last = Some((*addr, error)),
+        }
+    }
+    let Some(mut stream) = stream else {
+        let (addr, error) = last.context("the agent address has no usable loopback address")?;
+        return Err(error).with_context(|| format!("connect to the agent at {addr}"));
+    };
+    let display = &target.display;
     let body = body.unwrap_or_default();
     let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\n\
+        "{method} {path} HTTP/1.1\r\nHost: {display}\r\nAuthorization: Bearer {token}\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
@@ -133,8 +171,8 @@ async fn exchange(
 
 /// The instance this agent is bound to, from the existing host-tunnel list. `--instance` names
 /// what the operator means, so a command for another instance must not write this one.
-async fn bound_instance(addr: &str, token: &str) -> Result<String> {
-    let (code, value) = exchange(addr, "GET", "/v1/host/tunnels", token, None).await?;
+async fn bound_instance(target: &Target, token: &str) -> Result<String> {
+    let (code, value) = exchange(target, "GET", "/v1/host/tunnels", token, None).await?;
     if code != 200 {
         bail!("the agent did not answer the host-tunnel list with 200 ({code})");
     }
@@ -157,17 +195,18 @@ pub async fn apply(
     action: Action,
     profile: Option<&str>,
 ) -> Result<Value> {
-    let addr = loopback_address(agent)?;
+    let target = loopback_target(agent)?;
     let token = read_token(token_file)?;
-    let bound = bound_instance(&addr, &token).await?;
+    let bound = bound_instance(&target, &token).await?;
     if bound != instance {
         bail!(
-            "the agent at {addr} manages {bound}, not {instance}; connect to the agent of the \
-             instance you named, or use --agent"
+            "the agent at {} manages {bound}, not {instance}; connect to the agent of the \
+             instance you named, or use --agent",
+            target.display
         );
     }
     let body = request_body(action, profile, &new_key())?.to_string();
-    let (code, value) = exchange(&addr, "POST", PATH, &token, Some(&body)).await?;
+    let (code, value) = exchange(&target, "POST", PATH, &token, Some(&body)).await?;
     if code == 200 {
         return Ok(value);
     }
@@ -260,18 +299,16 @@ mod tests {
 
     #[test]
     fn only_a_loopback_origin_is_accepted() {
-        assert_eq!(
-            loopback_address("http://127.0.0.1:18080").unwrap(),
-            "127.0.0.1:18080"
-        );
-        assert_eq!(
-            loopback_address("http://localhost:9000").unwrap(),
-            "localhost:9000"
-        );
-        assert_eq!(
-            loopback_address("http://[::1]:18080").unwrap(),
-            "[::1]:18080"
-        );
+        let v4 = loopback_target("http://127.0.0.1:18080").unwrap();
+        assert_eq!(v4.display, "127.0.0.1:18080");
+        assert_eq!(v4.addrs, vec!["127.0.0.1:18080".parse().unwrap()]);
+        let name = loopback_target("http://localhost:9000").unwrap();
+        assert_eq!(name.display, "localhost:9000");
+        assert!(!name.addrs.is_empty(), "localhost must resolve here");
+        assert!(name.addrs.iter().all(|a| a.ip().is_loopback()), "{name:?}");
+        let v6 = loopback_target("http://[::1]:18080").unwrap();
+        assert_eq!(v6.display, "[::1]:18080");
+        assert!(v6.addrs.iter().all(|a| a.ip().is_loopback()), "{v6:?}");
         for bad in [
             "https://127.0.0.1:18080",
             "http://198.51.100.7:18080",
@@ -281,7 +318,7 @@ mod tests {
             "http://127.0.0.1:0",
             "http://user@127.0.0.1:18080",
         ] {
-            assert!(loopback_address(bad).is_err(), "{bad} must be refused");
+            assert!(loopback_target(bad).is_err(), "{bad} must be refused");
         }
     }
 

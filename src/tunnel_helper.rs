@@ -143,7 +143,7 @@ pub trait ServiceControl {
     fn reload(&self) -> Result<()>;
     /// Restart `baft-tunnel@NAME` and wait until systemd reports it active again.
     fn restart(&self, name: &str) -> Result<()>;
-    /// The running unit's `BAFT_TUNNEL_POLICY_PACK`, read from `/proc/<MainPID>/environ`.
+    /// The running unit's `BAFT_TUNNEL_POLICY_PACK` as systemd applied it (`systemctl show`).
     fn switch_value(&self, name: &str) -> Result<Option<String>>;
 }
 
@@ -192,22 +192,19 @@ impl ServiceControl for SystemService {
 
     fn switch_value(&self, name: &str) -> Result<Option<String>> {
         let unit = format!("baft-tunnel@{name}");
-        let out = Self::systemctl(&["show", "-p", "MainPID", "--value", &unit])?;
-        let pid: u32 = String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .parse()
-            .context("the unit has no MainPID to verify")?;
-        if pid == 0 {
-            bail!("{unit} is not running; its environment cannot be read");
+        // `Environment` is the environment systemd itself applied to this unit's processes. It is
+        // readable by the helper without CAP_SYS_PTRACE, which `/proc/<MainPID>/environ` of a
+        // `User=` unit would need (the installed service does not have that capability).
+        let out = Self::systemctl(&["show", "-p", "Environment", "--value", &unit])?;
+        if !out.status.success() {
+            bail!(
+                "systemctl show {unit} failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
         }
-        let environ = std::fs::read(format!("/proc/{pid}/environ"))
-            .with_context(|| format!("read /proc/{pid}/environ"))?;
-        let prefix = format!("{PACK_SWITCH}=");
-        Ok(environ
-            .split(|b| *b == 0)
-            .filter_map(|entry| std::str::from_utf8(entry).ok())
-            .find_map(|entry| entry.strip_prefix(&prefix))
-            .map(str::to_string))
+        Ok(pack_switch_in_environment(&String::from_utf8_lossy(
+            &out.stdout,
+        )))
     }
 }
 
@@ -595,6 +592,19 @@ fn plausible_profile_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'-' | b'_'))
 }
 
+/// The switch inside `systemctl show -p Environment` output (`A=1 B=2`, where a value may itself be
+/// quoted and contain spaces). Only our own variable is looked for.
+fn pack_switch_in_environment(text: &str) -> Option<String> {
+    let prefix = format!("{PACK_SWITCH}=");
+    let at = text.find(&prefix)?;
+    let after = &text[at + prefix.len()..];
+    let value = match after.strip_prefix('"') {
+        Some(quoted) => quoted.split('"').next().unwrap_or_default(),
+        None => after.split_whitespace().next().unwrap_or_default(),
+    };
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 fn mentions_switch(bytes: &[u8]) -> bool {
     let prefix = format!("{PACK_SWITCH}=");
     String::from_utf8_lossy(bytes)
@@ -605,11 +615,28 @@ fn mentions_switch(bytes: &[u8]) -> bool {
 
 /// A unit file or another drop-in that already sets the switch: this surface leaves it alone.
 fn switch_elsewhere(d: &Dirs<'_>, name: &str) -> Result<Option<String>> {
-    let unit = d.units.join(format!("baft-tunnel@{name}.service"));
-    if regular(&unit)?.is_some() && mentions_switch(&read_bounded(&unit)?) {
-        return Ok(Some(unit.to_string_lossy().into_owned()));
+    for unit in [
+        d.units.join(format!("baft-tunnel@{name}.service")),
+        // The template applies to every instance, so a switch set there is just as much someone
+        // else's configuration as one in this instance's own unit file.
+        d.units.join("baft-tunnel@.service"),
+    ] {
+        if regular(&unit)?.is_some() && mentions_switch(&read_bounded(&unit)?) {
+            return Ok(Some(unit.to_string_lossy().into_owned()));
+        }
     }
-    let Ok(entries) = std::fs::read_dir(drop_in_dir(d, name)) else {
+    // Drop-ins for this instance and for the template, each searched for `.conf` files only.
+    for dir in [drop_in_dir(d, name), d.units.join("baft-tunnel@.service.d")] {
+        if let Some(path) = switch_in_dir(&dir)? {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+/// A `.conf` drop-in in `dir` that sets the switch, other than this surface's own file.
+fn switch_in_dir(dir: &Path) -> Result<Option<String>> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Ok(None);
     };
     let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
@@ -717,8 +744,8 @@ fn policy_receipt(
 }
 
 /// One ADR-0057 write. Validates with the runtime's own schema, writes with a per-key backup,
-/// reloads systemd, restarts a running unit, verifies through the running process's environment,
-/// and restores both files' previous bytes when any step fails (ADR-0057 decision 4).
+/// reloads systemd, restarts a running unit, verifies through files and the unit's own environment,
+/// and restores the files this request replaced when any step fails (ADR-0057 decision 4).
 fn apply_policy(name: &str, req: &Request, d: &Dirs<'_>) -> Result<PolicyOutcome> {
     let action = req.action.context("policy needs an action")?;
     let config_name = format!("{name}.json");
@@ -727,6 +754,17 @@ fn apply_policy(name: &str, req: &Request, d: &Dirs<'_>) -> Result<PolicyOutcome
     let cfg_meta = regular(&config_path)?.context("configuration disappeared")?;
     let cfg: Value =
         serde_json::from_slice(&cfg_old).context("the current configuration is not valid JSON")?;
+    // The configuration on disk is validated before anything is written: an operator may have
+    // introduced an unknown id after the agent loaded its copy, and restarting the unit on it
+    // before finding out would be a write this request did not need to make.
+    if let Err(error) = validate_config(&cfg) {
+        return Ok(PolicyOutcome::Refused {
+            cause: "policy_not_valid",
+            reason: format!(
+                "the configuration on disk is already invalid, so nothing was changed: {error:#}"
+            ),
+        });
+    }
     let (profile_before, adaptive_before) = policy_row(&cfg)?;
     let drop_path = drop_in_dir(d, name).join(DROP_IN);
     let drop_old = match regular(&drop_path)? {
@@ -783,21 +821,24 @@ fn apply_policy(name: &str, req: &Request, d: &Dirs<'_>) -> Result<PolicyOutcome
         }
         PolicyAction::Disable => {
             requested["switch"] = Value::Null;
-            if !managed && drop_old.is_some() {
+            // A second file that also sets the switch would keep it set after this file is gone,
+            // so that is a refusal whether or not the managed file exists.
+            if let Some(path) = &elsewhere {
                 return Ok(PolicyOutcome::Refused {
-                    cause: "switch_not_managed",
+                    cause: "switch_managed_elsewhere",
                     reason: format!(
-                        "{} was not written by this surface; remove it yourself if it is yours",
+                        "the switch is also set in {path}; removing {} would leave {PACK_SWITCH} in effect, so nothing was changed",
                         drop_path.display()
                     ),
                 });
             }
             if !managed {
-                if let Some(path) = &elsewhere {
+                if drop_old.is_some() {
                     return Ok(PolicyOutcome::Refused {
-                        cause: "switch_managed_elsewhere",
+                        cause: "switch_not_managed",
                         reason: format!(
-                            "the switch is set in {path}; remove it there, this surface does not edit that file"
+                            "{} was not written by this surface; remove it yourself if it is yours",
+                            drop_path.display()
                         ),
                     });
                 }
@@ -904,6 +945,16 @@ fn apply_policy(name: &str, req: &Request, d: &Dirs<'_>) -> Result<PolicyOutcome
         _ => (DropInChange::Keep, ""),
     };
     let was_up = std::fs::symlink_metadata(d.run.join(name)).is_ok();
+    // The running unit's switch before the write: recovery compares against this exact value, not
+    // against whatever the files imply, and says so when it cannot be read.
+    let baseline = if was_up {
+        match d.service.switch_value(name) {
+            Ok(value) => SwitchBaseline::Known(value),
+            Err(error) => SwitchBaseline::Unreadable(format!("{error:#}")),
+        }
+    } else {
+        SwitchBaseline::Stopped
+    };
     // Per-key backup of the exact bytes this request may replace (the Op::Edit mechanics).
     private_dir(d.backups)?;
     let instance_dir = d.backups.join(name);
@@ -930,30 +981,55 @@ fn apply_policy(name: &str, req: &Request, d: &Dirs<'_>) -> Result<PolicyOutcome
     // The manifest describes the state this request is responsible for: both files' previous bytes
     // are on disk, and the hashes are what a later revert may expect to find.
     let mut files = vec![config_name.clone()];
-    let mut written = vec![sha_hex(new_cfg.as_deref().unwrap_or(&cfg_old))];
+    let mut hashes = vec![sha_hex(new_cfg.as_deref().unwrap_or(&cfg_old))];
     match change {
         DropInChange::Write => {
             files.push(DROP_IN.to_string());
-            written.push(sha_hex(MANAGED_DROP_IN));
+            hashes.push(sha_hex(MANAGED_DROP_IN));
         }
         DropInChange::Keep => {
             if let Some(bytes) = &drop_old {
                 files.push(DROP_IN.to_string());
-                written.push(sha_hex(bytes));
+                hashes.push(sha_hex(bytes));
             }
         }
         DropInChange::Remove => {}
     }
-    write_manifest(&backup, Op::Policy, &files, &written)?;
+    write_manifest(&backup, Op::Policy, &files, &hashes)?;
+    let policy_files = PolicyFiles {
+        config_name: config_name.clone(),
+        config_path: config_path.clone(),
+        cfg_old: cfg_old.clone(),
+        cfg_meta: cfg_meta.clone(),
+        drop_path: drop_path.clone(),
+        drop_old: drop_old.clone(),
+        was_up,
+        baseline,
+        backup: backup.clone(),
+    };
+    let mut written: Vec<Written> = Vec::new();
     let mutation = (|| -> Result<()> {
         if let Some(bytes) = &new_cfg {
             replace(&config_path, bytes, &cfg_meta)?;
+            written.push(Written::replaced(
+                config_name.clone(),
+                config_path.clone(),
+                bytes,
+            ));
         }
         match change {
-            DropInChange::Write => write_fixed(&drop_path, MANAGED_DROP_IN, 0o644)?,
+            DropInChange::Write => {
+                write_fixed(&drop_path, MANAGED_DROP_IN, 0o644)?;
+                written.push(Written::replaced(
+                    DROP_IN.to_string(),
+                    drop_path.clone(),
+                    MANAGED_DROP_IN,
+                ));
+            }
             DropInChange::Remove => {
                 std::fs::remove_file(&drop_path)
                     .with_context(|| format!("remove {}", drop_path.display()))?;
+                written.push(Written::removed(DROP_IN.to_string(), drop_path.clone()));
             }
             DropInChange::Keep => {}
         }
@@ -967,14 +1043,8 @@ fn apply_policy(name: &str, req: &Request, d: &Dirs<'_>) -> Result<PolicyOutcome
             action,
             &previous,
             &requested,
-            &config_name,
-            &config_path,
-            &cfg_meta,
-            &cfg_old,
-            &drop_path,
-            drop_old.as_deref(),
-            was_up,
-            &backup,
+            &policy_files,
+            &written,
             format!("write: {error:#}"),
         ));
     }
@@ -982,11 +1052,8 @@ fn apply_policy(name: &str, req: &Request, d: &Dirs<'_>) -> Result<PolicyOutcome
         action,
         name,
         d,
-        &config_path,
-        &drop_path,
+        &policy_files,
         new_cfg.as_deref(),
-        &cfg_old,
-        was_up,
         req.profile.as_deref(),
     );
     if let Err(error) = check {
@@ -997,14 +1064,8 @@ fn apply_policy(name: &str, req: &Request, d: &Dirs<'_>) -> Result<PolicyOutcome
             action,
             &previous,
             &requested,
-            &config_name,
-            &config_path,
-            &cfg_meta,
-            &cfg_old,
-            &drop_path,
-            drop_old.as_deref(),
-            was_up,
-            &backup,
+            &policy_files,
+            &written,
             format!("verify: {error:#}"),
         ));
     }
@@ -1024,7 +1085,7 @@ fn apply_policy(name: &str, req: &Request, d: &Dirs<'_>) -> Result<PolicyOutcome
         json!({
             "level": if was_up { "unit" } else { "file" },
             "reason": if was_up {
-                "systemd was reloaded, the unit was restarted and became active, and its environment was re-read"
+                "systemd was reloaded, the unit was restarted and became active, and its own environment was re-read"
             } else {
                 "the unit was stopped before this request and was not started; only the files were verified"
             },
@@ -1034,47 +1095,131 @@ fn apply_policy(name: &str, req: &Request, d: &Dirs<'_>) -> Result<PolicyOutcome
     )))
 }
 
-/// The edited configuration parsed and validated by the runtime's own schema.
-fn validated_config(cfg: &Value) -> Result<Vec<u8>> {
+/// The state of one instance's files and unit that a single policy request works against.
+struct PolicyFiles {
+    config_name: String,
+    config_path: PathBuf,
+    cfg_old: Vec<u8>,
+    cfg_meta: std::fs::Metadata,
+    drop_path: PathBuf,
+    drop_old: Option<Vec<u8>>,
+    was_up: bool,
+    baseline: SwitchBaseline,
+    backup: PathBuf,
+}
+
+impl PolicyFiles {
+    /// The bytes a label held before this request (the drop-in: `None` when it was absent).
+    fn previous(&self, label: &str) -> Option<&[u8]> {
+        if label == self.config_name {
+            Some(&self.cfg_old)
+        } else {
+            self.drop_old.as_deref()
+        }
+    }
+
+    fn path(&self, label: &str) -> &Path {
+        if label == self.config_name {
+            &self.config_path
+        } else {
+            &self.drop_path
+        }
+    }
+}
+
+/// What the running unit had before the write: recovery restores the files and then compares the
+/// unit against this, rather than assuming.
+enum SwitchBaseline {
+    Stopped,
+    Known(Option<String>),
+    Unreadable(String),
+}
+
+/// One file this request actually replaced or removed, with the bytes it left there, so recovery
+/// reverts only its own writes and never overwrites an edit made while it ran.
+enum Written {
+    Replaced {
+        label: String,
+        path: PathBuf,
+        bytes: Vec<u8>,
+    },
+    Removed {
+        label: String,
+        path: PathBuf,
+    },
+}
+
+impl Written {
+    fn replaced(label: String, path: PathBuf, bytes: &[u8]) -> Self {
+        Self::Replaced {
+            label,
+            path,
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    fn removed(label: String, path: PathBuf) -> Self {
+        Self::Removed { label, path }
+    }
+
+    fn label(&self) -> &str {
+        match self {
+            Self::Replaced { label, .. } | Self::Removed { label, .. } => label,
+        }
+    }
+
+    /// The file still holds exactly what this request left there.
+    fn holds_its_own_write(&self) -> bool {
+        match self {
+            Self::Replaced { path, bytes, .. } => {
+                read_bounded(path).is_ok_and(|current| &current == bytes)
+            }
+            Self::Removed { path, .. } => std::fs::symlink_metadata(path).is_err(),
+        }
+    }
+}
+
+/// The configuration parsed and validated by the runtime's own schema.
+fn validate_config(cfg: &Value) -> Result<()> {
     let runtime: crate::config::RuntimeConfig = serde_json::from_value(cfg.clone())
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("the requested policy is not valid for this tunnel")?;
     runtime
         .validate_public()
-        .context("the requested policy is not valid for this tunnel")?;
+        .context("the requested policy is not valid for this tunnel")
+}
+
+/// The edited configuration parsed, validated and serialized by the runtime's own schema.
+fn validated_config(cfg: &Value) -> Result<Vec<u8>> {
+    validate_config(cfg)?;
     Ok(serde_json::to_vec_pretty(cfg)?)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn verify_policy(
     action: PolicyAction,
     name: &str,
     d: &Dirs<'_>,
-    config_path: &Path,
-    drop_path: &Path,
+    files: &PolicyFiles,
     new_cfg: Option<&[u8]>,
-    cfg_old: &[u8],
-    was_up: bool,
     profile: Option<&str>,
 ) -> Result<()> {
     d.service.reload()?;
-    if was_up {
+    if files.was_up {
         d.service.restart(name)?;
     }
-    let bytes = read_bounded(config_path)?;
+    let bytes = read_bounded(&files.config_path)?;
     if new_cfg.is_some_and(|want| bytes != want) {
-        bail!("{config_path:?} does not have the bytes this request wrote");
+        bail!(
+            "{} does not have the bytes this request wrote",
+            files.config_path.display()
+        );
     }
-    if new_cfg.is_none() && bytes != cfg_old {
-        bail!("{config_path:?} changed during the request");
+    if new_cfg.is_none() && bytes != files.cfg_old {
+        bail!("{} changed during the request", files.config_path.display());
     }
     let cfg: Value =
         serde_json::from_slice(&bytes).context("the written configuration is not valid JSON")?;
-    let runtime: crate::config::RuntimeConfig =
-        serde_json::from_value(cfg.clone()).context("the written configuration is not valid")?;
-    runtime
-        .validate_public()
-        .context("the written configuration is not valid")?;
+    validate_config(&cfg).context("the written configuration is not valid")?;
     let (profile_now, adaptive_now) = policy_row(&cfg)?;
     match action {
         PolicyAction::Select => {
@@ -1091,33 +1236,56 @@ fn verify_policy(
     }
     match action {
         PolicyAction::Enable => {
-            if read_bounded(drop_path)? != MANAGED_DROP_IN {
-                bail!("{} does not hold the managed content", drop_path.display());
+            if read_bounded(&files.drop_path)?.as_slice() != MANAGED_DROP_IN {
+                bail!(
+                    "{} does not hold the managed content",
+                    files.drop_path.display()
+                );
             }
         }
         PolicyAction::Disable => {
-            if std::fs::symlink_metadata(drop_path).is_ok() {
-                bail!("{} still exists", drop_path.display());
+            if std::fs::symlink_metadata(&files.drop_path).is_ok() {
+                bail!("{} still exists", files.drop_path.display());
             }
         }
         _ => {}
     }
-    if was_up {
+    if files.was_up {
+        // Evidence from the unit itself: `systemctl show -p Environment` is what systemd applied to
+        // the process it just started, and it does not need the helper to read another uid's
+        // `/proc` (the installed service has no CAP_SYS_PTRACE by design).
+        let switch = d.service.switch_value(name)?;
         match action {
             PolicyAction::Enable => {
-                if d.service.switch_value(name)?.as_deref() != Some(PACK_MODE) {
+                if switch.as_deref() != Some(PACK_MODE) {
                     bail!("the running unit does not have {PACK_SWITCH}={PACK_MODE}");
                 }
             }
             PolicyAction::Disable => {
-                if d.service.switch_value(name)?.is_some() {
+                if switch.is_some() {
                     bail!("the running unit still has {PACK_SWITCH} in its environment");
                 }
             }
-            _ => {}
+            _ => {
+                if let SwitchBaseline::Known(before) = &files.baseline {
+                    if &switch != before {
+                        bail!(
+                            "the running unit's {PACK_SWITCH} changed although this action does not touch it"
+                        );
+                    }
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// How a restore attempt ended: verified, or verified only at the file level because the unit's
+/// switch could not be read, or stopped because a file this request wrote was changed underneath it.
+enum Restore {
+    Verified,
+    FileOnly,
+    Conflict(Vec<String>),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1128,137 +1296,179 @@ fn recover_policy(
     action: PolicyAction,
     previous: &Value,
     requested: &Value,
-    config_name: &str,
-    config_path: &Path,
-    cfg_meta: &std::fs::Metadata,
-    cfg_old: &[u8],
-    drop_path: &Path,
-    drop_old: Option<&[u8]>,
-    was_up: bool,
-    backup: &Path,
+    files: &PolicyFiles,
+    written: &[Written],
     failed: String,
 ) -> PolicyOutcome {
     let mut restored: Vec<String> = Vec::new();
-    let mut step = String::new();
-    let restore = (|| -> Result<()> {
-        let config_differs = read_bounded(config_path).map_or(true, |cur| cur != cfg_old);
-        if config_differs {
-            step = format!("restore {config_name}");
-            replace(config_path, cfg_old, cfg_meta)?;
-            restored.push(config_name.to_string());
+    let attempt = (|| -> std::result::Result<Restore, String> {
+        let conflicts: Vec<String> = written
+            .iter()
+            .filter(|w| !w.holds_its_own_write())
+            .map(|w| w.label().to_string())
+            .collect();
+        if !conflicts.is_empty() {
+            // Another writer changed a file this request had already replaced. Overwriting it would
+            // destroy that edit, so it is left as it is and reported.
+            return Ok(Restore::Conflict(conflicts));
         }
-        match drop_old {
-            Some(bytes) => {
-                let differs = read_bounded(drop_path).map_or(true, |cur| cur != bytes);
-                if differs {
-                    step = format!("restore {DROP_IN}");
-                    write_fixed(drop_path, bytes, 0o644)?;
-                    restored.push(DROP_IN.to_string());
+        for w in written {
+            let label = w.label();
+            let path = files.path(label);
+            match (w, files.previous(label)) {
+                // The file did not exist before this request: putting it back means removing it.
+                (Written::Replaced { .. }, None) => {
+                    match std::fs::remove_file(path) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(format!("restore {label}: {error:#}")),
+                    }
+                    restored.push(label.to_string());
                 }
-            }
-            None => {
-                if std::fs::symlink_metadata(drop_path).is_ok() {
-                    step = format!("remove {DROP_IN}");
-                    std::fs::remove_file(drop_path)?;
-                    restored.push(DROP_IN.to_string());
+                (Written::Replaced { .. }, Some(previous)) => {
+                    if label == files.config_name {
+                        replace(path, previous, &files.cfg_meta)
+                            .map_err(|e| format!("restore {label}: {e:#}"))?;
+                    } else {
+                        write_fixed(path, previous, 0o644)
+                            .map_err(|e| format!("restore {label}: {e:#}"))?;
+                    }
+                    restored.push(label.to_string());
                 }
-            }
-        }
-        step = "systemctl daemon-reload".into();
-        d.service.reload()?;
-        if was_up {
-            step = format!("restart baft-tunnel@{name} on the previous files");
-            d.service.restart(name)?;
-        }
-        step = "verify the restored files".into();
-        if read_bounded(config_path)? != cfg_old {
-            bail!("{config_name} does not have its previous bytes");
-        }
-        match drop_old {
-            Some(bytes) => {
-                if read_bounded(drop_path)? != bytes {
-                    bail!("{DROP_IN} does not have its previous bytes");
+                (Written::Removed { .. }, Some(previous)) => {
+                    write_fixed(path, previous, 0o644)
+                        .map_err(|e| format!("restore {label}: {e:#}"))?;
+                    restored.push(label.to_string());
                 }
-            }
-            None => {
-                if std::fs::symlink_metadata(drop_path).is_ok() {
-                    bail!("{DROP_IN} is present but was absent before the request");
+                (Written::Removed { .. }, None) => {
+                    return Err(format!("restore {label}: the backup has no bytes"));
                 }
             }
         }
-        if was_up {
-            let expected = drop_old.is_some_and(|bytes| bytes == MANAGED_DROP_IN);
-            let switch = d.service.switch_value(name)?;
-            if switch.is_some() != expected {
-                bail!("the running unit's environment does not match the restored files");
+        d.service
+            .reload()
+            .map_err(|e| format!("systemctl daemon-reload: {e:#}"))?;
+        if files.was_up {
+            d.service
+                .restart(name)
+                .map_err(|e| format!("restart baft-tunnel@{name} on the previous files: {e:#}"))?;
+        }
+        for w in written {
+            let label = w.label();
+            match (files.previous(label), read_bounded(files.path(label))) {
+                (Some(previous), Ok(now)) if now == previous => {}
+                (None, Err(_)) if std::fs::symlink_metadata(files.path(label)).is_err() => {}
+                _ => return Err(format!("{label} does not have its previous state")),
             }
         }
-        Ok(())
+        if files.was_up {
+            match &files.baseline {
+                SwitchBaseline::Known(before) => {
+                    let switch = d
+                        .service
+                        .switch_value(name)
+                        .map_err(|e| format!("verify the unit's environment: {e:#}"))?;
+                    if &switch != before {
+                        return Err(format!(
+                            "the running unit's {PACK_SWITCH} does not match its value before the request"
+                        ));
+                    }
+                }
+                // Without a reading from before the write there is no unit-level claim to make.
+                SwitchBaseline::Unreadable(_) => return Ok(Restore::FileOnly),
+                SwitchBaseline::Stopped => {}
+            }
+        }
+        Ok(Restore::Verified)
     })();
-    let recovery = match restore {
-        Ok(()) => Ok(()),
-        Err(error) => Err(format!("{step}: {error:#}")),
+    let (result, level, unconfirmed, details) = match attempt {
+        Ok(Restore::Verified) => (
+            "rolled_back",
+            if files.was_up { "unit" } else { "file" },
+            Vec::new(),
+            Vec::new(),
+        ),
+        Ok(Restore::FileOnly) => {
+            let why = match &files.baseline {
+                SwitchBaseline::Unreadable(error) => error.clone(),
+                _ => "the unit's switch could not be read".to_string(),
+            };
+            (
+                "rolled_back",
+                "file",
+                vec!["switch".to_string()],
+                vec![format!(
+                    "the unit's {PACK_SWITCH} could not be read before the request ({why}), so the restart was not confirmed at the unit level"
+                )],
+            )
+        }
+        Ok(Restore::Conflict(list)) => (
+            "recovery_failed",
+            "none",
+            list.clone(),
+            vec![format!(
+                "changed by another writer while this request ran: {}",
+                list.join(", ")
+            )],
+        ),
+        Err(error) => ("recovery_failed", "none", Vec::new(), vec![error]),
     };
+    let recovered = result == "rolled_back";
     let mut rc = policy_receipt(
         &req.key,
         name,
         action,
-        if recovery.is_ok() {
-            "rolled_back"
-        } else {
-            "recovery_failed"
-        },
+        result,
         previous.clone(),
         requested.clone(),
         restored,
-        recovery.is_err() || !was_up,
+        files.was_up && !recovered,
         json!({
-            "level": if recovery.is_err() { "none" } else if was_up { "unit" } else { "file" },
-            "reason": if recovery.is_err() {
-                "the restore did not verify"
-            } else if was_up {
-                "the unit was restarted on the previous files and its environment was re-read"
-            } else {
-                "the unit was stopped before this request and was not started; only the files were verified"
+            "level": level,
+            "reason": match (result, level) {
+                ("rolled_back", "unit") => "the unit was restarted on the previous files and its own environment was re-read",
+                ("rolled_back", _) => "the files this request replaced were restored; the unit-level environment was not confirmed",
+                _ => "the restore did not verify",
             },
         }),
-        Some(backup),
+        Some(&files.backup),
         req.profile.as_deref(),
     );
     rc["failed_step"] = json!(failed);
     let mut file_state = serde_json::Map::new();
-    let states = [
-        (config_name, config_path, Some(cfg_old)),
-        (DROP_IN, drop_path, drop_old),
-    ];
-    let mut unconfirmed: Vec<String> = Vec::new();
-    for (label, path, want) in states {
-        let state = match (read_bounded(path), want) {
-            (Ok(bytes), Some(bytes_wanted)) if bytes == bytes_wanted => "previous",
-            (Ok(_), None) => "present",
-            (Ok(_), Some(_)) => "different",
-            (Err(_), None) if std::fs::symlink_metadata(path).is_err() => "absent",
-            (Err(_), _) => {
-                unconfirmed.push(label.to_string());
-                "unreadable"
+    for label in [files.config_name.as_str(), DROP_IN] {
+        let path = files.path(label);
+        let now = read_bounded(path).ok();
+        let before = files.previous(label);
+        let was_written = written.iter().any(|w| w.label() == label);
+        let state = if unconfirmed.iter().any(|c| c == label) {
+            "changed_by_other"
+        } else {
+            match (&now, before) {
+                (None, None) => "absent",
+                (Some(bytes), Some(want)) if bytes == want => "previous",
+                _ if was_written => "different",
+                _ => "changed_by_other",
             }
         };
         file_state.insert(label.to_string(), json!(state));
     }
     rc["file_state"] = json!(file_state);
     rc["unconfirmed"] = json!(unconfirmed);
-    if recovery.is_err() {
-        rc["recovery_error"] = json!(recovery.err());
+    if !recovered {
+        rc["recovery_error"] = json!(details);
         rc["operator_action"] = json!(format!(
-            "inspect {} and {}, run \"systemctl daemon-reload\"{}",
-            config_path.display(),
-            drop_path.display(),
-            if was_up {
+            "inspect {} and {}; a file this request wrote changed while it ran, so it was left as it is — run \"systemctl daemon-reload\"{} once the files hold what you want",
+            files.config_path.display(),
+            files.drop_path.display(),
+            if files.was_up {
                 format!(", then \"systemctl restart baft-tunnel@{name}\"")
             } else {
                 "; the unit was stopped before this request and was not started".to_string()
             }
         ));
+    } else if !details.is_empty() {
+        rc["recovery_note"] = json!(details);
     }
     PolicyOutcome::Done(rc)
 }
@@ -2523,7 +2733,13 @@ pub(crate) mod tests {
         e.service.fail(&e.service.restart_failures, 2);
         let out = policy(&e, "edge", "enable", None, "po-key-0051");
         assert_eq!(out["result"], "recovery_failed", "{out}");
-        assert!(out["recovery_error"].as_str().unwrap().contains("restart"));
+        let errors = out["recovery_error"].as_array().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.as_str().unwrap().contains("restart")),
+            "{out}"
+        );
         assert!(
             out["operator_action"]
                 .as_str()
@@ -2558,5 +2774,141 @@ pub(crate) mod tests {
             assert_eq!(out["result"], "refused", "{req}: {out}");
         }
         assert!(!e.drop_in("edge").exists());
+    }
+    #[test]
+    fn only_our_own_variable_is_read_from_the_unit_environment() {
+        assert_eq!(
+            pack_switch_in_environment("A=1 BAFT_TUNNEL_POLICY_PACK=sched X=2").as_deref(),
+            Some("sched")
+        );
+        assert_eq!(
+            pack_switch_in_environment("A=1 BAFT_TUNNEL_POLICY_PACK=\"sched\" X=2").as_deref(),
+            Some("sched")
+        );
+        assert_eq!(pack_switch_in_environment("A=1 B=2"), None);
+        assert_eq!(pack_switch_in_environment("BAFT_TUNNEL_POLICY_PACK="), None);
+    }
+
+    #[test]
+    fn a_switch_in_the_template_drop_in_counts_as_managed_elsewhere() {
+        let e = Env::new("pol-template");
+        e.forward("edge");
+        let dir = e.units.join("baft-tunnel@.service.d");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("10-operator.conf"),
+            "[Service]\nEnvironment=BAFT_TUNNEL_POLICY_PACK=sched\n",
+        )
+        .unwrap();
+        let out = policy(&e, "edge", "enable", None, "po-key-0061");
+        assert_eq!(out["result"], "refused", "{out}");
+        assert_eq!(out["cause"], "switch_managed_elsewhere");
+        assert!(out["reason"].as_str().unwrap().contains("10-operator.conf"));
+        assert!(!e.drop_in("edge").exists());
+        assert!(!e.backups.join("edge").exists(), "nothing was written");
+    }
+
+    #[test]
+    fn an_invalid_configuration_on_disk_is_refused_before_anything_is_written() {
+        let e = Env::new("pol-invalid");
+        e.forward("edge");
+        let mut cfg: Value =
+            serde_json::from_slice(&std::fs::read(e.config.join("edge.json")).unwrap()).unwrap();
+        cfg["engine"] = json!("not-an-engine");
+        let broken = cfg.to_string();
+        std::fs::write(e.config.join("edge.json"), &broken).unwrap();
+        let out = policy(&e, "edge", "enable", None, "po-key-0062");
+        assert_eq!(out["result"], "refused", "{out}");
+        assert_eq!(out["cause"], "policy_not_valid");
+        assert!(
+            out["reason"]
+                .as_str()
+                .unwrap()
+                .contains("nothing was changed")
+        );
+        assert_eq!(
+            std::fs::read_to_string(e.config.join("edge.json")).unwrap(),
+            broken
+        );
+        assert!(!e.drop_in("edge").exists());
+        assert!(!e.backups.join("edge").exists(), "nothing was backed up");
+        assert!(e.service.restarts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_switch_that_cannot_be_read_before_the_write_is_not_claimed_after_recovery() {
+        let e = Env::new("pol-unreadable");
+        e.forward("edge");
+        e.running("edge");
+        // The baseline read and the post-recovery read both fail; the verification restart fails.
+        e.service.fail(&e.service.switch_failures, 2);
+        e.service.fail(&e.service.restart_failures, 1);
+        let out = policy(&e, "edge", "enable", None, "po-key-0063");
+        assert_eq!(out["result"], "rolled_back", "{out}");
+        assert_eq!(out["verification"]["level"], "file", "{out}");
+        assert_eq!(out["unconfirmed"], json!(["switch"]), "{out}");
+        assert!(!e.drop_in("edge").exists(), "the new file was removed");
+        assert_eq!(
+            std::fs::read(e.config.join("edge.json")).unwrap(),
+            std::fs::read(e.config.join("edge.json")).unwrap()
+        );
+    }
+
+    #[test]
+    fn recovery_refuses_to_overwrite_a_file_changed_while_the_request_ran() {
+        let e = Env::new("pol-conflict");
+        e.forward("edge");
+        e.running("edge");
+        let edited = b"[Service]\nEnvironment=BAFT_TUNNEL_POLICY_PACK=sched\n# operator edit\n";
+        std::fs::create_dir_all(e.drop_in("edge").parent().unwrap()).unwrap();
+        std::fs::write(e.drop_in("edge"), edited).unwrap();
+        let cfg_path = e.config.join("edge.json");
+        let cfg = std::fs::read(&cfg_path).unwrap();
+        let files = PolicyFiles {
+            config_name: "edge.json".into(),
+            config_path: cfg_path.clone(),
+            cfg_old: cfg.clone(),
+            cfg_meta: std::fs::metadata(&cfg_path).unwrap(),
+            drop_path: e.drop_in("edge"),
+            drop_old: Some(MANAGED_DROP_IN.to_vec()),
+            was_up: true,
+            baseline: SwitchBaseline::Known(Some(PACK_MODE.to_string())),
+            backup: e.backups.join("edge").join("po-key-0064"),
+        };
+        let written = [Written::replaced(
+            DROP_IN.to_string(),
+            e.drop_in("edge"),
+            MANAGED_DROP_IN,
+        )];
+        let req = Request {
+            op: Op::Policy,
+            key: "po-key-0064".into(),
+            peer_host: None,
+            backup_peer_hosts: None,
+            action: Some(PolicyAction::Enable),
+            profile: None,
+        };
+        let out = recover_policy(
+            "edge",
+            &req,
+            &e.dirs(),
+            PolicyAction::Enable,
+            &json!({"switch": null, "profile": null, "adaptive": false}),
+            &json!({"switch": PACK_MODE, "profile": null, "adaptive": false}),
+            &files,
+            &written,
+            "write: test".into(),
+        );
+        let PolicyOutcome::Done(out) = out else {
+            panic!("expected a receipt");
+        };
+        assert_eq!(out["result"], "recovery_failed", "{out}");
+        assert_eq!(out["file_state"][DROP_IN], "changed_by_other", "{out}");
+        assert_eq!(std::fs::read(e.drop_in("edge")).unwrap(), edited);
+        assert_eq!(std::fs::read(&cfg_path).unwrap(), cfg);
+        assert!(
+            e.service.restarts.lock().unwrap().is_empty(),
+            "a conflicted restore does not restart the unit"
+        );
     }
 }

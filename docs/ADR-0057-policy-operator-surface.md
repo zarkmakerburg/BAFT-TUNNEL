@@ -231,4 +231,26 @@ pins down what the decisions above left to implementation, without changing any 
    existing `UNKNOWN_NOTE`, a 500, and **no stored receipt** — the receipt set of decision 6 covers
    writes, and storing `unknown` would replay as if it were an outcome. The exit codes are the ones
    decision 6 states (200 for `configured`/`unchanged`, 409 for `refused`, 500 for
-   `rolled_back`/`recovery_failed`).
+   `rolled_back`/`recovery_failed`). A helper that was never reached (its socket was unavailable,
+   so nothing could have been written) is the related case with the opposite answer: the agent
+   audits `policy_apply` as `failed`, returns 503 `helper_unavailable`, and stores no receipt, so
+   the same idempotency key applies the request once the helper is reachable instead of replaying
+   a failure. A replayed receipt keeps its own status: a `refused` receipt replays as 409, a
+   `configured` one as 200.
+4. **Unit-level verification reads systemd, not `/proc`.** The helper confirms the running unit's
+   switch with `systemctl show -p Environment --value baft-tunnel@NAME` rather than
+   `/proc/<MainPID>/environ`: the installed helper runs without `CAP_SYS_PTRACE`, so a `User=` unit's
+   environment is not readable from it, and `Environment` is what systemd actually applied to the
+   process it started. When that read fails, the receipt says so instead of claiming the unit.
+5. **Recovery reverts only this request's own writes, and never overwrites a later edit.** It keeps
+   the list of files it actually replaced or removed with the bytes it left there; if one of them no
+   longer holds those bytes, the restore stops, leaves the file as the other writer left it, and
+   reports `recovery_failed` with `file_state: changed_by_other` and an operator action. The
+   `previous` switch value is compared against a reading taken before the write; when that reading
+   failed, the receipt reports the file-level `rolled_back` with `unconfirmed: ["switch"]` rather
+   than asserting the unit is back. Failures of `systemctl`/`daemon-reload` are recorded, not
+   swallowed.
+6. **The configuration on disk is validated before anything is mutated,** and the pre-mutation
+   validation covers every action, including the two that only remove state: an operator may have
+   introduced an unknown id after the agent loaded its copy, and restarting the unit on invalid
+   bytes would be a write the request did not need.

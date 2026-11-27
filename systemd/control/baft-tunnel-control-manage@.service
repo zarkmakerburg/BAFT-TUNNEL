@@ -19,7 +19,9 @@ PrivateDevices=true
 PrivateNetwork=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control
+# The policy write surface (ADR-0057) installs a drop-in beside the tunnel's unit file; the `-`
+# prefix keeps the unit startable on a host where that directory does not exist yet.
+ReadWritePaths=-/etc/baft-tunnel -/var/lib/baft-tunnel -/var/lib/baft-tunnel-control -/etc/systemd/system
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true

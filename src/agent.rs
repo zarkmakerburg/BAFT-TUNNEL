@@ -341,6 +341,12 @@ async fn sampler(ctx: Arc<Ctx>) {
     let loaded = ctx.config.as_ref().and_then(|_| config_digest(&ctx));
     loop {
         tick.tick().await;
+        // A policy or edit request holds `ctx.lock` until it has recorded its outcome and built
+        // its response; reloading underneath it would kill the process before that response is
+        // sent. The next tick after the guard is released reloads (ADR-0057 decision 6).
+        if ctx.lock.try_lock().is_err() {
+            continue;
+        }
         // ADR-0055: the tunnel was removed (back to setup mode) or edited (reload the new
         // configuration). systemd (Restart=always) starts the agent again.
         if loaded.is_some() && config_digest(&ctx) != loaded {
@@ -2953,9 +2959,6 @@ async fn policy_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
     let key = req.idempotency_key.clone();
     let _guard = ctx.lock.lock().await;
     let receipts = state_dir.join("receipts");
-    if let Some(old) = crate::apply::replay_key(&receipts, &key, &digest) {
-        return old;
-    }
     let helper_req = crate::tunnel_helper::Request {
         op: crate::tunnel_helper::Op::Policy,
         key: key.clone(),
@@ -2964,6 +2967,17 @@ async fn policy_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
         action: Some(action),
         profile: req.profile.clone(),
     };
+    if let Some((code, old)) = crate::apply::replay_key(&receipts, &key, &digest) {
+        // A replay is the same answer again: a refusal replays as 409, never as a
+        // transport-level success. An answer that is not a policy receipt (the same key with a
+        // different request) keeps the status the replay itself chose.
+        let code = if old.get("result").is_some() {
+            policy_code(&old)
+        } else {
+            code
+        };
+        return (code, old);
+    }
     let (manage, rdir, dg) = (ctx.manage.clone(), receipts.clone(), digest.clone());
     let inst = name.clone();
     let mut receipt = match tokio::task::spawn_blocking(move || {
@@ -2979,6 +2993,33 @@ async fn policy_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             );
         }
     };
+    if receipt["result"] == "failed" {
+        // The helper was never dispatched to (its socket was unavailable), so nothing was written
+        // and this is not a policy outcome. A stored receipt would make the same key replay the
+        // failure instead of applying the request once the socket is back.
+        let _ = audit(
+            state_dir,
+            ctx,
+            AuditEvent {
+                action: "policy_apply",
+                result: "failed",
+                resource: format!("policy/{}", action.as_str()),
+                node: None,
+                instance: Some(&name),
+                sha256: &digest,
+                detail: action.as_str(),
+                receipt_id: None,
+            },
+        );
+        return (
+            503,
+            json!({
+                "error": "helper_unavailable",
+                "detail": receipt["reason"].clone(),
+                "note": "nothing was written; retry the same request with the same idempotency key once the helper is reachable"
+            }),
+        );
+    }
     if receipt["result"] == "unknown" {
         // No receipt: the helper may have written the files, and a stored "unknown" would replay
         // as if it were an outcome. The operator is told what to inspect instead.
@@ -2998,8 +3039,9 @@ async fn policy_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
         );
         return (500, receipt);
     }
-    crate::apply::store_receipt(&receipts, &key, &mut receipt);
-    let _ = audit(
+    // ADR-0057: one audit line per apply. If the log cannot take it, the completed write must not
+    // look fully recorded, and the failure has to be visible without repeating the write.
+    let recorded = audit(
         state_dir,
         ctx,
         AuditEvent {
@@ -3013,6 +3055,12 @@ async fn policy_apply(ctx: &Ctx, body: &[u8]) -> (u16, Value) {
             receipt_id: receipt["id"].as_str(),
         },
     );
+    if let Err(error) = &recorded {
+        eprintln!("policy apply: the audit line could not be written: {error:#}");
+        receipt["audit_recorded"] = json!(false);
+        receipt["audit_error"] = json!(format!("{error:#}"));
+    }
+    crate::apply::store_receipt(&receipts, &key, &mut receipt);
     (policy_code(&receipt), receipt)
 }
 
@@ -7006,6 +7054,11 @@ mod tests {
         assert_eq!(code, 409, "{out}");
         assert_eq!(out["result"], "refused");
         assert_eq!(out["cause"], "policy_not_valid");
+        // A refusal replays as the same refusal, never as a transport-level success.
+        let (code, again) = route(&post("/v1/policy/apply"), bad, &ctx).await;
+        assert_eq!(code, 409, "{again}");
+        assert_eq!(again["replayed"], true, "{again}");
+        assert_eq!(again["result"], "refused", "{again}");
         let audit = std::fs::read_to_string(state.join(AUDIT_FILE)).unwrap();
         assert!(audit.contains("\"action\":\"policy_apply\""), "{audit}");
         assert!(audit.contains("\"resource\":\"policy/select\""), "{audit}");
@@ -7015,6 +7068,32 @@ mod tests {
             receipts, 5,
             "one receipt per accepted key, including refusals"
         );
+    }
+
+    #[cfg(feature = "policy-pack")]
+    #[tokio::test]
+    async fn a_helper_that_is_not_reachable_stores_no_receipt() {
+        struct Down;
+        impl crate::tunnel_helper::ManageHelper for Down {
+            fn submit(&self, _: &str, _: &crate::tunnel_helper::Request) -> Result<Value, String> {
+                Err("helper socket unavailable (test)".into())
+            }
+        }
+        let state = state_dir("po-down");
+        let (ctx, _) = lifecycle_ctx(&state, Some("edge"), "inactive");
+        let ctx = ctx.with_manage_helper(Arc::new(Down));
+        let body = br#"{"confirm":true,"idempotency_key":"po-down-0001","action":"disable"}"#;
+        let (code, out) = route(&post("/v1/policy/apply"), body, &ctx).await;
+        assert_eq!(code, 503, "{out}");
+        assert_eq!(out["error"], "helper_unavailable");
+        assert!(
+            !state.join("receipts/po-down-0001.json").exists(),
+            "nothing was written, so nothing is stored"
+        );
+        let audit = std::fs::read_to_string(state.join(AUDIT_FILE)).unwrap();
+        assert!(audit.contains("\"result\":\"failed\""), "{audit}");
+        // The key is not poisoned by the failure: the next attempt is dispatched again.
+        assert_eq!(route(&post("/v1/policy/apply"), body, &ctx).await.0, 503);
     }
 
     #[tokio::test]
