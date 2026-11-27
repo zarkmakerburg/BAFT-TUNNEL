@@ -254,3 +254,9 @@ pins down what the decisions above left to implementation, without changing any 
    validation covers every action, including the two that only remove state: an operator may have
    introduced an unknown id after the agent loaded its copy, and restarting the unit on invalid
    bytes would be a write the request did not need.
+7. **The agent's sampler does not reload under an in-flight write.** Decision 5's reload is how the
+   agent picks up a new configuration, but a `select`/`reset` replaces `NAME.json` before the helper
+   has restarted systemd. The sampler therefore takes `ctx.lock` with `try_lock` and skips the tick
+   while a policy (or manage) request holds it; the next tick after the guard is released reloads.
+   Without that, the process could exit mid-write and leave a completed helper mutation with no HTTP
+   response, receipt or audit line.
