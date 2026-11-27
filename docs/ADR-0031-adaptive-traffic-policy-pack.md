@@ -390,11 +390,13 @@ Decision 9's bullet list is now specified rather than left to implementation. [A
   to the configured row, and the configured row restored after three missed samples. Every change
   is one log line naming its cause and the estimate that triggered it.
 - **Off by default.** `policy-pack` and `BAFT_TUNNEL_POLICY_PACK` still gate the pack, and
-  adaptation additionally needs a `policy.adaptive` opt-in (default false) that the wiring slice
-  will add; decision 2's fail-safe target and this ADR's profile rows are unchanged. No profile is
-  measured and no benefit is claimed by adaptation.
-- **Shipped so far.** The pure decision core in `src/policy_adaptive.rs` and its unit tests, with
-  no caller and no config field; the wiring, benchmark and LAB items stay open in TP-4.1.
+  adaptation additionally needs the `policy.adaptive` opt-in (default false, inert without a
+  configured profile); decision 2's fail-safe target and this ADR's profile rows are unchanged. No
+  profile is measured and no benefit is claimed by adaptation.
+- **Shipped so far.** The decision core in `src/policy_adaptive.rs`, the opt-in wiring in
+  `src/policy_relay.rs`/`src/config.rs` (1 Hz samples, one row change applied to the affected
+  direction, one log line per change) and a `simulated` benchmark record. The two-host LAB item
+  stays open in TP-4.1; nothing here is a measured benefit.
 
 ## Known limits (recorded in Phase 0)
 

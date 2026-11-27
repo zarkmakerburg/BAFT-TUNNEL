@@ -216,9 +216,7 @@ impl Controller {
         if let Some(pending) = self.pending {
             if now >= pending.at.saturating_add(VERIFY_WINDOW) {
                 let improved = signals.queue_delay.saturating_mul(100)
-                    <= pending
-                        .baseline
-                        .saturating_mul(100 - MIN_IMPROVEMENT);
+                    <= pending.baseline.saturating_mul(100 - MIN_IMPROVEMENT);
                 self.pending = None;
                 if !improved {
                     // Revert this step only: the row before it was already verified.
