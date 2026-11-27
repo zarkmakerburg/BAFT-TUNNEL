@@ -133,7 +133,7 @@ ap_cleanup() {
 # set +e: under errexit the (exit N) that restores the status would end the trap before cleanup runs.
 trap 'ap_status=$?; set +e; ap_cleanup_status=0; ap_cleanup "$ap_status" || ap_cleanup_status=$?; if (( ap_status == 0 && ap_cleanup_status != 0 )); then ap_status=$ap_cleanup_status; fi; (exit "$ap_status"); cleanup' EXIT
 
-tar -czf "$LOCAL_TMP/ap-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd lab/real-hosts/auto-pair-install-host.sh lab/real-hosts/auto-pair-cleanup-host.sh
+tar -czf "$LOCAL_TMP/ap-pkg.tgz" scripts/*.sh scripts/pki/*.sh systemd lab/real-hosts/auto-pair-install-host.sh lab/real-hosts/auto-pair-cleanup-host.sh lab/real-hosts/lib-runtime-children.sh
 cp "$MVP_BINARY_PATH" "$LOCAL_TMP/baft-tunnel-ap"
 
 ap_api() { # side METHOD path ; JSON body on stdin for POST (kept off the command line)

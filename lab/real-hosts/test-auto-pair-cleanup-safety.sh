@@ -128,7 +128,17 @@ contains "$lab_config_workflow" 'test-auto-pair-integrity-retry.sh'
 contains "$workflow" 'baft-tunnel-v0.3.1-rc.1-linux-x86_64'
 not_contains "$workflow" 'cargo +1.88.0 build --locked --release'
 
-agent_userdel_line="$(grep -nF 'userdel baft-tunnel-agent' "$cleanup_helper" | cut -d: -f1)"
+contains "$cleanup_helper" 'MANAGE_DIR=/run/baft-tunnel/manage'
+contains "$cleanup_helper" 'lib-runtime-children.sh'
+contains "$cleanup_helper" 'baft_runtime_children_known /run/baft-tunnel "$CONTROL_DIR" "$MANAGE_DIR"'
+contains "$cleanup_helper" 'baft_manage_dir_known "$MANAGE_DIR"'
+contains "$cleanup_helper" 'manage runtime directory survived uninstall'
+contains "$stage" 'lab/real-hosts/lib-runtime-children.sh'
+contains "$stage" 'lab/real-hosts/auto-pair-cleanup-host.sh'
+not_contains "$cleanup_helper" 'rm -rf /run/baft-tunnel'
+bash "$root/lab/real-hosts/test-runtime-children.sh"
+
+agent_userdel_line="$(grep -nF 'userdel baft-tunnel-agent'  "$cleanup_helper" | cut -d: -f1)"
 service_userdel_line="$(grep -nF 'userdel baft-tunnel' "$cleanup_helper" | tail -1 | cut -d: -f1)"
 [[ -n "$agent_userdel_line" && -n "$service_userdel_line" && "$agent_userdel_line" -lt "$service_userdel_line" ]] ||
   fail "agent account must be deleted before the service account"
