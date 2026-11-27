@@ -84,8 +84,16 @@ read chunk; the opt-in gates the controller).
   every rollback/suspension path **on live traffic** — none occurred (0 changes), so these remain
   test-covered only. They are TP-4.2's matrix, not this record's.
 - Delivered goodput (the harness counts sender handoffs), RSS, the 60-minute profile run.
-- `violations`: the scheduler path instantiates no `Guarded<TrafficPolicy>`, so the sample reports a
-  constant `0`; the guard fail-safe is reached only by unit tests. `overflow_refusals` is live.
+- `violations` was a constant `0` when this record was written. **Updated 2026-11-27:** the arbiter
+  now counts a request above the configured row's cap (`ArbiterStats::guard_violations`) and the
+  controller's sample carries that counter instead of a literal zero. Evidence labels: the counter
+  and its propagation are **tested** (`only_an_over_cap_request_counts_as_a_guard_violation`,
+  `the_live_sample_carries_the_arbiters_guard_counter`, and
+  `a_live_arbiter_guard_violation_restores_the_row_without_forced_samples`, which raises the
+  signal through the live arbiter and reads it back with the session's own tick); the 1 Hz driver
+  inside a running product is **read from code**, not observed; and no live congestion sample
+  exists, so decision 4's queue-delay signal stays **unverified** here. `overflow_refusals` is live
+  as before.
 
 No profile becomes `measured` through this record, ADR-0048's default-off decision and the
 `simulated` label of every other record are untouched, and the `policy.adaptive` opt-in stays off

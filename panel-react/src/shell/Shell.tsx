@@ -123,7 +123,7 @@ export function Shell() {
   return (
     <FeedCtx.Provider value={feed}>
       <a className="skip" href="#main" onClick={(e) => { e.preventDefault(); document.getElementById('main')?.focus(); }}>{t('skip')}</a>
-      <div className={`shell ${stale ? 'is-stale' : ''} ${route.id === 'overview' ? 'dashboard-shell' : ''}`} data-nav={nav}>
+      <div className={`shell ${route.id === 'overview' ? 'dashboard-shell' : ''}`} data-nav={nav}>
         <aside className="sidebar">
           <div className="brand"><Mark /><span className="brand-name">{t('app')}</span></div>
           <nav className="side-nav" aria-label={t('ui.nav.main')}>{navTree()}</nav>
@@ -132,7 +132,7 @@ export function Shell() {
               <span className="side-id">{c.local_identity ? <Ltr>{c.local_identity}</Ltr> : s?.instance ? <Ltr>{s.instance}</Ltr> : t('unknown')}</span>
               <span className="side-ver">{s ? <Ltr>{'v' + s.version}</Ltr> : '—'}</span>
             </div>
-            <button type="button" className="ghost icon-btn collapse" aria-pressed={nav === 'rail'} aria-label={t('ui.nav.collapse')} title={t('ui.nav.collapse')} onClick={() => setNav(nav === 'rail' ? 'full' : 'rail')}><Icon name="panel" /></button>
+            <button type="button" className="ghost icon-btn collapse" aria-pressed={nav === 'rail'} aria-label={t('ui.nav.collapse')} title={t('ui.nav.collapse')} onClick={() => setNav(nav === 'rail' ? 'full' : 'rail')}><Icon name="panel" className="flip" /></button>
           </div>
         </aside>
         <div className="main">
@@ -140,6 +140,7 @@ export function Shell() {
             <button type="button" className="ghost icon-btn menu-btn" aria-label={t('ui.nav.open')} aria-haspopup="dialog" onClick={() => setOverlay('drawer')}><Icon name="menu" /></button>
             <div className="heading"><span className="crumb">{t('nav.g.' + route.group)}</span><h1>{t('nav.' + route.id)}</h1></div>
             <span className={`fresh ${stale ? 'stale' : ''}`}>{feed.fetchedAt ? t('updated', { ago: ago(lang, t, feed.fetchedAt) }) : ''}</span>
+            {stale && <Pill kind="warn">{t('stale')}</Pill>}
             <Pill kind={st.k}>{st.l}</Pill>
             <button type="button" className="ghost search-btn" aria-label={t('ui.cmd.open')} aria-haspopup="dialog" onClick={() => { setQ(''); setOverlay('palette'); }}>
               <Icon name="search" /><span className="search-l">{t('ui.cmd.open')}</span><kbd>Ctrl K</kbd>

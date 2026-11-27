@@ -1,5 +1,6 @@
 import { useApp } from '../app';
 import { fmtTime } from '../derive';
+import { cellGeometry } from '../health-strip.mjs';
 
 export interface Pt { x: number; y: number | null }
 
@@ -31,18 +32,26 @@ export function LineChart({ pts, label, fmtY }: { pts: Pt[]; label: string; fmtY
   );
 }
 
-/** One cell per real probe: up, down; nothing is filled in for time without samples. */
+/** One cell per real probe: up, down; nothing is filled in for time without samples. A down probe
+ *  is also shorter, so health is never carried by colour alone, and the caption names both states. */
 export function StatusStrip({ samples, label }: { samples: { t: number; up: boolean }[]; label: string }) {
-  const { lang } = useApp();
+  const { t, lang } = useApp();
   if (!samples.length) return null;
   const n = samples.length, W = 600, H = 28, cell = Math.min(W / n, 8), gap = cell > 3 ? 1 : 0, w = Math.max(1, cell - gap);
   const up = samples.filter((s) => s.up).length;
   return (
     <figure className="chart">
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${label}: ${up}/${n}`} preserveAspectRatio="none">
-        {samples.map((s, i) => <rect key={i} className={s.up ? 'up' : 'down'} x={i * cell} y={0} width={w} height={H} />)}
+        {samples.map((s, i) => {
+          const geometry = cellGeometry(!s.up, H);
+          return <rect key={i} className={s.up ? 'up' : 'down'} x={i * cell} y={geometry.y} width={w} height={geometry.height} />;
+        })}
       </svg>
-      <figcaption className="legend"><span>{fmtTime(lang, samples[0]!.t)}</span><span>{fmtTime(lang, samples[n - 1]!.t)}</span></figcaption>
+      <figcaption className="legend">
+        <span>{fmtTime(lang, samples[0]!.t)}</span>
+        <span className="strip-key"><b aria-hidden="true">✓</b> {t('strip.up')} <b aria-hidden="true">✕</b> {t('strip.down')}</span>
+        <span>{fmtTime(lang, samples[n - 1]!.t)}</span>
+      </figcaption>
     </figure>
   );
 }

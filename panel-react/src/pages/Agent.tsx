@@ -52,9 +52,8 @@ export function AgentPage() {
         <ul className="list">
           <li>{t('cap.audit')}: <CapPill state={d.meta.audit} /></li>
           <li>{t('cap.desired')}: <CapPill state={d.meta.desired} /></li>
-          <li>{t('cap.plan')}: <CapPill state={null} /></li>
-          <li>{t('cap.apply')}: <CapPill state={null} /></li>
         </ul>
+        <p className="sub">{t('cap.setup.note')}</p>
         <p className="sub">{t('agent.loopback')}</p><p className="sub">{t('agent.secret')}</p>
       </Card>
       <Card title={t('ops.title')}><OpsBody /></Card>

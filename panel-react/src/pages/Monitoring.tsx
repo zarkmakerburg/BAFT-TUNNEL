@@ -4,6 +4,8 @@ import { useData } from '../feed-context';
 import { fmtBytes, fmtNum, fmtTime, stats, warnings } from '../derive';
 import { Card, Empty, KV, Ltr, Pill, Segmented } from '../components/ui';
 import { LineChart, StatusStrip } from '../components/charts';
+import { longHistoryNotice } from '../history-view.mjs';
+import { totalOrNull } from '../series.mjs';
 import { TrafficBody, WarnList, nv } from './parts';
 
 /** Only ranges the backend really keeps: the last hour at 5 s and 24 h at one minute. Nothing is interpolated. */
@@ -19,7 +21,14 @@ export function Monitoring() {
   const longBody = () => {
     const lh = d.history?.long;
     const sm: any[] = lh?.samples ?? [];
-    if (!sm.length) return <Empty>{t('empty.history')}</Empty>;
+    const notice = longHistoryNotice(d.meta.history, sm.length);
+    if (notice !== 'ok') {
+      return (
+        <Empty kind={notice === 'empty' ? 'empty' : 'unavailable'}>
+          {notice === 'empty' ? t('empty.history') : t('ui.unavail.history')}
+        </Empty>
+      );
+    }
     const tot = lh.totals ?? {};
     const pct = tot.probes ? (tot.up / tot.probes) * 100 : null;
     return (
@@ -28,7 +37,7 @@ export function Monitoring() {
         <h3>{t('ov.avail')}</h3>
         <LineChart label={`${t('ov.avail')} (%)`} pts={sm.map((x) => ({ x: x.t, y: x.probes ? (x.up / x.probes) * 100 : null }))} fmtY={(v) => fmtNum(lang, v, 0)} />
         <h3>{t('tr.bytes.min')}</h3>
-        <LineChart label={t('tr.bytes.min')} pts={sm.map((x) => ({ x: x.t, y: (x.from_peer_bytes ?? 0) + (x.to_peer_bytes ?? 0) }))} fmtY={(v) => b(v) ?? ''} />
+        <LineChart label={t('tr.bytes.min')} pts={sm.map((x) => ({ x: x.t, y: totalOrNull(x.from_peer_bytes, x.to_peer_bytes) }))} fmtY={(v) => `${b(v)}/min`} />
         <p className="sub">{t('lh.src', { m: fmtNum(lang, (lh.bucket_s ?? 60) / 60, 0), h: fmtNum(lang, (lh.retention_s ?? 0) / 3600, 0) })}</p>
         {!lh.persisted && <p className="sub">{t('lh.nopersist')}</p>}
         {(lh.load_error || lh.write_error) && <p className="sub">{t('lh.error')}: {lh.write_error ?? lh.load_error}</p>}

@@ -8,7 +8,7 @@
     "dev": "vite",
     "typecheck": "tsc -b --noEmit",
     "build": "tsc -b && vite build",
-    "test": "node --test test/policy-view.test.mjs",
+    "test": "node --test test/*.test.mjs",
     "check:dist": "node scripts/check-dist.mjs",
     "check:i18n": "node scripts/check-i18n.mjs"
   },

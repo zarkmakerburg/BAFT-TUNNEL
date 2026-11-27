@@ -25,6 +25,11 @@ export function Servers() {
         [t('f.keysrc'), c.private_key_source ?? '—'],
       ]} />;
   const role = c.mode ? roleLabel(c.mode, c.direction, t) : '—';
+  // A median without a sample count is not 0% availability; the missing side stays unknown.
+  const avail = st.avail == null ? t('unknown') : `${fmtNum(lang, st.avail, 1)}%`;
+  const diag = st.med == null
+    ? t('unknown')
+    : `${t('f.latency')}: ${fmtNum(lang, st.med, 2)} ms · ${t('f.avail')}: ${avail}`;
   return (
     <div className="stack">
       <p className="muted">{t('servers.note')}</p>
@@ -39,7 +44,7 @@ export function Servers() {
             [t('f.lastseen'), t('checked', { ago: ago(lang, t, fetchedAt) })],
             [t('f.version'), <Ltr key="v">{'v' + s.version}</Ltr>],
             [t('f.engine'), <Ltr key="e">{s.engine}</Ltr>],
-            [t('f.diag'), st.med == null ? t('unknown') : `${t('f.latency')}: ${fmtNum(lang, st.med, 2)} ms · ${t('f.avail')}: ${fmtNum(lang, st.avail ?? 0, 1)}%`],
+            [t('f.diag'), diag],
           ]} />
           <hr className="sep" />
           <h3>{t('f.caps')}</h3>
@@ -47,9 +52,8 @@ export function Servers() {
             <li>{t('cap.engines', { l: engines || '—' })}</li>
             <li>{t('cap.audit')}: <CapPill state={d.meta.audit} /></li>
             <li>{t('cap.desired')}: <CapPill state={d.meta.desired} /></li>
-            <li>{t('cap.plan')}: <CapPill state={null} /></li>
-            <li>{t('cap.apply')}: <CapPill state={null} /></li>
           </ul>
+          <p className="sub">{t('cap.setup.note')}</p>
           <hr className="sep" />
           <h3>{t('f.trust')}</h3>
           {trust}
