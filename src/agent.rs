@@ -4377,6 +4377,11 @@ fn fleet_nodes(ctx: &Ctx) -> Value {
                         "tunnel": if live { i.tunnel.as_deref().map_or_else(unknown, |s| json!(s)) } else { unknown() },
                         "integrity": if live { i.integrity.as_deref().map_or_else(unknown, |s| json!(s)) } else { unknown() },
                         "health": if live { i.health.as_deref().map_or_else(unknown, |s| json!(s)) } else { unknown() },
+                        // The hub already holds the node's measured samples (absent means unknown,
+                        // never zero). They must reach the operator, and a stale report turns them
+                        // back into unknown like every other measured field here.
+                        "rtt_ms": if live { i.rtt_ms.map_or_else(unknown, |x| json!(x)) } else { unknown() },
+                        "jitter_ms": if live { i.jitter_ms.map_or_else(unknown, |x| json!(x)) } else { unknown() },
                     })
                 })
                 .collect();
@@ -6000,6 +6005,50 @@ mod tests {
         );
         assert_eq!(body["long"]["totals"]["probes"], 1);
         assert!(body["alerts"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn fleet_nodes_show_measured_rtt_only_while_the_report_is_live() {
+        let ctx = Ctx::new(sample(), TOKEN.into(), None);
+        let ekus = [crate::fleet::EKU_FLEET_NODE];
+        let peer = crate::fleet::PeerCert {
+            node_id: "n1",
+            serial: "01",
+            ekus: &ekus,
+        };
+        let body = br#"{"schema":"node.status.v1","seq":1,"version":"0.3.1","instances":[{"name":"t1","tunnel":"connected","integrity":"verified","health":"ok","rtt_ms":12.5,"jitter_ms":2.0}]}"#;
+        ctx.fleet
+            .lock()
+            .unwrap()
+            .accept(&peer, body, unix_now())
+            .unwrap();
+        let v = fleet_nodes(&ctx);
+        assert_eq!(
+            v["nodes"][0]["instances"][0]["rtt_ms"],
+            serde_json::json!(12.5),
+            "the measured round-trip time the node reported must reach the operator: {v}"
+        );
+        assert_eq!(
+            v["nodes"][0]["instances"][0]["jitter_ms"],
+            serde_json::json!(2.0),
+            "the measured jitter the node reported must reach the operator: {v}"
+        );
+        // The same report an hour later is stale: the measurement must read unknown, never 12.5.
+        ctx.fleet
+            .lock()
+            .unwrap()
+            .accept(
+                &crate::fleet::PeerCert {
+                    node_id: "n2",
+                    ..peer
+                },
+                body,
+                unix_now() - 3600,
+            )
+            .unwrap();
+        let v = fleet_nodes(&ctx);
+        assert_eq!(v["nodes"][1]["instances"][0]["rtt_ms"], "unknown");
+        assert_eq!(v["nodes"][1]["instances"][0]["jitter_ms"], "unknown");
     }
 
     #[test]
