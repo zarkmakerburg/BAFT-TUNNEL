@@ -216,6 +216,22 @@ pub(crate) struct PolicySession {
     scripted: Mutex<VecDeque<(Option<Counters>, Option<Counters>)>>,
 }
 
+/// The single line that says which row the pack engaged, with the numbers it is running.
+///
+/// Operators had no way to tell a compiled-in, engaged pack from a configured profile that the
+/// build ignores, and the LAB cannot treat such a run as evidence. The line names the row it
+/// resolved: the versioned id and the window/quantum/cap the relay is actually using.
+pub(crate) fn engaged_summary(profile: PolicyProfile, adaptive: bool) -> String {
+    format!(
+        "policy pack engaged: profile={} window_bytes={} quantum_bytes={} max_queued_bytes={} adaptive={}",
+        profile.id(),
+        profile.window_bytes(),
+        profile.quantum_bytes(),
+        profile.max_queued_bytes(),
+        if adaptive { "on" } else { "off" }
+    )
+}
+
 impl PolicySession {
     /// `Some` only when the switch enables the pack and a scheduler applies; a `window-cap` switch
     /// with no configured profile keeps today's unscheduled path (ADR-0048). `adaptive` is the
@@ -235,6 +251,11 @@ impl PolicySession {
             }
             return Some(Self::with_config(config));
         };
+        // Once per process: a session is built per tunnel stream, so an unbounded print would
+        // repeat this line for every stream. The LAB (and an operator reading the journal) needs
+        // exactly one positive statement that this build resolved this profile.
+        static ENGAGED: std::sync::Once = std::sync::Once::new();
+        ENGAGED.call_once(|| eprintln!("{}", engaged_summary(profile, adaptive)));
         Some(Self::new(config, profile, adaptive))
     }
 
@@ -665,6 +686,27 @@ mod tests {
         // M1's relay-level credit budget was rejected by the experiments; it is not a switch.
         assert_eq!(PolicyRelay::parse("credit-budget:65536"), None);
         assert_eq!(PolicyRelay::parse("on"), None);
+    }
+
+    #[test]
+    fn the_engaged_line_names_the_row_the_pack_actually_uses() {
+        // The LAB treats this line as the positive proof that the build resolved this profile,
+        // so it must carry the row's real numbers and change with the row.
+        assert_eq!(
+            engaged_summary(PolicyProfile::Gaming, false),
+            "policy pack engaged: profile=gaming/1 window_bytes=262144 quantum_bytes=4096 \
+             max_queued_bytes=16384 adaptive=off"
+        );
+        assert_eq!(
+            engaged_summary(PolicyProfile::Bulk, false),
+            "policy pack engaged: profile=bulk/1 window_bytes=2097152 quantum_bytes=65536 \
+             max_queued_bytes=262144 adaptive=off"
+        );
+        assert!(engaged_summary(PolicyProfile::Trading, true).ends_with("adaptive=on"));
+        assert_ne!(
+            engaged_summary(PolicyProfile::Balanced, false),
+            engaged_summary(PolicyProfile::Streaming, false)
+        );
     }
 
     #[test]

@@ -1,0 +1,174 @@
+name: LAB policy triples (two-host measurement of engine x carrier x profile, with a sink-side control)
+
+# Measures the policy pack on the real Iran <-> abroad LAB path, for the profile rows the binary
+# under test can genuinely drive. It builds the binary from the dispatched main commit WITH
+# `--features policy-pack` (the release build does not include the pack, so a release asset cannot
+# exercise a profile), creates a throwaway 2-day PKI on the runner, and runs everything under one
+# temp dir on both hosts: no install, no systemd, no firewall/route/sysctl/SSH change.
+#
+# Per arm the sink on the abroad host receives a deterministic bulk flow while an interactive probe
+# on the Iran host does 64-byte round trips over the same tunnel, so the two flows compete for it.
+# The first arm is the control: same path, same window, no pack switch and no profile. Every line
+# that carries numbers is measured from sockets on the wire; a profile is only reported for the
+# exact (engine=tcp-tls, carrier=tcp/Yamux, profile) triple it exercised here.
+#
+# Evidence level: LAB only, for this path and this window. UDP has no arm in this workflow: the
+# datagram carrier is behind a separate feature and this harness cannot drive it, so it stays
+# NOT TESTED. Hosts are shared: one run at a time (concurrency group).
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type RUN_LAB_POLICY to authorize the isolated two-host policy measurement
+        required: true
+        type: string
+        default: ''
+      candidate_sha:
+        description: Full 40-char SHA of the main commit to build and measure (must be the dispatched ref)
+        required: true
+        type: string
+      size_mib:
+        description: Bulk flow size per arm in MiB (4-256)
+        required: false
+        type: string
+        default: '32'
+      probes:
+        description: Interactive round trips per arm (20-600)
+        required: false
+        type: string
+        default: '60'
+      arms:
+        description: Space-separated arms; the first must be "control"
+        required: false
+        type: string
+        default: 'control balanced/1 gaming/1 trading/1 streaming/1 bulk/1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-trusted-lab-hosts
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 60
+    env:
+      LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+      LAB_ABROAD_HOST: ${{ secrets.LAB_ABROAD_HOST }}
+      LAB_SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+      LAB_SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+      LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+      LAB_ABROAD_SSH_USER: ${{ vars.LAB_ABROAD_SSH_USER }}
+      LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+      LAB_ABROAD_SSH_PORT: ${{ vars.LAB_ABROAD_SSH_PORT }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Authorize and pin the commit under test
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == RUN_LAB_POLICY ]] || { echo "confirmation missing" >&2; exit 2; }
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "candidate_sha must be a full 40-char sha" >&2; exit 2; }
+          [[ "$CANDIDATE_SHA" == "$GITHUB_SHA" ]] || {
+            echo "candidate_sha $CANDIDATE_SHA is not the dispatched ref $GITHUB_SHA; dispatch on main at the commit you mean" >&2
+            exit 3; }
+          echo "POLICY_LAB_COMMIT sha=$GITHUB_SHA ref=$GITHUB_REF"
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Build the feature binary and record its digest
+        run: |
+          set -euo pipefail
+          cargo +1.88.0 build --locked --release --features policy-pack
+          sha256sum target/release/baft-tunnel | tee "$RUNNER_TEMP/binary.sha256"
+          # The pack must be compiled in for any of this to be evidence.
+          target/release/baft-tunnel --version
+
+      - name: Measure the triples on both LAB hosts
+        env:
+          SIZE_MIB: ${{ inputs.size_mib }}
+          PROBES: ${{ inputs.probes }}
+          ARMS: ${{ inputs.arms }}
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/policy-lab"; mkdir -p "$W"
+          GEN_ONLY=1 "$GITHUB_WORKSPACE/bench/baft_up.sh" "$W/pki" "$GITHUB_WORKSPACE/target/release/baft-tunnel" \
+            "0.0.0.0:18300" "ABROAD_ADDR:18300" 127.0.0.1:18094 127.0.0.1:18080 "" ""
+          key="$W/lab-id"; kh="$W/lab-kh"
+          printf '%s\n' "$LAB_SSH_PRIVATE_KEY" > "$key"
+          printf '%s\n' "$LAB_SSH_KNOWN_HOSTS" > "$kh"
+          chmod 0600 "$key" "$kh"; unset LAB_SSH_PRIVATE_KEY LAB_SSH_KNOWN_HOSTS
+          export SSH_KEY_FILE="$key" SSH_KNOWN_HOSTS_FILE="$kh"
+          export POLICY_LAB_BINARY="$GITHUB_WORKSPACE/target/release/baft-tunnel"
+          export POLICY_LAB_PKI="$W/pki"
+          export POLICY_LAB_ARMS="$ARMS" POLICY_LAB_SIZE_MIB="$SIZE_MIB" POLICY_LAB_PROBES="$PROBES"
+          echo "POLICY_LAB_EVIDENCE_LEVEL=LAB path=iran-abroad window=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          bash "$GITHUB_WORKSPACE/lab/real-hosts/policy-lab-stage.sh" 2>&1 | tee "$W/evidence.txt"
+          status=${PIPESTATUS[0]}
+          cp "$W/evidence.txt" "$RUNNER_TEMP/evidence.txt"
+          exit "$status"
+
+      - name: Publish the measurement
+        if: always()
+        run: |
+          set -euo pipefail
+          f="$RUNNER_TEMP/evidence.txt"
+          [[ -s "$f" ]] || { echo "no evidence file was produced" >&2; exit 0; }
+          {
+            echo "## LAB policy triples"
+            echo ""
+            echo "Binary: built from \`$GITHUB_SHA\` with \`--features policy-pack\` (release build does not carry the pack)."
+            echo ""
+            echo '```'
+            grep -E 'POLICY_LAB_|E2E_REMOTE_TMP_CLEANUP' "$f" || true
+            echo '```'
+            echo ""
+            echo "LAB evidence for this path and window only; UDP has no arm here and stays NOT TESTED."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4.6.2
+        if: always()
+        with:
+          name: policy-lab-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/evidence.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Both hosts must be clean afterwards
+        if: always()
+        run: |
+          set -euo pipefail
+          d="/tmp/baft-policy-lab-$GITHUB_RUN_ID"
+          opts=(-i "$RUNNER_TEMP/policy-lab/lab-id" -o UserKnownHostsFile="$RUNNER_TEMP/policy-lab/lab-kh"
+                -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15)
+          rc=0
+          for side in iran abroad; do
+            if [[ "$side" == iran ]]; then host="$LAB_IRAN_HOST"; user="${LAB_IRAN_SSH_USER:-root}"; port="${LAB_IRAN_SSH_PORT:-22}"
+            else host="$LAB_ABROAD_HOST"; user="${LAB_ABROAD_SSH_USER:-root}"; port="${LAB_ABROAD_SSH_PORT:-22}"; fi
+            out="$(timeout 120 ssh "${opts[@]}" -p "$port" "$user@$host" "set +e
+              pkill -TERM -f '$d/[b]aft-tunnel' 2>/dev/null
+              pkill -TERM -f '$d/policy-lab-measure.py' 2>/dev/null
+              sleep 1
+              pkill -KILL -f '$d/[b]aft-tunnel' 2>/dev/null
+              pkill -KILL -f '$d/policy-lab-measure.py' 2>/dev/null
+              rm -rf '$d'
+              if [ -e '$d' ] || [ \"\$(pgrep -f '$d/' | wc -l)\" != 0 ]; then echo leftover; else echo clean; fi" 2>/dev/null)" || out=""
+            if [[ "$out" == clean ]]; then
+              echo "POLICY_LAB_TMP_CLEANUP_AFTER side=$side result=pass"
+            else
+              echo "POLICY_LAB_TMP_CLEANUP_AFTER side=$side result=fail" >&2
+              rc=1
+            fi
+          done
+          exit "$rc"
