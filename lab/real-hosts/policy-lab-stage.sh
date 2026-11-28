@@ -168,15 +168,41 @@ cleanup_all() { # always runs; a leftover or a changed host must fail the stage
     fi
     after="$(ssh_host "$side" "ss -ltnH 2>/dev/null | wc -l" 2>/dev/null)" || after=""
     listeners="${after//[[:space:]]/}"
-    if ssh_host "$side" "nft --stateless list ruleset" >"$WORK/fw-after-$side.txt" 2>/dev/null &&
-       [[ "$(sha256sum "$WORK/fw-after-$side.txt" | awk '{print $1}')" == "${FW_BEFORE[$side]:-}" ]]; then
-      echo "POLICY_LAB_FW_DRIFT side=$side result=none"
+    fw_read=1
+    ssh_host "$side" "nft --stateless list ruleset" >"$WORK/fw-after-$side.txt" 2>/dev/null || fw_read=0
+    # These are shared LAB hosts, and their fail2ban rewrites its own ban set continuously as
+    # the internet probes sshd. That churn is not this run's doing and cannot be stopped, so the
+    # drift assertion covers everything except that one table, and the fail2ban movement is
+    # reported on its own line instead of being hidden or blamed on the tunnel.
+    without_fail2ban() {
+      awk '/^table inet f2b-table /{skip=1;next} skip&&/^}/{skip=0;next} !skip' "$1"
+    }
+    only_fail2ban() {
+      awk '/^table inet f2b-table /{inside=1} inside{print} inside&&/^}/{inside=0}' "$1"
+    }
+    before_sha="$(without_fail2ban "$WORK/fw-before-$side.txt" | sha256sum | awk '{print $1}')"
+    after_sha="$(without_fail2ban "$WORK/fw-after-$side.txt" | sha256sum | awk '{print $1}')"
+    baft_rules="$(grep -cE 'baft|18300' "$WORK/fw-after-$side.txt" 2>/dev/null || true)"
+    baft_rules="${baft_rules:-0}"
+    # A read that failed is not a host without rules: without the snapshot there is nothing to
+    # compare, so that case must fail rather than pass as "nothing changed".
+    if [[ "$fw_read" == "1" && "$before_sha" == "$after_sha" && "$baft_rules" == "0" ]]; then
+      echo "POLICY_LAB_FW_DRIFT side=$side result=none baft_fw_rules=$baft_rules"
     else
-      # Say what changed, not just that something did: a ruleset that moved because another
-      # tenant's tooling reacted to this run's connections must not be blamed on the tunnel.
-      echo "POLICY_LAB_FW_DRIFT side=$side result=changed" >&2
+      echo "POLICY_LAB_FW_DRIFT side=$side result=changed baft_fw_rules=$baft_rules" >&2
       diff -u "$WORK/fw-before-$side.txt" "$WORK/fw-after-$side.txt" 2>/dev/null | head -25 >&2 || true
       side_status=1
+    fi
+    # Exactly that table, not a fixed window after its name: a change in a table that happens to
+    # follow it must not be attributed to fail2ban, and a large ban set must not be truncated.
+    if [[ "$fw_read" == "1" ]] &&
+       diff -q <(only_fail2ban "$WORK/fw-before-$side.txt") \
+               <(only_fail2ban "$WORK/fw-after-$side.txt") >/dev/null 2>&1; then
+      echo "POLICY_LAB_FW_UNRELATED side=$side fail2ban=none"
+    elif [[ "$fw_read" == "1" ]]; then
+      echo "POLICY_LAB_FW_UNRELATED side=$side fail2ban=changed (the host's own ban set, not this run)"
+    else
+      echo "POLICY_LAB_FW_UNRELATED side=$side fail2ban=unknown (the post-run ruleset could not be read)"
     fi
     if [[ -n "$after" && "$listeners" == "${LISTENERS_BEFORE[$side]:-}" ]]; then
       echo "POLICY_LAB_LISTENERS_UNCHANGED side=$side result=pass count=$listeners"

@@ -60,6 +60,14 @@ fi
 grep -F 'nft --stateless list ruleset' "$stage" >/dev/null
 grep -F 'fw-before-$side.txt' "$stage" >/dev/null
 grep -F 'fw-after-$side.txt' "$stage" >/dev/null
+# the hosts' own fail2ban churn is reported, not silently included in or excused from the check
+grep -F 'without_fail2ban' "$stage" >/dev/null
+grep -F 'POLICY_LAB_FW_UNRELATED side=$side fail2ban=none' "$stage" >/dev/null
+grep -F 'baft_fw_rules=$baft_rules' "$stage" >/dev/null
+grep -F 'only_fail2ban' "$stage" >/dev/null
+# a failed post-run read must fail the check, not pass as an empty ruleset
+grep -F 'fw_read=0' "$stage" >/dev/null
+grep -F '"$fw_read" == "1"' "$stage" >/dev/null
 grep -F 'diff -u "$WORK/fw-before-$side.txt"' "$stage" >/dev/null
 grep -F 'firewall is not readable on $side' "$stage" >/dev/null
 # the workflow's own defaults must be able to clear the sample floor
