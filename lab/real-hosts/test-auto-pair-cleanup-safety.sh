@@ -69,6 +69,8 @@ contains "$cleanup_helper" 'installation already absent; nothing to remove'
 not_contains "$cleanup_helper" 'rm -rf /run/baft-tunnel'
 contains "$cleanup_helper" 'instance_is_ours()'
 contains "$cleanup_helper" 'per-instance want points outside the unit templates'
+contains "$cleanup_helper" '"$UNIT_DIR"/baft-tunnel*.service'
+contains "$cleanup_helper" 'readlink -f -- "$path"'
 contains "$cleanup_helper" 'unexpected per-instance systemd resource: $rel; preserving installation'
 not_contains "$cleanup_helper" "-mindepth 2 -name 'baft-tunnel*' -print -quit"
 contains "$cleanup_helper" 'at least one explicit --instance is required'
