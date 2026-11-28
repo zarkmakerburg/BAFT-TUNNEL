@@ -1,6 +1,6 @@
 # TP-3.3 Trading profile: per-tuple evidence record
 
-**Status: harness evidence only (`simulated`); the profile is not measured and not accepted.**
+**Status: `(tcp-tls, TCP/Yamux, `trading/1`)` is `measured` on the two-host LAB (2026-11-28, run 46150559605); every other tuple is unmeasured and the item stays open.**
 Item: TP-3.3 (#235), `trading/1`. Decision: [ADR-0031](ADR-0031-adaptive-traffic-policy-pack.md)
 decisions 15-20 and its TP-3.3 implementation note. Acceptance list:
 [ADAPTIVE_TRAFFIC_POLICY_PACK.md](ADAPTIVE_TRAFFIC_POLICY_PACK.md) §6. Status contract:
@@ -252,3 +252,32 @@ POLICY_EXPERIMENT {"profile_run":"tp-3.3","scenario":"relay_cpu_probe","mechanis
 
 Test summary: `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out;
 finished in 176.09s`.
+
+## LAB measurement of this profile on the real path (2026-11-28)
+
+Run [46150559605](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/46150559605) on `main` `d6dcf2c` is `success`. `lab/real-hosts/policy-lab-stage.sh` drove
+the two LAB hosts for six arms under `.github/workflows/policy-lab.yml`, which builds the binary
+from the dispatched `main` commit with `--features policy-pack`. This profile's arm was:
+
+```
+POLICY_LAB_ARM arm=trading-1 profile=trading/1 pack=sched pack_engaged=1 engine=tcp-tls carrier=tcp
+  bytes=134217728 delivered_bytes=134217728 sink_MiB_per_s=1.86 interactive_p50_us=108,419 interactive_p95_us=134,695
+  probe_samples=417 probe_bulk_window=True sha_match=1 evidence=LAB
+  policy pack engaged: profile=trading/1 window_bytes=262144 quantum_bytes=2048 max_queued_bytes=8192 adaptive=off
+```
+
+What that is: 128 MiB of a deterministic stream that the sink, behind the tunnel on the abroad
+host, hashed byte-exact (`sha_match=1`); a sink-clocked throughput of **1.86 MiB/s**; and 64-byte
+echo round trips from the Iran host, sampled **only inside the bulk window** (417 samples, p50
+**108,419 µs**, p95 **134,695 µs**), so the two flows competed for one tunnel session. The pack's own
+`policy pack engaged` line appeared on **both** hosts with the row above and `adaptive=off`; the
+control arm in the same run engaged nothing. For scale in that same run: control 19.44 MiB/s and
+125,836 µs p50; `balanced/1` 1.82 MiB/s and 110,634 µs.
+
+So `(tcp-tls, TCP/Yamux, trading/1)` is **`measured` for this path and window**, once — one run,
+so the run-to-run spread is unknown. Still **unmeasured**, and the reasons the item stays open:
+`(noise-tcp, TCP, trading/1)`; the UDP/datagram carrier, which has no arm in this harness at all
+(**NOT TESTED**, not approximated); loss and jitter/impairment (no shaper on this path); RSS; the
+60-minute run; repeat runs for a spread; and the adaptive controller, which was off in every arm.
+No benefit is claimed for this row from this run: the scheduler rows delivered markedly less bulk
+goodput than the control on this path.
