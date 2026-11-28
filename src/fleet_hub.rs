@@ -7,7 +7,8 @@
 #![allow(dead_code)]
 
 use crate::fleet::{self, Hub, PeerCert, Reject};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
+use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -27,12 +28,19 @@ const MAX_HEAD_BYTES: usize = 4096;
 /// shared context, so the listener never needs to know about the rest of the agent.
 pub trait HubStore: Send + Sync + 'static {
     fn hub(&self) -> &Mutex<Hub>;
+
+    /// Called only after the report has passed all Hub acceptance rules. Identity is derived
+    /// from the authenticated TLS leaf, never from report JSON. Implementors must handle this
+    /// explicitly; test-only stores may intentionally provide a no-op.
+    fn report_accepted(&self, identity: &Identity);
 }
 
 impl HubStore for Mutex<Hub> {
     fn hub(&self) -> &Mutex<Hub> {
         self
     }
+
+    fn report_accepted(&self, _identity: &Identity) {}
 }
 
 /// What the verified client certificate says about the caller.
@@ -40,6 +48,8 @@ impl HubStore for Mutex<Hub> {
 pub struct Identity {
     pub node_id: String,
     pub serial: String,
+    /// SHA-256 of the exact authenticated leaf DER, used to bind first-report acceptance to Join.
+    pub fingerprint: String,
     pub ekus: Vec<String>,
 }
 
@@ -70,13 +80,15 @@ pub fn peer_identity(leaf_der: &[u8]) -> Result<Identity> {
         }
     }
     let node_id = node_id.context("client certificate has no node identity")?;
-    if !(1..=63).contains(&node_id.len())
-        || !node_id
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-    {
-        bail!("client certificate node id is not [a-z0-9-]{{1,63}}");
-    }
+    ensure!(
+        crate::fleet_ca::valid_node_id(node_id),
+        "client certificate node id is invalid"
+    );
+    crate::fleet_ca::validate_identity_sans(
+        leaf_der,
+        &crate::fleet_ca::dns_name(node_id),
+        &crate::fleet_ca::node_uri(node_id),
+    )?;
     let eku = cert
         .extended_key_usage()
         .context("parse client certificate extended key usage")?
@@ -89,6 +101,7 @@ pub fn peer_identity(leaf_der: &[u8]) -> Result<Identity> {
     Ok(Identity {
         node_id: node_id.to_owned(),
         serial: cert.raw_serial_as_string(),
+        fingerprint: hex::encode(Sha256::digest(leaf_der)),
         ekus,
     })
 }
@@ -123,9 +136,10 @@ fn reason(code: u16) -> &'static str {
 
 /// Parse one bounded POST and answer it. Returns the status that was (or would have been) sent.
 /// No keep-alive, no chunked bodies, no `Expect`, one route.
-pub async fn handle<S>(stream: &mut S, id: &Identity, hub: &Mutex<Hub>, now: u64) -> u16
+pub async fn handle<S, H>(stream: &mut S, id: &Identity, hub: &H, now: u64) -> u16
 where
     S: AsyncRead + AsyncWrite + Unpin,
+    H: HubStore,
 {
     let code = match read_request(stream).await {
         Ok(body) => {
@@ -135,11 +149,16 @@ where
                 serial: &id.serial,
                 ekus: &ekus,
             };
-            let r = hub
+            let accepted = hub
+                .hub()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .accept(&peer, &body, now);
-            status_of(&r)
+            if accepted.is_ok() {
+                // Do not hold the Hub lock while the enrollment store acquires its own lock.
+                hub.report_accepted(id);
+            }
+            status_of(&accepted)
         }
         Err(code) => code,
     };
@@ -287,7 +306,7 @@ pub async fn serve<S: HubStore>(
                         .and_then(|c| c.first())
                         .and_then(|leaf| peer_identity(leaf.as_ref()).ok());
                     let Some(id) = id else { return };
-                    let _ = timeout(REQUEST_TIMEOUT, handle(&mut tls, &id, hub.hub(), unix_now())).await;
+                    let _ = timeout(REQUEST_TIMEOUT, handle(&mut tls, &id, hub.as_ref(), unix_now())).await;
                 });
             }
         }
@@ -302,6 +321,7 @@ mod tests {
         CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
         KeyUsagePurpose, SanType, string::Ia5String,
     };
+    use sha2::Digest;
     use std::path::{Path, PathBuf};
     use tokio::io::duplex;
 
@@ -309,12 +329,13 @@ mod tests {
         ExtendedKeyUsagePurpose::Other(s.split('.').map(|p| p.parse().unwrap()).collect())
     }
 
-    /// A client certificate with exactly the given private EKUs (plus clientAuth, which the
-    /// TLS verifier needs) and the given node URI.
-    fn client_cert(
+    /// A client certificate with caller-selected DNS and URI SANs for strict identity tests.
+    fn client_cert_with_names(
         dir: &Path,
         name: &str,
         node: &str,
+        dns_names: &[&str],
+        uri_names: &[&str],
         ekus: &[&str],
         issuer: &rcgen::Issuer<'static, KeyPair>,
     ) -> (PathBuf, PathBuf) {
@@ -327,9 +348,16 @@ mod tests {
         usages.extend(ekus.iter().map(|e| oid(e)));
         p.extended_key_usages = usages;
         p.use_authority_key_identifier_extension = true;
-        p.subject_alt_names.push(SanType::URI(
-            Ia5String::try_from(format!("baft-fleet://{node}.fleet.baft.invalid")).unwrap(),
-        ));
+        for dns in dns_names {
+            p.subject_alt_names.push(SanType::DnsName(
+                Ia5String::try_from((*dns).to_owned()).unwrap(),
+            ));
+        }
+        for uri in uri_names {
+            p.subject_alt_names.push(SanType::URI(
+                Ia5String::try_from((*uri).to_owned()).unwrap(),
+            ));
+        }
         let key = KeyPair::generate().unwrap();
         let cert = p.signed_by(&key, issuer).unwrap();
         let (c, k) = (
@@ -339,6 +367,18 @@ mod tests {
         std::fs::write(&c, cert.pem()).unwrap();
         std::fs::write(&k, key.serialize_pem()).unwrap();
         (c, k)
+    }
+
+    fn client_cert(
+        dir: &Path,
+        name: &str,
+        node: &str,
+        ekus: &[&str],
+        issuer: &rcgen::Issuer<'static, KeyPair>,
+    ) -> (PathBuf, PathBuf) {
+        let dns = format!("{node}.fleet.baft.invalid");
+        let uri = format!("baft-fleet://{node}.fleet.baft.invalid");
+        client_cert_with_names(dir, name, node, &[&dns], &[&uri], ekus, issuer)
     }
 
     fn der_of(cert_pem: &Path) -> Vec<u8> {
@@ -358,11 +398,56 @@ mod tests {
     }
 
     #[test]
+    fn fleet_identity_rejects_mismatched_dns_and_uri_sans() {
+        let d = tmp("strict-san");
+        let ca = crate::tls::tests::make_ca(&d, "ca");
+        let expected_dns = "node-a.fleet.baft.invalid";
+        let expected_uri = "baft-fleet://node-a.fleet.baft.invalid";
+        let cases: [(&str, &[&str], &[&str]); 5] = [
+            ("missing-dns", &[], &[expected_uri]),
+            ("wrong-dns", &["other.fleet.baft.invalid"], &[expected_uri]),
+            (
+                "wrong-uri",
+                &[expected_dns],
+                &["baft-fleet://other.fleet.baft.invalid"],
+            ),
+            (
+                "duplicate-dns",
+                &[expected_dns, expected_dns],
+                &[expected_uri],
+            ),
+            (
+                "duplicate-uri",
+                &[expected_dns],
+                &[expected_uri, expected_uri],
+            ),
+        ];
+        for (tag, dns_names, uri_names) in cases {
+            let (cert, _) = client_cert_with_names(
+                &d,
+                tag,
+                "node-a",
+                dns_names,
+                uri_names,
+                &[EKU_FLEET_NODE],
+                &ca.issuer,
+            );
+            assert!(
+                peer_identity(&der_of(&cert)).is_err(),
+                "{tag} must be rejected"
+            );
+        }
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
     fn identity_comes_from_the_certificate_and_refuses_any_eku() {
         let d = tmp("id");
         let ca = crate::tls::tests::make_ca(&d, "ca");
         let (c, _) = client_cert(&d, "n1", "node-a", &[EKU_FLEET_NODE], &ca.issuer);
-        let id = peer_identity(&der_of(&c)).unwrap();
+        let der = der_of(&c);
+        let id = peer_identity(&der).unwrap();
+        assert_eq!(id.fingerprint, hex::encode(sha2::Sha256::digest(&der)));
         assert_eq!(id.node_id, "node-a");
         assert_eq!(id.ekus, vec![EKU_FLEET_NODE.to_owned()]);
         assert!(!id.serial.is_empty());
@@ -377,11 +462,28 @@ mod tests {
         Identity {
             node_id: "node-a".into(),
             serial: "01".into(),
+            fingerprint: "a".repeat(64),
             ekus: ekus.iter().map(|s| (*s).to_owned()).collect(),
         }
     }
 
-    async fn post(raw: Vec<u8>, id: &Identity, hub: &Mutex<Hub>, now: u64) -> u16 {
+    #[derive(Default)]
+    struct RecordingStore {
+        hub: Mutex<Hub>,
+        accepted: Mutex<Vec<Identity>>,
+    }
+
+    impl HubStore for RecordingStore {
+        fn hub(&self) -> &Mutex<Hub> {
+            &self.hub
+        }
+
+        fn report_accepted(&self, identity: &Identity) {
+            self.accepted.lock().unwrap().push(identity.clone());
+        }
+    }
+
+    async fn post<S: HubStore>(raw: Vec<u8>, id: &Identity, hub: &S, now: u64) -> u16 {
         let (mut client, mut server) = duplex(64 * 1024);
         let w = tokio::spawn(async move {
             client.write_all(&raw).await.unwrap();
@@ -546,6 +648,22 @@ mod tests {
         assert_eq!(over.len() - 4, MAX_HEAD_BYTES + 1);
         let mut past_cap = over.as_bytes();
         assert_eq!(read_request(&mut past_cap).await, Err(400));
+    }
+
+    #[tokio::test]
+    async fn only_accepted_reports_notify_the_hub_store() {
+        let store = RecordingStore::default();
+        let good = ident(&[EKU_FLEET_NODE]);
+        let body = r#"{"schema":"node.status.v1","seq":1,"instances":[]}"#;
+        assert_eq!(post(req(body), &good, &store, 100).await, 204);
+        assert_eq!(store.accepted.lock().unwrap().len(), 1);
+        assert_eq!(store.accepted.lock().unwrap()[0].node_id, "node-a");
+        assert_eq!(
+            post(req(body), &good, &store, 200).await,
+            409,
+            "a replayed report must not be reported as newly accepted"
+        );
+        assert_eq!(store.accepted.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

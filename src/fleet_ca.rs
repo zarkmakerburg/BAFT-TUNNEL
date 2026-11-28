@@ -2,24 +2,25 @@
 //!
 //! The per-tunnel CA (ADR-0050) signs exactly two fixed node ids, so it cannot enroll a third
 //! panel-added server. This separate CA exists for that one purpose and is bounded by M5:
-//! its key lives only in a root-only directory (the root helper owns it), it is name
-//! constrained to `*.fleet.baft.invalid`, signs only the `fleet-node` profile (the single BAFT
-//! EKU from `fleet::EKU_FLEET_NODE` plus `clientAuth`, F-4), leaves live at most 30 days, and a
-//! CRL is kept. It never signs a tunnel certificate and a tunnel CA never signs a fleet one.
+//! its key lives only in a root-only directory (the root helper owns it). Leaf certificates are
+//! DNS-constrained to `.fleet.baft.invalid`, carry a Fleet URI SAN as the application identity,
+//! use explicit EKU profiles, live at most 30 days, and are checked against the CA CRL. It never
+//! signs a tunnel certificate and a tunnel CA never signs a fleet one.
 //! Uses `/usr/bin/openssl` through `pair_ca`, so no crypto dependency is added.
 
 #![allow(dead_code)] // wired by the root helper in the enrollment slice
 
 use std::{
     fs,
-    os::unix::fs::DirBuilderExt,
+    os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, ensure};
+use sha2::{Digest, Sha256};
 
 use crate::fleet::{EKU_FLEET_HUB, EKU_FLEET_NODE};
-use crate::pair_ca::{check_csr, run, validate_san, write_private};
+use crate::pair_ca::{check_csr, run, write_private};
 
 /// M5: at most 30 days.
 pub const LEAF_DAYS: u32 = 30;
@@ -37,12 +38,62 @@ pub fn valid_node_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+/// The DNS identity constrained by the Fleet CA and paired with the URI identity.
+pub fn dns_name(id: &str) -> String {
+    format!("{id}.{DOMAIN}")
+}
+
 /// The URI name a fleet-node certificate carries; the hub takes the node id from here (F-5).
 pub fn node_uri(node_id: &str) -> String {
     format!("baft-fleet://{node_id}.{DOMAIN}")
 }
 
-/// Create the Fleet CA in an empty or absent `dir` (mode 0700). Returns the CA certificate PEM.
+/// Validate a joining member's CSR and return the canonical SHA-256 fingerprint of its DER
+/// SubjectPublicKeyInfo. The CSR signature, exact node CN and P-256 profile are checked before
+/// the fingerprint is computed; no client-supplied fingerprint is trusted.
+pub fn validate_node_csr(node_id: &str, csr_pem: &str) -> Result<String> {
+    ensure!(valid_node_id(node_id), "invalid fleet node id");
+    check_csr(csr_pem, node_id)?;
+    let public_key_pem = run(&["req", "-pubkey", "-noout"], Some(csr_pem.as_bytes()))?;
+    let public_key_der = run(
+        &["pkey", "-pubin", "-outform", "DER"],
+        Some(&public_key_pem),
+    )?;
+    Ok(hex::encode(Sha256::digest(public_key_der)))
+}
+
+/// Validate a fleet CSR and require exactly one signed PKCS##9 challengePassword attribute
+/// matching this offer's nonce. OpenSSL verifies the CSR signature in `check_csr`; its parsed
+/// attribute view is used only after that verification succeeds.
+pub fn validate_node_csr_with_challenge(
+    node_id: &str,
+    csr_pem: &str,
+    nonce: &str,
+) -> Result<String> {
+    let fingerprint = validate_node_csr(node_id, csr_pem)?;
+    ensure!(
+        !nonce.is_empty() && nonce.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid offer nonce"
+    );
+    let text = run(&["req", "-noout", "-text"], Some(csr_pem.as_bytes()))?;
+    let text = String::from_utf8(text)?;
+    let mut values = Vec::new();
+    for line in text.lines() {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim() == "challengePassword" {
+                values.push(value.trim());
+            }
+        }
+    }
+    ensure!(
+        values.len() == 1 && values[0] == nonce,
+        "CSR challengePassword does not match offer nonce"
+    );
+    Ok(fingerprint)
+}
+
+/// Create the Fleet CA in an empty or absent directory (mode 0711). Only public trust files are
+/// readable by the Agent; the CA key and signing database remain root-only. Returns CA PEM.
 pub fn create(dir: &Path, name: &str) -> Result<String> {
     ensure!(
         !name.is_empty()
@@ -52,17 +103,31 @@ pub fn create(dir: &Path, name: &str) -> Result<String> {
                 .all(|b| b.is_ascii_alphanumeric() || b" ._-".contains(&b)),
         "invalid CA name"
     );
-    if dir.exists() {
-        ensure!(
-            fs::read_dir(dir)?.next().is_none(),
-            "refusing to initialize a non-empty directory"
-        );
-    } else {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)?;
+    match fs::symlink_metadata(dir) {
+        Ok(meta) => {
+            ensure!(
+                meta.file_type().is_dir(),
+                "refusing to initialize a non-directory or symlink"
+            );
+            ensure!(
+                fs::read_dir(dir)?.next().is_none(),
+                "refusing to initialize a non-empty directory"
+            );
+            // An operator may pre-create the empty target directory. Tighten it before any key is written.
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o711))?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o711)
+                .create(dir)?;
+        }
+        Err(e) => return Err(e.into()),
     }
+    // DirBuilder mode is filtered by the process umask. Enforce the exact traversal-only mode
+    // after creation so a restrictive sudo/service umask cannot silently make public trust files
+    // unreadable to the unprivileged Agent.
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o711))?;
     fs::DirBuilder::new()
         .mode(0o700)
         .create(dir.join("newcerts"))?;
@@ -106,11 +171,16 @@ pub fn create(dir: &Path, name: &str) -> Result<String> {
             "-addext",
             "keyUsage=critical,keyCertSign,cRLSign",
             "-addext",
-            &format!("nameConstraints=critical,permitted;URI:.{DOMAIN}"),
+            "subjectKeyIdentifier=hash",
+            "-addext",
+            &format!("nameConstraints=critical,permitted;DNS:.{DOMAIN}"),
         ],
         None,
     )?;
     crate::pair_ca::crl(dir, CRL_DAYS)?;
+    // The Agent needs only these public files; keep all signing state and the CA key private.
+    fs::set_permissions(&ca_crt, fs::Permissions::from_mode(0o644))?;
+    fs::set_permissions(dir.join("ca.crl"), fs::Permissions::from_mode(0o644))?;
     Ok(fs::read_to_string(ca_crt)?)
 }
 
@@ -122,7 +192,8 @@ pub fn sign(dir: &Path, node_id: &str, csr_pem: &str) -> Result<String> {
     check_csr(csr_pem, node_id)?;
     let tmp = dir.join(format!("sign-{}.tmp", rand::random::<u64>()));
     let ext = format!(
-        "[node_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth,{EKU_FLEET_NODE}\nsubjectAltName=URI:{}\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n",
+        "[node_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth,{EKU_FLEET_NODE}\nsubjectAltName=DNS:{},URI:{}\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n",
+        dns_name(node_id),
         node_uri(node_id)
     );
     let ext_path: PathBuf = tmp.with_extension("ext");
@@ -160,17 +231,64 @@ pub fn hub_uri(hub_name: &str) -> String {
     format!("baft-fleet-hub://{hub_name}.{DOMAIN}")
 }
 
+/// Require the exact paired DNS and URI identities on a Fleet leaf. No other SAN entry, duplicate
+/// SAN extension, missing name or mismatched identity is accepted. The DNS name is constrained
+/// by the CA for standard WebPKI; the URI remains the canonical Fleet application identity.
+pub(crate) fn validate_identity_sans(
+    leaf_der: &[u8],
+    expected_dns: &str,
+    expected_uri: &str,
+) -> Result<()> {
+    use x509_parser::extensions::GeneralName;
+
+    let (rest, cert) = x509_parser::parse_x509_certificate(leaf_der)
+        .map_err(|_| anyhow::anyhow!("Fleet certificate is not valid X.509 DER"))?;
+    ensure!(rest.is_empty(), "Fleet certificate has trailing DER data");
+    let san_extensions = cert
+        .extensions()
+        .iter()
+        .filter(|extension| extension.oid.to_id_string() == "2.5.29.17")
+        .count();
+    ensure!(
+        san_extensions == 1,
+        "Fleet certificate must contain exactly one SAN extension"
+    );
+    let san = cert
+        .subject_alternative_name()
+        .context("parse Fleet certificate subjectAltName")?
+        .context("Fleet certificate has no subjectAltName")?;
+    let mut dns_count = 0usize;
+    let mut uri_count = 0usize;
+    for name in &san.value.general_names {
+        match name {
+            GeneralName::DNSName(dns) if *dns == expected_dns => dns_count += 1,
+            GeneralName::URI(uri) if *uri == expected_uri => uri_count += 1,
+            _ => anyhow::bail!(
+                "Fleet certificate contains a missing, duplicate, mismatched or unexpected SAN entry"
+            ),
+        }
+    }
+    ensure!(
+        dns_count == 1,
+        "Fleet certificate must contain exactly one expected DNS SAN"
+    );
+    ensure!(
+        uri_count == 1,
+        "Fleet certificate must contain exactly one expected URI SAN"
+    );
+    Ok(())
+}
+
 /// Sign the `fleet-hub` server certificate (F-2): `serverAuth` plus the fleet-hub EKU only (never
-/// `clientAuth`, never the node EKU), the hub URI name, and the DNS name or IP the members dial
-/// (`DNS:name` or `IP:addr`) so ordinary name verification passes. The dialed address is not under
-/// the URI name constraint; the chain, the profile EKU and the URI name are what bind it.
-pub fn sign_hub(dir: &Path, hub_name: &str, dial_san: &str, csr_pem: &str) -> Result<String> {
+/// `clientAuth`, never the node EKU), one DNS identity constrained by the Fleet CA, and the exact
+/// Hub URI application identity. The public TCP dial address is deliberately not a certificate SAN.
+pub fn sign_hub(dir: &Path, hub_name: &str, csr_pem: &str) -> Result<String> {
     ensure!(valid_node_id(hub_name), "invalid hub name");
-    validate_san(dial_san)?;
     check_csr(csr_pem, hub_name)?;
     let tmp = dir.join(format!("sign-{}.tmp", rand::random::<u64>()));
     let ext = format!(
-        "[hub_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,{EKU_FLEET_HUB}\nsubjectAltName=URI:{},{dial_san}\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n",
+        "[hub_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,{EKU_FLEET_HUB}\nsubjectAltName=DNS:{},URI:{}\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n",
+        dns_name(hub_name),
         hub_uri(hub_name)
     );
     let ext_path: PathBuf = tmp.with_extension("ext");
@@ -255,12 +373,131 @@ mod tests {
         String::from_utf8(run(&["x509", "-noout", "-text"], Some(pem.as_bytes())).unwrap()).unwrap()
     }
 
+    fn sign_node_with_dns(dir: &Path, node_id: &str, dns: &str) -> String {
+        let csr_pem = csr(node_id, "prime256v1");
+        let ext = format!(
+            "[node_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth,{EKU_FLEET_NODE}\nsubjectAltName=DNS:{dns},URI:{}\n",
+            node_uri(node_id)
+        );
+        let ext_path = dir.join("outside.ext");
+        let csr_path = dir.join("outside.csr");
+        fs::write(&ext_path, ext).unwrap();
+        fs::write(&csr_path, csr_pem).unwrap();
+        let out = run(
+            &[
+                "ca",
+                "-batch",
+                "-notext",
+                "-config",
+                &dir.join("openssl.cnf").to_string_lossy(),
+                "-extfile",
+                &ext_path.to_string_lossy(),
+                "-extensions",
+                "node_ext",
+                "-days",
+                &LEAF_DAYS.to_string(),
+                "-in",
+                &csr_path.to_string_lossy(),
+                "-out",
+                "/dev/stdout",
+            ],
+            None,
+        )
+        .unwrap();
+        let _ = fs::remove_file(ext_path);
+        let _ = fs::remove_file(csr_path);
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn fleet_ca_initialization_generates_crl_with_issuer_key_identifier() {
+        let dir = tmp("crl-aki");
+        let result = create(&dir, "BAFT Fleet CA");
+        assert!(
+            result.is_ok(),
+            "Fleet CA initialization must generate a CRL: {result:?}"
+        );
+        let ca_text = text(&result.unwrap());
+        assert!(
+            ca_text.contains("X509v3 Subject Key Identifier"),
+            "{ca_text}"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn fleet_name_constraints_use_critical_permitted_dns_subtree() {
+        let dir = tmp("dns-constraints");
+        let ca = create(&dir, "BAFT Fleet CA").unwrap();
+        let ca_text = text(&ca);
+        assert!(
+            ca_text.contains("X509v3 Name Constraints: critical"),
+            "{ca_text}"
+        );
+        assert!(ca_text.contains("DNS:.fleet.baft.invalid"), "{ca_text}");
+        assert!(!ca_text.contains("URI:.fleet.baft.invalid"), "{ca_text}");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn fleet_member_certificate_has_paired_dns_and_uri_sans() {
+        let dir = tmp("dns-member");
+        create(&dir, "BAFT Fleet CA").unwrap();
+        let cert = sign(&dir, "iran-1", &csr("iran-1", "prime256v1")).unwrap();
+        let cert_text = text(&cert);
+        assert!(
+            cert_text.contains("DNS:iran-1.fleet.baft.invalid"),
+            "{cert_text}"
+        );
+        assert!(
+            cert_text.contains("URI:baft-fleet://iran-1.fleet.baft.invalid"),
+            "{cert_text}"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn fleet_ca_rejects_member_dns_san_outside_constrained_namespace() {
+        let dir = tmp("dns-outside");
+        create(&dir, "BAFT Fleet CA").unwrap();
+        let cert = sign_node_with_dns(&dir, "iran-1", "attacker.example");
+        let cert_path = dir.join("outside.pem");
+        fs::write(&cert_path, cert).unwrap();
+        let result = run(
+            &[
+                "verify",
+                "-CAfile",
+                &dir.join("ca.crt").to_string_lossy(),
+                &cert_path.to_string_lossy(),
+            ],
+            None,
+        );
+        assert!(result.is_err(), "CA accepted an out-of-namespace DNS SAN");
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn node_ids() {
         assert!(valid_node_id("iran-1"));
         for bad in ["", "-a", "a-", "A", "a_b", "a.b", "a/b", &"a".repeat(64)] {
             assert!(!valid_node_id(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn validates_join_csr_and_returns_full_canonical_spki_sha256() {
+        let valid = csr("edge-1", "prime256v1");
+        let fingerprint = validate_node_csr("edge-1", &valid).unwrap();
+        assert_eq!(fingerprint.len(), 64);
+        assert!(
+            fingerprint
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
+        assert_eq!(validate_node_csr("edge-1", &valid).unwrap(), fingerprint);
+        assert!(validate_node_csr("edge-2", &valid).is_err());
+        assert!(validate_node_csr("edge-1", &csr("edge-1", "secp384r1")).is_err());
+        assert!(validate_node_csr("edge-1", "not a CSR").is_err());
     }
 
     #[test]
@@ -317,17 +554,24 @@ mod tests {
     }
 
     #[test]
-    fn hub_profile_is_server_only() {
+    fn fleet_hub_certificate_uses_internal_dns_identity_not_dial_address() {
         let dir = tmp("ca4");
         create(&dir, "BAFT Fleet CA").unwrap();
-        let cert = sign_hub(&dir, "hub-1", "IP:203.0.113.7", &csr("hub-1", "prime256v1")).unwrap();
+        let cert = sign_hub(&dir, "hub-1", &csr("hub-1", "prime256v1")).unwrap();
         let t = text(&cert);
         assert!(t.contains("TLS Web Server Authentication"), "{t}");
         assert!(!t.contains("TLS Web Client Authentication"));
         assert!(t.contains("1.3.6.1.4.1.59999.1.3"));
         assert!(!t.contains("1.3.6.1.4.1.59999.1.2"));
-        assert!(t.contains("baft-fleet-hub://hub-1.fleet.baft.invalid"));
-        assert!(t.contains("203.0.113.7"));
+        assert!(t.contains("DNS:hub-1.fleet.baft.invalid"), "{t}");
+        assert!(
+            t.contains("baft-fleet-hub://hub-1.fleet.baft.invalid"),
+            "{t}"
+        );
+        assert!(
+            !t.contains("203.0.113.7"),
+            "public dial address leaked into Hub certificate: {t}"
+        );
         let (cp, ap) = (dir.join("hub.pem"), dir.join("ca.crt"));
         fs::write(&cp, &cert).unwrap();
         assert!(
@@ -344,8 +588,8 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(sign_hub(&dir, "hub-1", "bad", &csr("hub-1", "prime256v1")).is_err());
-        assert!(sign_hub(&dir, "Hub", "DNS:a.example", &csr("Hub", "prime256v1")).is_err());
+        assert!(sign_hub(&dir, "hub-1", &csr("other", "prime256v1")).is_err());
+        assert!(sign_hub(&dir, "Hub", &csr("Hub", "prime256v1")).is_err());
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -364,6 +608,50 @@ mod tests {
                 .unwrap();
         assert!(ctext.contains("Serial Number"), "{ctext}");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn refuses_ca_name_config_injection_before_creating_files() {
+        for (index, bad) in ["", "x\n[evil]", "x\"\npolicy = any", "x\tbad"]
+            .into_iter()
+            .enumerate()
+        {
+            let dir = tmp(&format!("bad-name-{index}"));
+            assert!(
+                create(&dir, bad).is_err(),
+                "accepted unsafe CA name {bad:?}"
+            );
+            assert!(
+                !dir.exists(),
+                "created a directory for rejected CA name {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn creates_private_ca_directory_and_private_key() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tmp("private");
+        create(&dir, "BAFT Fleet CA").unwrap();
+        let dir_mode = fs::metadata(&dir).unwrap().mode() & 0o777;
+        let key_mode = fs::metadata(dir.join("ca.key")).unwrap().mode() & 0o777;
+        let cfg_mode = fs::metadata(dir.join("openssl.cnf")).unwrap().mode() & 0o777;
+        assert_eq!(dir_mode, 0o711);
+        assert_eq!(key_mode, 0o600);
+        assert_eq!(cfg_mode, 0o600);
+        assert_eq!(
+            fs::metadata(dir.join("ca.crt")).unwrap().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(
+            fs::metadata(dir.join("ca.crl")).unwrap().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(
+            fs::metadata(dir.join("newcerts")).unwrap().mode() & 0o777,
+            0o700
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

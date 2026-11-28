@@ -1,0 +1,111 @@
+# Fleet Join TLS Transport Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Add an isolated Fleet-specific TLS 1.3 server-authenticated Join transport and pinned member client, without enabling or advertising enrollment before later Enroller/Report integration and two-host acceptance.
+
+**Architecture:** A temporary, per-offer Hub listener uses TLS 1.3 with no client certificate, separate from the existing persistent mandatory-mTLS Report listener. The member authenticates the Hub through the exact leaf SHA-256 pin carried by the operator's trusted offer code, and validates the leaf's validity period, Fleet Hub EKU, URI SAN and dial-target DNS/IP SAN before sending a Fleet-specific bounded request. The joining member does not yet possess the Fleet CA/CRL; those public trust materials are delivered only after the pinned TLS session is established. The server keeps the TLS session open through operator approval and certificate/trust delivery; the member acknowledges only after local installation and its caller's first-report step. This transport slice does not mark a node Enrolled.
+
+**Tech Stack:** Rust 2024, Tokio, rustls 0.23, tokio-rustls 0.26, serde/serde_json, SHA-256, existing x509-parser and OpenSSL helpers. No new dependency.
+
+**Spec:** Owner-approved 2026-11-19 Addendum in [PR #399](https://github.com/zarkmakerburg/BAFT-TUNNEL/pull/399/files), `docs/ADR-0051-add-server-from-panel.md`, sections “Fleet Join TLS bootstrap and certificate delivery” and “Required negative and failure tests”. The base code for this stacked implementation is PR #402 exact HEAD `337901e18f47f1c54a0f17a07704cefd8f273b36`.
+
+## Global Constraints
+
+- TLS 1.3 only; Join is server-authentication-only and Report remains mandatory mTLS.
+- Never reuse tunnel pairing message types, codes, identities, or state.
+- Hub identity pin is the SHA-256 fingerprint of the exact Hub leaf certificate. Validate leaf validity, Fleet Hub EKU, URI SAN and dial-target DNS/IP SAN before sending the CSR. Do not require CA/CRL before Join: the member obtains the public CA certificate and CRL over the already-pinned TLS session.
+- One-time token is 128 bits minimum; token and nonce never appear in URLs, logs, or audit.
+- CSR private key is generated and retained by the member; only the CSR crosses Join.
+- Frames, fields, concurrency, failures, and read/write deadlines are bounded; fail closed on malformed or oversized input.
+- Only public member certificate, CA certificate, CRL and Hub identity certificate/metadata may be delivered. No CA or member private key is transmitted.
+- No firewall, route, sysctl, host-network, or `CAP_NET_ADMIN` changes. No real-host mutation, merge, release, or deploy.
+- This slice remains unadvertised and cannot claim Enrolled; Enroller and accepted first-report integration are later slices.
+
+## Review Focus
+
+- A wrong or stale Hub pin must fail before the member sends its CSR.
+- Even with the exact pin, a leaf with the wrong Hub EKU, URI identity, validity period, or dial-target SAN must fail closed.
+- Slow, oversized, truncated, replayed, and malformed frames must not block or exhaust the listener.
+- A failed delivery or missing member acknowledgement must not be reported as success.
+- The member's private key and Fleet CA private key must never enter a Join message, browser response, argv, environment, or log.
+
+---
+
+### Task 1: Fleet-specific TLS identity primitives
+
+**Files:**
+- Modify: `src/tls.rs`
+- Create: `src/fleet_join.rs`
+- Modify: `src/main.rs`
+- Test: `src/fleet_join.rs` unit tests
+
+**Interfaces:**
+- `tls::fleet_join_acceptor(cert, key) -> Result<TlsAcceptor>` builds TLS 1.3 with no client auth and early data disabled.
+- `fleet_join::HubPinVerifier` verifies the exact leaf SHA-256 pin, validity period, Fleet Hub EKU, URI SAN, and configured DNS/IP SAN inside rustls certificate verification. It uses the pinned leaf as the bootstrap trust anchor; no CA/CRL is required before Join.
+- `fleet_join::client_connector(pin, hub_id, hub_name) -> Result<TlsConnector>` uses a rustls custom verifier and ring TLS 1.3 handshake-signature verification. It rejects intermediate chains and never sends a CSR before all leaf identity checks pass.
+- The Hub sends the public CA certificate and current CRL only in `JoinResponse`, over the already-pinned TLS session; the member uses them for the subsequent mandatory-mTLS Report connection.
+
+- [x] Write tests proving TLS 1.3 server-only acceptor construction and accepting an exact pinned Hub leaf without preloaded CA/CRL; reject wrong pin, expired/not-yet-valid certificate, wrong EKU, wrong URI SAN, and wrong DNS/IP SAN.
+- [x] Run the focused tests and confirm they fail for the intended missing behavior.
+- [x] Implement the minimal TLS acceptor and pinned verifier; keep TLS 1.3 handshake-signature verification delegated to rustls ring.
+- [x] Run focused tests and `cargo fmt --all -- --check`.
+
+### Task 2: Fleet-specific offer and bounded message framing
+
+**Files:**
+- Modify: `src/fleet_join.rs`
+- Test: `src/fleet_join.rs` unit tests
+
+**Interfaces:**
+- `JoinOffer { v, host, port, hub_name, hub_id, hub_pin, offer_id, node_id, token, nonce, expires }` has `encode/decode/validate` using a Fleet-only prefix and bounded base64url JSON; no `PairCode` reuse.
+- `JoinRequest { offer_id, node_id, token, nonce, csr_pem }` and `JoinResponse { ok, member_certificate_pem, ca_certificate_pem, crl_pem, hub_certificate_pem, reason }` are strict (`deny_unknown_fields`); response contains public material only. The returned Hub identity certificate must match the exact TLS peer leaf pin before it is persisted.
+- `JoinAck { ok }` confirms transport delivery only; it does not imply Enrolled.
+- Length-prefixed JSON frames use a fixed maximum and bounded read/write deadlines.
+
+- [x] Write tests for offer encoding, invalid fields, unknown JSON fields, frame lengths 0/oversized/truncated, and timeout; ensure no CA/CRL field is required in the offer and the Join response carries the public Hub identity alongside CA/CRL.
+- [x] Run focused tests and confirm the missing cases fail.
+- [x] Implement strict Fleet-only types and framing; never log request or response bodies.
+- [x] Run focused tests and formatting.
+
+### Task 3: One-shot Hub Join listener and member session
+
+**Files:**
+- Modify: `src/fleet_join.rs`
+- Test: `src/fleet_join.rs` async integration tests
+
+**Interfaces:**
+- `Admission::{Retry, Close, Deliver(JoinResponse)}` lets the Enroller callback distinguish a retryable bad token from a consumed/closed offer and an operator-approved delivery.
+- `serve<F, Fut>(listener, acceptor, offer_id, node_id, expires, decide)` handles one offer, bounded concurrent connections and per-IP/total failures; it invokes `decide(JoinRequest, peer_addr)` and holds the TLS session through approval and acknowledgement.
+- `join(offer, csr_pem)` verifies the exact Hub pin and identity before sending a request; waits no longer than the offer expiry.
+- `JoinSession::ack(ok)` writes the final bounded acknowledgement over the same pinned TLS session.
+- The listener returns success only after the member acknowledgement; integration with the Report listener and Enroller state transition is deliberately deferred to the next slice.
+
+- [x] Write a loopback TLS integration test with a real generated Hub certificate and a valid member CSR.
+- [x] Add negative tests for bad pin, Hub identity mismatch, wrong offer/node, wrong token/nonce, expired offer, concurrent/replayed submission, oversized/slow frame, disconnect before response, and missing acknowledgement.
+- [ ] Run tests and confirm expected failures before implementation.
+- [x] Implement the one-shot accept loop, bounded session lifecycle and member client.
+- [x] Verify success, refusal, expiry, disconnect and timeout behavior with exact test output.
+
+### Task 4: Module registration, documentation and handoff
+
+**Files:**
+- Modify: `src/main.rs`
+- Modify: `docs/ADR-0051-add-server-from-panel.md` only if a precise implementation note is needed; do not copy the unmerged PR #399 addendum into this branch.
+- Test: full hosted `phase1-rust` workflow on the exact new HEAD
+
+- [x] Register `mod fleet_join;` and ensure no public API or UI advertises Fleet Join yet.
+- [x] Run `cargo fmt --all -- --check`, `git diff --check`, focused Rust tests, and inspect the complete diff.
+- [x] Commit the transport slice on this isolated branch and push only this task branch.
+- [x] Open a Draft PR stacked on PR #402; record exact SHA, CI, limitations and next Enroller/Report integration in Issue #2.
+
+
+
+### Task 3/4 evidence reconciliation (2026-11-19)
+
+- Implementation HEAD: `26f66133117a4c84fb6544e845f24a9b55683256`; PR #403 exact-head CI run `44562305399` completed SUCCESS. All 13 check-runs passed, including the Rust job (formatting, focused tests, Clippy, release build), Ubuntu 22.04 baseline, Ubuntu 24.04 installer, panel, and offline CA container.
+- Loopback integration uses a generated Hub certificate and member CSR. Negative tests cover bad pin/Hub identity, expired offer, wrong offer/node/token/nonce, replay/concurrent submission, oversized/stalled frames, disconnect, mismatched delivered Hub identity, closed offer, and missing ACK. Exact test names are in `task-3-report.md`.
+- Local `cargo fmt --all -- --check` and `git diff --check` passed on the clean branch before this documentation reconciliation.
+- The test-first RED checkbox remains open: the PR description records a failure on test-only parent `5a71a2a` before the implementation landed, but a directly retrievable run URL/result was not independently recovered during this reconciliation. Do not treat that process-evidence item as verified.
+- `SetupCommand::Join` in `src/main.rs` is a pre-existing local bundle/checksum import command (introduced before this Fleet Join branch); it is not the new Fleet Join transport. This slice adds no Fleet Join public API or panel/UI entry point.
+- Task 4 is complete for this transport slice. Task 3 implementation and behavioral verification are complete; only the explicit test-first RED evidence checkbox remains unverified.
