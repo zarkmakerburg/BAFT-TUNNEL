@@ -445,7 +445,39 @@ cmp -s "$REMOTE_DIR/expected-unit-files.txt" "$REMOTE_DIR/actual-unit-files.txt"
   die "unexpected top-level BAFT-TUNNEL unit files remain; preserving installation"
 cmp -s "$PKG/systemd/control/baft-tunnel-control.conf" /etc/tmpfiles.d/baft-tunnel-control.conf ||
   die "tmpfiles template changed; preserving installation"
-if find "$UNIT_DIR" -mindepth 2 -name 'baft-tunnel*' -print -quit | grep -q .; then
+# Per-instance systemd resources are expected at this point: the round enabled the agent,
+# its lifecycle path units, the manage socket and the tunnel instance for these instances,
+# and `install-agent-control.sh --remove` above clears only part of that. What must not exist
+# is a per-instance BAFT-TUNNEL resource that belongs to another instance, has an unknown
+# shape, or points outside the unit templates. uninstall.sh removes the rest below and its
+# result is asserted afterwards, so the product's own claim is still tested.
+instance_is_ours() {
+  local candidate=$1 instance
+  for instance in "${INSTANCES[@]}"; do
+    [[ "$candidate" == "$instance" ]] && return 0
+  done
+  return 1
+}
+foreign_instance_resources=()
+while IFS= read -r -d '' path; do
+  rel="${path#"$UNIT_DIR"/}"
+  if [[ "$rel" =~ ^(multi-user\.target\.wants|sockets\.target\.wants)/baft-tunnel[a-z-]*@([A-Za-z0-9_.-]+)\.(path|service|socket)$ ]]; then
+    instance="${BASH_REMATCH[2]}"
+    if [[ -L "$path" ]]; then
+      target="$(readlink "$path")"
+      [[ "$target" == ../baft-tunnel* ]] ||
+        die "per-instance want points outside the unit templates: $rel; preserving installation"
+    fi
+  elif [[ "$rel" =~ ^baft-tunnel[a-z-]*@([A-Za-z0-9_.-]+)\.(service|socket)\.d(/.*)?$ ]]; then
+    instance="${BASH_REMATCH[1]}"
+  else
+    die "unexpected per-instance systemd resource: $rel; preserving installation"
+  fi
+  instance_is_ours "$instance" || foreign_instance_resources+=("$rel")
+done < <(find "$UNIT_DIR" -mindepth 2 -name 'baft-tunnel*' -print0)
+if (( ${#foreign_instance_resources[@]} > 0 )); then
+  printf 'auto-pair cleanup: per-instance resources for an instance outside this run remain:\n' >&2
+  printf '  %s\n' "${foreign_instance_resources[@]:0:20}" >&2
   die "unexpected per-instance systemd resources remain; preserving installation"
 fi
 

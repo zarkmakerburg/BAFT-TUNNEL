@@ -67,6 +67,10 @@ contains "$cleanup_helper" 'baft_runtime_children_known /run/baft-tunnel "$CONTR
 contains "$cleanup_helper" 'baft_manage_dir_known "$MANAGE_DIR"'
 contains "$cleanup_helper" 'installation already absent; nothing to remove'
 not_contains "$cleanup_helper" 'rm -rf /run/baft-tunnel'
+contains "$cleanup_helper" 'instance_is_ours()'
+contains "$cleanup_helper" 'per-instance want points outside the unit templates'
+contains "$cleanup_helper" 'unexpected per-instance systemd resource: $rel; preserving installation'
+not_contains "$cleanup_helper" "-mindepth 2 -name 'baft-tunnel*' -print -quit"
 contains "$cleanup_helper" 'at least one explicit --instance is required'
 contains "$cleanup_helper" 'no run-owned installer backup path was supplied or recovered'
 contains "$cleanup_helper" 'unit remains active; preserving cleanup target'
