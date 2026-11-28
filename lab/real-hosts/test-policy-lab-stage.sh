@@ -61,9 +61,18 @@ grep -F 'nft --stateless list ruleset' "$stage" >/dev/null
 grep -F 'firewall unreadable' "$stage" >/dev/null
 grep -F '"$fw" != unreadable' "$stage" >/dev/null
 # the probe samples only inside the bulk window, at a floor of loaded samples
-grep -F -- '--go-file probe.go --stop-file probe.done' "$stage" >/dev/null
-grep -F 'probe.go' "$stage" >/dev/null
+grep -F -- '--ready-file probe.ready --bulk-json send-$label.json' "$stage" >/dev/null
+grep -F -- '--start-file probe.go --wait-file probe.ready' "$stage" >/dev/null
 grep -F 'touch probe.done' "$stage" >/dev/null
+grep -F 'probe_bulk_window=${probe_bulk_window:-unknown}' "$stage" >/dev/null
+grep -F "probe had no bulk window to filter to" "$stage" >/dev/null
+# a repeated arm would read the previous run's JSON
+grep -F "is listed twice" "$stage" >/dev/null
+# a rerun clears its own artifacts first
+grep -F 'rm -f sink-$label.json send-$label.json probe-$label.json' "$stage" >/dev/null
+# an unreadable engagement log must not count as "not engaged"
+grep -F "read=fail" "$stage" >/dev/null
+grep -F "could not read an engagement log" "$stage" >/dev/null
 # a measured arm that did not deliver its bytes fails the run
 grep -F 'if (( sha_ok != 1 )); then FAILED=1; fi' "$stage" >/dev/null
 grep -F 'exit 1' "$stage" >/dev/null
@@ -95,10 +104,11 @@ for _ in $(seq 1 40); do grep -q listening "$work/server.log" 2>/dev/null && bre
 # window: the probe waits for the go file (raised after the sender connects) and stops when the
 # bulk finishes, exactly as the stage does on the hosts.
 python3 "$tool" probe --target "127.0.0.1:$port" --interval-ms 5 --max-seconds 60 \
-  --go-file "$work/go" --stop-file "$work/stop" --json "$work/probe.json" >/dev/null 2>&1 &
+  --go-file "$work/go" --stop-file "$work/stop" --ready-file "$work/ready" \
+  --bulk-json "$work/send.json" --json "$work/probe.json" >/dev/null 2>&1 &
 probe_pid=$!
 python3 "$tool" send --target "127.0.0.1:$port" --size 134217728 --start-file "$work/go" \
-  --json "$work/send.json" >/dev/null &
+  --wait-file "$work/ready" --json "$work/send.json" >/dev/null &
 send_pid=$!
 wait "$send_pid"
 touch "$work/stop"
@@ -119,12 +129,17 @@ assert sink["bulk_complete"] and sink["bulk_total"] == 134217728, sink
 assert sink["bulk_sha"] == sent["sha_expected"], "the sink's digest must equal what the sender generated"
 # loopback finishes 128 MiB in ~150 ms, so this window is short by nature; the floor that
 # matters on the hosts (POLICY_LAB_PROBES inside a multi-second bulk) is asserted by the stage.
+assert probe["errors"] == 0, probe
+assert probe["bulk_window"] is True, probe
 assert probe["ok"] >= 10, probe
 assert probe["ok"] == probe["count"], probe
+assert probe["count"] <= probe["samples_total"], probe
 # The sink's record is stamped when the bulk completes, so it cannot hold echoes the probe
 # measured afterwards; what it must show is that both flows used the same destination.
 assert sink["echo_streams"] >= 1, sink
-assert sink["echo_trips"] == probe["ok"], (sink["echo_trips"], probe["ok"])
+# The sink counts every echo it answered, including the samples the probe dropped for falling
+# outside the bulk window, so it can only be asked for at least the kept ones.
+assert sink["echo_trips"] >= probe["ok"], (sink["echo_trips"], probe["ok"])
 assert probe["p50_us"] and probe["p95_us"] and probe["window_s"] > 0
 print("policy-lab tool: 128 MiB delivered byte-exact, %d round trips inside the bulk window, p50=%sus"
       % (probe["ok"], probe["p50_us"]))

@@ -74,7 +74,12 @@ done
 read -r -a ARM_LIST <<<"$ARMS"
 [[ "${ARM_LIST[0]}" == control ]] || die "the first arm must be the control"
 PROFILE_ARMS=0
+ARM_SEEN=" "
 for arm in "${ARM_LIST[@]}"; do
+  # Every arm's evidence lives in files named after it. A repeated arm would read the previous
+  # run's sender JSON and raise the stop file immediately, so a repeat is refused outright.
+  [[ "$ARM_SEEN" != *" $arm "* ]] || die "arm '$arm' is listed twice"
+  ARM_SEEN="$ARM_SEEN$arm "
   if [[ "$arm" == control ]]; then
     continue
   fi
@@ -300,6 +305,13 @@ for arm in "${ARM_LIST[@]}"; do
   ssh_host iran "set -eu; cd '$REMOTE_DIR'; ./baft-tunnel config validate --config forward.json" >/dev/null ||
     die "forward config was refused on iran for $arm"
 
+  # A rerun must not be able to read a previous run's evidence for this arm.
+  for side in abroad iran; do
+    ssh_host "$side" "set -eu; cd '$REMOTE_DIR'; rm -f sink-$label.json send-$label.json probe-$label.json \
+      server-$label.log serve-$label.log forward-$label.log probe.ready probe.go probe.done" ||
+      die "could not clear the previous $arm artifacts on $side"
+  done
+
   # sink first (it is the tunnel's target), then the listener, then the joiner
   ssh_host abroad "set -eu; cd '$REMOTE_DIR'
     setsid nohup python3 '$REMOTE_DIR/policy-lab-measure.py' server --port $SINK_PORT --bulk-size $BULK_BYTES \
@@ -332,12 +344,14 @@ for arm in "${ARM_LIST[@]}"; do
   # raised once the sender is connected, and it stops when the send completes. A probe that
   # ran before or after the transfer would report an idle path, not a loaded one.
   ssh_long iran "cd '$REMOTE_DIR'
-    rm -f probe.go probe.done
+    rm -f probe.go probe.done probe.ready
     nohup python3 '$REMOTE_DIR/policy-lab-measure.py' probe --target 127.0.0.1:$ENTRY_PORT \
       --interval-ms $INTERVAL_MS --max-seconds 600 --go-file probe.go --stop-file probe.done \
+      --ready-file probe.ready --bulk-json send-$label.json \
       --json probe-$label.json > probe-$label.log 2>&1 < /dev/null &
     nohup python3 '$REMOTE_DIR/policy-lab-measure.py' send --target 127.0.0.1:$ENTRY_PORT \
-      --size $BULK_BYTES --start-file probe.go --json send-$label.json > send-$label.log 2>&1 < /dev/null &
+      --size $BULK_BYTES --start-file probe.go --wait-file probe.ready \
+      --json send-$label.json > send-$label.log 2>&1 < /dev/null &
     for n in \$(seq 1 600); do test -s send-$label.json && break; sleep 0.5; done
     touch probe.done
     for n in \$(seq 1 120); do test -s probe-$label.json && break; sleep 0.5; done
@@ -351,10 +365,24 @@ for arm in "${ARM_LIST[@]}"; do
   ssh_host iran "cat '$REMOTE_DIR/send-$label.json' 2>/dev/null || true" >"$WORK/send-$label.json" || true
   ssh_host iran "cat '$REMOTE_DIR/probe-$label.json' 2>/dev/null || true" >"$WORK/probe-$label.json" || true
 
-  ssh_host abroad "grep -c 'policy pack engaged: profile=' '$REMOTE_DIR/serve-$label.log' 2>/dev/null || true" >"$WORK/engaged-serve-$label.txt" || true
-  ssh_host iran "grep -c 'policy pack engaged: profile=' '$REMOTE_DIR/forward-$label.log' 2>/dev/null || true" >"$WORK/engaged-forward-$label.txt" || true
-  engaged_serve="$(tr -dc '0-9' <"$WORK/engaged-serve-$label.txt" | head -c 3)"
-  engaged_forward="$(tr -dc '0-9' <"$WORK/engaged-forward-$label.txt" | head -c 3)"
+  # "the log could not be read" and "the log had no such line" must not collapse into the same
+  # zero, or a failed read would vouch for the control.
+  read_engagement() { # side log -> "read=ok count=N" on stdout
+    local side="$1" log="$2"
+    ssh_host "$side" "if [ -r '$log' ]; then
+        printf 'read=ok count=%s\n' \"\$(grep -c 'policy pack engaged: profile=' '$log' || true)\"
+      else
+        echo 'read=fail'
+      fi" 2>/dev/null || echo 'read=fail'
+  }
+  serve_read="$(read_engagement abroad "$REMOTE_DIR/serve-$label.log")"
+  forward_read="$(read_engagement iran "$REMOTE_DIR/forward-$label.log")"
+  engaged_serve="$(printf '%s' "$serve_read" | sed -n 's/.*count=\([0-9]*\).*/\1/p')"
+  engaged_forward="$(printf '%s' "$forward_read" | sed -n 's/.*count=\([0-9]*\).*/\1/p')"
+  if [[ "$serve_read" != read=ok* || "$forward_read" != read=ok* ]]; then
+    note "$arm could not read an engagement log (abroad='$serve_read' iran='$forward_read')"
+    FAILED=1
+  fi
   engaged_both=0
   if [[ "$arm" == control ]]; then
     # The control arm has no switch and no profile: the pack must stay silent on both hosts,
@@ -394,9 +422,11 @@ PY
   probe_p50="$(json_value "$WORK/probe-$label.json" p50_us)"
   probe_p95="$(json_value "$WORK/probe-$label.json" p95_us)"
   probe_window="$(json_value "$WORK/probe-$label.json" window_s)"
+  probe_bulk_window="$(json_value "$WORK/probe-$label.json" bulk_window)"
+  probe_total="$(json_value "$WORK/probe-$label.json" samples_total)"
   sender_mibs="$(json_value "$WORK/send-$label.json" sender_MiB_per_s)"
 
-  line="POLICY_LAB_ARM arm=$label profile=$([[ $arm == control ]] && echo none || echo "$arm") pack=$pack pack_engaged=$engaged_both engine=tcp-tls carrier=tcp bytes=$BULK_BYTES delivered_bytes=${delivered:-0} sink_secs=${sink_secs:-none} sink_MiB_per_s=${sink_mibs:-none} sender_MiB_per_s=${sender_mibs:-none} interactive_p50_us=${probe_p50:-none} interactive_p95_us=${probe_p95:-none} probe_samples=${probe_ok:-0} probe_window_s=${probe_window:-none} probe_min=$PROBES sink_echo_streams=${sink_echo_streams:-0} sha_match=$sha_ok evidence=LAB"
+  line="POLICY_LAB_ARM arm=$label profile=$([[ $arm == control ]] && echo none || echo "$arm") pack=$pack pack_engaged=$engaged_both engine=tcp-tls carrier=tcp bytes=$BULK_BYTES delivered_bytes=${delivered:-0} sink_secs=${sink_secs:-none} sink_MiB_per_s=${sink_mibs:-none} sender_MiB_per_s=${sender_mibs:-none} interactive_p50_us=${probe_p50:-none} interactive_p95_us=${probe_p95:-none} probe_samples=${probe_ok:-0} probe_samples_total=${probe_total:-0} probe_bulk_window=${probe_bulk_window:-unknown} probe_window_s=${probe_window:-none} probe_min=$PROBES sink_echo_streams=${sink_echo_streams:-0} sha_match=$sha_ok evidence=LAB"
   echo "$line"
   [[ "$arm" == control ]] && CONTROL_LINE="$line"
   if (( sha_ok != 1 )); then FAILED=1; fi
@@ -409,6 +439,12 @@ PY
   # the bulk: one destination, two flows, one tunnel session.
   if [[ -z "${sink_echo_streams:-}" ]] || (( ${sink_echo_streams:-0} < 1 )); then
     note "$arm's sink never saw the interactive stream; the two flows did not share the session"
+    FAILED=1
+  fi
+  # Without the sender's window there is nothing to filter to, so the samples were not proven
+  # to overlap the bulk transfer and the arm has no latency evidence.
+  if [[ "${probe_bulk_window:-}" != True ]]; then
+    note "$arm's probe had no bulk window to filter to; its samples did not overlap the transfer"
     FAILED=1
   fi
   if [[ -z "${probe_ok:-}" ]] || (( ${probe_ok:-0} < PROBES )); then

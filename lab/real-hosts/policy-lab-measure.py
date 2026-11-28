@@ -162,7 +162,7 @@ def connect(target, timeout):
     return sock
 
 
-def send(target, size, out, timeout, start_file=None):
+def send(target, size, out, timeout, start_file=None, wait_file=None, wait_seconds=30.0):
     sock = connect(target, timeout)
     try:
         sock.sendall(b"B")
@@ -170,42 +170,58 @@ def send(target, size, out, timeout, start_file=None):
             # The bulk flow is connected and about to stream: this is the moment the probe
             # should start sampling, not a sleep in the orchestrator that a fast path outruns.
             open(start_file, "w").close()
+        waited = 0.0
+        if wait_file:
+            # Hold the first byte until the probe's echo stream is connected, so every sample
+            # it takes overlaps this transfer. Bounded: a broken probe must not hang the run.
+            began = time.time()
+            while not os.path.exists(wait_file) and time.time() - began < wait_seconds:
+                time.sleep(0.01)
+            waited = round(time.time() - began, 3)
         t0 = time.time()
         for chunk in gen(size):
             sock.sendall(chunk)
         ack = sock.recv(1)
-        elapsed = time.time() - t0
+        t1 = time.time()
+        elapsed = t1 - t0
     finally:
         sock.close()
     result = {"role": "send", "size_bytes": size, "elapsed_s": round(elapsed, 3),
+              "t0": round(t0, 6), "t1": round(t1, 6), "probe_wait_s": waited,
               "sender_MiB_per_s": round(size / elapsed / 1048576, 3) if elapsed else None,
               "ack": ack.decode(errors="replace"), "sha_expected": expected(size)}
     write_json(out, result)
     print(json.dumps(result), flush=True)
 
 
-def probe(target, count, interval_ms, out, timeout, go_file=None, stop_file=None, max_seconds=600.0):
-    """Sample 64-byte round trips between the go signal and the stop signal.
+def probe(target, count, interval_ms, out, timeout, go_file=None, stop_file=None,
+          max_seconds=600.0, ready_file=None, bulk_json=None):
+    """Sample 64-byte round trips and keep only the ones taken while the bulk flow ran.
 
-    The window is what makes the number mean something: the caller raises the go file once the
-    bulk sender is connected and the stop file when it finishes, so every sample here was taken
-    while the bulk flow was competing for the same tunnel.
+    The window is what makes the number mean something. The probe connects first and writes a
+    readiness file, which is what the sender waits for before its first byte; the sender then
+    records the absolute interval it spent streaming, and every sample below is filtered to
+    that interval. A sample that fell before the transfer started, or after it finished, was
+    taken on an idle path and is not counted.
     """
-    rtts, errors = [], 0
+    samples, errors = [], 0
     waited = 0.0
     t_start = time.time()
-    if go_file:
-        while not os.path.exists(go_file):
-            if time.time() - t_start > 120:
-                break
-            time.sleep(0.05)
-        waited = round(time.time() - t_start, 3)
     sock = connect(target, timeout)
     try:
         sock.sendall(b"E")
+        if ready_file:
+            # The echo stream exists and the sink has accepted it: the sender may go.
+            open(ready_file, "w").close()
+        if go_file:
+            while not os.path.exists(go_file):
+                if time.time() - t_start > 120:
+                    break
+                time.sleep(0.01)
+            waited = round(time.time() - t_start, 3)
         payload = bytes(range(ECHO))
         for _ in range(count):
-            if stop_file and os.path.exists(stop_file) and rtts:
+            if stop_file and os.path.exists(stop_file) and samples:
                 break
             if time.time() - t_start > max_seconds:
                 break
@@ -217,18 +233,32 @@ def probe(target, count, interval_ms, out, timeout, go_file=None, stop_file=None
                 if not part:
                     raise ConnectionError("eof")
                 got += part
-            rtts.append((time.perf_counter() - t0) * 1e6)
+            samples.append((time.time(), (time.perf_counter() - t0) * 1e6))
             time.sleep(interval_ms / 1000.0)
     except Exception:  # noqa: BLE001 - counted, and the sample list is what it is
         errors += 1
     finally:
         sock.close()
-    result = {"role": "probe", "count": len(rtts), "ok": len(rtts), "errors": errors,
+
+    window = None
+    if bulk_json:
+        try:
+            bulk = json.load(open(bulk_json))
+            t0, t1 = bulk.get("t0"), bulk.get("t1")
+            if t0 and t1 and t1 > t0:
+                window = (t0, t1)
+        except Exception:  # noqa: BLE001 - no window file means no filtering is possible
+            window = None
+    # No window means the sender never recorded one: keep everything and let the stage judge,
+    # because filtering is only meaningful against the interval this transfer really held.
+    kept = [us for ts, us in samples if window is None or window[0] <= ts <= window[1]]
+    result = {"role": "probe", "count": len(kept), "ok": len(kept), "errors": errors,
+              "samples_total": len(samples), "bulk_window": window is not None,
               "go_wait_s": waited, "window_s": round(time.time() - t_start, 3),
-              "p50_us": round(pct(rtts, 0.50), 1) if rtts else None,
-              "p95_us": round(pct(rtts, 0.95), 1) if rtts else None,
-              "p99_us": round(pct(rtts, 0.99), 1) if rtts else None,
-              "max_us": round(max(rtts), 1) if rtts else None}
+              "p50_us": round(pct(kept, 0.50), 1) if kept else None,
+              "p95_us": round(pct(kept, 0.95), 1) if kept else None,
+              "p99_us": round(pct(kept, 0.99), 1) if kept else None,
+              "max_us": round(max(kept), 1) if kept else None}
     write_json(out, result)
     print(json.dumps(result), flush=True)
 
@@ -244,6 +274,9 @@ def main(argv):
     ap.add_argument("--interval-ms", type=float, default=50)
     ap.add_argument("--go-file")
     ap.add_argument("--start-file")
+    ap.add_argument("--wait-file")
+    ap.add_argument("--ready-file")
+    ap.add_argument("--bulk-json")
     ap.add_argument("--stop-file")
     ap.add_argument("--max-seconds", type=float, default=600)
     ap.add_argument("--idle", type=float, default=45)
@@ -258,12 +291,12 @@ def main(argv):
         elif a.role == "send":
             if not a.target or not a.size:
                 ap.error("send needs --target and --size")
-            send(a.target, a.size, a.json, a.timeout, a.start_file)
+            send(a.target, a.size, a.json, a.timeout, a.start_file, a.wait_file)
         else:
             if not a.target:
                 ap.error("probe needs --target")
             probe(a.target, a.count, a.interval_ms, a.json, a.timeout, a.go_file, a.stop_file,
-                  a.max_seconds)
+                  a.max_seconds, a.ready_file, a.bulk_json)
     except Exception as exc:  # noqa: BLE001 - the record has to exist for the stage to read it
         # A missing file and a failed flow look the same to the stage; write the failure instead.
         write_json(a.json, {"role": a.role, "error": type(exc).__name__, "failed": True})
