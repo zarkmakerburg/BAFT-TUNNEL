@@ -127,7 +127,6 @@ jobs:
                   and info["comm"] == "python3"
                   and info["exe"] == EXPECTED_EXE
                   and len(info["argv"]) >= 2
-                  and info["argv"][0] in {EXPECTED_EXE, "python3"}
                   and info["argv"][1] == EXPECTED_SCRIPT
                   and EXPECTED_UNIT in info["cgroup"]
               )
@@ -136,6 +135,9 @@ jobs:
               raise SystemExit("PROC_UNAVAILABLE")
           if subprocess.run(["sh", "-c", "command -v ss >/dev/null 2>&1"]).returncode != 0:
               raise SystemExit("SS_UNAVAILABLE")
+
+          if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+              raise SystemExit("ABORT: pidfd signalling is unavailable; refusing race-prone PID signalling")
 
           rows, pids = listener_snapshot()
           if not rows:
@@ -147,6 +149,12 @@ jobs:
           pid = next(iter(pids))
           if not pid.isdigit() or int(pid) <= 1:
               raise SystemExit("ABORT: invalid listener PID")
+
+          # Pin the kernel process identity before final revalidation; this prevents PID reuse.
+          try:
+              pidfd = os.pidfd_open(int(pid), 0)
+          except (AttributeError, OSError) as exc:
+              raise SystemExit("ABORT: could not pin exact process identity") from exc
 
           before = proc_info(pid)
           if not is_exact(before):
@@ -162,7 +170,12 @@ jobs:
           if pids_now != {pid} or not rows_now:
               raise SystemExit("ABORT: TCP/19090 ownership changed during revalidation")
 
-          os.kill(int(pid), signal.SIGTERM)
+          try:
+              signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+          except ProcessLookupError:
+              raise SystemExit("ABORT: pinned process exited before SIGTERM; no signal sent")
+          finally:
+              os.close(pidfd)
           print("PROCESS_ACTION=SIGTERM")
           print("TARGET_PID_REDACTED=yes")
           deadline = time.monotonic() + 12
