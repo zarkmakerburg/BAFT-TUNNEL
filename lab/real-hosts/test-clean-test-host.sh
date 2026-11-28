@@ -10,6 +10,9 @@ grep -Fq "/run/baft-tunnel" "$HELPER"
 grep -Fq "/etc/baft-tunnel" "$HELPER"
 grep -Fq "/var/lib/baft-tunnel-agent" "$HELPER"
 grep -Fq "baft-tunnel-install.*" "$HELPER"
+grep -Fq "python3 /tmp/baft-tunnel-e2e-[0-9]+/(echo|echo2|impair|probe|agent)" "$HELPER"
+grep -Fq "an E2E helper from an earlier run is still running" "$HELPER"
+grep -Fq "E2E leftover directory remains" "$HELPER"
 if grep -Eq "rm -rf --? /([[:space:]]|$)|iptables|nft |sysctl|reboot|ufw" "$HELPER"; then
   echo "cleanup helper exceeds BAFT-TUNNEL artifact scope" >&2
   exit 1

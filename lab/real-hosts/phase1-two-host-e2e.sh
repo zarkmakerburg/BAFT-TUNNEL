@@ -213,6 +213,10 @@ cleanup() {
     fi
     if (( LOSS > 0 || REVERSE_R3 > 0 )); then ssh_host "$side" "nft delete table inet $LOSS_TABLE 2>/dev/null || true" || true; fi
     if ssh_host "$side" "set -e
+      if [ ! -e '$REMOTE_DIR' ] && [ ! -L '$REMOTE_DIR' ]; then
+        echo 'E2E_REMOTE_TMP_STATE=already_absent'
+        exit 0
+      fi
       test -d '$REMOTE_DIR'
       test ! -L '$REMOTE_DIR'
       [ \"\$(stat -c '%U:%G %a' '$REMOTE_DIR')\" = 'root:root 700' ]
@@ -224,7 +228,17 @@ cleanup() {
         f='$REMOTE_DIR/'\$role'.pid'
         if [ -s \"\$f\" ]; then kill \$(cat \"\$f\") 2>/dev/null || true; fi
       done
-      sleep 0.2
+      rm -f -- '$REMOTE_DIR/'*.pid
+      # A helper whose pid file is already gone keeps its fixed port bound and makes every
+      # later run fail its port preflight. Match only this run's own helper paths so no
+      # other process on the host can be signalled.
+      for pattern in '^python3 $REMOTE_DIR/(echo|echo2|impair|probe|agent)\.py( |$)' '$REMOTE_DIR/(baft-tunnel|baft-engine)( |$)'; do
+        pkill -TERM -f \"\$pattern\" 2>/dev/null || true
+      done
+      sleep 1
+      for pattern in '^python3 $REMOTE_DIR/(echo|echo2|impair|probe|agent)\.py( |$)' '$REMOTE_DIR/(baft-tunnel|baft-engine)( |$)'; do
+        pkill -KILL -f \"\$pattern\" 2>/dev/null || true
+      done
       rm -rf -- '$REMOTE_DIR'
       test ! -e '$REMOTE_DIR'
       test ! -L '$REMOTE_DIR'
@@ -382,16 +396,17 @@ while True:
 PY
 cat > "$LOCAL_TMP/check-ports.py" <<'PORTS_CHECK'
 import socket, sys
-for host, raw_port in [("0.0.0.0", sys.argv[1]), ("127.0.0.1", sys.argv[2]), ("127.0.0.1", sys.argv[3]), ("127.0.0.1", sys.argv[4])]:
+side = sys.argv[1]
+for host, raw_port in [("0.0.0.0", sys.argv[2]), ("127.0.0.1", sys.argv[3]), ("127.0.0.1", sys.argv[4]), ("127.0.0.1", sys.argv[5])]:
     port = int(raw_port)
     probe = socket.socket()
     try:
         probe.bind((host, port))
     except OSError as exc:
-        raise SystemExit(f"LAB port already in use: {host}:{port}: {exc}")
+        raise SystemExit(f"LAB port already in use: side={side} {host}:{port}: {exc}")
     finally:
         probe.close()
-print("LAB test ports are free")
+print(f"LAB test ports are free side={side}")
 PORTS_CHECK
 cat > "$LOCAL_TMP/probe.py" <<'PY'
 import hashlib, socket, sys, time
@@ -445,7 +460,8 @@ for side in iran abroad; do
     "$LOCAL_TMP/control.crt" "$LOCAL_TMP/control.key" "$LOCAL_TMP/revabroad.crt" "$LOCAL_TMP/revabroad.key" \
     "$LOCAL_TMP/echo.py" "$LOCAL_TMP/impair.py" "$LOCAL_TMP/probe.py" "$LOCAL_TMP/check-ports.py"
   ssh_host "$side" "chmod 700 '$REMOTE_DIR/baft-tunnel' && chmod 600 '$REMOTE_DIR/'*.key"
-  ssh_host "$side" "python3 '$REMOTE_DIR/check-ports.py' '$E2E_PORT' '$LOCAL_PORT' '$ECHO_PORT' '$IMPAIR_PORT'"
+  ssh_host "$side" "python3 '$REMOTE_DIR/check-ports.py' '$side' '$E2E_PORT' '$LOCAL_PORT' '$ECHO_PORT' '$IMPAIR_PORT'" ||
+    { echo "LAB port preflight failed on side=$side; a leftover helper or another service holds one of the LAB ports" >&2; exit 1; }
 done
 
 start_echo iran
