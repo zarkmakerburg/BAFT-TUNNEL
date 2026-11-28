@@ -114,8 +114,12 @@ jobs:
           export POLICY_LAB_PKI="$W/pki"
           export POLICY_LAB_ARMS="$ARMS" POLICY_LAB_SIZE_MIB="$SIZE_MIB" POLICY_LAB_PROBES="$PROBES"
           echo "POLICY_LAB_EVIDENCE_LEVEL=LAB path=iran-abroad window=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # The evidence must survive a failing stage: with `set -e` a bare pipeline would end
+          # the step before PIPESTATUS was read and the summary/artifact would find nothing.
+          set +e
           bash "$GITHUB_WORKSPACE/lab/real-hosts/policy-lab-stage.sh" 2>&1 | tee "$W/evidence.txt"
           status=${PIPESTATUS[0]}
+          set -e
           cp "$W/evidence.txt" "$RUNNER_TEMP/evidence.txt"
           exit "$status"
 

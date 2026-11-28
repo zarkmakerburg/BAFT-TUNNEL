@@ -41,7 +41,7 @@ IRAN_SSH_PORT="${LAB_IRAN_SSH_PORT:-22}"
 ABROAD_SSH_PORT="${LAB_ABROAD_SSH_PORT:-22}"
 ARMS="${POLICY_LAB_ARMS:-control balanced/1 gaming/1 trading/1 streaming/1 bulk/1}"
 SIZE_MIB="${POLICY_LAB_SIZE_MIB:-32}"
-PROBES="${POLICY_LAB_PROBES:-60}"
+PROBES="${POLICY_LAB_PROBES:-20}"
 INTERVAL_MS="${POLICY_LAB_INTERVAL_MS:-50}"
 TP="${POLICY_LAB_TUNNEL_PORT:-18300}"
 SINK_PORT="${POLICY_LAB_SINK_PORT:-18094}"
@@ -49,7 +49,6 @@ ENTRY_PORT="${POLICY_LAB_ENTRY_PORT:-18080}"
 RUN_ID="${GITHUB_RUN_ID:-local-$$}"
 REMOTE_DIR="/tmp/baft-policy-lab-${RUN_ID}"
 WORK="$(mktemp -d)"
-BULK_BYTES=$(( SIZE_MIB << 20 ))
 
 die() { echo "policy-lab: $*" >&2; exit 2; }
 note() { echo "policy-lab: $*" >&2; }
@@ -60,6 +59,8 @@ for value in "$SIZE_MIB" "$PROBES" "$INTERVAL_MS" "$TP" "$SINK_PORT" "$ENTRY_POR
 done
 (( SIZE_MIB >= 4 && SIZE_MIB <= 256 )) || die "POLICY_LAB_SIZE_MIB must be 4-256"
 (( PROBES >= 20 && PROBES <= 600 )) || die "POLICY_LAB_PROBES must be 20-600"
+# Only now: bash evaluates the expansion, so an unvalidated value must never reach it.
+BULK_BYTES=$(( SIZE_MIB << 20 ))
 for port in "$TP" "$SINK_PORT" "$ENTRY_PORT"; do
   (( port >= 1024 && port <= 65535 )) || die "invalid port $port"
 done
@@ -71,12 +72,16 @@ for f in ca.crt ca.crl entry.crt entry.key exit.crt exit.key; do
 done
 [[ -f "$(dirname "$0")/policy-lab-measure.py" ]] || die "measurement tool is missing"
 read -r -a ARM_LIST <<<"$ARMS"
-(( ${#ARM_LIST[@]} >= 2 )) || die "need a control arm and at least one profile"
 [[ "${ARM_LIST[0]}" == control ]] || die "the first arm must be the control"
+PROFILE_ARMS=0
 for arm in "${ARM_LIST[@]}"; do
-  [[ "$arm" == control || "$arm" =~ ^(balanced|gaming|trading|streaming|bulk)/1$ ]] ||
-    die "unknown arm '$arm'"
+  if [[ "$arm" == control ]]; then
+    continue
+  fi
+  [[ "$arm" =~ ^(balanced|gaming|trading|streaming|bulk)/1$ ]] || die "unknown arm '$arm'"
+  PROFILE_ARMS=$(( PROFILE_ARMS + 1 ))
 done
+(( PROFILE_ARMS >= 1 )) || die "need at least one profile arm beside the control"
 
 BINARY_SHA="$(sha256sum "$POLICY_LAB_BINARY" | awk '{print $1}')"
 pin() { openssl x509 -in "$1" -outform DER | sha256sum | awk '{print $1}'; }
@@ -121,7 +126,8 @@ for side in abroad iran; do
     if ss -ltnH 2>/dev/null | awk '{print \$4}' | grep -qE ':$TP\$'; then echo 'tunnel port in use' >&2; exit 3; fi
     if ss -ltnH 2>/dev/null | awk '{print \$4}' | grep -qE ':$SINK_PORT\$'; then echo 'sink port in use' >&2; exit 3; fi
     if ss -ltnH 2>/dev/null | awk '{print \$4}' | grep -qE ':$ENTRY_PORT\$'; then echo 'entry port in use' >&2; exit 3; fi
-    fw=\$(nft list ruleset 2>/dev/null | sha256sum | awk '{print \$1}')
+    if ! nft --stateless list ruleset > /dev/null 2>&1; then echo 'firewall unreadable' >&2; exit 4; fi
+    fw=\$(nft --stateless list ruleset | sha256sum | awk '{print \$1}')
     listeners=\$(ss -ltnH 2>/dev/null | wc -l)
     echo \"fw=\$fw listeners=\$listeners\"")" || die "preflight failed on $side"
   FW_BEFORE[$side]="${baseline#*fw=}"; FW_BEFORE[$side]="${FW_BEFORE[$side]%% *}"
@@ -135,13 +141,13 @@ cleanup_remote() { # side -> removes this run's directory and every process that
   pattern="/tmp/${token}/"
   ssh_host "$side" "set +e
     pkill -TERM -f '${pattern}[b]aft-tunnel' 2>/dev/null
-    pkill -TERM -f '${pattern}policy-lab-measure.py' 2>/dev/null
+    pkill -TERM -f '${pattern}policy-lab-measure[.]py' 2>/dev/null
     sleep 1
     pkill -KILL -f '${pattern}[b]aft-tunnel' 2>/dev/null
-    pkill -KILL -f '${pattern}policy-lab-measure.py' 2>/dev/null
+    pkill -KILL -f '${pattern}policy-lab-measure[.]py' 2>/dev/null
     sleep 1
     rm -rf '$REMOTE_DIR'
-    remaining=\$(pgrep -f '${pattern}' | wc -l)
+    remaining=\$(pgrep -f \"(${pattern}[b]aft-tunnel|${pattern}policy-lab-measure[.]py)\" | wc -l)
     if [ -e '$REMOTE_DIR' ] || [ \"\$remaining\" != 0 ]; then echo 'leftover'; exit 1; fi
     echo cleaned" || return 1
 }
@@ -156,12 +162,13 @@ cleanup_all() { # always runs; a leftover or a changed host must fail the stage
       side_status=1
     fi
     after="$(ssh_host "$side" "set +e
-      fw=\$(nft list ruleset 2>/dev/null | sha256sum | awk '{print \$1}')
+      if ! nft --stateless list ruleset > /dev/null 2>&1; then echo 'fw=unreadable listeners=0'; exit 0; fi
+      fw=\$(nft --stateless list ruleset | sha256sum | awk '{print \$1}')
       listeners=\$(ss -ltnH 2>/dev/null | wc -l)
       echo \"fw=\$fw listeners=\$listeners\"" 2>/dev/null)" || after=""
     fw="${after#*fw=}"; fw="${fw%% *}"
     listeners="${after##*listeners=}"
-    if [[ -n "$after" && "$fw" == "${FW_BEFORE[$side]:-}" ]]; then
+    if [[ -n "$after" && "$fw" != unreadable && "$fw" == "${FW_BEFORE[$side]:-}" ]]; then
       echo "POLICY_LAB_FW_DRIFT side=$side result=none"
     else
       echo "POLICY_LAB_FW_DRIFT side=$side result=changed" >&2
@@ -256,10 +263,10 @@ stop_arm() { # side : bounded stop of this arm's processes only
   local side="$1" pattern="/tmp/${REMOTE_DIR#/tmp/}/"
   ssh_host "$side" "set +e
     pkill -TERM -f '${pattern}[b]aft-tunnel' 2>/dev/null
-    pkill -TERM -f '${pattern}policy-lab-measure.py' 2>/dev/null
+    pkill -TERM -f '${pattern}policy-lab-measure[.]py' 2>/dev/null
     sleep 1
     pkill -KILL -f '${pattern}[b]aft-tunnel' 2>/dev/null
-    pkill -KILL -f '${pattern}policy-lab-measure.py' 2>/dev/null
+    pkill -KILL -f '${pattern}policy-lab-measure[.]py' 2>/dev/null
     true" >/dev/null 2>&1 || true
 }
 
@@ -281,7 +288,8 @@ note "run=$RUN_ID binary_sha256=$BINARY_SHA size_mib=$SIZE_MIB probes=$PROBES ar
 CONTROL_LINE=""
 FAILED=0
 for arm in "${ARM_LIST[@]}"; do
-  label="$arm"; pack=sched
+  label="${arm//\//-}"   # balanced/1 -> balanced-1 for filenames; $arm stays the profile id
+  pack=sched
   if [[ "$arm" == control ]]; then pack=off; fi
   write_config "$arm" serve "$WORK/serve.json"
   write_config "$arm" forward "$WORK/forward.json"
@@ -320,13 +328,18 @@ for arm in "${ARM_LIST[@]}"; do
       die "joiner did not open $ENTRY_PORT on iran for $arm"
   fi
 
-  # interactive flow runs across the whole bulk transfer; the bulk starts a moment later
+  # The probe samples strictly inside the bulk window: it waits for the go file, which is
+  # raised once the sender is connected, and it stops when the send completes. A probe that
+  # ran before or after the transfer would report an idle path, not a loaded one.
   ssh_long iran "cd '$REMOTE_DIR'
-    nohup python3 '$REMOTE_DIR/policy-lab-measure.py' probe --target 127.0.0.1:$ENTRY_PORT --count $PROBES \
-      --interval-ms $INTERVAL_MS --json probe-$label.json > probe-$label.log 2>&1 < /dev/null &
-    sleep 1
-    python3 '$REMOTE_DIR/policy-lab-measure.py' send --target 127.0.0.1:$ENTRY_PORT --size $BULK_BYTES \
-      --json send-$label.json > send-$label.log 2>&1
+    rm -f probe.go probe.done
+    nohup python3 '$REMOTE_DIR/policy-lab-measure.py' probe --target 127.0.0.1:$ENTRY_PORT \
+      --interval-ms $INTERVAL_MS --max-seconds 600 --go-file probe.go --stop-file probe.done \
+      --json probe-$label.json > probe-$label.log 2>&1 < /dev/null &
+    nohup python3 '$REMOTE_DIR/policy-lab-measure.py' send --target 127.0.0.1:$ENTRY_PORT \
+      --size $BULK_BYTES --start-file probe.go --json send-$label.json > send-$label.log 2>&1 < /dev/null &
+    for n in \$(seq 1 600); do test -s send-$label.json && break; sleep 0.5; done
+    touch probe.done
     for n in \$(seq 1 120); do test -s probe-$label.json && break; sleep 0.5; done
     true" || note "sender reported a failure for $arm"
   # the sink finishes on its own idle timer once the bulk is complete
@@ -345,8 +358,13 @@ for arm in "${ARM_LIST[@]}"; do
   engaged_both=0
   if [[ "$arm" == control ]]; then
     # The control arm has no switch and no profile: the pack must stay silent on both hosts,
-    # otherwise the comparison is between two packed runs and proves nothing.
-    (( ${engaged_serve:-0} == 0 && ${engaged_forward:-0} == 0 )) && engaged_both=0
+    # otherwise the comparison is between two packed runs and proves nothing. One positive
+    # count is enough to mark the arm engaged, so the check below fails the run.
+    if (( ${engaged_serve:-0} == 0 && ${engaged_forward:-0} == 0 )); then
+      engaged_both=0
+    else
+      engaged_both=1
+    fi
   else
     (( ${engaged_serve:-0} >= 1 && ${engaged_forward:-0} >= 1 )) && engaged_both=1
   fi
@@ -371,11 +389,14 @@ print("" if secs <= 0 else round(int(sys.argv[2]) / secs / 1048576, 2))
 PY
 )"
   probe_ok="$(json_value "$WORK/probe-$label.json" ok)"
+  sink_echo_streams="$(json_value "$WORK/sink-$label.json" echo_streams)"
+  sink_echo_trips="$(json_value "$WORK/sink-$label.json" echo_trips)"
   probe_p50="$(json_value "$WORK/probe-$label.json" p50_us)"
   probe_p95="$(json_value "$WORK/probe-$label.json" p95_us)"
+  probe_window="$(json_value "$WORK/probe-$label.json" window_s)"
   sender_mibs="$(json_value "$WORK/send-$label.json" sender_MiB_per_s)"
 
-  line="POLICY_LAB_ARM arm=$label profile=$([[ $arm == control ]] && echo none || echo "$arm") pack=$pack pack_engaged=$engaged_both engine=tcp-tls carrier=tcp bytes=$BULK_BYTES delivered_bytes=${delivered:-0} sink_secs=${sink_secs:-none} sink_MiB_per_s=${sink_mibs:-none} sender_MiB_per_s=${sender_mibs:-none} interactive_p50_us=${probe_p50:-none} interactive_p95_us=${probe_p95:-none} probe_ok=${probe_ok:-0}/$PROBES sha_match=$sha_ok evidence=LAB"
+  line="POLICY_LAB_ARM arm=$label profile=$([[ $arm == control ]] && echo none || echo "$arm") pack=$pack pack_engaged=$engaged_both engine=tcp-tls carrier=tcp bytes=$BULK_BYTES delivered_bytes=${delivered:-0} sink_secs=${sink_secs:-none} sink_MiB_per_s=${sink_mibs:-none} sender_MiB_per_s=${sender_mibs:-none} interactive_p50_us=${probe_p50:-none} interactive_p95_us=${probe_p95:-none} probe_samples=${probe_ok:-0} probe_window_s=${probe_window:-none} probe_min=$PROBES sink_echo_streams=${sink_echo_streams:-0} sha_match=$sha_ok evidence=LAB"
   echo "$line"
   [[ "$arm" == control ]] && CONTROL_LINE="$line"
   if (( sha_ok != 1 )); then FAILED=1; fi
@@ -384,7 +405,16 @@ PY
   else
     (( engaged_both == 1 )) || { note "$arm did not prove the pack engaged on both hosts"; FAILED=1; }
   fi
-  if [[ -z "${probe_ok:-}" ]] || (( ${probe_ok:-0} < PROBES * 95 / 100 )); then FAILED=1; fi
+  # The competition claim needs the sink to have seen the interactive stream at the same time as
+  # the bulk: one destination, two flows, one tunnel session.
+  if [[ -z "${sink_echo_streams:-}" ]] || (( ${sink_echo_streams:-0} < 1 )); then
+    note "$arm's sink never saw the interactive stream; the two flows did not share the session"
+    FAILED=1
+  fi
+  if [[ -z "${probe_ok:-}" ]] || (( ${probe_ok:-0} < PROBES )); then
+    note "$arm produced ${probe_ok:-0} interactive samples inside the bulk window; $PROBES are required"
+    FAILED=1
+  fi
   ssh_host abroad "cd '$REMOTE_DIR'; tail -n 5 serve-$label.log 2>/dev/null | sed 's/^/  serve: /'" >&2 || true
   ssh_host iran "cd '$REMOTE_DIR'; tail -n 5 forward-$label.log 2>/dev/null | sed 's/^/  forward: /'" >&2 || true
   stop_arm abroad

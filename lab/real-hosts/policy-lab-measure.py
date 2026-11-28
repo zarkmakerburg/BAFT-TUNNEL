@@ -61,12 +61,15 @@ def write_json(path, obj):
 
 def server(port, bulk_size, out, idle):
     state = {"bulk_total": 0, "bulk_sha": None, "t0": None, "t1": None,
-             "echo_streams": 0, "echo_trips": 0, "errors": []}
+             "echo_streams": 0, "echo_trips": 0, "errors": [],
+             "active": 0, "last": time.time()}
     lock = threading.Lock()
-    done = threading.Event()
 
     def handle(conn):
         mode = b""
+        with lock:
+            state["active"] += 1
+            state["last"] = time.time()
         try:
             conn.settimeout(idle)
             mode = conn.recv(1)
@@ -78,6 +81,8 @@ def server(port, bulk_size, out, idle):
                         break
                     h.update(chunk)
                     n += len(chunk)
+                    with lock:
+                        state["last"] = time.time()
                 t1 = time.time()
                 with lock:
                     state["bulk_total"] += n
@@ -91,7 +96,6 @@ def server(port, bulk_size, out, idle):
                     written["bulk_size"] = bulk_size
                     written["bulk_complete"] = True
                     write_json(out, written)
-                    done.set()
             elif mode == b"E":
                 with lock:
                     state["echo_streams"] += 1
@@ -105,6 +109,7 @@ def server(port, bulk_size, out, idle):
                     conn.sendall(buf)
                     with lock:
                         state["echo_trips"] += 1
+                        state["last"] = time.time()
             else:
                 with lock:
                     state["errors"].append("first-byte:" + mode.hex())
@@ -112,6 +117,9 @@ def server(port, bulk_size, out, idle):
             with lock:
                 state["errors"].append(type(exc).__name__)
         finally:
+            with lock:
+                state["active"] -= 1
+                state["last"] = time.time()
             try:
                 conn.close()
             except OSError:
@@ -123,20 +131,19 @@ def server(port, bulk_size, out, idle):
     ls.listen(16)
     ls.settimeout(1.0)
     print(json.dumps({"role": "server", "event": "listening", "port": port}), flush=True)
-    # The bulk flow finishing does not end the run: the interactive flow is still using the
-    # tunnel. Keep accepting echo streams until the bulk is complete AND the window has been
-    # idle for --idle seconds, so a fast path cannot close the probe's connection early.
-    gave_up = time.time() + idle
+    # The deadline is inactivity on the sockets, never "no new connection": a slow bulk
+    # transfer holds one stream open for minutes, and an accept-side deadline would cut it in
+    # half and report a truncated sink. The server ends when nothing has been received for
+    # --idle seconds.
     while True:
         try:
             conn, _ = ls.accept()
         except socket.timeout:
-            if done.is_set() and time.time() - state["t1"] > 2 * idle:
-                break
-            if not done.is_set() and time.time() > gave_up:
+            with lock:
+                quiet = state["active"] == 0 and time.time() - state["last"] > idle
+            if quiet:
                 break
             continue
-        gave_up = time.time() + idle
         threading.Thread(target=handle, args=(conn,), daemon=True).start()
     time.sleep(0.3)
     final = dict(state)
@@ -155,10 +162,14 @@ def connect(target, timeout):
     return sock
 
 
-def send(target, size, out, timeout):
+def send(target, size, out, timeout, start_file=None):
     sock = connect(target, timeout)
     try:
         sock.sendall(b"B")
+        if start_file:
+            # The bulk flow is connected and about to stream: this is the moment the probe
+            # should start sampling, not a sleep in the orchestrator that a fast path outruns.
+            open(start_file, "w").close()
         t0 = time.time()
         for chunk in gen(size):
             sock.sendall(chunk)
@@ -173,13 +184,31 @@ def send(target, size, out, timeout):
     print(json.dumps(result), flush=True)
 
 
-def probe(target, count, interval_ms, out, timeout):
+def probe(target, count, interval_ms, out, timeout, go_file=None, stop_file=None, max_seconds=600.0):
+    """Sample 64-byte round trips between the go signal and the stop signal.
+
+    The window is what makes the number mean something: the caller raises the go file once the
+    bulk sender is connected and the stop file when it finishes, so every sample here was taken
+    while the bulk flow was competing for the same tunnel.
+    """
     rtts, errors = [], 0
+    waited = 0.0
+    t_start = time.time()
+    if go_file:
+        while not os.path.exists(go_file):
+            if time.time() - t_start > 120:
+                break
+            time.sleep(0.05)
+        waited = round(time.time() - t_start, 3)
     sock = connect(target, timeout)
     try:
         sock.sendall(b"E")
         payload = bytes(range(ECHO))
         for _ in range(count):
+            if stop_file and os.path.exists(stop_file) and rtts:
+                break
+            if time.time() - t_start > max_seconds:
+                break
             t0 = time.perf_counter()
             sock.sendall(payload)
             got = b""
@@ -194,7 +223,8 @@ def probe(target, count, interval_ms, out, timeout):
         errors += 1
     finally:
         sock.close()
-    result = {"role": "probe", "count": count, "ok": len(rtts), "errors": errors,
+    result = {"role": "probe", "count": len(rtts), "ok": len(rtts), "errors": errors,
+              "go_wait_s": waited, "window_s": round(time.time() - t_start, 3),
               "p50_us": round(pct(rtts, 0.50), 1) if rtts else None,
               "p95_us": round(pct(rtts, 0.95), 1) if rtts else None,
               "p99_us": round(pct(rtts, 0.99), 1) if rtts else None,
@@ -210,24 +240,34 @@ def main(argv):
     ap.add_argument("--bulk-size", type=int)
     ap.add_argument("--target")
     ap.add_argument("--size", type=int)
-    ap.add_argument("--count", type=int, default=60)
+    ap.add_argument("--count", type=int, default=20000, help="cap on samples")
     ap.add_argument("--interval-ms", type=float, default=50)
+    ap.add_argument("--go-file")
+    ap.add_argument("--start-file")
+    ap.add_argument("--stop-file")
+    ap.add_argument("--max-seconds", type=float, default=600)
     ap.add_argument("--idle", type=float, default=45)
     ap.add_argument("--timeout", type=float, default=60)
     ap.add_argument("--json", required=True)
     a = ap.parse_args(argv)
-    if a.role == "server":
-        if not a.port or not a.bulk_size:
-            ap.error("server needs --port and --bulk-size")
-        server(a.port, a.bulk_size, a.json, a.idle)
-    elif a.role == "send":
-        if not a.target or not a.size:
-            ap.error("send needs --target and --size")
-        send(a.target, a.size, a.json, a.timeout)
-    else:
-        if not a.target:
-            ap.error("probe needs --target")
-        probe(a.target, a.count, a.interval_ms, a.json, a.timeout)
+    try:
+        if a.role == "server":
+            if not a.port or not a.bulk_size:
+                ap.error("server needs --port and --bulk-size")
+            server(a.port, a.bulk_size, a.json, a.idle)
+        elif a.role == "send":
+            if not a.target or not a.size:
+                ap.error("send needs --target and --size")
+            send(a.target, a.size, a.json, a.timeout, a.start_file)
+        else:
+            if not a.target:
+                ap.error("probe needs --target")
+            probe(a.target, a.count, a.interval_ms, a.json, a.timeout, a.go_file, a.stop_file,
+                  a.max_seconds)
+    except Exception as exc:  # noqa: BLE001 - the record has to exist for the stage to read it
+        # A missing file and a failed flow look the same to the stage; write the failure instead.
+        write_json(a.json, {"role": a.role, "error": type(exc).__name__, "failed": True})
+        raise
 
 
 if __name__ == "__main__":

@@ -124,7 +124,14 @@ jobs:
           cargo +1.88.0 test --locked --features policy-pack policy_relay::tests:: -- --nocapture
       - name: Prove the default test list has no pack test
         run: |
-          if cargo +1.88.0 test --locked -- --list | grep -q 'policy_relay'; then
+          # Capture first: piping cargo into `grep -q` would let an early grep exit stand in
+          # for cargo's status, so a default build that cannot even list its tests would pass.
+          if ! cargo +1.88.0 test --locked -- --list > "$RUNNER_TEMP/default-tests.txt" 2>&1; then
+            echo 'the default build could not list its tests' >&2
+            cat "$RUNNER_TEMP/default-tests.txt" >&2
+            exit 1
+          fi
+          if grep -q 'policy_relay' "$RUNNER_TEMP/default-tests.txt"; then
             echo 'a pack test is compiled without the feature' >&2
             exit 1
           fi
