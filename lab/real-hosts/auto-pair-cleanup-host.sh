@@ -541,7 +541,13 @@ for backup_dir in "${BACKUP_DIRS[@]}"; do
     scope_marker="$backup_dir/scope-binary"
     if [[ -e "$scope_marker" || -L "$scope_marker" ]]; then
       [[ -f "$scope_marker" && ! -L "$scope_marker" ]] || die "backup scope marker has an unexpected type"
-      [[ "$(stat -c '%U:%G %a' "$scope_marker")" == root:root\ 600 && ! -s "$scope_marker" ]] ||
+      # install.sh runs with umask 022, so the empty marker it writes is 0600 or 0644; the
+      # safety property is that it is root-owned, empty and not writable by group or other,
+      # not one exact mode string. The LAB failed on this in run 46111713482.
+      marker_meta="$(stat -c '%U:%G %a' "$scope_marker")"
+      marker_mode="${marker_meta##* }"
+      [[ "${marker_meta% *}" == root:root && ! -s "$scope_marker" ]] &&
+        (( (8#$marker_mode & 8#0022) == 0 )) ||
         die "backup scope marker changed; preserving backup"
       rm -f -- "$scope_marker"
     fi
