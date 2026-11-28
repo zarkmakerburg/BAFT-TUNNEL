@@ -51,6 +51,14 @@ text = open(sys.argv[1]).read()
 assert text.index('must be 4-256') < text.index('BULK_BYTES=$(( SIZE_MIB << 20 ))'), \
     'SIZE_MIB reaches arithmetic expansion before its bounds are checked'
 PY2
+# the workflow's own post-run cleanup has the same rule, and it is the copy that had the bug:
+# an unbracketed pattern there killed the remote shell before it could report its verdict
+wf="$(dirname "$stage")/../../.github/workflows/policy-lab.yml"
+grep -F "pkill -TERM -f '\$d/[p]olicy-lab-measure.py'" "$wf" >/dev/null
+grep -F "pgrep -f '\$d/[bp]'" "$wf" >/dev/null
+if grep -F "pkill -f '\$d/policy-lab-measure.py'" "$wf" >/dev/null; then
+  echo "the workflow's cleanup pattern can match its own shell" >&2; exit 1
+fi
 # teardown patterns cannot match the shell that runs them
 grep -F "policy-lab-measure[.]py" "$stage" >/dev/null
 if grep -F "pkill -TERM -f '\${pattern}policy-lab-measure.py'" "$stage" >/dev/null; then
