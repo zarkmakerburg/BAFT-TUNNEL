@@ -32,6 +32,32 @@ AUTO_PAIR_ECHO_PORT=""
 [[ "$(id -u)" == 0 ]] || die "must run as root"
 [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{64}$ ]] || die "invalid candidate SHA-256"
 [[ "$REMOTE_DIR" =~ ^/tmp/baft-tunnel-e2e-[A-Za-z0-9._-]+$ ]] || die "invalid run directory"
+
+# A round can invoke this helper twice: once when the round finishes and once from the
+# stage's EXIT trap. The first pass removes the installation (including the config root and
+# the run directory), so the second pass must be a successful no-op instead of failing on an
+# absent config root. Exit 0 only when every artifact this helper owns is already gone; any
+# partial state still falls through to the strict, fail-closed checks below.
+installation_absent() {
+  local path
+  for path in "$UB" "$EB" /var/lib/baft-tunnel "$AGENT_STATE_DIR" /var/lib/baft-tunnel-control \
+    /run/baft-tunnel /usr/local/lib/baft-tunnel "$ENGINE_STORE" \
+    /etc/tmpfiles.d/baft-tunnel-control.conf; do
+    [[ ! -e "$path" && ! -L "$path" ]] || return 1
+  done
+  [[ -z "$(find "$UNIT_DIR" -mindepth 1 -name 'baft-tunnel*' -print -quit 2>/dev/null)" ]] || return 1
+  ! systemctl list-unit-files --no-legend 'baft-tunnel*' 2>/dev/null | grep -q '^baft-tunnel' || return 1
+  [[ -z "$(find /var/backups -maxdepth 1 \( -name 'baft-tunnel-install.*' -o -name 'baft-tunnel-backup.*' \) -print -quit 2>/dev/null)" ]] || return 1
+  for account in baft-tunnel baft-tunnel-agent; do
+    ! getent passwd "$account" >/dev/null 2>&1 || return 1
+    ! getent group "$account" >/dev/null 2>&1 || return 1
+  done
+  return 0
+}
+if installation_absent; then
+  echo 'auto-pair cleanup: installation already absent; nothing to remove'
+  exit 0
+fi
 [[ -d "$REMOTE_DIR" && ! -L "$REMOTE_DIR" ]] || die "run directory is missing or unsafe"
 [[ "$(stat -c '%U:%G %a' "$REMOTE_DIR")" == root:root\ 700 ]] || die "run directory ownership or mode changed"
 run_marker="$REMOTE_DIR/.baft-tunnel-e2e-run-owner"
@@ -42,6 +68,7 @@ run_marker="$REMOTE_DIR/.baft-tunnel-e2e-run-owner"
 [[ -d "$PKG" && ! -L "$PKG" ]] || die "package directory is missing or unsafe"
 [[ "$(stat -c '%U:%G' "$PKG")" == root:root ]] || die "package directory is not root-owned"
 [[ "$AGENT_STATE_DIR" == /var/lib/baft-tunnel-agent ]] || die "unexpected agent state directory"
+
 [[ -d "$EB" && ! -L "$EB" ]] || die "config root is missing or unsafe"
 [[ "$(stat -c '%U:%G %a' "$EB")" == root:baft-tunnel\ 750 ]] || die "config root ownership or mode changed"
 # This LAB never creates credential directories; preserve any that appear.
@@ -353,6 +380,9 @@ if [[ -d "$CONTROL_DIR" ]]; then
 elif [[ -e "$CONTROL_DIR" || -L "$CONTROL_DIR" ]]; then
   die "control path has an unexpected type; preserving it"
 fi
+# /run/baft-tunnel holds the control request directory and the control-manage socket
+# directory the product creates (tmpfiles entry plus baft-tunnel-control-manage@.socket).
+# scripts/uninstall.sh removes both; any other runtime resource is still refused.
 if [[ -d /run/baft-tunnel ]]; then
   # Exactly two children are the product's own: control (checked above) and manage. Both are
   # validated; any third entry stops the cleanup instead of being removed.
