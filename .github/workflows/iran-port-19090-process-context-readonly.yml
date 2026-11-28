@@ -117,7 +117,9 @@ jobs:
               if parse_python:
                   try:
                       raw = open(base + "/cmdline", "rb").read()
-                      argv = [x.decode("utf-8", "replace") for x in raw.split(b"\x00") if x]
+                      if raw.endswith(b"\x00"):
+                          raw = raw[:-1]
+                      argv = [x.decode("utf-8", "replace") for x in raw.split(b"\x00")] if raw else []
                   except Exception:
                       argv = []
                   if argv and ("python" in os.path.basename(argv[0]).lower()):
@@ -155,14 +157,9 @@ jobs:
                               if i < len(argv):
                                   candidate = argv[i]
                                   if os.path.isabs(candidate):
-                                      resolved = os.path.realpath(candidate)
+                                      mode, script = "script", safe(candidate, 240)
                                   else:
-                                      try:
-                                          cwd = os.readlink(base + "/cwd")
-                                          resolved = os.path.realpath(os.path.join(cwd, candidate))
-                                      except Exception:
-                                          resolved = ""
-                                  mode, script = ("script", safe(resolved, 240)) if resolved else ("script-path-unavailable", "unavailable")
+                                      mode, script = "script-relative-unverified", safe(candidate, 240)
                               else:
                                   mode, script = "interactive-or-stdin", "not-disclosed"
                               break
@@ -170,14 +167,9 @@ jobs:
                               mode, script = "unclassified-option-suppressed", "not-disclosed"
                               break
                           if os.path.isabs(arg):
-                              resolved = os.path.realpath(arg)
+                              mode, script = "script", safe(arg, 240)
                           else:
-                              try:
-                                  cwd = os.readlink(base + "/cwd")
-                                  resolved = os.path.realpath(os.path.join(cwd, arg))
-                              except Exception:
-                                  resolved = ""
-                          mode, script = ("script", safe(resolved, 240)) if resolved else ("script-path-unavailable", "unavailable")
+                              mode, script = "script-relative-unverified", safe(arg, 240)
                           break
                       else:
                           mode, script = "interactive-or-stdin", "not-disclosed"
