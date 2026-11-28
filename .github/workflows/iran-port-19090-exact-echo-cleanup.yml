@@ -1,0 +1,205 @@
+name: Iran LAB exact Echo process cleanup (TCP 19090)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type TERM_EXACT_IRAN_ECHO_46039424060 to revalidate and TERM only the exact E2E Echo process on the Iran LAB host
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baft-tunnel-trusted-lab-hosts
+  cancel-in-progress: false
+
+jobs:
+  validate-confirmation:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require exact task-specific confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRM" == "TERM_EXACT_IRAN_ECHO_46039424060" ]] || {
+            echo "Invalid confirmation; no LAB host was contacted." >&2
+            exit 2
+          }
+
+  cleanup-iran-echo:
+    needs: validate-confirmation
+    runs-on: ubuntu-24.04
+    environment: baft-tunnel-lab
+    timeout-minutes: 5
+    env:
+      LAB_IRAN_HOST: ${{ secrets.LAB_IRAN_HOST }}
+      LAB_IRAN_SSH_USER: ${{ vars.LAB_IRAN_SSH_USER }}
+      LAB_IRAN_SSH_PORT: ${{ vars.LAB_IRAN_SSH_PORT }}
+    steps:
+      - name: Prepare ephemeral pinned SSH credentials
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.LAB_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.LAB_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -n "$SSH_PRIVATE_KEY" || { echo 'Missing LAB_SSH_PRIVATE_KEY' >&2; exit 2; }
+          test -n "$SSH_KNOWN_HOSTS" || { echo 'Missing LAB_SSH_KNOWN_HOSTS' >&2; exit 2; }
+          test -n "$LAB_IRAN_HOST" || { echo 'Missing LAB_IRAN_HOST' >&2; exit 2; }
+          echo "::add-mask::$LAB_IRAN_HOST"
+          mkdir -p "$RUNNER_TEMP/baft-tunnel-exact-echo-cleanup"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/baft-tunnel-exact-echo-cleanup/id_ed25519"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/baft-tunnel-exact-echo-cleanup/known_hosts"
+          chmod 600 "$RUNNER_TEMP/baft-tunnel-exact-echo-cleanup/id_ed25519" "$RUNNER_TEMP/baft-tunnel-exact-echo-cleanup/known_hosts"
+          echo "SSH_KEY_FILE=$RUNNER_TEMP/baft-tunnel-exact-echo-cleanup/id_ed25519" >> "$GITHUB_ENV"
+          echo "SSH_KNOWN_HOSTS_FILE=$RUNNER_TEMP/baft-tunnel-exact-echo-cleanup/known_hosts" >> "$GITHUB_ENV"
+
+      - name: Revalidate exact owner, send TERM only, and verify TCP 19090 is free
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          user="${LAB_IRAN_SSH_USER:-root}"
+          port="${LAB_IRAN_SSH_PORT:-22}"
+          [[ "$user" =~ ^[A-Za-z_][A-Za-z0-9_.-]*[$]?$ ]] || { echo 'Invalid LAB_IRAN_SSH_USER' >&2; exit 2; }
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || { echo 'Invalid LAB_IRAN_SSH_PORT' >&2; exit 2; }
+          ssh -i "$SSH_KEY_FILE" -p "$port" \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" \
+            -o GlobalKnownHostsFile=/dev/null \
+            -o ConnectTimeout=12 -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=2 -o LogLevel=ERROR \
+            "$user@$LAB_IRAN_HOST" 'python3 -' <<'REMOTE'
+          import os
+          import re
+          import signal
+          import subprocess
+          import time
+
+          EXPECTED_EXE = "/usr/bin/python3.10"
+          EXPECTED_SCRIPT = "/tmp/baft-tunnel-e2e-46039424060/echo.py"
+          EXPECTED_UNIT = "session-21.scope"
+          PORT = "19090"
+
+          def listener_snapshot():
+              result = subprocess.run(
+                  ["ss", "-lntpH", f"sport = :{PORT}"],
+                  check=True, text=True, stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE, timeout=5,
+              )
+              rows = [line for line in result.stdout.splitlines() if line.strip()]
+              pids = set()
+              for row in rows:
+                  pids.update(re.findall(r"pid=(\d+)", row))
+              return rows, pids
+
+          def proc_info(pid):
+              base = f"/proc/{pid}"
+              with open(base + "/stat", "r", encoding="utf-8") as f:
+                  stat = f.read()
+              tail = stat[stat.rfind(")") + 2:].split()
+              if len(tail) < 20:
+                  raise RuntimeError("process stat is incomplete")
+              state = tail[0]
+              start_time = tail[19]
+              with open(base + "/comm", "r", encoding="utf-8") as f:
+                  comm = f.read().strip()
+              exe = os.readlink(base + "/exe")
+              with open(base + "/cmdline", "rb") as f:
+                  argv = [part.decode("utf-8", "replace") for part in f.read().split(b"\0") if part]
+              with open(base + "/cgroup", "r", encoding="utf-8") as f:
+                  cgroup = f.read()
+              return {
+                  "state": state, "start_time": start_time, "comm": comm,
+                  "exe": exe, "argv": argv, "cgroup": cgroup,
+              }
+
+          def is_exact(info):
+              return (
+                  info["state"] not in {"Z", "X"}
+                  and info["comm"] == "python3"
+                  and info["exe"] == EXPECTED_EXE
+                  and len(info["argv"]) >= 2
+                  and info["argv"][1] == EXPECTED_SCRIPT
+                  and EXPECTED_UNIT in info["cgroup"]
+              )
+
+          if not os.path.exists("/proc/self"):
+              raise SystemExit("PROC_UNAVAILABLE")
+          if subprocess.run(["sh", "-c", "command -v ss >/dev/null 2>&1"]).returncode != 0:
+              raise SystemExit("SS_UNAVAILABLE")
+
+          rows, pids = listener_snapshot()
+          if not rows:
+              print("PORT_19090_STATE=already-free")
+              print("PROCESS_ACTION=none")
+              raise SystemExit(0)
+          if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+              raise SystemExit("ABORT: pidfd signalling is unavailable; refusing race-prone PID signalling")
+          if len(pids) != 1:
+              raise SystemExit("ABORT: listener ownership is missing or ambiguous")
+          pid = next(iter(pids))
+          if not pid.isdigit() or int(pid) <= 1:
+              raise SystemExit("ABORT: invalid listener PID")
+
+          # Pin the kernel process identity before final revalidation; this prevents PID reuse.
+          try:
+              pidfd = os.pidfd_open(int(pid), 0)
+          except (AttributeError, OSError) as exc:
+              raise SystemExit("ABORT: could not pin exact process identity") from exc
+
+          before = proc_info(pid)
+          if not is_exact(before):
+              raise SystemExit("ABORT: process identity does not exactly match the approved Echo target")
+          if not any(pid in re.findall(r"pid=(\d+)", row) for row in rows):
+              raise SystemExit("ABORT: listener ownership changed")
+
+          # Immediately re-read all identity fields and the socket owner before signalling.
+          current = proc_info(pid)
+          rows_now, pids_now = listener_snapshot()
+          if not is_exact(current) or current["start_time"] != before["start_time"]:
+              raise SystemExit("ABORT: process identity changed during revalidation")
+          if pids_now != {pid} or not rows_now:
+              raise SystemExit("ABORT: TCP/19090 ownership changed during revalidation")
+
+          try:
+              signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+          except ProcessLookupError:
+              raise SystemExit("ABORT: pinned process exited before SIGTERM; no signal sent")
+          finally:
+              os.close(pidfd)
+          print("PROCESS_ACTION=SIGTERM")
+          print("TARGET_PID_REDACTED=yes")
+          deadline = time.monotonic() + 12
+          exited = False
+          while time.monotonic() < deadline:
+              try:
+                  after = proc_info(pid)
+                  if after["start_time"] != before["start_time"]:
+                      exited = True
+                      break
+              except (FileNotFoundError, ProcessLookupError, PermissionError):
+                  exited = True
+                  break
+              time.sleep(0.4)
+
+          if not exited:
+              raise SystemExit("FAIL: exact process did not exit after TERM; no KILL escalation was attempted")
+
+          rows_after, pids_after = listener_snapshot()
+          if rows_after or pids_after:
+              raise SystemExit("FAIL: TCP/19090 remains listening after exact process exit")
+          print("PORT_19090_STATE=free")
+          print("PROCESS_EXIT=verified")
+          REMOTE
+
+      - name: Remove ephemeral credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/baft-tunnel-exact-echo-cleanup"
