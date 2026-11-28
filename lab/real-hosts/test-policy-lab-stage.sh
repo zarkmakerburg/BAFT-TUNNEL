@@ -56,10 +56,15 @@ grep -F "policy-lab-measure[.]py" "$stage" >/dev/null
 if grep -F "pkill -TERM -f '\${pattern}policy-lab-measure.py'" "$stage" >/dev/null; then
   echo "an unbracketed teardown pattern can match its own shell" >&2; exit 1
 fi
-# the firewall snapshot is stateless and its failure is not masked
+# the firewall is compared with a real snapshot, and a change says what moved
 grep -F 'nft --stateless list ruleset' "$stage" >/dev/null
-grep -F 'firewall unreadable' "$stage" >/dev/null
-grep -F '"$fw" != unreadable' "$stage" >/dev/null
+grep -F 'fw-before-$side.txt' "$stage" >/dev/null
+grep -F 'fw-after-$side.txt' "$stage" >/dev/null
+grep -F 'diff -u "$WORK/fw-before-$side.txt"' "$stage" >/dev/null
+grep -F 'firewall is not readable on $side' "$stage" >/dev/null
+# the workflow's own defaults must be able to clear the sample floor
+grep -F "default: '128'" "$wf" >/dev/null
+grep -F "default: '20'" "$wf" >/dev/null
 # the probe samples only inside the bulk window, at a floor of loaded samples
 grep -F -- '--ready-file probe.ready --bulk-json send-$label.json' "$stage" >/dev/null
 grep -F -- '--start-file probe.go --wait-file probe.ready' "$stage" >/dev/null

@@ -131,11 +131,11 @@ for side in abroad iran; do
     if ss -ltnH 2>/dev/null | awk '{print \$4}' | grep -qE ':$TP\$'; then echo 'tunnel port in use' >&2; exit 3; fi
     if ss -ltnH 2>/dev/null | awk '{print \$4}' | grep -qE ':$SINK_PORT\$'; then echo 'sink port in use' >&2; exit 3; fi
     if ss -ltnH 2>/dev/null | awk '{print \$4}' | grep -qE ':$ENTRY_PORT\$'; then echo 'entry port in use' >&2; exit 3; fi
-    if ! nft --stateless list ruleset > /dev/null 2>&1; then echo 'firewall unreadable' >&2; exit 4; fi
-    fw=\$(nft --stateless list ruleset | sha256sum | awk '{print \$1}')
     listeners=\$(ss -ltnH 2>/dev/null | wc -l)
-    echo \"fw=\$fw listeners=\$listeners\"")" || die "preflight failed on $side"
-  FW_BEFORE[$side]="${baseline#*fw=}"; FW_BEFORE[$side]="${FW_BEFORE[$side]%% *}"
+    echo \"listeners=\$listeners\"")" || die "preflight failed on $side"
+  ssh_host "$side" "nft --stateless list ruleset" >"$WORK/fw-before-$side.txt" 2>/dev/null ||
+    die "firewall is not readable on $side"
+  FW_BEFORE[$side]="$(sha256sum "$WORK/fw-before-$side.txt" | awk '{print $1}')"
   LISTENERS_BEFORE[$side]="${baseline##*listeners=}"
   echo "POLICY_LAB_PREFLIGHT side=$side result=ok fw_ruleset_sha256=${FW_BEFORE[$side]} listeners=${LISTENERS_BEFORE[$side]}"
 done
@@ -166,17 +166,16 @@ cleanup_all() { # always runs; a leftover or a changed host must fail the stage
       echo "E2E_REMOTE_TMP_CLEANUP side=$side result=fail" >&2
       side_status=1
     fi
-    after="$(ssh_host "$side" "set +e
-      if ! nft --stateless list ruleset > /dev/null 2>&1; then echo 'fw=unreadable listeners=0'; exit 0; fi
-      fw=\$(nft --stateless list ruleset | sha256sum | awk '{print \$1}')
-      listeners=\$(ss -ltnH 2>/dev/null | wc -l)
-      echo \"fw=\$fw listeners=\$listeners\"" 2>/dev/null)" || after=""
-    fw="${after#*fw=}"; fw="${fw%% *}"
-    listeners="${after##*listeners=}"
-    if [[ -n "$after" && "$fw" != unreadable && "$fw" == "${FW_BEFORE[$side]:-}" ]]; then
+    after="$(ssh_host "$side" "ss -ltnH 2>/dev/null | wc -l" 2>/dev/null)" || after=""
+    listeners="${after//[[:space:]]/}"
+    if ssh_host "$side" "nft --stateless list ruleset" >"$WORK/fw-after-$side.txt" 2>/dev/null &&
+       [[ "$(sha256sum "$WORK/fw-after-$side.txt" | awk '{print $1}')" == "${FW_BEFORE[$side]:-}" ]]; then
       echo "POLICY_LAB_FW_DRIFT side=$side result=none"
     else
+      # Say what changed, not just that something did: a ruleset that moved because another
+      # tenant's tooling reacted to this run's connections must not be blamed on the tunnel.
       echo "POLICY_LAB_FW_DRIFT side=$side result=changed" >&2
+      diff -u "$WORK/fw-before-$side.txt" "$WORK/fw-after-$side.txt" 2>/dev/null | head -25 >&2 || true
       side_status=1
     fi
     if [[ -n "$after" && "$listeners" == "${LISTENERS_BEFORE[$side]:-}" ]]; then
