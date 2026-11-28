@@ -416,7 +416,7 @@ async fn udp_round_trip(connection: &quinn::Connection, sequence: &mut u64, payl
 
 async fn echo_udp_peer(endpoint: quinn::Endpoint) {
     let connection = carrier::accept(&endpoint).await.expect("udp accept failed");
-    carrier::answer_hello(&connection, "server", [12_u8; carrier::NONCE_LEN])
+    carrier::answer_hello(&connection, "server")
         .await
         .expect("udp hello answer failed");
     while let Ok((sequence, payload)) = carrier::recv_datagram(&connection).await {
