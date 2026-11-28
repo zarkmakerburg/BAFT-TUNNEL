@@ -2,6 +2,12 @@
 
 > این فایل فقط نقطه ورود و خلاصه مدیریتی است. مرجع واحد فازها، اولویت‌ها و گام بعدی: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md). ارزیابی فنی تطبیق BAFT / Hashem / BCC با کد فعلی و دستورکار اجرایی Agent: [CROSS_PROJECT_CAPABILITY_ALIGNMENT.md](CROSS_PROJECT_CAPABILITY_ALIGNMENT.md). شواهد تاریخی دقیق و شناسه اجراها: [PHASE1_IMPLEMENTATION_STATUS.md](PHASE1_IMPLEMENTATION_STATUS.md). برد تصمیمات و گزارش عملیات: [HQ Issue #2](https://github.com/zarkmakerburg/BAFT-TUNNEL/issues/2).
 
+## به‌روزرسانی 2026-11-28 (LAB واقعی — Phase 1 در هر دو جهت سبز شد؛ سطح شاهد: LAB)
+
+- **نتیجه:** اجرای [46113280639](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/46113280639) روی `main` `b85b29f` کامل سبز شد. هر دو راند `apd` (direct) و `apr` (reverse) با همهٔ پرچم‌ها (`fingerprints_match`، `wrong_nonce_refused`، `second_request_refused`، `configs_ok`، `ca_key_listener_only`، `workers_gone`، `start_via_agent`، `non_root`، `integrity_64k_2m`، `integrity_probe_both_nodes`، `diagnostics_tiers`) PASS شدند، teardown روی هر دو میزبان `AUTO_PAIR_HOST_CLEANUP=PASS` داد و خط پایانی `AUTO_PAIR_RESULT ... listeners_units_unchanged=1 baft_fw_rules=0 unrelated_fw_drift=none` بود؛ `/tmp` هر دو میزبان هم پاک شد.
+- **چهار رفع لازم، همه در هارنس (`lab/real-hosts/`) و بدون تغییر در محصول:** #500 بررسی per-instance به‌جای بررسی مطلق depth-2، #501 پذیرش تارگت مطلق `systemctl enable` با `readlink -f`، #502 حذف idempotent حساب/گروه (`userdel` گروه اختصاصی را هم می‌برد) و توقف stage وقتی teardown شکست می‌خورد، #503 پذیرش مارکر ۰۶۴۴ نصب‌کننده بدون قفل‌کردن روی یک mode.
+- **محدودهٔ این شاهد:** فقط مسیر pairing/tunnel. گیت `v0.4.0` (TP-3.2 تا TP-3.5، TP-4.1، TP-4.2 و اندازه‌گیری سه‌گانه engine/carrier/profile) هنوز باز است، هیچ profile وضعیت `measured` ندارد، UDP در `lab/real-hosts` مسیری ندارد و **NOT TESTED** است، و **هیچ tag یا Release برای `v0.4.0` ساخته نشده است.**
+
 ## به‌روزرسانی 2026-11-27 (LAB — cleanup روی `/run/baft-tunnel/manage` رفع شد؛ سطح شاهد: فقط LOCAL TEST)
 
 - **علت دقیق:** اجرای 46039424060 جفت‌سازی مستقیم و بررسی SHA256 برای ۶۴KB و ~۲MB را کامل کرد و بعد cleanup روی هر دو میزبان متوقف شد، چون اسکریپت `auto-pair-cleanup-host.sh` زیر `/run/baft-tunnel` فقط `control` را مجاز می‌دانست. مسیر `manage` متعلق به خود محصول است: خط `d /run/baft-tunnel/manage 0755 root root -` در tmpfiles.d نصب‌شده، `ListenStream=/run/baft-tunnel/manage/%i.manage.sock` در تمپلیت socket، و `tunnel_helper::SOCKET_DIR`.
