@@ -28,15 +28,15 @@ on:
         required: true
         type: string
       size_mib:
-        description: Bulk flow size per arm in MiB (4-256)
+        description: Bulk flow size per arm in MiB (16-256); must stay open long enough for the probe floor
         required: false
         type: string
-        default: '32'
+        default: '128'
       probes:
-        description: Interactive round trips per arm (20-600)
+        description: Samples each arm must collect inside the bulk window (20-600)
         required: false
         type: string
-        default: '60'
+        default: '20'
       arms:
         description: Space-separated arms; the first must be "control"
         required: false
