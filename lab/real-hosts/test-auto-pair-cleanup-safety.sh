@@ -149,8 +149,11 @@ contains "$stage" 'lab/real-hosts/auto-pair-cleanup-host.sh'
 not_contains "$cleanup_helper" 'rm -rf /run/baft-tunnel'
 bash "$root/lab/real-hosts/test-runtime-children.sh"
 
-agent_userdel_line="$(grep -nF 'userdel baft-tunnel-agent'  "$cleanup_helper" | cut -d: -f1)"
-service_userdel_line="$(grep -nF 'userdel baft-tunnel' "$cleanup_helper" | tail -1 | cut -d: -f1)"
+contains "$cleanup_helper" 'delete_account_and_group() {'
+contains "$cleanup_helper" 'if getent group "$account" >/dev/null 2>&1; then'
+not_contains "$cleanup_helper" 'groupdel baft-tunnel-agent'
+agent_userdel_line="$(grep -nF 'delete_account_and_group baft-tunnel-agent'  "$cleanup_helper" | cut -d: -f1)"
+service_userdel_line="$(grep -nF 'delete_account_and_group baft-tunnel' "$cleanup_helper" | tail -1 | cut -d: -f1)"
 [[ -n "$agent_userdel_line" && -n "$service_userdel_line" && "$agent_userdel_line" -lt "$service_userdel_line" ]] ||
   fail "agent account must be deleted before the service account"
 
