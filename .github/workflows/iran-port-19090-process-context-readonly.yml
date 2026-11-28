@@ -117,7 +117,7 @@ jobs:
               if parse_python:
                   try:
                       raw = open(base + "/cmdline", "rb").read()
-                      argv = [x.decode("utf-8", "replace") for x in raw.split(b"\\x00") if x]
+                      argv = [x.decode("utf-8", "replace") for x in raw.split(b"\x00") if x]
                   except Exception:
                       argv = []
                   if argv and ("python" in os.path.basename(argv[0]).lower()):
