@@ -136,14 +136,13 @@ jobs:
           if subprocess.run(["sh", "-c", "command -v ss >/dev/null 2>&1"]).returncode != 0:
               raise SystemExit("SS_UNAVAILABLE")
 
-          if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
-              raise SystemExit("ABORT: pidfd signalling is unavailable; refusing race-prone PID signalling")
-
           rows, pids = listener_snapshot()
           if not rows:
               print("PORT_19090_STATE=already-free")
               print("PROCESS_ACTION=none")
               raise SystemExit(0)
+          if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+              raise SystemExit("ABORT: pidfd signalling is unavailable; refusing race-prone PID signalling")
           if len(pids) != 1:
               raise SystemExit("ABORT: listener ownership is missing or ambiguous")
           pid = next(iter(pids))
