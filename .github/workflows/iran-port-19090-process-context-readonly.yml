@@ -105,53 +105,82 @@ jobs:
               value = "".join(ch if ch.isprintable() else "_" for ch in value)
               return value[:limit] or "unavailable"
 
-          def details(pid):
+          def details(pid, parse_python=False):
               base = f"/proc/{pid}"
               comm = safe(read_text(base + "/comm").strip(), 80)
               try:
-                  exe = safe(os.path.realpath(base + "/exe"), 240)
+                  exe = safe(os.readlink(base + "/exe"), 240)
               except Exception:
                   exe = "unavailable"
-              try:
-                  raw = open(base + "/cmdline", "rb").read()
-                  argv = [x.decode("utf-8", "replace") for x in raw.split(b"\x00") if x]
-              except Exception:
-                  argv = []
               script = "unavailable"
               mode = "not-python-or-unavailable"
-              if argv and ("python" in os.path.basename(argv[0]).lower()):
-                  mode = "script"
-                  i = 1
-                  takes_value = {"-W", "-X", "--check-hash-based-pycs"}
-                  no_value = {"-b", "-B", "-d", "-E", "-h", "-I", "-i", "-O", "-OO", "-q", "-R", "-s", "-S", "-u", "-v", "-V", "-x", "-P"}
-                  while i < len(argv):
-                      arg = argv[i]
-                      if arg in takes_value:
-                          i += 2
-                          continue
-                      if arg in no_value:
-                          i += 1
-                          continue
-                      if arg == "-m" and i + 1 < len(argv):
-                          mode, script = "module", safe(argv[i + 1], 180)
-                          break
-                      if arg == "-c":
-                          mode, script = "inline-code-suppressed", "not-disclosed"
-                          break
-                      if arg == "--":
-                          i += 1
-                          if i < len(argv):
-                              script = safe(os.path.realpath(argv[i]) if os.path.isabs(argv[i]) else os.path.realpath(os.path.join(base + "/cwd", argv[i])), 240)
+              if parse_python:
+                  try:
+                      raw = open(base + "/cmdline", "rb").read()
+                      argv = [x.decode("utf-8", "replace") for x in raw.split(b"\\x00") if x]
+                  except Exception:
+                      argv = []
+                  if argv and ("python" in os.path.basename(argv[0]).lower()):
+                      mode = "unclassified-python-arguments"
+                      i = 1
+                      no_value = {"-b", "-B", "-d", "-E", "-h", "-i", "-I", "-O", "-OO", "-P", "-q", "-R", "-s", "-S", "-u", "-v", "-V", "-x"}
+                      while i < len(argv):
+                          arg = argv[i]
+                          if arg == "-":
+                              mode, script = "stdin-program-suppressed", "not-disclosed"
+                              break
+                          if arg == "-c":
+                              mode, script = "inline-code-suppressed", "not-disclosed"
+                              break
+                          if arg == "-m" and i + 1 < len(argv):
+                              mode, script = "module", safe(argv[i + 1], 180)
+                              break
+                          if arg in {"-W", "-X"}:
+                              i += 2
+                              continue
+                          if (arg.startswith("-W") or arg.startswith("-X")) and len(arg) > 2:
+                              i += 1
+                              continue
+                          if arg == "--check-hash-based-pycs":
+                              i += 2
+                              continue
+                          if arg.startswith("--check-hash-based-pycs="):
+                              i += 1
+                              continue
+                          if arg in no_value:
+                              i += 1
+                              continue
+                          if arg == "--":
+                              i += 1
+                              if i < len(argv):
+                                  candidate = argv[i]
+                                  if os.path.isabs(candidate):
+                                      resolved = os.path.realpath(candidate)
+                                  else:
+                                      try:
+                                          cwd = os.readlink(base + "/cwd")
+                                          resolved = os.path.realpath(os.path.join(cwd, candidate))
+                                      except Exception:
+                                          resolved = ""
+                                  mode, script = ("script", safe(resolved, 240)) if resolved else ("script-path-unavailable", "unavailable")
+                              else:
+                                  mode, script = "interactive-or-stdin", "not-disclosed"
+                              break
+                          if arg.startswith("-"):
+                              mode, script = "unclassified-option-suppressed", "not-disclosed"
+                              break
+                          if os.path.isabs(arg):
+                              resolved = os.path.realpath(arg)
                           else:
-                              mode = "interactive-or-stdin"
+                              try:
+                                  cwd = os.readlink(base + "/cwd")
+                                  resolved = os.path.realpath(os.path.join(cwd, arg))
+                              except Exception:
+                                  resolved = ""
+                          mode, script = ("script", safe(resolved, 240)) if resolved else ("script-path-unavailable", "unavailable")
                           break
-                      if arg.startswith("-"):
-                          i += 1
-                          continue
-                      script = safe(os.path.realpath(arg) if os.path.isabs(arg) else os.path.realpath(os.path.join(base + "/cwd", arg)), 240)
-                      break
-                  else:
-                      mode = "interactive-or-stdin"
+                      else:
+                          mode, script = "interactive-or-stdin", "not-disclosed"
               cgroup = read_text(base + "/cgroup")
               units = re.findall(r"([^/]+\.(?:service|scope|slice))", cgroup)
               unit = safe(units[-1], 120) if units else "not-visible"
@@ -164,7 +193,7 @@ jobs:
               if not owner.isdigit() or owner in seen:
                   continue
               seen.add(owner)
-              info = details(owner)
+              info = details(owner, parse_python=True)
               print("OWNER_PROCESS_NAME=" + info["comm"])
               print("OWNER_EXECUTABLE=" + info["exe"])
               print("OWNER_PYTHON_MODE=" + info["mode"])
