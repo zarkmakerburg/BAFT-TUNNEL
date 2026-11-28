@@ -464,11 +464,16 @@ while IFS= read -r -d '' path; do
   if [[ "$rel" =~ ^(multi-user\.target\.wants|sockets\.target\.wants)/baft-tunnel[a-z-]*@([A-Za-z0-9_.-]+)\.(path|service|socket)$ ]]; then
     instance="${BASH_REMATCH[2]}"
     if [[ -L "$path" ]]; then
-      target="$(readlink "$path")"
-      [[ "$target" == ../baft-tunnel* ]] ||
-        die "per-instance want points outside the unit templates: $rel; preserving installation"
+      # `systemctl enable` may record either a relative (../baft-tunnel@.service) or an
+      # absolute (/etc/systemd/system/baft-tunnel@.service) target, so resolve the link
+      # and require the template it names to live in the unit directory itself.
+      resolved="$(readlink -f -- "$path" 2>/dev/null || true)"
+      case "$resolved" in
+        "$UNIT_DIR"/baft-tunnel*.service|"$UNIT_DIR"/baft-tunnel*.socket|"$UNIT_DIR"/baft-tunnel*.path) ;;
+        *) die "per-instance want points outside the unit templates: $rel; preserving installation" ;;
+      esac
     fi
-  elif [[ "$rel" =~ ^baft-tunnel[a-z-]*@([A-Za-z0-9_.-]+)\.(service|socket)\.d(/.*)?$ ]]; then
+  elif [[ "$rel" =~ ^baft-tunnel[a-z-]*@([A-Za-z0-9_.-]+)\.(service|socket|path)\.d(/.*)?$ ]]; then
     instance="${BASH_REMATCH[1]}"
   else
     die "unexpected per-instance systemd resource: $rel; preserving installation"
