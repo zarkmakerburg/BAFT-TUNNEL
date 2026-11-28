@@ -27,7 +27,7 @@ CANDIDATE_BINARY_SHA256="$(sha256sum "$CANDIDATE_BINARY" | awk '{print $1}')"
 [[ "$CANDIDATE_BINARY_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo 'could not calculate candidate binary SHA-256' >&2; exit 2; }
 echo "FL_CANDIDATE_BINARY_SHA256=$CANDIDATE_BINARY_SHA256"
 
-validate_ip() { python3 - "$1" <<'PYIP'
+validate_ip() { python3 - "$1" 2>/dev/null <<'PYIP'
 import ipaddress, sys
 ipaddress.ip_address(sys.argv[1])
 PYIP
@@ -35,8 +35,10 @@ PYIP
 validate_user() { [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_.-]*[$]?$ ]]; }
 validate_port() { [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 )); }
 
-validate_ip "$LAB_IRAN_HOST"
-validate_ip "$LAB_ABROAD_HOST"
+# An unguarded failure here used to end the run with a python traceback and exit 1, which the
+# workflow log reports only as "exit code 1". Every other preflight guard names what is wrong.
+validate_ip "$LAB_IRAN_HOST" || { echo 'LAB_IRAN_HOST is not an IP address' >&2; exit 2; }
+validate_ip "$LAB_ABROAD_HOST" || { echo 'LAB_ABROAD_HOST is not an IP address' >&2; exit 2; }
 [[ "$LAB_IRAN_HOST" != "$LAB_ABROAD_HOST" ]] || { echo 'LAB hosts must differ' >&2; exit 2; }
 # The hub address is written as host:port in the member config; keep this LAB to IPv4.
 [[ "$LAB_ABROAD_HOST" != *:* && "$LAB_IRAN_HOST" != *:* ]] || { echo 'the Fleet LAB supports IPv4 LAB hosts only' >&2; exit 2; }
