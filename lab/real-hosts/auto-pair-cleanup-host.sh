@@ -512,15 +512,25 @@ for account in baft-tunnel-agent baft-tunnel; do
   ! pgrep -u "$account" >/dev/null 2>&1 || die "$account process remains; preserving account"
 done
 
-userdel baft-tunnel-agent
-groupdel baft-tunnel-agent
+# `userdel` also removes a user-private group (USERGROUPS_ENAB), which is how Ubuntu and
+# Debian are shipped; deleting a group that is already gone would abort the cleanup under
+# `set -e`, and run 46110313716 failed exactly there after the account was removed. The
+# post-conditions below still require both the account and the group to be absent, so a
+# group that survives `userdel` is deleted here and a group that outlives both is still fatal.
+delete_account_and_group() {
+  local account=$1
+  userdel "$account"
+  if getent group "$account" >/dev/null 2>&1; then
+    groupdel "$account"
+  fi
+}
+delete_account_and_group baft-tunnel-agent
 service_group_before="$REMOTE_DIR/account-baft-tunnel.group.before"
 [[ -f "$service_group_before" && ! -L "$service_group_before" ]] || die "original service-group manifest is missing"
 [[ "$(stat -c '%U:%G %a' "$service_group_before")" == root:root\ 600 ]] || die "original service-group manifest ownership or mode changed"
 [[ "$(getent group baft-tunnel || true)" == "$(cat "$service_group_before")" ]] ||
   die "service group did not return to its original membership; preserving it"
-userdel baft-tunnel
-groupdel baft-tunnel
+delete_account_and_group baft-tunnel
 
 # Installer backups are removed only by exact path returned by this run, and only when empty.
 for backup_dir in "${BACKUP_DIRS[@]}"; do

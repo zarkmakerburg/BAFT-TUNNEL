@@ -381,7 +381,10 @@ ap_round() { # name direction listener_side joiner_side joiner_location
   ap_verify_diag "$ls" "$rn" "$dir" || return 1
   ap_verify_diag "$js" "$rn" "$dir" || return 1
   echo "AUTO_PAIR_ROUND name=$rn direction=$dir listener=$ls joiner=$js joiner_location=$jloc fingerprints_match=1 wrong_nonce_refused=1 second_request_refused=1 configs_ok=1 ca_key_listener_only=1 workers_gone=1 start_via_agent=1 non_root=1 integrity_64k_2m=1 integrity_probe_both_nodes=pass up_s=$AP_UP_S diagnostics_tiers=pass"
-  ap_cleanup
+  # A failed teardown must stop the stage: continuing to the next round on a host that still
+  # holds the previous installation fails later as "pre-existing service account" (run
+  # 46110313716) and hides the real cause. The EXIT trap reports the cleanup status as well.
+  ap_cleanup || { echo "auto-pair teardown failed; refusing to start the next round" >&2; return 1; }
   for side in iran abroad; do
     ssh_host "$side" "! test -e $UB && ! test -e $EB && ! test -e /var/lib/baft-tunnel && ! test -e /run/baft-tunnel/control" || { echo "uninstall left BAFT-TUNNEL resources on $side" >&2; return 1; }
   done
