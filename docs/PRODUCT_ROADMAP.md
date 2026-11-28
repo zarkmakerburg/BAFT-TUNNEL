@@ -6,6 +6,36 @@
 **Release:** `v0.3.1` is the latest Stable release (not a prerelease), cut from reviewed `main` after the signed `v0.3.1-rc.2`; evidence level is hosted CI only and is recorded in [RELEASE.md](RELEASE.md). Earlier Stable `v0.3.0` and `v0.2.0` evidence stays in [STABLE_0.2.0_EVIDENCE.md](STABLE_0.2.0_EVIDENCE.md) and the release notes. Reverse and BAFT ship as **Preview**; `ready` stays Unknown by design. Production deploy is not claimed.
 **Product status:** latest released version: **Stable v0.3.1**. Maturity: **Active Development** (Reverse, BAFT and stream resume are Preview). Production readiness: **not verified**; `ready` remains Unknown unless independently verified under the readiness contract. Main is protected; all code changes continue through PRs and exact-SHA CI.
 
+**Update 2026-11-28 (later) — the two-host policy measurement now exists and ran green (LAB).** Run [46150559605](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/46150559605) on `main` `d6dcf2c` is `success`, and it is the first run in which a stage actually measured the (engine, carrier, profile) triple on the real LAB pair instead of a loopback harness:
+
+```
+POLICY_LAB_ARM arm=control     pack=off   pack_engaged=0 engine=tcp-tls carrier=tcp 128 MiB sink_MiB_per_s=19.44 interactive_p50_us=125836.3 interactive_p95_us=155400.3 probe_samples=32  sha_match=1
+POLICY_LAB_ARM arm=balanced-1  pack=sched pack_engaged=1 engine=tcp-tls carrier=tcp 128 MiB sink_MiB_per_s=1.82  interactive_p50_us=110633.5 interactive_p95_us=143238.7 probe_samples=414 sha_match=1
+POLICY_LAB_ARM arm=gaming-1    pack=sched pack_engaged=1 engine=tcp-tls carrier=tcp 128 MiB sink_MiB_per_s=1.8   interactive_p50_us=109319.4 interactive_p95_us=142202.3 probe_samples=419 sha_match=1
+POLICY_LAB_ARM arm=trading-1   pack=sched pack_engaged=1 engine=tcp-tls carrier=tcp 128 MiB sink_MiB_per_s=1.86  interactive_p50_us=108419.3 interactive_p95_us=134695.3 probe_samples=417 sha_match=1
+POLICY_LAB_ARM arm=streaming-1 pack=sched pack_engaged=1 engine=tcp-tls carrier=tcp 128 MiB sink_MiB_per_s=3.47  interactive_p50_us=109156.8 interactive_p95_us=189843.5 probe_samples=209 sha_match=1
+POLICY_LAB_ARM arm=bulk-1      pack=sched pack_engaged=1 engine=tcp-tls carrier=tcp 128 MiB sink_MiB_per_s=13.04 interactive_p50_us=111374.2 interactive_p95_us=164144.6 probe_samples=55  sha_match=1
+POLICY_LAB_RESULT result=pass arms=6 control=off measured_triples=5
+E2E_REMOTE_TMP_CLEANUP side=abroad pass / side=iran pass
+POLICY_LAB_FW_DRIFT side=abroad result=none baft_fw_rules=0 / side=iran result=none baft_fw_rules=0
+POLICY_LAB_HOST_CLEANUP side=abroad result=PASS / side=iran result=PASS
+```
+
+| arm (profile) | pack | delivered (sink) | p50 | p95 | interactive samples in window | bytes |
+|---|---|---|---|---|---|---|
+| control (none) | off | 19.44 MiB/s | 125,836 µs | 155,400 µs | 32 | 128 MiB, byte-exact |
+| `balanced/1` | sched | 1.82 MiB/s | 110,634 µs | 143,239 µs | 414 | 128 MiB, byte-exact |
+| `gaming/1` | sched | 1.80 MiB/s | 109,319 µs | 142,202 µs | 419 | 128 MiB, byte-exact |
+| `trading/1` | sched | 1.86 MiB/s | 108,419 µs | 134,695 µs | 417 | 128 MiB, byte-exact |
+| `streaming/1` | sched | 3.47 MiB/s | 109,157 µs | 189,844 µs | 209 | 128 MiB, byte-exact |
+| `bulk/1` | sched | 13.04 MiB/s | 111,374 µs | 164,145 µs | 55 | 128 MiB, byte-exact |
+
+How to read it, without over-reading it: every arm moved 128 MiB that the sink hashed byte-exact, the interactive p50/p95 comes from 64-byte round trips **sampled only inside the bulk window** (the probe starts when the sender raises its start file and stops when the transfer ends), the throughput is the sink's own clock, and the pack's engagement is the product's own `policy pack engaged: profile=… window_bytes=… quantum_bytes=… max_queued_bytes=… adaptive=off` line on **both** hosts, absent in the control. So `(tcp-tls, TCP/Yamux, balanced/1)`, `… gaming/1`, `… trading/1`, `… streaming/1` and `… bulk/1` are now `measured` **for this path and this window** — one run per arm, so the spread is unknown. On this path the scheduler rows delivered markedly less bulk goodput than the control (1.8-1.9 MiB/s for Balanced/Gaming/Trading, 3.5 for Streaming, 13.0 for Bulk, against 19.4) while their loaded interactive p50 sat slightly below the control's (108-117 ms against 126 ms); that is a cost on the bulk flow and a small latency difference, not a claimed benefit, and nothing here says which row an operator should pick.
+
+What is still unmeasured, per item: **TP-3.2/TP-3.3/TP-3.4/TP-3.5** now hold their `(tcp-tls, TCP, <profile>)` tuple and stay open on `(noise-tcp, TCP, <profile>)`, on the UDP/datagram carrier (no arm exists, **NOT TESTED**), on loss/jitter/impairment, RSS, the 60-minute run, and on repeat runs for a spread; TP-3.5's delivered-goodput item is satisfied only for this path. **TP-4.1** and **TP-4.2** stay open on their own LAB windows: every arm in this run ran `adaptive=off`, so neither the 1 Hz controller nor the fail-safe matrix has been exercised on a real path. **No profile row is `unknown` for this engine/carrier any more, and no `v0.4.0` tag or release exists** — `Cargo.toml` is still `0.3.1`.
+
+The harness itself is `lab/real-hosts/policy-lab-stage.sh` plus `lab/real-hosts/policy-lab-measure.py`, driven by `.github/workflows/policy-lab.yml`, which builds the binary from the dispatched `main` commit with `--features policy-pack` and pins `candidate_sha` to it. Four defects had to be fixed before a green run was possible, all in `lab/real-hosts/` and CI: #505's harness (with one product log line, the only positive proof of engagement), #506's unreachable sample floor and diagnostic firewall diff, #507's fail2ban attribution (the shared hosts' own ban set churns continuously, so the drift check covers the ruleset minus that one table while still requiring zero rules naming the tunnel), and #508's workflow post-check that killed its own shell with an unbracketed `pkill` pattern. No product defect surfaced on this path, so no product code changed for the measurement itself.
+
 **Update 2026-11-28 — the trusted two-host automatic-pairing LAB is green (LAB evidence, not CI-only).** Run [46113280639](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/46113280639) on `main` `b85b29f` completed the whole Phase 1 gate on the two real LAB hosts, in both directions and with a teardown proof on each side:
 
 ```

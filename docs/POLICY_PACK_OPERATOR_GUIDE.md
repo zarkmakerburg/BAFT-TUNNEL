@@ -178,6 +178,9 @@ remain open for all four non-Balanced rows.
 | `streaming/1` | 512 KiB | 32 KiB | 128 KiB | Sustained medium-bitrate delivery with a larger but bounded standing buffer | TP-3.4: loaded p50/p95/p99 2.1–2.2× Balanced; CPU lower but repeats do not overlap; delivered goodput not measured |
 | `bulk/1` | 2 MiB | 64 KiB | 256 KiB | Throughput for bulk transfer, latency accepted; half of the unmanaged 4 MiB window | TP-3.5: loaded p50/p95/p99 8.3–8.9× Balanced; CPU 48.9% lower; **delivered goodput not measured** |
 
+**2026-11-28 LAB update:** `(tcp-tls, TCP/Yamux)` is now measured for all five rows on the two LAB hosts ([run 46150559605](https://github.com/zarkmakerburg/BAFT-TUNNEL/actions/runs/46150559605)): 128 MiB byte-exact per arm, sink goodput 1.82 / 1.80 / 1.86 / 3.47 / 13.04 MiB/s for Balanced / Gaming / Trading / Streaming / Bulk against 19.44 for the control, loaded interactive p50 108-117 ms against the control's 126 ms — one run per arm, a bulk-flow cost, **no benefit claimed**. Everything else in this guide's limits still stands: `(noise-tcp, TCP, …)`, the UDP/datagram carrier (**NOT TESTED**), loss/jitter, RSS, the 60-minute run and repeats are unmeasured, and the adaptive controller was off in every arm.
+
+
 No profile is "recommended", "accepted as measured" or "ready". Choose one only as a configured
 intent after reading its record, and expect `unknown` until the unit is restarted into it. The
 records are [TP-3.2](POLICY_PACK_TP-3.2_GAMING_EVIDENCE.md),
