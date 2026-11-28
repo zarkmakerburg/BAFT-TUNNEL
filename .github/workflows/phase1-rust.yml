@@ -106,6 +106,38 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  policy-pack:
+    # `policy_relay` only exists with `--features policy-pack`, so without this job the pack's
+    # tests are compiled in no CI run at all. The default graph and test list must stay pack-free.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy
+      - name: Build with the policy-pack feature
+        run: cargo +1.88.0 build --locked --features policy-pack
+      - name: Run the pack's tests (scheduler, profiles, engagement line)
+        run: |
+          cargo +1.88.0 test --locked --features policy-pack policy_relay::tests:: -- --nocapture
+      - name: Prove the default test list has no pack test
+        run: |
+          # Capture first: piping cargo into `grep -q` would let an early grep exit stand in
+          # for cargo's status, so a default build that cannot even list its tests would pass.
+          if ! cargo +1.88.0 test --locked -- --list > "$RUNNER_TEMP/default-tests.txt" 2>&1; then
+            echo 'the default build could not list its tests' >&2
+            cat "$RUNNER_TEMP/default-tests.txt" >&2
+            exit 1
+          fi
+          if grep -q 'policy_relay' "$RUNNER_TEMP/default-tests.txt"; then
+            echo 'a pack test is compiled without the feature' >&2
+            exit 1
+          fi
+      - name: Run Clippy with the pack feature
+        run: cargo +1.88.0 clippy --locked --all-targets --features policy-pack -- -D warnings
+
   ubuntu-2204-baseline:
     # Baseline gate: Ubuntu 22.04 / systemd 249 with LoadCredential= (no encrypted credentials).
     runs-on: ubuntu-22.04
